@@ -626,6 +626,67 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
     final class Fail: @unchecked Sendable { let l = NSLock(); var on = true
         var value: Bool { get { l.withLock { on } } set { l.withLock { on = newValue } } } }
 
+    @Test func publicRotationMidPublicationRefusesFinishedHandler() async throws {
+        let w = try await World.make()
+        let handler = HandlerGate(), publication = HandlerGate()
+        await w.host.setHandler { _ in
+            await handler.wait()
+            return .response(status: 200, headers: [:], data: Data("secret".utf8))
+        }
+        let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0x71))
+        let response = Task { await w.host.process(envelope: env, mailbox: h.rid) }
+        while !handler.isEntered { await Task.yield() }
+        await w.host.setPublishHook { await publication.wait() }
+        let rotation = Task {
+            try await w.host.rotate(remaining: [(w.primary.deviceKeys, World.all), (w.phone, ["look", "decide"])],
+                                    relay: w.relay, session: w.hostSession)
+        }
+        while !publication.isEntered { await Task.yield() }
+        handler.open()
+        // Publication stays blocked until the response arrives: no scheduler delay or sleep decides the race.
+        let chunks = await response.value
+        #expect(await w.host.epoch == 1)
+        #expect(chunks.count == 1)
+        let opened = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
+        #expect(opened.meta == unknownRefusal.meta)
+        #expect(opened.data.isEmpty)
+        publication.open()
+        try await rotation.value
+        #expect(await w.host.epoch == 2)
+        #expect(await w.host.rotationRequired == false)
+    }
+
+    @Test func publicRotationFailureKeepsGateAndRetriesOnPump() async throws {
+        let w = try await World.make()
+        let counter = Counter()
+        await w.host.setHandler { _ in
+            counter.bump()
+            return .response(status: 200, headers: [:], data: Data("secret".utf8))
+        }
+        await w.host.setPublishHook { throw TestCrash() }
+        do {
+            try await w.host.rotate(remaining: [(w.phone, ["look", "decide"])], relay: w.relay, session: w.hostSession)
+            Issue.record("publication should fail")
+        } catch is TestCrash {} // Public API preserves the publication error.
+        #expect(await w.host.rotationRequired)
+        #expect(await w.host.epoch == 1)
+        let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0x72))
+        let chunks = await w.host.process(envelope: env, mailbox: h.rid)
+        let opened = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
+        #expect(opened.meta == unknownRefusal.meta)
+        #expect(opened.data.isEmpty)
+        #expect(counter.value == 0)
+        await w.host.setPublishHook(nil)
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        #expect(await w.host.rotationRequired == false)
+        #expect(await w.host.epoch == 2)
+        let state = await w.host.coreState()
+        #expect(state.members[w.primaryID] == nil) // Retry preserves the public rotation's requested roster.
+        let (next, nh) = try await w.sealedRequest(rid: ID16.fresh(0x73), seq: 2, epoch: 2)
+        let answer = await w.host.process(envelope: next, mailbox: nh.rid)
+        #expect(try openChunk(#require(answer.first), wk: await w.host.wkFor(2)).data == Data("secret".utf8))
+    }
+
     // A handler returning while the rotation's grants are being published must not seal data.
     @Test func handlerFinishingDuringPublicationGetsNoData() async throws {
         let w = try await World.make()

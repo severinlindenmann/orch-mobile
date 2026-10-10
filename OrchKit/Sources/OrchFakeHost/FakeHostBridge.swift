@@ -52,6 +52,26 @@ extension FakeHost {
 
     /// Rotation (section 7.2 host rules): `WK_{e+1}`, a grant for every remaining device, then the list.
     public func rotate(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
+        try await beginRotation(remaining: remaining, relay: relay, session: session).value
+    }
+
+    /// Every entry point installs the gate synchronously, before publication can suspend. Concurrent callers join it.
+    /// Only the publication task owns cleanup, so a waiter cannot clear the gate of a later rotation.
+    private func beginRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) -> Task<Void, Error> {
+        if let rotation { return rotation }
+        rotationRequired = true
+        pendingRotation = (remaining, relay, session)
+        let task = Task {
+            defer { rotation = nil }
+            try await publishRotation(remaining: remaining, relay: relay, session: session)
+            pendingRotation = nil
+            rotationRequired = false
+        }
+        rotation = task
+        return task
+    }
+
+    private func publishRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
         let next = epoch + 1
         try await publishHook?()
         endOpenStreams(newEpoch: next)
@@ -97,12 +117,16 @@ extension FakeHost {
     /// A rotation in progress is awaited first, and membership, revocation and epoch are checked AGAIN after the handler
     /// ran: if any changed, the answer is `already_done(unknown)` and no data leaves under the old epoch (section 8.5).
     public func process(envelope: Data, mailbox: ID16?) async -> [Data] {
-        while let t = rotation { _ = await t.value; if rotation == t { rotation = nil } }
+        while let t = rotation { _ = try? await t.value }
         let now = wall.nowMs
         switch core.check(envelope, mailbox: mailbox, nowMs: now) {
         case .drop: return []
         case .refuse(let r, let h): return (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
-        case .replay(let chunks, _): return chunks
+        case .replay(let chunks, let h):
+            if rotationRequired {
+                return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
+            }
+            return chunks
         case .accept(let a):
             let h = a.header
             if h.flagSet.contains(.stream) { streamOpen[h.rid] = (h.device, h.epoch, 0) }
@@ -112,7 +136,12 @@ extension FakeHost {
                 return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
             }
             let reply = await run(a)
-            while let t = rotation { _ = await t.value; if rotation == t { rotation = nil } }     // seal only after a rotation completed
+            // A non-stream handler may finish while grants are suspended, with epoch and membership still unchanged.
+            // Refuse immediately; streams wait for their terminal stale_epoch chunk and revocation waits for its own rotation.
+            if rotationRequired && !isRevocation && !h.flagSet.contains(.stream) {
+                return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
+            }
+            while let t = rotation { _ = try? await t.value }     // seal only after a rotation completed
             if streamEnded.remove(h.rid) != nil { return [] }          // a rotation already ended this stream
             streamOpen[h.rid] = nil
             // The revocation's own `{"revoked":true}` reply is the one exemption: it is sealed under the request's epoch (8.5), carries no data.
@@ -173,17 +202,17 @@ extension FakeHost {
     /// `rotationRequired` is cleared only on success.
     @discardableResult
     private func runRotation() async -> Bool {
-        if let t = rotation { return await t.value && !rotationRequired }
-        guard let ctx = bridgeRelay else { return false }
-        let remaining = roster.filter { !core.revoked.contains($0.key) }.map { ($0.value.keys, $0.value.scopes) }
-        let t = Task<Bool, Never> {
-            do { try await self.rotate(remaining: remaining, relay: ctx.relay, session: ctx.session); return true } catch { return false }
+        let task: Task<Void, Error>
+        if let rotation { task = rotation }
+        else if let pending = pendingRotation {
+            let remaining = pending.remaining.filter { !core.revoked.contains($0.0.deviceID) }
+            task = beginRotation(remaining: remaining, relay: pending.relay, session: pending.session)
+        } else {
+            guard let ctx = bridgeRelay else { return false }
+            let remaining = roster.filter { !core.revoked.contains($0.key) }.map { ($0.value.keys, $0.value.scopes) }
+            task = beginRotation(remaining: remaining, relay: ctx.relay, session: ctx.session)
         }
-        rotation = t
-        let ok = await t.value
-        if rotation == t { rotation = nil }
-        if ok { rotationRequired = false }
-        return ok
+        do { try await task.value; return !rotationRequired } catch { return false }
     }
 
     /// Seals response chunks under the request's own epoch key (so a `stale_epoch` refusal at an old epoch is readable by
