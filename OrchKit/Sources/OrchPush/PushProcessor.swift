@@ -49,9 +49,8 @@ public enum PushProcessor {
         case drop(DropReason)
     }
 
-    /// The highest `ts_ms` shown per `(ws, id)`, plus a high-water mark of the clock values seen. A value type: pure
-    /// functions take it and return the next one. The caller persists it (also after drops: `process` prunes and
-    /// advances the high-water mark on every call).
+    /// The highest `ts_ms` shown per `(ws, id)`, plus the highest `ts_ms` shown at all. A value type: pure functions
+    /// take it and return the next one. The caller persists it.
     public struct ReplayState: Equatable, Sendable {
         /// Keyed by the id's UTF-8 bytes, never by `String` (Swift equality is canonical equivalence, the protocol
         /// compares code points).
@@ -61,30 +60,31 @@ public enum PushProcessor {
             public init(workspace: ID16, id: String) { self.workspace = workspace; self.idBytes = Data(id.utf8) }
         }
         public private(set) var lastShown: [Key: Int64]
-        /// The largest `nowMs` any call has seen. Pruning and the 24 h lower bound use `max(nowMs, highWaterMs)`, so
-        /// winding the clock back cannot resurrect a pruned entry and make an old push replayable.
-        public private(set) var highWaterMs: Int64
-        public init(lastShown: [Key: Int64] = [:], highWaterMs: Int64 = Int64.min) {
-            self.lastShown = lastShown; self.highWaterMs = highWaterMs
+        /// The highest `ts_ms` actually shown: host time under the WSK signature, not the local clock. The 24 h lower
+        /// bound is `max(nowMs, maxShownTs) - 24 h` and entries older than `maxShownTs - 24 h` are pruned, so winding
+        /// the clock back cannot make a pruned push replayable. A wrong local clock cannot move this mark, only a
+        /// genuine signed push can (and only within `now + 300 s`).
+        public private(set) var maxShownTs: Int64
+        public init(lastShown: [Key: Int64] = [:], maxShownTs: Int64 = Int64.min) {
+            self.lastShown = lastShown; self.maxShownTs = maxShownTs
         }
 
         public func last(workspace: ID16, id: String) -> Int64? { lastShown[Key(workspace: workspace, id: id)] }
 
-        /// Drops entries the 24 h rule would refuse anyway (`ts_ms < now - 24 h`) and advances the high-water mark.
-        func advanced(to effectiveNowMs: Int64) -> ReplayState {
-            let floor = saturatingAdd(effectiveNowMs, -PushProcessor.maxAgeMs)
-            return ReplayState(lastShown: lastShown.filter { $0.value >= floor }, highWaterMs: effectiveNowMs)
+        func pruned() -> ReplayState {
+            let floor = saturatingAdd(maxShownTs, -PushProcessor.maxAgeMs)
+            return ReplayState(lastShown: lastShown.filter { $0.value >= floor }, maxShownTs: maxShownTs)
         }
 
         func recording(_ key: Key, _ ts: Int64) -> ReplayState {
             var next = lastShown; next[key] = ts
-            return ReplayState(lastShown: next, highWaterMs: highWaterMs)
+            return ReplayState(lastShown: next, maxShownTs: max(maxShownTs, ts)).pruned()
         }
     }
 
-    /// The timestamp rule of section 9 steps 6 and 7 as a pure function: `floorNowMs - 24 h <= ts_ms <= nowMs + 300 s`
+    /// The timestamp rule of section 9 steps 6 and 7 as a pure function: `max(nowMs, maxShownTs) - 24 h <= ts_ms <= nowMs + 300 s`
     /// (inclusive), and strictly higher than the last one shown for `(ws, id)`. `floorNowMs` is
-    /// `max(nowMs, highWaterMs)` (see `ReplayState`); pass `nowMs` twice when there is no history.
+    /// `maxShownTs` (see `ReplayState`); pass `Int64.min` when there is no history.
     public static func checkTimestamp(tsMs: Int64, nowMs: Int64, floorNowMs: Int64, lastShown: Int64?) -> DropReason? {
         guard tsMs >= saturatingAdd(max(nowMs, floorNowMs), -maxAgeMs), tsMs <= saturatingAdd(nowMs, skewMs) else { return .stale }
         if let last = lastShown, tsMs <= last { return .replay }
@@ -92,15 +92,14 @@ public enum PushProcessor {
     }
 
     /// Processes the outer object's bytes. Returns the outcome and the next replay state: pruned and advanced on every
-    /// call, with the shown timestamp recorded on `.show`.
+    /// call, with the shown timestamp recorded on `.show`. Only a shown push changes the state.
     public static func process(outer raw: Data, keys: Keyring, replay: ReplayState, nowMs: Int64) -> (result: Outcome, replay: ReplayState) {
-        let effective = max(nowMs, replay.highWaterMs)
-        let state = replay.advanced(to: effective)
+        let state = replay.pruned()
         switch open(outer: raw, keys: keys) {
         case .drop(let why): return (.drop(why), state)
         case .show(let p):
             let key = ReplayState.Key(workspace: p.workspace, id: p.id)
-            if let why = checkTimestamp(tsMs: p.tsMs, nowMs: nowMs, floorNowMs: effective, lastShown: state.lastShown[key]) {
+            if let why = checkTimestamp(tsMs: p.tsMs, nowMs: nowMs, floorNowMs: state.maxShownTs, lastShown: state.lastShown[key]) {
                 return (.drop(why), state)
             }
             return (.show(p), state.recording(key, p.tsMs))

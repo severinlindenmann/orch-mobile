@@ -65,8 +65,8 @@ import OrchProtocol
         var r2 = PushProcessor.ReplayState()
         let old = now - 1000
         r2 = PushProcessor.process(o: try make(pay("x", old)), keys: keys, replay: r2, nowMs: now).replay
-        r2 = PushProcessor.process(o: "{}", keys: keys, replay: r2, nowMs: now + PushProcessor.maxAgeMs + 10_000).replay   // clock jumped ahead
+        r2 = PushProcessor.process(o: try make(pay("x", old)), keys: keys, replay: r2, nowMs: now + PushProcessor.maxAgeMs + 10_000).replay   // clock jumped ahead
         let back = PushProcessor.process(o: try make(pay("x", old)), keys: keys, replay: r2, nowMs: now)
-        #expect(back.result == .drop(.stale), "rollback replay")
+        #expect(back.result == .drop(.replay), "rollback replay")
     }
 }

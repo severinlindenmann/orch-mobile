@@ -124,3 +124,35 @@ import Testing
         #expect((try? SaltedAEAD.open(key: k, msgLabel: "y", aad: Data([1]), blob: sb.dropFirst(3))) == nil)
     }
 }
+
+@Suite struct KeyEquivalence {
+    // Swift String / Dictionary / Set equality is canonical equivalence: "\u{212A}" == "K". Parsed objects can never
+    // carry such keys (ASCII only), but every field-set check must also hold for objects built in code.
+    @Test func parserRejectsEquivalentKeys() {
+        #expect(throws: JSONError.self) { try StrictJSON.parse("{\"K\":1,\"\u{212A}\":2}") }
+        #expect(throws: JSONError.self) { try StrictJSON.parse("{\"\u{212A}\":2}") }
+        #expect(throws: JSONError.self) { try StrictJSON.parse("{\"k\u{131}nd\":2}") }
+        #expect(throws: JSONError.self) { try StrictJSON.parse("{\"\\u212A\":2}") }
+        #expect(throws: JSONError.self) { try StrictJSON.parse("{\"e\u{301}\":2}") }
+    }
+
+    @Test func fieldSetsAreByteExact() throws {
+        let kelvin: [String: JSONValue] = ["\u{212A}": 1]
+        #expect(!kelvin.hasExactly(["K"]))
+        #expect(!(["K": 1] as [String: JSONValue]).hasExactly(["K", "x"]))
+        #expect((["K": 1] as [String: JSONValue]).hasExactly(["K"]))
+        #expect(JSONValue.object(kelvin) != JSONValue.object(["K": 1]))
+    }
+
+    @Test func signedObjectWithEquivalentKeyIsMalformed() throws {
+        let pk = SoftwareSigner()
+        let good = try SignedObject.sign(["v": 2, "suite": 2, "kind": "revocation"], kind: .revocation, signer: pk)
+        var bad = good.object
+        bad["\u{212A}"] = 1                       // distinct from every legal key, and not ASCII
+        #expect(throws: Refusal.malformed) { try SignedObject(object: bad, signature: good.signature).verify(kind: .revocation, key: pk.publicKey) }
+        let wire: JSONValue = .object(["o": .object(bad), "sig": .string(B64U.encode(good.signature))])
+        #expect(throws: Refusal.malformed) { try SignedObject.parse(wire) }
+        // the envelope itself: a Kelvin-sign twin of "o" is not accepted for "o"
+        #expect(throws: Refusal.malformed) { try SignedObject.parse(.object(["o": .object(good.object), "sig": .string(B64U.encode(good.signature)), "\u{212A}": 1])) }
+    }
+}

@@ -52,7 +52,7 @@ public struct SignedObject: Equatable, Sendable {
 
     /// Shape check only: exactly the keys `o` and `sig`, `o` an object, `sig` a canonical 64-byte b64u string.
     public static func parse(_ v: JSONValue) throws -> SignedObject {
-        guard let m = v.object, Set(m.keys) == ["o", "sig"], let o = m["o"]?.object,
+        guard let m = v.object, m.hasExactly(["o", "sig"]), let o = m["o"]?.object, o.allKeysASCII,
               let s = m["sig"]?.string, let sig = B64U.decode(s, length: Suite2.signatureLength) else { throw Refusal.malformed }
         return SignedObject(object: o, signature: sig)
     }
@@ -60,7 +60,8 @@ public struct SignedObject: Equatable, Sendable {
     /// Section 2.4 order: `v`, `suite` and `kind` first, then the signature. Returns the object on success.
     /// Throws `Refusal.malformed` for a wrong `v`/`suite`/`kind` and `Refusal.badSignature` for a bad signature.
     public func verify(kind: SignedKind, key: SigningPublicKey) throws -> [String: JSONValue] {
-        guard object["v"] == .int(2), object["suite"] == .int(Int64(Suite2.id)), object["kind"] == .string(kind.rawValue) else {
+        guard object.allKeysASCII, object["v"] == .int(2), object["suite"] == .int(Int64(Suite2.id)),
+              object["kind"] == .string(kind.rawValue) else {
             throw Refusal.malformed
         }
         guard let msg = try? canonicalJSON(.object(object)),
@@ -71,7 +72,10 @@ public struct SignedObject: Equatable, Sendable {
 
 /// Field-reading helpers for exact-field-set checks.
 extension Dictionary where Key == String, Value == JSONValue {
-    func hasExactly(_ keys: Set<String>) -> Bool { Set(self.keys) == keys }
+    /// Exact field set, byte-exact: every key must be ASCII (section 2.3) before the set is compared, because Swift's
+    /// `Set<String>` equality is canonical equivalence (a key "\u{212A}" would equal "K").
+    func hasExactly(_ keys: Set<String>) -> Bool { allKeysASCII && Set(self.keys) == keys }
+    var allKeysASCII: Bool { self.keys.allSatisfy { !$0.isEmpty && $0.utf8.allSatisfy { $0 < 0x80 } } }
     func id16(_ k: String) -> ID16? { self[k]?.string.flatMap { ID16(hex: $0) } }
     func b64u(_ k: String, length: Int? = nil) -> Data? { self[k]?.string.flatMap { B64U.decode($0, length: length) } }
 }

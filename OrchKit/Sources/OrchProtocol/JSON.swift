@@ -21,8 +21,10 @@ public indirect enum JSONValue: Equatable, Sendable {
         case (.string(let x), .string(let y)): return x.utf8.elementsEqual(y.utf8)
         case (.array(let x), .array(let y)): return x.count == y.count && zip(x, y).allSatisfy { $0 == $1 }
         case (.object(let x), .object(let y)):
-            // keys are ASCII (section 2.3), for which String equality is byte equality
-            return x.count == y.count && x.allSatisfy { k, v in y[k].map { $0 == v } ?? false }
+            // Dictionary lookup uses Swift String equality (canonical equivalence: U+212A finds "K"), so match keys by bytes
+            return x.count == y.count && x.allSatisfy { k, v in
+                y.contains { $0.key.bytesEqual(k) && $0.value == v }
+            }
         default: return false
         }
     }

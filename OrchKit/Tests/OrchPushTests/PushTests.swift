@@ -110,7 +110,7 @@ struct Host {
         let out = PushProcessor.process(outer: try h.outer(), keys: h.keys, replay: .init(), nowMs: now)
         #expect(out.result == .show(.init(workspace: h.ws, epoch: 1, kind: "question", id: "q-1", label: "Ship?", tsMs: 1_000_000)))
         #expect(out.replay.last(workspace: h.ws, id: "q-1") == 1_000_000)
-        #expect(out.replay.highWaterMs == now)
+        #expect(out.replay.maxShownTs == 1_000_000)
     }
 
     @Test func replayEntriesChangeOnShowOnly() throws {
@@ -181,25 +181,43 @@ struct Host {
         #expect(late.result == .drop(.stale))
     }
 
-    @Test func processPrunesByItself() throws {
+    @Test func pruningFollowsShownTimestamps() throws {
         let h = Host()
         let r = PushProcessor.process(outer: try h.outer(), keys: h.keys, replay: .init(), nowMs: now).replay
-        let later = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now + 1000).replay
-        #expect(later.last(workspace: h.ws, id: "q-1") == 1_000_000)
-        let muchLater = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now + PushProcessor.maxAgeMs + 1).replay
-        #expect(muchLater.last(workspace: h.ws, id: "q-1") == nil)
+        // a drop never changes the state, whatever the clock says
+        let dropped = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now + 5 * PushProcessor.maxAgeMs).replay
+        #expect(dropped == r)
+        // a newer shown push moves the mark and prunes entries older than mark - 24 h
+        let newer = try h.outer(payload: ["kind": "join", "id": "j", "label": "x", "ts_ms": .int(1_000_000 + PushProcessor.maxAgeMs + 5)])
+        let r2 = PushProcessor.process(outer: newer, keys: h.keys, replay: r, nowMs: now + PushProcessor.maxAgeMs + 5).replay
+        #expect(r2.maxShownTs == 1_000_000 + PushProcessor.maxAgeMs + 5)
+        #expect(r2.last(workspace: h.ws, id: "q-1") == nil && r2.last(workspace: h.ws, id: "j") != nil)
     }
 
     @Test func clockRollbackCannotReplay() throws {
         let h = Host(), raw = try h.outer()
-        var r = PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).replay
-        // the clock jumps a day ahead: the entry is pruned and the push is stale
+        let r = PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).replay
         let ahead = now + PushProcessor.maxAgeMs + 10_000
         let f = PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: ahead)
-        #expect(f.result == .drop(.stale)); r = f.replay
-        #expect(r.last(workspace: h.ws, id: "q-1") == nil && r.highWaterMs == ahead)
-        // the clock is wound back: the pruned entry must not make the old push shown again
-        #expect(PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: now).result == .drop(.stale))
+        #expect(f.result == .drop(.stale) && f.replay == r)
+        // the clock is wound back: the push is still a replay
+        #expect(PushProcessor.process(outer: raw, keys: h.keys, replay: f.replay, nowMs: now).result == .drop(.replay))
+    }
+
+    @Test func clockOneYearAheadIsNotSticky() throws {
+        let h = Host()
+        let year: Int64 = 365 * 24 * 3600 * 1000
+        var r = PushProcessor.ReplayState()
+        let a = PushProcessor.process(outer: try h.outer(), keys: h.keys, replay: r, nowMs: now)
+        r = a.replay
+        // clock a year ahead: a genuine push at the true time is stale, nothing shown, the mark does not advance
+        let genuine = try h.outer(payload: ["kind": "question", "id": "q-2", "label": "x", "ts_ms": 1_000_100])
+        let wrong = PushProcessor.process(outer: genuine, keys: h.keys, replay: r, nowMs: now + year)
+        #expect(wrong.result == .drop(.stale))
+        #expect(wrong.replay.maxShownTs == r.maxShownTs && wrong.replay == r)
+        // clock returns: the next genuine push is shown
+        let fine = PushProcessor.process(outer: genuine, keys: h.keys, replay: wrong.replay, nowMs: now + 200)
+        guard case .show = fine.result else { Issue.record("genuine push dropped after the clock came back: \(fine.result)"); return }
     }
 
     @Test func forgedByAMemberWithKPush() throws {
