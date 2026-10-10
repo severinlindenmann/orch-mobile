@@ -31,16 +31,17 @@ public struct AgreementPublicKey: Hashable, Sendable {
     public func hash(into h: inout Hasher) { h.combine(x963) }
 }
 
-/// Anything that can produce suite-2 signatures: a software key here, a Secure Enclave key in OrchCustody.
+/// Anything that can produce suite-2 signatures: a software key here, a Secure Enclave key in OrchCustody. Package-visible
+/// so that raw, label-less signing cannot be called from outside the OrchKit package.
 /// The private scalar never crosses this protocol.
-public protocol Signer: Sendable {
+package protocol Signer: Sendable {
     var publicKey: SigningPublicKey { get }
     /// Raw 64-byte `r || s` over `message` (ECDSA P-256 with SHA-256, IEEE P1363).
     func rawSignature(over message: Data) throws -> Data
 }
 
 /// Anything that can do ECDH P-256 with a peer key: software or Secure Enclave.
-public protocol KeyAgreer: Sendable {
+package protocol KeyAgreer: Sendable {
     var publicKey: AgreementPublicKey { get }
     /// The 32-byte x-coordinate. All-zero output must be refused by callers (`Sealing` does).
     func sharedSecret(with peer: AgreementPublicKey) throws -> Data
@@ -62,7 +63,7 @@ public struct SoftwareSigner: Signer {
         publicKey = try SigningPublicKey(x963: key.publicKey.x963Representation)
     }
 
-    public func rawSignature(over message: Data) throws -> Data {
+    package func rawSignature(over message: Data) throws -> Data {
         try key.signature(for: message).rawRepresentation
     }
 }
@@ -82,14 +83,14 @@ public struct SoftwareKeyAgreer: KeyAgreer {
         publicKey = try AgreementPublicKey(x963: key.publicKey.x963Representation)
     }
 
-    public func sharedSecret(with peer: AgreementPublicKey) throws -> Data {
+    package func sharedSecret(with peer: AgreementPublicKey) throws -> Data {
         try key.sharedSecretFromKeyAgreement(with: peer.key).withUnsafeBytes { Data($0) }
     }
 }
 
 extension SymmetricKey {
     /// The raw bytes, for persisting a key (WK, PVK, ...) in custody storage.
-    public var rawBytes: Data { withUnsafeBytes { Data($0) } }
+    package var rawBytes: Data { withUnsafeBytes { Data($0) } }
 }
 
 /// ECDSA over P-256, raw `r || s` (section 1.2, suite 2).
@@ -100,7 +101,7 @@ public enum Signature {
 
     /// Section 1.2: 64 bytes, `r` and `s` in `1 ... n-1`, valid on-curve key, then ECDSA/SHA-256. A high-`s` twin
     /// verifies (vector `high_s_twin_verifies`): ECDSA is malleable, so no signature is ever used as an identifier.
-    public static func verify(_ key: SigningPublicKey, signature: Data, message: Data) -> Bool {
+    package static func verify(_ key: SigningPublicKey, signature: Data, message: Data) -> Bool {
         guard signature.count == Suite2.signatureLength else { return false }
         let bytes = Array(signature)
         for half in [bytes[0..<32], bytes[32..<64]] {
@@ -116,7 +117,7 @@ public enum Signature {
     }
 
     /// Sign `label || message`.
-    public static func sign(_ signer: some Signer, label: String, message: Data) throws -> Data {
+    package static func sign(_ signer: some Signer, label: String, message: Data) throws -> Data {
         let sig = try signer.rawSignature(over: Data(label.utf8) + message)
         guard sig.count == Suite2.signatureLength else { throw CryptoFailure.invalidLength }
         return sig

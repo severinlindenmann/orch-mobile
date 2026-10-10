@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import OrchProtocol
+import OrchTestVectors
 import Testing
 @testable import OrchPush
 
@@ -9,8 +10,7 @@ import Testing
 
 enum PushVectors {
     static let root: JSONValue = {
-        let url = Bundle.module.url(forResource: "vectors_v2", withExtension: "json")!
-        return try! StrictJSON.parse(try! Data(contentsOf: url))
+        try! StrictJSON.parse(OrchTestVectors.Vectors.data)
     }()
     static var push: JSONValue { root["suites"]["2"]["push"] }
 }
@@ -67,7 +67,7 @@ func keyring(_ j: JSONValue) -> PushProcessor.Keyring {
         let c = PushVectors.root["constants"]["push"]
         #expect(c["max_bytes"].int == Int64(PushProcessor.maxOuterBytes))
         #expect(c["max_age_ms"].int == PushProcessor.maxAgeMs)
-        #expect(Set(c["kinds"].items.map(\.str)) == PushProcessor.kinds)
+        #expect(c["kinds"].items.map(\.str) == PushProcessor.kinds)
         #expect(PushVectors.root["constants"]["skew_ms"].int == PushProcessor.skewMs)
     }
 
@@ -110,17 +110,18 @@ struct Host {
         let out = PushProcessor.process(outer: try h.outer(), keys: h.keys, replay: .init(), nowMs: now)
         #expect(out.result == .show(.init(workspace: h.ws, epoch: 1, kind: "question", id: "q-1", label: "Ship?", tsMs: 1_000_000)))
         #expect(out.replay.last(workspace: h.ws, id: "q-1") == 1_000_000)
+        #expect(out.replay.highWaterMs == now)
     }
 
-    @Test func replayStateChangesOnShowOnly() throws {
+    @Test func replayEntriesChangeOnShowOnly() throws {
         let h = Host(), raw = try h.outer()
         var r = PushProcessor.ReplayState()
         let first = PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: now)
         r = first.replay
         let again = PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: now)
-        #expect(again.result == .drop(.replay) && again.replay == r)
+        #expect(again.result == .drop(.replay) && again.replay.lastShown == r.lastShown)
         let dropped = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now)
-        #expect(dropped.result == .drop(.shape) && dropped.replay == r)
+        #expect(dropped.result == .drop(.shape) && dropped.replay.lastShown == r.lastShown)
         // the input state is a value: the first call did not mutate it
         #expect(PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).result != .drop(.replay))
     }
@@ -147,14 +148,30 @@ struct Host {
 
     @Test func timestampRule() {
         let n: Int64 = 10_000_000_000
-        #expect(PushProcessor.checkTimestamp(tsMs: n - PushProcessor.maxAgeMs, nowMs: n, lastShown: nil) == nil)
-        #expect(PushProcessor.checkTimestamp(tsMs: n - PushProcessor.maxAgeMs - 1, nowMs: n, lastShown: nil) == .stale)
-        #expect(PushProcessor.checkTimestamp(tsMs: n + 300_000, nowMs: n, lastShown: nil) == nil)
-        #expect(PushProcessor.checkTimestamp(tsMs: n + 300_001, nowMs: n, lastShown: nil) == .stale)
-        #expect(PushProcessor.checkTimestamp(tsMs: n, nowMs: n, lastShown: n) == .replay)
-        #expect(PushProcessor.checkTimestamp(tsMs: n, nowMs: n, lastShown: n + 1) == .replay)
-        #expect(PushProcessor.checkTimestamp(tsMs: n, nowMs: n, lastShown: n - 1) == nil)
-        #expect(PushProcessor.checkTimestamp(tsMs: n - 1, nowMs: n, lastShown: n) == .replay)
+        func check(_ ts: Int64, last: Int64? = nil, floor: Int64 = 0) -> PushProcessor.DropReason? {
+            PushProcessor.checkTimestamp(tsMs: ts, nowMs: n, floorNowMs: floor, lastShown: last)
+        }
+        #expect(check(n - PushProcessor.maxAgeMs) == nil)
+        #expect(check(n - PushProcessor.maxAgeMs - 1) == .stale)
+        #expect(check(n + 300_000) == nil)
+        #expect(check(n + 300_001) == .stale)
+        #expect(check(n, last: n) == .replay)
+        #expect(check(n, last: n + 1) == .replay)
+        #expect(check(n, last: n - 1) == nil)
+        #expect(check(n - 1, last: n) == .replay)
+        // a higher floor (clock wound back) tightens the lower bound only
+        #expect(check(n - 1000, floor: n + PushProcessor.maxAgeMs) == .stale)
+        #expect(check(n + 300_000, floor: n + PushProcessor.maxAgeMs) == nil)
+    }
+
+    @Test func saturatingClockArithmetic() {
+        #expect(PushProcessor.checkTimestamp(tsMs: 0, nowMs: Int64.min, floorNowMs: Int64.min, lastShown: nil) == .stale)
+        #expect(PushProcessor.checkTimestamp(tsMs: 0, nowMs: Int64.max, floorNowMs: Int64.max, lastShown: nil) == .stale)
+        #expect(PushProcessor.checkTimestamp(tsMs: Int64.max, nowMs: Int64.max, floorNowMs: Int64.max, lastShown: nil) == nil)
+        #expect(saturatingAdd(Int64.max, 1) == Int64.max && saturatingAdd(Int64.min, -1) == Int64.min)
+        let h = Host()
+        _ = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: .init(), nowMs: Int64.min)
+        _ = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: .init(), nowMs: Int64.max)
     }
 
     @Test func staleBeatsReplay() throws {
@@ -164,11 +181,25 @@ struct Host {
         #expect(late.result == .drop(.stale))
     }
 
-    @Test func prunedStateKeepsWhatStillMatters() throws {
+    @Test func processPrunesByItself() throws {
         let h = Host()
         let r = PushProcessor.process(outer: try h.outer(), keys: h.keys, replay: .init(), nowMs: now).replay
-        #expect(r.pruned(nowMs: now + 1000).last(workspace: h.ws, id: "q-1") == 1_000_000)
-        #expect(r.pruned(nowMs: now + PushProcessor.maxAgeMs + 1).last(workspace: h.ws, id: "q-1") == nil)
+        let later = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now + 1000).replay
+        #expect(later.last(workspace: h.ws, id: "q-1") == 1_000_000)
+        let muchLater = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now + PushProcessor.maxAgeMs + 1).replay
+        #expect(muchLater.last(workspace: h.ws, id: "q-1") == nil)
+    }
+
+    @Test func clockRollbackCannotReplay() throws {
+        let h = Host(), raw = try h.outer()
+        var r = PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).replay
+        // the clock jumps a day ahead: the entry is pruned and the push is stale
+        let ahead = now + PushProcessor.maxAgeMs + 10_000
+        let f = PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: ahead)
+        #expect(f.result == .drop(.stale)); r = f.replay
+        #expect(r.last(workspace: h.ws, id: "q-1") == nil && r.highWaterMs == ahead)
+        // the clock is wound back: the pruned entry must not make the old push shown again
+        #expect(PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: now).result == .drop(.stale))
     }
 
     @Test func forgedByAMemberWithKPush() throws {
@@ -192,7 +223,7 @@ struct Host {
 
     @Test func shapeAndPayloadRules() throws {
         let h = Host()
-        func run(_ raw: Data) -> PushProcessor.Result { PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).result }
+        func run(_ raw: Data) -> PushProcessor.Outcome { PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).result }
         #expect(run(Data(repeating: 0x20, count: PushProcessor.maxOuterBytes + 1)) == .drop(.size))
         for bad in ["", "[]", "{}", "{\"v\":2,\"ws\":\"00\",\"epoch\":1,\"c\":\"AA\"}", "{\"v\":3,\"ws\":\"\(h.ws.hex)\",\"epoch\":1,\"c\":\"AA\"}",
                     "{\"v\":2,\"ws\":\"\(h.ws.hex.uppercased())\",\"epoch\":1,\"c\":\"AA\"}",
@@ -202,12 +233,12 @@ struct Host {
             #expect(run(Data(bad.utf8)) == .drop(.shape), "\(bad)")
         }
         #expect(run(Data("{\"v\":2,\"ws\":\"\(h.ws.hex)\",\"epoch\":1.0,\"c\":\"AA\"}".utf8)) == .drop(.shape))
-        #expect(run(Data("{\"v\":2,\"ws\":\"\(h.ws.hex)\",\"epoch\":\"1\",\"c\":\"AA\"}".utf8)) == .drop(.noKey))
+        #expect(run(Data("{\"v\":2,\"ws\":\"\(h.ws.hex)\",\"epoch\":\"1\",\"c\":\"AA\"}".utf8)) == .drop(.shape))
         #expect(run(Data("{\"v\":2,\"ws\":\"\(h.ws.hex)\",\"epoch\":-1,\"c\":\"AA\"}".utf8)) == .drop(.noKey))
         #expect(run(Data("{\"v\":2,\"ws\":\"\(h.ws.hex)\",\"epoch\":4294967297,\"c\":\"AA\"}".utf8)) == .drop(.noKey))
         #expect(run(Data("{\"v\":2,\"ws\":\"\(h.ws.hex)\",\"epoch\":1,\"c\":\"AA\"}".utf8)) == .drop(.tag))
 
-        #expect(run(try h.outer(extraInner: true)) == .drop(.payload))
+        #expect(run(try h.outer(extraInner: true)) == .drop(.tag))        // section 9 step 3
         #expect(run(try h.outer(payload: ["kind": "nope", "id": "i", "label": "x", "ts_ms": 1_000_000])) == .drop(.payload))
         #expect(run(try h.outer(payload: ["kind": "join", "id": "i", "label": "x", "ts_ms": 1_000_000, "extra": 1])) == .drop(.payload))
         #expect(run(try h.outer(payload: ["kind": "join", "id": "i", "label": "x"])) == .drop(.payload))
@@ -234,8 +265,9 @@ struct Host {
     @Test func tamperedBytesNeverShow() throws {
         let h = Host(), raw = try h.outer()
         var shown = 0
-        for i in stride(from: 0, to: raw.count, by: 7) {
+        for i in 0..<raw.count {
             var t = raw; t[i] ^= 0x01
+            // flipping one bit in the "v", "epoch" or "ws" digits can still map to a key we hold, but never to a valid push
             if case .show = PushProcessor.process(outer: t, keys: h.keys, replay: .init(), nowMs: now).result { shown += 1 }
         }
         #expect(shown == 0)

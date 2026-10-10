@@ -60,6 +60,18 @@ public enum Base32 {
     }
 }
 
+extension String {
+    /// Byte-exact comparison (UTF-8), for protocol fields. Swift `==` is canonical equivalence.
+    package func bytesEqual(_ other: String) -> Bool { utf8.elementsEqual(other.utf8) }
+    package func bytesHasPrefix(_ prefix: String) -> Bool { utf8.starts(with: prefix.utf8) }
+}
+
+/// Saturating `a + b` for clock arithmetic (a hostile or broken clock must not trap).
+package func saturatingAdd(_ a: Int64, _ b: Int64) -> Int64 {
+    let (r, o) = a.addingReportingOverflow(b)
+    return o ? (b > 0 ? Int64.max : Int64.min) : r
+}
+
 /// Binary layout helpers (section "Conventions"): big-endian integers and `lp16`.
 public enum Bytes {
     public static func u8(_ v: UInt8) -> Data { Data([v]) }

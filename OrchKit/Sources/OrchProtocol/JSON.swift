@@ -11,6 +11,22 @@ public indirect enum JSONValue: Equatable, Sendable {
     case array([JSONValue])
     case object([String: JSONValue])
 
+    /// Byte-exact equality: strings compare by UTF-8 bytes, never by Swift's canonical equivalence (U+212A is not "K",
+    /// U+037E is not ";"). Signatures and protocol fields are defined over bytes.
+    public static func == (a: JSONValue, b: JSONValue) -> Bool {
+        switch (a, b) {
+        case (.null, .null): return true
+        case (.bool(let x), .bool(let y)): return x == y
+        case (.int(let x), .int(let y)): return x == y
+        case (.string(let x), .string(let y)): return x.utf8.elementsEqual(y.utf8)
+        case (.array(let x), .array(let y)): return x.count == y.count && zip(x, y).allSatisfy { $0 == $1 }
+        case (.object(let x), .object(let y)):
+            // keys are ASCII (section 2.3), for which String equality is byte equality
+            return x.count == y.count && x.allSatisfy { k, v in y[k].map { $0 == v } ?? false }
+        default: return false
+        }
+    }
+
     public var object: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
     public var array: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
     public var string: String? { if case .string(let s) = self { return s }; return nil }

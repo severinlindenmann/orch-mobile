@@ -17,8 +17,10 @@ let package = Package(
     targets: [
         .target(name: "OrchProtocol", dependencies: [],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol"],
-                    resources: [.copy("Resources/vectors_v2.json")]),
+        // Test-only: the single copy of the protocol vectors. Not a product, never linked into the app.
+        .target(name: "OrchTestVectors", path: "Tests/OrchTestVectors", exclude: ["PROVENANCE.md"],
+                resources: [.copy("vectors_v2.json")]),
+        .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
         .target(name: "OrchCustody", dependencies: ["OrchProtocol"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody"]),
@@ -27,8 +29,7 @@ let package = Package(
         .testTarget(name: "OrchStoreTests", dependencies: ["OrchStore"]),
         .target(name: "OrchPush", dependencies: ["OrchProtocol"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol"],
-                    resources: [.copy("Resources/vectors_v2.json")]),
+        .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchTestVectors"]),
         .target(name: "OrchClient", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchClientTests", dependencies: ["OrchClient"]),

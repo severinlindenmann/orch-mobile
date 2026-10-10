@@ -1,13 +1,13 @@
 import CryptoKit
 import Foundation
+import OrchTestVectors
 @testable import OrchProtocol
 
-/// Vector access. The file is a test resource copied from orch-relay (Tests/Vectors/PROVENANCE.md); it is parsed with
+/// Vector access. The file is a test resource copied from orch-relay (Tests/OrchTestVectors/PROVENANCE.md); it is parsed with
 /// the module's own strict parser, which doubles as a check that the parser accepts the contract's own data.
 enum Vectors {
     static let root: JSONValue = {
-        let url = Bundle.module.url(forResource: "vectors_v2", withExtension: "json")!
-        return try! StrictJSON.parse(try! Data(contentsOf: url))
+        try! StrictJSON.parse(OrchTestVectors.Vectors.data)
     }()
     static var suite2: JSONValue { root["suites"]["2"] }
 }

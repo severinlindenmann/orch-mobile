@@ -98,7 +98,6 @@ import Testing
         #expect(c["seal_purposes"].items.map(\.str) == SealPurpose.allCases.map(\.rawValue))
         #expect(c["scope_order"].items.map(\.str) == Scopes.order)
         #expect(c["skew_ms"].i64 == Suite2.skewMs)
-        #expect(Vectors.suite2["suite"].int == nil || Vectors.suite2["suite"].i64 == 2)
     }
 
     @Test func seedsReproduceEveryVectorPublicKey() throws {
@@ -145,6 +144,8 @@ import Testing
         for c in cases {
             let name = c["name"].str
             let got: Bool
+            // point_not_on_curve: an off-curve key cannot even be constructed, so it is refused before any verify
+            // (asserted separately below); every other case reaches Signature.verify.
             if let pub = try? SigningPublicKey(x963: c["pub"].hexData) {
                 got = Signature.verify(pub, signature: c["sig"].hexData, message: c["msg"].hexData)
             } else { got = false }                                           // point_not_on_curve never reaches verify
@@ -257,10 +258,17 @@ import Testing
         #expect(cases.count == 7)
         for c in cases {
             let recipient = try testAgreer("\(c["recipient"].str).kx")
-            let got = try? Sealing.open(with: recipient, recipientID: c["recipient_id"].id,
-                                        purpose: SealPurpose(rawValue: c["purpose"].str)!, object: c["object_id"].id,
-                                        epoch: c["epoch"].u32, sealed: c["sealed"].hexData)
-            if c["plaintext"].isNull { #expect(got == nil, "\(c["name"].str)") } else { #expect(got == c["plaintext"].hexData, "\(c["name"].str)") }
+            let name = c["name"].str
+            do {
+                let got = try Sealing.open(with: recipient, recipientID: c["recipient_id"].id,
+                                           purpose: SealPurpose(rawValue: c["purpose"].str)!, object: c["object_id"].id,
+                                           epoch: c["epoch"].u32, sealed: c["sealed"].hexData)
+                #expect(!c["plaintext"].isNull, "\(name) must not open")
+                #expect(got == c["plaintext"].hexData, "\(name)")
+            } catch {
+                #expect(c["plaintext"].isNull, "\(name) must open")
+                #expect(error as? CryptoFailure == .authenticationFailed, "\(name)")
+            }
         }
     }
 
@@ -292,6 +300,8 @@ import Testing
         #expect(throws: CryptoFailure.self) { try SealedLabel.open(sealed: c["sealed"].b64Data, pvk: SymmetricKey(size: .bits256), person: person, device: c["device_id"].id) }
         #expect(throws: CryptoFailure.self) { try SealedLabel.open(sealed: c["sealed"].b64Data, pvk: c["pvk"].key, person: person, device: ID16.random()) }
         #expect(throws: CryptoFailure.self) { try SealedLabel.open(sealed: c["sealed"].b64Data, pvk: c["pvk"].key, person: ID16.random(), device: c["device_id"].id) }
+        let bom = try SealedLabel.seal(label: "\u{FEFF}x", pvk: c["pvk"].key, person: person, device: c["device_id"].id)
+        #expect(try SealedLabel.open(sealed: bom, pvk: c["pvk"].key, person: person, device: c["device_id"].id).unicodeScalars.count == 2)
         let again = try SealedLabel.seal(label: "x", pvk: c["pvk"].key, person: person, device: c["device_id"].id)
         #expect(try SealedLabel.open(sealed: again, pvk: c["pvk"].key, person: person, device: c["device_id"].id) == "x")
     }
@@ -325,12 +335,17 @@ import Testing
             "person_id": .string(Identifiers.personID(pk.publicKey).hex), "dk_sig_pub": .string(B64U.encode(dk.publicKey.x963)),
             "dk_kx_pub": .string(B64U.encode(kx.publicKey.x963)), "label_sealed": .string(B64U.encode(Data(count: 40))),
             "created_ms": 1000, "expires_ms": nil, "scopes_max": ["look", "decide"]]
-        let signed = try SignedObject.sign(o, label: Label.sigDeviceCert, signer: pk)
+        let signed = try SignedObject.sign(o, kind: .deviceCert, signer: pk)
         let cert = try DeviceCertificate.verify(signed.json, personKey: pk.publicKey, nowMs: 2000)
         #expect(cert.scopesMax == ["look", "decide"] && cert.signingKey == dk.publicKey && cert.agreementKey == kx.publicKey)
         #expect(throws: Refusal.certInvalid) { try DeviceCertificate.verify(signed.json, personKey: SoftwareSigner().publicKey, nowMs: 2000) }
         #expect(throws: Refusal.revoked) { try DeviceCertificate.verify(signed.json, personKey: pk.publicKey, nowMs: 2000, revoked: [cert.deviceID]) }
-        #expect(throws: Refusal.malformed) { try SignedObject.sign(["v": 1, "suite": 2, "kind": "x"], label: "l", signer: pk) }
+        #expect(throws: Refusal.malformed) { try SignedObject.sign(["v": 1, "suite": 2, "kind": "device_cert"], kind: .deviceCert, signer: pk) }
+        #expect(throws: Refusal.malformed) { try SignedObject.sign(["v": 2, "suite": 2, "kind": "revocation"], kind: .deviceCert, signer: pk) }
+        // a signed object verifies only under the label of its kind
+        let rev = try SignedObject.sign(["v": 2, "suite": 2, "kind": "revocation"], kind: .revocation, signer: pk)
+        #expect(throws: Refusal.malformed) { try rev.verify(kind: .deviceCert, key: pk.publicKey) }
+        #expect(SignedKind.allCases.count == Set(SignedKind.allCases.map(\.label)).count)
     }
 
     @Test func revocationVectors() throws {
@@ -347,6 +362,22 @@ import Testing
                 #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
             }
         }
+        // field set, v, suite, kind and reason problems after a valid signature are malformed (section 6.2), not bad_signature
+        let pk = try testSigner("person_alice.sig"), id = DeviceCertificate.Identity(deviceID: cases[0]["cert"]["device_id"].id, personID: cases[0]["cert"]["person_id"].id)
+        func make(_ edit: (inout [String: JSONValue]) -> Void) throws -> JSONValue {
+            var o = cases[0]["signed"]["o"].object!; edit(&o)
+            return try SignedObject.sign(o, kind: .revocation, signer: pk).json
+        }
+        _ = try Revocation.verify(make { _ in }, personKey: pk.publicKey, cert: id)
+        #expect(throws: Refusal.malformed) { try Revocation.verify(make { $0["extra"] = 1 }, personKey: pk.publicKey, cert: id) }
+        #expect(throws: Refusal.malformed) { try Revocation.verify(make { $0["reason"] = "Lost" }, personKey: pk.publicKey, cert: id) }
+        #expect(throws: Refusal.malformed) { try Revocation.verify(make { $0["revoked_ms"] = "1" }, personKey: pk.publicKey, cert: id) }
+        #expect(throws: Refusal.malformed) { try Revocation.verify(make { $0["device_id"] = "not hex" }, personKey: pk.publicKey, cert: id) }
+        #expect(throws: Refusal.malformed) { try Revocation.verify(make { $0["missing"] = nil; $0.removeValue(forKey: "reason") }, personKey: pk.publicKey, cert: id) }
+        #expect(throws: Refusal.badSignature) { try Revocation.verify(make { _ in }, personKey: SoftwareSigner().publicKey, cert: id) }
+        var badKind = cases[0]["signed"].object!
+        badKind["sig"] = .string(B64U.encode(Data(count: 64)))
+        #expect(throws: Refusal.badSignature) { try Revocation.verify(.object(badKind), personKey: cases[0]["pk_pub"].sigPub, cert: id) }
         #expect(throws: Refusal.otherPerson) {
             try Revocation.verify(cases[0]["signed"], personKey: cases[0]["pk_pub"].sigPub, cert: nil)
         }

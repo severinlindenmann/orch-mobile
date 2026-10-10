@@ -9,7 +9,7 @@ public enum KDF {
     }
 
     /// RFC 5869 HKDF-SHA-256. An empty salt means 32 zero bytes (what CryptoKit does too).
-    public static func hkdf(ikm: SymmetricKey, salt: Data, info: Data, length: Int = 32) -> SymmetricKey {
+    package static func hkdf(ikm: SymmetricKey, salt: Data, info: Data, length: Int = 32) -> SymmetricKey {
         HKDF<SHA256>.deriveKey(inputKeyMaterial: ikm, salt: salt, info: info, outputByteCount: length)
     }
 
@@ -141,7 +141,7 @@ public enum Sealing {
     }
 
     /// Opens a sealed blob. Any wrong purpose, recipient id, object, epoch, extra, key or tampering fails the tag.
-    public static func open(with recipient: some KeyAgreer, recipientID: ID16, purpose: SealPurpose, object: ID16,
+    package static func open(with recipient: some KeyAgreer, recipientID: ID16, purpose: SealPurpose, object: ID16,
                             epoch: UInt32, extra: Data = Data(), sealed: Data) throws -> Data {
         guard sealed.count >= Suite2.publicKeyLength + 16 else { throw CryptoFailure.authenticationFailed }
         let blob = Data(sealed)
@@ -172,7 +172,9 @@ public enum SealedLabel {
     public static func open(sealed: Data, pvk: SymmetricKey, person: ID16, device: ID16) throws -> String {
         let pt = try SaltedAEAD.open(key: KDF.kLabel(pvk: pvk, person: person), msgLabel: Label.kdfLabelMsg,
                                      aad: aad(device: device), blob: sealed)
-        guard let s = String(data: pt, encoding: .utf8) else { throw Refusal.malformed }
+        // Exact decode: String(data:encoding:) would drop a leading U+FEFF; invalid UTF-8 fails the round trip.
+        let s = String(decoding: pt, as: UTF8.self)
+        guard s.utf8.elementsEqual(pt) else { throw Refusal.malformed }
         return s
     }
 }

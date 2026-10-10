@@ -53,3 +53,17 @@ orch-mobile. Section references were checked against both files on 10 Oct 2026. 
 - Items 5, 8, 10, 21, 26 and 29 are provisionally decided (D-3, D-5, D-4, D-1, D-2, D-6) and stay in this list
   until the owner confirms them and the spec text is changed.
 - Left out on purpose: prototype-side risks that are not spec or protocol gaps (S1/S2 spikes are not production custody, FakePrimary shares the phone process, App Group and notification race limits, export compliance, App Group registration, CI Xcode pinning, app-switcher snapshots). They are handled in decisions.md.
+
+## M2 protocol ambiguities
+
+Found while implementing `OrchProtocol` and `OrchPush` against `docs/protocol-v2.md` and `vectors_v2.json`. Each entry names the reading the code takes. No vector contradicts any of them; none is resolved by guessing silently.
+
+- **JSON nesting depth (§2.3, "at most 16 levels").** The Python reference (`_check_json`) counts depth from 0 and fails only when `depth > 16`, so it accepts 17 nested containers. Swift implements 16 container levels at most. The reference should change to `depth >= 16` (counting the current container). No vector covers it.
+- **`device_id` that is not hex in a revocation (§6.2, §14).** Python compares the string with the certificate's `device_id` and answers `other_person`; Swift parses it as an id first and answers `malformed`. The protocol text should say which.
+- **Revocation refusal order (§6.2, §14).** The reference answers `bad_signature` for a wrong field set. Swift answers `bad_signature` only when the signature fails, and `malformed` for wrong `v`/`suite`/`kind`, wrong field set, a `person_id` that is not the signer's, a reason outside the list or a non-integer `revoked_ms`. The reference should follow.
+- **§2.5 cleaning.** `Cn` (unassigned) and Default_Ignorable_Code_Point depend on the Unicode version of the Swift runtime. The reference uses a fixed range table. They can differ for code points added later.
+- **§9 drop reasons.** The text names steps, the vectors name reasons (`size`, `shape`, `no_key`, `tag`, `signature`, `payload`, `stale`, `replay`). Swift maps "inner is not exactly {p, sig}" (and an undecodable `sig`) to `tag` as step 3 says (the reference says `payload` for the key set), a non-integer `epoch` to `shape`, and a negative or out-of-range integer `epoch` to `no_key`.
+- **§9 replay state and the clock.** The text keeps "the highest `ts_ms` shown per (ws, id)" and a 24 h window against the local clock. A clock wound back after pruning would make an old push shown again. Swift keeps a high-water mark of the clock and uses `max(now, high water)` for pruning and the lower bound. A clock set far into the future once therefore makes pushes stale until real time catches up; the protocol should say whether that is wanted.
+- **§13 `content_hash` in the decision signature.** The signature covers the `content_hash` as sent (b64u of 32 bytes), not a recomputation from the question. Signing and verifying use the same field values, as the reference does.
+- **§1.2 / §2.3 and `-0`.** Not mentioned. Swift accepts `-0` and canonicalises it to `0`, as Python does.
+- **§2.3 string comparison.** The protocol compares strings as code points or bytes. Swift's `==` is canonical equivalence (U+212A equals "K"). All protocol field checks in Swift compare UTF-8 bytes; a note in §2.3 would help other implementers.

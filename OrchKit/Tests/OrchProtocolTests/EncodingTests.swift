@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import OrchTestVectors
 import Testing
 @testable import OrchProtocol
 
@@ -113,5 +115,15 @@ import Testing
         #expect(Bytes.u32(0x01020304) == Data([1, 2, 3, 4]))
         #expect(Bytes.u64(0x0102030405060708) == Data([1, 2, 3, 4, 5, 6, 7, 8]))
         #expect(Bytes.lp16(Data([9, 9, 9])) == Data([0, 3, 9, 9, 9]))
+    }
+}
+
+@Suite struct ProvenanceTests {
+    @Test func vectorsMatchProvenanceSHA256() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("OrchTestVectors/PROVENANCE.md")
+        let prov = try String(contentsOf: url, encoding: .utf8)
+        let digest = Hex.encode(SHA256.hash(data: OrchTestVectors.Vectors.data))
+        #expect(prov.contains("sha256: `\(digest)`"))
     }
 }

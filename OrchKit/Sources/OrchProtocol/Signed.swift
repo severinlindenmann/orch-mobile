@@ -1,6 +1,32 @@
 import CryptoKit
 import Foundation
 
+/// The signed object kinds, each bound to its signature label (section 3), so that a label/kind mismatch cannot be
+/// expressed.
+public enum SignedKind: String, Sendable, CaseIterable {
+    case deviceCert = "device_cert"
+    case revocation
+    case wsDelegation = "ws_delegation"
+    case card
+    case memberList = "member_list"
+    case wkGrant = "wk_grant"
+    case skGrant = "sk_grant"
+    case enrollRequest = "enroll_request"
+
+    public var label: String {
+        switch self {
+        case .deviceCert: return Label.sigDeviceCert
+        case .revocation: return Label.sigRevocation
+        case .wsDelegation: return Label.sigWSDelegation
+        case .card: return Label.sigCardWSK
+        case .memberList: return Label.sigMemberList
+        case .wkGrant: return Label.sigWKGrant
+        case .skGrant: return Label.sigSKGrant
+        case .enrollRequest: return Label.sigEnrollRequest
+        }
+    }
+}
+
 /// A signed object (section 2.4): `{"o": <object>, "sig": <b64u>}` with exactly those two keys,
 /// `sig = Sign(key, label(kind) || cj(o))`. The signature covers the re-serialised canonical form, never the received
 /// bytes.
@@ -12,12 +38,12 @@ public struct SignedObject: Equatable, Sendable {
         self.object = object; self.signature = signature
     }
 
-    /// Builds and signs. `object` must carry `v: 2`, `suite: 2` and a `kind`.
-    public static func sign(_ object: [String: JSONValue], label: String, signer: some Signer) throws -> SignedObject {
-        guard object["v"] == .int(2), object["suite"] == .int(Int64(Suite2.id)), object["kind"]?.string != nil else {
+    /// Builds and signs. `object` must carry `v: 2`, `suite: 2` and `kind == kind.rawValue`; the label comes from `kind`.
+    package static func sign(_ object: [String: JSONValue], kind: SignedKind, signer: some Signer) throws -> SignedObject {
+        guard object["v"] == .int(2), object["suite"] == .int(Int64(Suite2.id)), object["kind"] == .string(kind.rawValue) else {
             throw Refusal.malformed
         }
-        let sig = try Signature.sign(signer, label: label, message: try canonicalJSON(.object(object)))
+        let sig = try Signature.sign(signer, label: kind.label, message: try canonicalJSON(.object(object)))
         return SignedObject(object: object, signature: sig)
     }
 
@@ -33,12 +59,12 @@ public struct SignedObject: Equatable, Sendable {
 
     /// Section 2.4 order: `v`, `suite` and `kind` first, then the signature. Returns the object on success.
     /// Throws `Refusal.malformed` for a wrong `v`/`suite`/`kind` and `Refusal.badSignature` for a bad signature.
-    public func verify(kind: String, label: String, key: SigningPublicKey) throws -> [String: JSONValue] {
-        guard object["v"] == .int(2), object["suite"] == .int(Int64(Suite2.id)), object["kind"] == .string(kind) else {
+    public func verify(kind: SignedKind, key: SigningPublicKey) throws -> [String: JSONValue] {
+        guard object["v"] == .int(2), object["suite"] == .int(Int64(Suite2.id)), object["kind"] == .string(kind.rawValue) else {
             throw Refusal.malformed
         }
         guard let msg = try? canonicalJSON(.object(object)),
-              Signature.verify(key, signature: signature, label: label, message: msg) else { throw Refusal.badSignature }
+              Signature.verify(key, signature: signature, label: kind.label, message: msg) else { throw Refusal.badSignature }
         return object
     }
 }
@@ -56,8 +82,9 @@ public enum Scopes {
     public static let order = ["look", "decide", "operate", "type"]
 
     public static func isValid(_ scopes: [String]) -> Bool {
-        if scopes.count == 1, scopes[0].hasPrefix("drop:"), ID16(hex: String(scopes[0].dropFirst(5))) != nil { return true }
-        return !scopes.isEmpty && scopes == Array(order.prefix(scopes.count))
+        if scopes.count == 1, scopes[0].bytesHasPrefix("drop:"), ID16(hex: String(scopes[0].dropFirst(5))) != nil { return true }
+        let expected = order.prefix(scopes.count)
+        return !scopes.isEmpty && scopes.count == expected.count && zip(scopes, expected).allSatisfy { $0.bytesEqual($1) }
     }
 }
 
@@ -71,7 +98,7 @@ public struct DeviceCertificate: Equatable, Sendable {
     public let createdMs: Int64
     public let expiresMs: Int64?
     public let scopesMax: [String]
-    public var isScopedAgent: Bool { scopesMax.first?.hasPrefix("drop:") == true }
+    public var isScopedAgent: Bool { scopesMax.first?.bytesHasPrefix("drop:") == true }
     public var identity: Identity { Identity(deviceID: deviceID, personID: personID) }
 
     /// Who a certificate names; what a revocation is checked against.
@@ -90,7 +117,7 @@ public struct DeviceCertificate: Equatable, Sendable {
     public static func verify(_ signed: JSONValue, personKey: SigningPublicKey, nowMs: Int64,
                               revoked: Set<ID16> = []) throws -> DeviceCertificate {
         let o: [String: JSONValue]
-        do { o = try SignedObject.parse(signed).verify(kind: "device_cert", label: Label.sigDeviceCert, key: personKey) }
+        do { o = try SignedObject.parse(signed).verify(kind: .deviceCert, key: personKey) }
         catch { throw Refusal.certInvalid }
         guard o.hasExactly(fields),
               let sigPub = o.b64u("dk_sig_pub", length: Suite2.publicKeyLength).flatMap({ try? SigningPublicKey(x963: $0) }),
@@ -110,7 +137,7 @@ public struct DeviceCertificate: Equatable, Sendable {
         let cert = DeviceCertificate(deviceID: deviceID, personID: personID, signingKey: sigPub, agreementKey: kxPub,
                                      labelSealed: labelSealed, createdMs: created, expiresMs: expires, scopesMax: scopes)
         if cert.isScopedAgent && expires == nil { throw Refusal.certInvalid }   // a scoped agent always expires (D15)
-        if created > nowMs + Suite2.skewMs { throw Refusal.certInvalid }
+        if created > saturatingAdd(nowMs, Suite2.skewMs) { throw Refusal.certInvalid }
         if let e = expires, nowMs >= e { throw Refusal.certExpired }
         if revoked.contains(deviceID) { throw Refusal.revoked }
         return cert
@@ -119,22 +146,21 @@ public struct DeviceCertificate: Equatable, Sendable {
 
 /// A verified revocation (section 6.2).
 public struct Revocation: Equatable, Sendable {
-    public static let reasons: Set<String> = ["lost", "retired", "compromised"]
+    public static let reasons: [String] = ["lost", "retired", "compromised"]
     public let personID: ID16
     public let deviceID: ID16
     public let revokedMs: Int64
     public let reason: String
 
-    /// `bad_signature` for a bad signature or field set, `malformed` for another person id than the key's, a reason
-    /// outside the list or a bad `revoked_ms`, `other_person` when `cert` (the identity in the device's certificate)
-    /// is missing or names another person or device.
+    /// Section 6.2 / 14: `bad_signature` only when the signature does not verify. Once it does, a wrong `v`/`suite`/
+    /// `kind` (checked first, section 2.4), a wrong field set, a `person_id` that is not the key's (or not hex), a
+    /// reason outside the list or a `revoked_ms` that is not an integer is `malformed`. `other_person` when `cert` (the
+    /// identity in the device's certificate) is missing or names another person or device.
     public static func verify(_ signed: JSONValue, personKey: SigningPublicKey, cert: DeviceCertificate.Identity?) throws -> Revocation {
-        let o: [String: JSONValue]
-        do { o = try SignedObject.parse(signed).verify(kind: "revocation", label: Label.sigRevocation, key: personKey) }
-        catch { throw Refusal.badSignature }
-        guard o.hasExactly(["v", "suite", "kind", "person_id", "device_id", "revoked_ms", "reason"]) else { throw Refusal.badSignature }
-        guard let person = o.id16("person_id"), person == Identifiers.personID(personKey),
-              let reason = o["reason"]?.string, reasons.contains(reason),
+        let o = try SignedObject.parse(signed).verify(kind: .revocation, key: personKey)
+        guard o.hasExactly(["v", "suite", "kind", "person_id", "device_id", "revoked_ms", "reason"]),
+              let person = o.id16("person_id"), person == Identifiers.personID(personKey),
+              let reason = o["reason"]?.string, reasons.contains(where: { $0.bytesEqual(reason) }),
               let revoked = o["revoked_ms"]?.int, let device = o.id16("device_id") else { throw Refusal.malformed }
         guard let cert, cert.personID == person, cert.deviceID == device else { throw Refusal.otherPerson }
         return Revocation(personID: person, deviceID: device, revokedMs: revoked, reason: reason)
@@ -148,21 +174,26 @@ public enum Decisions {
         Data(SHA256.hash(data: Data(Label.hQuestion.utf8) + (try canonicalJSON(content))))
     }
 
+    /// `cj({workspace_id, question_id, content_hash, decision_id, answer})`, the part after the label.
+    static func body(workspace: ID16, questionID: ID16, contentHash: Data, decisionID: ID16, answer: JSONValue) throws -> Data {
+        try canonicalJSON(["workspace_id": .string(workspace.hex), "question_id": .string(questionID.hex),
+                           "content_hash": .string(B64U.encode(contentHash)), "decision_id": .string(decisionID.hex),
+                           "answer": answer])
+    }
+
     /// `"orch/v2/sig/decision|" || cj({workspace_id, question_id, content_hash, decision_id, answer})`
     public static func signedBytes(workspace: ID16, questionID: ID16, contentHash: Data, decisionID: ID16,
                                    answer: JSONValue) throws -> Data {
-        let body: JSONValue = ["workspace_id": .string(workspace.hex), "question_id": .string(questionID.hex),
-                               "content_hash": .string(B64U.encode(contentHash)), "decision_id": .string(decisionID.hex),
-                               "answer": answer]
-        return Data(Label.sigDecision.utf8) + (try canonicalJSON(body))
+        Data(Label.sigDecision.utf8) + (try body(workspace: workspace, questionID: questionID, contentHash: contentHash,
+                                                 decisionID: decisionID, answer: answer))
     }
 
     /// The bridge op `{"op":"decision", ...}` with a detached device signature.
-    public static func makeOp(workspace: ID16, questionID: ID16, contentHash: Data, decisionID: ID16, answer: JSONValue,
-                              signer: some Signer) throws -> JSONValue {
-        let bytes = try signedBytes(workspace: workspace, questionID: questionID, contentHash: contentHash,
-                                    decisionID: decisionID, answer: answer)
-        let sig = try signer.rawSignature(over: bytes)
+    package static func makeOp(workspace: ID16, questionID: ID16, contentHash: Data, decisionID: ID16, answer: JSONValue,
+                               signer: some Signer) throws -> JSONValue {
+        let sig = try Signature.sign(signer, label: Label.sigDecision,
+                                     message: try body(workspace: workspace, questionID: questionID, contentHash: contentHash,
+                                                       decisionID: decisionID, answer: answer))
         return ["op": "decision", "decision_id": .string(decisionID.hex), "question_id": .string(questionID.hex),
                 "content_hash": .string(B64U.encode(contentHash)), "answer": answer, "sig": .string(B64U.encode(sig))]
     }
@@ -173,8 +204,7 @@ public enum Decisions {
               m["op"] == "decision", let decisionID = m.id16("decision_id"), let questionID = m.id16("question_id"),
               let hash = m.b64u("content_hash", length: 32), let sig = m.b64u("sig", length: Suite2.signatureLength),
               let answer = m["answer"] else { throw Refusal.malformed }
-        guard let bytes = try? signedBytes(workspace: workspace, questionID: questionID, contentHash: hash,
-                                           decisionID: decisionID, answer: answer),
-              Signature.verify(deviceKey, signature: sig, message: bytes) else { throw Refusal.badSignature }
+        guard let body = try? body(workspace: workspace, questionID: questionID, contentHash: hash, decisionID: decisionID, answer: answer),
+              Signature.verify(deviceKey, signature: sig, label: Label.sigDecision, message: body) else { throw Refusal.badSignature }
     }
 }
