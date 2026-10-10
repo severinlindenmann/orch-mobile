@@ -48,6 +48,7 @@ public actor FakeRelay: RequestSender {
     private struct Workspace {
         var card: VerifiedCard?
         var cardJSON: JSONValue?
+        var abandonedEpoch: UInt32 = 0
         var list: MemberList?
         var listJSON: JSONValue?
         var grants: [MemberList.Directory.GrantKey: JSONValue] = [:]
@@ -180,10 +181,22 @@ public actor FakeRelay: RequestSender {
         }
         guard gws == ws else { throw ClientError.relay(RelayRefusal(status: 409, code: .otherWorkspace)) }
         try checkUploadTarget(dev, card: card)
-        // Epochs never skip: a grant is for the current epoch or the next one (section 7.2 check 6).
-        let current = w.list?.epoch ?? 0
-        guard UInt32(epoch) <= current &+ 1 else { throw ClientError.relay(RelayRefusal(status: 409, code: .badEpoch)) }
+        // A grant can advance by one from the current list or the last explicitly retired rotation attempt.
+        let current = max(w.list?.epoch ?? 0, w.abandonedEpoch)
+        guard UInt32(epoch) > w.abandonedEpoch, UInt32(epoch) <= current &+ 1 else { throw ClientError.relay(RelayRefusal(status: 409, code: .badEpoch)) }
         workspaces[ws]?.grants[.init(device: dev, epoch: UInt32(epoch))] = grant
+    }
+
+    /// In-process rotation cleanup, independent of an expired publication session. This is not a wire API.
+    /// Retiring an attempt deletes all its grants and permits exactly the next epoch, never arbitrary skips.
+    func abandonRotation(workspace: ID16, epoch: UInt32) {
+        guard var w = workspaces[workspace],
+              epoch == max(w.list?.epoch ?? 0, w.abandonedEpoch) ||
+                (max(w.list?.epoch ?? 0, w.abandonedEpoch) < UInt32.max && epoch == max(w.list?.epoch ?? 0, w.abandonedEpoch) + 1)
+        else { return }
+        w.abandonedEpoch = max(w.abandonedEpoch, epoch)
+        w.grants = w.grants.filter { $0.key.epoch != epoch }
+        workspaces[workspace] = w
     }
 
     /// `CK` for one card sequence, sealed to one device (host-api section 3). Only for certified, unrevoked, unexpired devices of
@@ -209,7 +222,7 @@ public actor FakeRelay: RequestSender {
         do {
             let parsed = try MemberList.verify(list, wsk: card.wsk)
             let dir = MemberList.Directory(ownerKey: owner, certs: certs, revoked: revoked, grants: Set(w.grants.keys))
-            try parsed.checkRelayUpdate(cardWorkspace: ws, previous: w.list, directory: dir, nowMs: wall.nowMs)
+            try parsed.checkRelayUpdate(cardWorkspace: ws, previous: w.list, directory: dir, nowMs: wall.nowMs, abandonedThrough: w.abandonedEpoch)
             let left = Set((w.list?.members ?? []).map(\.deviceID)).subtracting(parsed.members.map(\.deviceID))
             workspaces[ws]?.list = parsed; workspaces[ws]?.listJSON = list
             for d in left { removeDevice(d, from: ws) }

@@ -50,6 +50,15 @@ extension FakeHost {
     /// Deletes an old epoch's key (vector `epoch_whose_key_the_host_deleted_dropped`).
     public func deleteKey(epoch e: UInt32) { core.keys[e] = nil }
 
+    /// Rotation invariants (protocol §8.5):
+    /// I1: No data is sealed while the gate is up, except the revocation reply (empty refusals are allowed).
+    /// I2: Clear the gate only after grants, list and installEpoch succeed for one consistent roster.
+    /// I3: Abandon every failed attempt, delete its uploaded grants and key; retries use fresh keys and strictly increasing epochs.
+    /// I4: The final roster excludes every queued removal and every relay/host revocation.
+    /// I5: One task serializes requests; same-roster requests in the same relay/session join.
+    /// I6: Failures retain the gate and pending work; pump retries it.
+    /// I7: Recovery leaves no final-epoch grant for a removed/revoked device.
+    ///
     /// Rotation (section 7.2 host rules): `WK_{e+1}`, a grant for every remaining device, then the list.
     public func rotate(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
         try await beginRotation(remaining: remaining, relay: relay, session: session).value
@@ -62,7 +71,7 @@ extension FakeHost {
         let sameRoster = lastRotationRoster.map { previous in
             rostersEqual(previous, remaining)
         } ?? false
-        if !sameRoster {
+        if !sameRoster || pendingRotations.last.map({ $0.relay !== relay || $0.session != session }) == true {
             let previousIDs = lastRotationRoster.map { Set($0.map { $0.0.deviceID }) } ?? Set(roster.keys)
             let requestedIDs = Set(remaining.map { $0.0.deviceID })
             rotationRemoved.formUnion(previousIDs.subtracting(requestedIDs))
@@ -81,7 +90,11 @@ extension FakeHost {
             while !pendingRotations.isEmpty {
                 await refreshPendingRotations()
                 let pending = pendingRotations[0]
-                try await publishRotation(remaining: pending.remaining, relay: pending.relay, session: pending.session)
+                do {
+                    try await publishRotation(remaining: pending.remaining, relay: pending.relay, session: pending.session)
+                } catch RotationChanged.roster {
+                    continue
+                }
                 pendingRotations.removeFirst()
             }
             lastRotationRoster = nil
@@ -110,7 +123,7 @@ extension FakeHost {
         revoked.formUnion(core.revoked)
         rotationRemoved.formUnion(revoked)
         for index in pendingRotations.indices {
-            pendingRotations[index].remaining.removeAll { revoked.contains($0.0.deviceID) }
+            pendingRotations[index].remaining.removeAll { rotationRemoved.contains($0.0.deviceID) }
         }
         // Adjacent equal rosters need one publication. Preserve distinct transitions and relay/session contexts.
         var next = 1
@@ -123,16 +136,42 @@ extension FakeHost {
         }
     }
 
+    private enum RotationChanged: Error { case roster }
+
+    private func checkRotationRoster(_ remaining: [(DemoKeys, [String])], relay: FakeRelay) async throws {
+        rotationRemoved.formUnion(await relay.revokedDevices())
+        rotationRemoved.formUnion(core.revoked)
+        if remaining.contains(where: { rotationRemoved.contains($0.0.deviceID) }) {
+            throw RotationChanged.roster
+        }
+    }
+
     private func publishRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
-        let next = epoch + 1
-        try await publishHook?()
-        endOpenStreams(newEpoch: next)
-        listSeq += 1
-        _ = wk(next)
-        for (k, _) in remaining { try await relay.putGrant(try grant(for: k, epoch: next), token: session.token) }
-        try await relay.publishMemberList(try memberList(remaining.map { ($0.0.deviceID, $0.1) }, epoch: next, listSeq: max(listSeq, 2)), token: session.token)
-        installEpoch(next)
-        setRoster(remaining)
+        guard max(epoch, rotationEpoch) < UInt32.max else { throw Refusal.badEpoch }
+        rotationEpoch = max(epoch, rotationEpoch) + 1
+        let next = rotationEpoch
+        // Allocate before any suspension, including a failure before the first upload.
+        wks[next] = SymmetricKey(data: entropy.bytes(32))
+        do {
+            try await publishHook?()
+            try await checkRotationRoster(remaining, relay: relay)
+            endOpenStreams(newEpoch: next)
+            listSeq += 1
+            for (k, _) in remaining {
+                try await relay.putGrant(try grant(for: k, epoch: next), token: session.token)
+                try await checkRotationRoster(remaining, relay: relay)
+            }
+            try await relay.publishMemberList(try memberList(remaining.map { ($0.0.deviceID, $0.1) }, epoch: next, listSeq: max(listSeq, 2)), token: session.token)
+            // A removal can arrive during the list actor hop, too. Retire that epoch before retrying.
+            try await checkRotationRoster(remaining, relay: relay)
+            installEpoch(next)
+            setRoster(remaining)
+        } catch {
+            wks[next] = nil
+            core.keys[next] = nil
+            await relay.abandonRotation(workspace: workspace, epoch: next)
+            throw error
+        }
     }
 
     /// Section 8.5: rotation ends every open stream with `LAST | REFUSAL` `stale_epoch`, sealed under the stream's own (old) epoch.

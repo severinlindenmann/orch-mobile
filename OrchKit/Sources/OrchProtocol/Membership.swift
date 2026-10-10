@@ -84,13 +84,16 @@ public struct MemberList: Equatable, Sendable {
 
     /// The rest of section 7.2 (checks 3 to 9), as the relay applies them before it publishes a list.
     /// `cardWorkspace` is the workspace of the card whose `wsk_pub` verified the list. `previous` is the last accepted list.
-    public func checkRelayUpdate(cardWorkspace: ID16, previous: MemberList?, directory: Directory, nowMs: Int64) throws {
+    /// `abandonedThrough` is the relay's trusted rotation retirement watermark, never a value supplied by a list.
+    /// Failed attempts consume epochs without becoming active lists; only the epoch after that watermark may follow.
+    public func checkRelayUpdate(cardWorkspace: ID16, previous: MemberList?, directory: Directory, nowMs: Int64, abandonedThrough: UInt32 = 0) throws {
         guard workspace == cardWorkspace else { throw Refusal.otherWorkspace }
         if let p = previous {
             guard listSeq > p.listSeq else { throw Refusal.staleList }
-            guard epoch == p.epoch || (p.epoch != UInt32.max && epoch == p.epoch + 1) else { throw Refusal.badEpoch }
+            let previousEpoch = max(p.epoch, abandonedThrough)
+            guard (epoch == p.epoch && epoch > abandonedThrough) || (previousEpoch != UInt32.max && epoch == previousEpoch + 1) else { throw Refusal.badEpoch }
             let now = Set(members.map(\.deviceID))
-            if p.members.contains(where: { !now.contains($0.deviceID) }), epoch != p.epoch &+ 1 { throw Refusal.rotationRequired }
+            if p.members.contains(where: { !now.contains($0.deviceID) }), epoch != previousEpoch &+ 1 { throw Refusal.rotationRequired }
         } else if epoch != 1 || listSeq != 1 {
             throw Refusal.badEpoch
         }

@@ -679,12 +679,12 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         await w.host.setPublishHook(nil)
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         #expect(await w.host.rotationRequired == false)
-        #expect(await w.host.epoch == 2)
+        #expect(await w.host.epoch == 3)
         let state = await w.host.coreState()
         #expect(state.members[w.primaryID] == nil) // Retry preserves the public rotation's requested roster.
-        let (next, nh) = try await w.sealedRequest(rid: ID16.fresh(0x73), seq: 2, epoch: 2)
+        let (next, nh) = try await w.sealedRequest(rid: ID16.fresh(0x73), seq: 2, epoch: 3)
         let answer = await w.host.process(envelope: next, mailbox: nh.rid)
-        #expect(try openChunk(#require(answer.first), wk: await w.host.wkFor(2)).data == Data("secret".utf8))
+        #expect(try openChunk(#require(answer.first), wk: await w.host.wkFor(3)).data == Data("secret".utf8))
     }
 
     // A handler returning while the rotation's grants are being published must not seal data.
@@ -733,14 +733,14 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let c2 = await w.host.process(envelope: e2, mailbox: h2.rid)
         let m2 = try openChunk(c2[0], wk: await w.host.wkFor(1)).meta
         #expect(c2.count == 1 && m2 == unknownRefusal.meta && counter.value == 0)
-        // next pump retries; once it succeeds the epoch moves and requests work at epoch 2
+        // next pump retries; once it succeeds the epoch moves and requests work at epoch 3
         fail.value = false
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         let rr2 = await w.host.rotationRequired, ep2 = await w.host.epoch
-        #expect(!rr2 && ep2 == 2)
-        let (e3, h3) = try await w.sealedRequest(rid: ID16.fresh(0x65), seq: 3, epoch: 2)
+        #expect(!rr2 && ep2 == 3)
+        let (e3, h3) = try await w.sealedRequest(rid: ID16.fresh(0x65), seq: 3, epoch: 3)
         let c3 = await w.host.process(envelope: e3, mailbox: h3.rid)
-        let d3 = try openChunk(c3[0], wk: await w.host.wkFor(2)).data
+        let d3 = try openChunk(c3[0], wk: await w.host.wkFor(3)).data
         #expect(d3 == Data("data".utf8))
     }
 
@@ -758,7 +758,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let mc = try openChunk(c[0], wk: await w.host.wkFor(1)).meta
         #expect(mc.object?["status"] == .int(200))
         let rr3 = await w.host.rotationRequired, ep3 = await w.host.epoch
-        #expect(ep3 == 2 && !rr3)
+        #expect(ep3 == 3 && !rr3)
     }
 }
 

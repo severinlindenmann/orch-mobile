@@ -47,14 +47,14 @@ extension FakeHost {
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
 
         #expect(await w.host.rotationRequired == false)
-        #expect(await w.host.epoch == 2)
+        #expect(await w.host.epoch == 3)
         #expect(calls.value == 2)
         #expect(await w.host.coreState().members[w.primaryID] == nil)
-        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 2) == false)
-        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 2))
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 3))
         let fetched = try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession)
         let verified = try MemberList.verify(fetched, wsk: w.host.wskPublic)
-        #expect(verified.epoch == 2)
+        #expect(verified.epoch == 3)
         #expect(verified.members.map(\.deviceID) == [w.phoneID])
     }
 
@@ -93,11 +93,11 @@ extension FakeHost {
             try await second.value
         }
         // A failed removal followed by an attempted re-add leaves identical pending rosters.
-        let publications = failFirst && removalFirst ? 1 : 2
+        let publications = failFirst ? 1 : 2
         #expect(calls.value == publications + (failFirst ? 1 : 0))
         #expect(await w.host.rotationRequired == false)
         let epoch = await w.host.epoch
-        #expect(epoch == UInt32(1 + publications))
+        #expect(epoch == UInt32(1 + publications + (failFirst ? 1 : 0)))
         #expect(await w.host.coreState().members[w.primaryID] == nil)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: epoch) == false)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: epoch))
