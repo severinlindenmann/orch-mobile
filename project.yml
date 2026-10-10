@@ -98,11 +98,15 @@ targets:
   OrchTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [AppTests]
+    sources:
+      - AppTests
+      # test-only push fixtures (test keys), shared with scripts/make-push-fixture.swift and OrchPushTests
+      - path: OrchKit/Tests/OrchPushFixtures/PushFixtures.swift
+        group: PushFixtures
     dependencies:
       - target: Orch
       - package: OrchKit
-        products: [OrchProtocol, OrchCustody]
+        products: [OrchProtocol, OrchCustody, OrchPush]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.tests

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Durable `(realm, ws, generation)` removal records kept as coordination files (A11/C2).
-/// Pure Foundation (no SQLite): usable from the NSE and share extension.
+/// Pure Foundation (no SQLite): usable from the NSE and share extension. Lives in OrchCoordination, not OrchStore.
 ///
 /// Semantics: a tombstone with generation `g` means every generation `<= g` of that workspace is removed;
 /// a later rejoin must use a higher generation. Files are read and written under `flock`.
@@ -42,7 +42,7 @@ public struct TombstoneCoordination: Sendable {
 
     /// Bare fail-closed check (unreadable counts as removed). Internal: only for callers whose action is
     /// itself ordered by the index tombstone (see WorkspaceIndex) and for tests.
-    func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
+    package func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
         for dir in directories {
             guard let records = try? Self.read(dir: dir) else { return true }
             if Self.covers(records, realm, ws, generation) { return true }
@@ -51,7 +51,7 @@ public struct TombstoneCoordination: Sendable {
     }
 
     /// Fail-open variant, for diagnostics and tests only: unreadable files count as "not removed".
-    func isRemoved(realm: String, ws: String, generation: Int64) -> Bool {
+    package func isRemoved(realm: String, ws: String, generation: Int64) -> Bool {
         for dir in directories {
             guard let records = try? Self.read(dir: dir) else { continue }
             if Self.covers(records, realm, ws, generation) { return true }
@@ -62,8 +62,12 @@ public struct TombstoneCoordination: Sendable {
     /// The extension API: check-then-act under the shared lock of every directory: a wipe (exclusive writer) cannot slip in
     /// between the check and `body`. Returns nil, without running `body`, when the workspace is removed or
     /// the state is unreadable (fail-closed). `body` must be synchronous and short.
-    public func ifNotRemoved<T>(realm: String, ws: String, generation: Int64, _ body: () throws -> T) throws -> T? {
-        try Self.withLocks(directories.sorted { $0.path < $1.path }[...], exclusive: false, create: false) { () throws -> T? in
+    ///
+    /// `timeout`: wait at most this long for the locks (polling `LOCK_NB`), else throw `TombstoneError.lockFailed(EWOULDBLOCK)`
+    /// without running `body`. Extensions on a deadline use it; nil waits as long as it takes.
+    public func ifNotRemoved<T>(realm: String, ws: String, generation: Int64, timeout: TimeInterval? = nil, _ body: () throws -> T) throws -> T? {
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
+        return try Self.withLocks(directories.sorted { $0.path < $1.path }[...], exclusive: false, create: true, deadline: deadline) { () throws -> T? in
             for dir in directories {
                 guard let records = try? Self.readUnlocked(dir: dir) else { return nil }
                 if Self.covers(records, realm, ws, generation) { return nil }
@@ -141,19 +145,27 @@ public struct TombstoneCoordination: Sendable {
 
     /// Takes the lock files in the given order (callers sort) and runs `body` while holding all of them.
     /// Readers never create directories: a missing directory simply means no tombstones.
-    private static func withLocks<T>(_ dirs: ArraySlice<URL>, exclusive: Bool, create: Bool, _ body: () throws -> T) throws -> T {
+    private static func withLocks<T>(_ dirs: ArraySlice<URL>, exclusive: Bool, create: Bool, deadline: Date? = nil, _ body: () throws -> T) throws -> T {
         guard let dir = dirs.first else { return try body() }
         if create { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
         let path = dir.appendingPathComponent(lockName).path
         // O_NOFOLLOW: a planted symlink must not redirect O_CREAT to another file.
         let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if fd < 0 {
-            if errno == ENOENT && !create { return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, body) }
+            if errno == ENOENT && !create { return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, body) }
             throw TombstoneError.lockFailed(errno)
         }
         defer { close(fd) }
-        guard flock(fd, exclusive ? LOCK_EX : LOCK_SH) == 0 else { throw TombstoneError.lockFailed(errno) }
+        let op = exclusive ? LOCK_EX : LOCK_SH
+        if let deadline {
+            while flock(fd, op | LOCK_NB) != 0 {
+                guard errno == EWOULDBLOCK, Date() < deadline else { throw TombstoneError.lockFailed(errno) }
+                usleep(5_000)
+            }
+        } else {
+            guard flock(fd, op) == 0 else { throw TombstoneError.lockFailed(errno) }
+        }
         defer { flock(fd, LOCK_UN) }
-        return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, body)
+        return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, body)
     }
 }

@@ -110,7 +110,7 @@ struct Host {
         let out = PushProcessor.process(outer: try h.outer(), keys: h.keys, replay: .init(), nowMs: now)
         #expect(out.result == .show(.init(workspace: h.ws, epoch: 1, kind: "question", id: "q-1", label: "Ship?", tsMs: 1_000_000)))
         #expect(out.replay.last(workspace: h.ws, id: "q-1") == 1_000_000)
-        #expect(out.replay.maxShownTs == 1_000_000)
+        #expect(out.replay.maxShownTs(for: h.ws) == 1_000_000)
     }
 
     @Test func replayEntriesChangeOnShowOnly() throws {
@@ -119,9 +119,9 @@ struct Host {
         let first = PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: now)
         r = first.replay
         let again = PushProcessor.process(outer: raw, keys: h.keys, replay: r, nowMs: now)
-        #expect(again.result == .drop(.replay) && again.replay.lastShown == r.lastShown)
+        #expect(again.result == .drop(.replay) && again.replay == r)
         let dropped = PushProcessor.process(outer: Data("{}".utf8), keys: h.keys, replay: r, nowMs: now)
-        #expect(dropped.result == .drop(.shape) && dropped.replay.lastShown == r.lastShown)
+        #expect(dropped.result == .drop(.shape) && dropped.replay == r)
         // the input state is a value: the first call did not mutate it
         #expect(PushProcessor.process(outer: raw, keys: h.keys, replay: .init(), nowMs: now).result != .drop(.replay))
     }
@@ -190,7 +190,7 @@ struct Host {
         // a newer shown push moves the mark and prunes entries older than mark - 24 h
         let newer = try h.outer(payload: ["kind": "join", "id": "j", "label": "x", "ts_ms": .int(1_000_000 + PushProcessor.maxAgeMs + 5)])
         let r2 = PushProcessor.process(outer: newer, keys: h.keys, replay: r, nowMs: now + PushProcessor.maxAgeMs + 5).replay
-        #expect(r2.maxShownTs == 1_000_000 + PushProcessor.maxAgeMs + 5)
+        #expect(r2.maxShownTs(for: h.ws) == 1_000_000 + PushProcessor.maxAgeMs + 5)
         #expect(r2.last(workspace: h.ws, id: "q-1") == nil && r2.last(workspace: h.ws, id: "j") != nil)
     }
 
@@ -214,7 +214,7 @@ struct Host {
         let genuine = try h.outer(payload: ["kind": "question", "id": "q-2", "label": "x", "ts_ms": 1_000_100])
         let wrong = PushProcessor.process(outer: genuine, keys: h.keys, replay: r, nowMs: now + year)
         #expect(wrong.result == .drop(.stale))
-        #expect(wrong.replay.maxShownTs == r.maxShownTs && wrong.replay == r)
+        #expect(wrong.replay.maxShownTs(for: h.ws) == r.maxShownTs(for: h.ws) && wrong.replay == r)
         // clock returns: the next genuine push is shown
         let fine = PushProcessor.process(outer: genuine, keys: h.keys, replay: wrong.replay, nowMs: now + 200)
         guard case .show = fine.result else { Issue.record("genuine push dropped after the clock came back: \(fine.result)"); return }
