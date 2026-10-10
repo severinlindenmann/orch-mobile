@@ -12,6 +12,10 @@ public enum SignedKind: String, Sendable, CaseIterable {
     case wkGrant = "wk_grant"
     case skGrant = "sk_grant"
     case enrollRequest = "enroll_request"
+    case certRequest = "cert_request"
+    case certChallenge = "cert_challenge"
+    case dropObject = "drop_object"
+    case dropClaim = "drop_claim"
 
     public var label: String {
         switch self {
@@ -23,6 +27,10 @@ public enum SignedKind: String, Sendable, CaseIterable {
         case .wkGrant: return Label.sigWKGrant
         case .skGrant: return Label.sigSKGrant
         case .enrollRequest: return Label.sigEnrollRequest
+        case .certRequest: return Label.sigCertRequest
+        case .certChallenge: return Label.sigCertChallenge
+        case .dropObject: return Label.sigDropObject
+        case .dropClaim: return Label.sigDropClaim
         }
     }
 }
@@ -77,6 +85,8 @@ extension Dictionary where Key == String, Value == JSONValue {
     func hasExactly(_ keys: Set<String>) -> Bool { allKeysASCII && Set(self.keys) == keys }
     var allKeysASCII: Bool { self.keys.allSatisfy { !$0.isEmpty && $0.utf8.allSatisfy { $0 < 0x80 } } }
     func id16(_ k: String) -> ID16? { self[k]?.string.flatMap { ID16(hex: $0) } }
+    /// An integer in `1 ... UInt32.max` (epochs, sequence numbers, versions).
+    func positiveU32(_ k: String) -> UInt32? { self[k]?.int.flatMap { $0 >= 1 && $0 <= Int64(UInt32.max) ? UInt32($0) : nil } }
     func b64u(_ k: String, length: Int? = nil) -> Data? { self[k]?.string.flatMap { B64U.decode($0, length: length) } }
 }
 

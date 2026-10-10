@@ -96,3 +96,15 @@ public struct ID16: Hashable, Sendable {
         return ID16(bytes: Data((0..<16).map { _ in UInt8.random(in: 0...255, using: &g) }))!
     }
 }
+
+extension Bytes {
+    /// Big-endian reads at `offset` (Data may be a slice; indices are relative to its start).
+    static func readU32(_ d: Data, _ offset: Int) -> UInt32 {
+        let b = d.startIndex + offset
+        return (0..<4).reduce(UInt32(0)) { ($0 << 8) | UInt32(d[b + $1]) }
+    }
+    static func readU64(_ d: Data, _ offset: Int) -> UInt64 {
+        let b = d.startIndex + offset
+        return (0..<8).reduce(UInt64(0)) { ($0 << 8) | UInt64(d[b + $1]) }
+    }
+}

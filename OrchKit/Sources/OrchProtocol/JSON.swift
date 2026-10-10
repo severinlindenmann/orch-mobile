@@ -59,7 +59,12 @@ public struct StrictJSON {
     private let b: [UInt8]
     private var i = 0
 
-    public static func parse(_ data: Data) throws -> JSONValue {
+    /// Default input cap: 1 MiB, the largest bridge request (section 8.1). Callers with a smaller contract pass a
+    /// smaller `maxBytes` (meta 64 KiB, push 3 KiB, ...). Larger inputs are refused before any parsing work.
+    public static let defaultMaxBytes = 1 << 20
+
+    public static func parse(_ data: Data, maxBytes: Int = StrictJSON.defaultMaxBytes) throws -> JSONValue {
+        guard data.count <= maxBytes else { throw JSONError(why: "too large") }
         var p = StrictJSON(b: Array(data))
         p.skipWS()
         let v = try p.value(0)
@@ -68,7 +73,9 @@ public struct StrictJSON {
         return v
     }
 
-    public static func parse(_ text: String) throws -> JSONValue { try parse(Data(text.utf8)) }
+    public static func parse(_ text: String, maxBytes: Int = StrictJSON.defaultMaxBytes) throws -> JSONValue {
+        try parse(Data(text.utf8), maxBytes: maxBytes)
+    }
 
     private init(b: [UInt8]) { self.b = b }
 

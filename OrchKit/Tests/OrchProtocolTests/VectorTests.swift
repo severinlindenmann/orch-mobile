@@ -3,14 +3,17 @@ import Foundation
 import Testing
 @testable import OrchProtocol
 
-// TODO(M3+): suite-2 vector groups outside M2's scope, deliberately not run here:
-//   bridge.seal, bridge.host_cases, bridge.device_cases, bridge.pair_answers, bridge.links  (bridge envelope, host/device
-//     state machines, pairing links; includes the label-cleaning case `pair_with_a_label_full_of_controls`, whose raw label
-//     is inside a sealed envelope; section 2.5 cleaning is tested below with its own cases)
-//   card (delegation, sealed part, ck_commit, card-key wrap, 16 update cases), wk_grants, member_lists
-//   cert_request, enroll, webauthn, revocation_op (bridge op on the host)
-//   drop, ws_envelopes (ws -> ws), publish, relay_auth
+// TODO(later slices): suite-2 vector groups that need a host or coordinator pipeline, deliberately not run here.
+//   bridge.host_cases (47)      slice 2a: FakeHost ordered checks, replay, quota, budgets, epochs, seq window
+//   bridge.pair_answers (20)    slice 2b: open_pair_answer / PairingCoordinator (pins, SAS, R1 alarm, cert_pending UI rules)
+//   bridge.links (6)            slice 2b: pairing link fragment parsing
+//   enroll, webauthn            slice 2b / later: scoped agent enrolment, assertion and registration challenges
+//   revocation_op               slice 2a: the host's bridge op for a PK-signed revocation
+//   ws_envelopes, publish       out of scope for the phone (ws->ws, orch-publish)
+//   relay_auth.cases            covered here only as the relay-side pure check (RelayAuth.check); the HTTP flow is slice 1
 // The ed25519_small_order group and everything under suites."1" belong to suite 1, which this module does not implement.
+// Slice 0 gates run in BridgeTests, CardMembershipTests, CertRequestTests and DropTests: bridge.seal, bridge.device_cases,
+// card.cases/hosted_marker/card_key_wrap_to_phone, member_lists, wk_grants.cases, cert_request.* , relay_auth.cases, drop.*.
 
 @Suite struct VectorTests {
     var s2: JSONValue { Vectors.suite2 }
@@ -433,5 +436,26 @@ import Testing
         // the vector's expected label: "abc" + 77 x
         let expected = "abc" + String(repeating: "x", count: 77)
         #expect(PersonText.clean("a\u{0}b\u{202E}c" + String(repeating: "x", count: 200)) == expected)
+    }
+
+    /// Every suite-2 group is either run by a test in this target or listed as deferred above: this fails when the vector
+    /// file gains a group, and pins the case counts the gates assert.
+    @Test func everyGroupIsAccountedFor() {
+        let run: Set<String> = ["keys", "ids", "sign", "hkdf", "salted_aead", "seal", "seal_open", "label_sealed", "certs", "revocations",
+                                "card", "wk_grants", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop"]
+        let partial: Set<String> = ["bridge"]                       // seal, device_cases and sas run; host_cases, pair_answers, links deferred
+        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish"]
+        let meta: Set<String> = ["suite", "name"]
+        let all = Set(s2.object!.keys)
+        #expect(all == run.union(partial).union(deferred).union(meta), "unaccounted: \(all.subtracting(run).subtracting(partial).subtracting(deferred).subtracting(meta))")
+        let b = s2["bridge"].object!
+        #expect(b["seal"]?.array?.count == 1 && b["device_cases"]?.array?.count == 11 && b["host_cases"]?.array?.count == 47
+                && b["pair_answers"]?.array?.count == 20 && b["links"]?.array?.count == 6)
+        #expect(s2["card"]["cases"].items.count == 16 && s2["card"]["hosted_marker"].items.count == 4 && s2["member_lists"].items.count == 14
+                && s2["wk_grants"]["cases"].items.count == 3 && s2["cert_request"]["cases"].items.count == 10
+                && s2["cert_request"]["open_cases"].items.count == 5 && s2["relay_auth"]["cases"].items.count == 6)
+        let d = s2["drop"]
+        #expect(d["descriptor_cases"].items.count == 5 && d["claims"].items.count == 6 && d["documents"].items.count == 7
+                && d["document_chains"].items.count == 3 && d["wrap_negative"].items.count == 3 && d["wraps"].object?.count == 5)
     }
 }

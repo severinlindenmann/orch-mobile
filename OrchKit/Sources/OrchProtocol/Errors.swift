@@ -10,6 +10,25 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case revoked
     case otherPerson = "other_person"
     case wrongSuite = "wrong_suite"
+    case otherWorkspace = "other_workspace"
+    case staleList = "stale_list"
+    case badEpoch = "bad_epoch"
+    case rotationRequired = "rotation_required"
+    case scopeExceeded = "scope_exceeded"
+    case missingGrant = "missing_grant"
+    case delegationMismatch = "delegation_mismatch"
+    case staleCard = "stale_card"
+    case wskChanged = "wsk_changed"
+    case delegationChanged = "delegation_changed"
+    case wxkChangedWithoutVersion = "wxk_changed_without_version"
+    case badWxkVersion = "bad_wxk_version"
+    case notForThisDevice = "not_for_this_device"
+    case expired
+    case replayed
+    case requestOpen = "request_open"
+    case alreadySigned = "already_signed"
+    case rejected
+    case unknownRequest = "unknown_request"
 }
 
 /// Failures of the byte-level primitives (encodings, keys, AEAD).
