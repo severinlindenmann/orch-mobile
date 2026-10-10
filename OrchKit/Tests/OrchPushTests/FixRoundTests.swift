@@ -164,4 +164,95 @@ struct FixRoundTests {
         }
         #expect(outs.allSatisfy { $0 == .shown })
     }
+
+    // MARK: round 2 (Codex P1 x2, P2)
+
+    @Test func finalizationBlockedOnAHeldLockIsBoundedAndExpiryStillDelivers() throws {
+        let dir = tmp(), x = h(dir)
+        let r = x.handle(o: q("q1", nowMs))
+        let lockPath = dir.appendingPathComponent("tombstones.lock").path
+        // 1) the bounded handoff gives up on a held lock and delivers generic
+        var got: [PushPresentation] = []
+        let start = Date()
+        _ = try CoordinationFiles.withFlock(lockPath, exclusive: true) { x.handoff(r, timeout: 0.2) { got.append($0) } }
+        #expect(got == [.generic] && Date().timeIntervalSince(start) < 2)
+        // 2) full state machine: finalization stuck on the lock, the deadline delivers generic at once, exactly once
+        let out = Delivered(), qq = DispatchQueue(label: "t-blocked")
+        let d = PushDelivery(handler: x, queue: qq, handoffTimeout: 30) { _, done in done() }
+        let release = DispatchSemaphore(value: 0), held = DispatchSemaphore(value: 0)
+        let holder = Thread {
+            _ = try? CoordinationFiles.withFlock(lockPath, exclusive: true) { held.signal(); release.wait() }
+        }
+        holder.start()
+        held.wait()
+        d.start(o: q("q2", nowMs + 1), complete: out.add)   // processing now blocks on the exclusive lock
+        Thread.sleep(forTimeInterval: 0.3)
+        d.expire()
+        #expect(out.all == [.generic], "expiry always delivers: it needs no lock")
+        release.signal()
+        qq.sync {}
+        #expect(out.all == [.generic], "the unblocked normal path finds the completion already consumed")
+    }
+
+    @Test func removalCannotCommitBetweenTheCheckAndTheHandoff() throws {
+        let dir = tmp(), x = h(dir)
+        let r = x.handle(o: q("q1", nowMs))
+        let order = OrderLog()
+        let writer = Thread {
+            Thread.sleep(forTimeInterval: 0.1)   // the wipe tries to commit while the handoff is inside its critical section
+            try? TombstoneCoordination(directories: [dir]).write(TombstoneRecord(realm: "live", ws: PushFixtures.workspaceA.id.hex, generation: 1))
+            order.add("tombstone committed")
+        }
+        writer.start()
+        x.handoff(r) { p in
+            #expect(p == r.presentation)
+            Thread.sleep(forTimeInterval: 0.4)
+            order.add("handed off")
+        }
+        while order.all.count < 2 { Thread.sleep(forTimeInterval: 0.05) }
+        #expect(order.all == ["handed off", "tombstone committed"], "the wipe waits for the handoff, it cannot slip in between")
+    }
+
+    @Test func newerClosureCannotCommitBetweenTheCheckAndTheHandoff() throws {
+        let dir = tmp(), x = h(dir)
+        let question = x.handle(o: q("qq", nowMs - 20))
+        let order = OrderLog()
+        let closer = Thread {
+            Thread.sleep(forTimeInterval: 0.1)
+            _ = x.handle(o: q("qq", nowMs - 10, kind: "question.closed", label: "Answered on laptop"))
+            order.add("closure committed")
+        }
+        closer.start()
+        x.handoff(question) { p in
+            #expect(p == question.presentation)
+            Thread.sleep(forTimeInterval: 0.4)
+            order.add("question handed off")
+        }
+        while order.all.count < 2 { Thread.sleep(forTimeInterval: 0.05) }
+        #expect(order.all == ["question handed off", "closure committed"])
+    }
+
+    @Test func fullTableRecoversOnceTheWindowMovesOn() {
+        var r = PushProcessor.ReplayState()
+        let keys: PushProcessor.Keyring = [a.id: material(a).keys]
+        for i in 0..<PushProcessor.maxEntriesPerWorkspace {
+            let out = PushProcessor.process(outer: Data(q("id\(i)", nowMs + Int64(i)).utf8), keys: keys, replay: r, nowMs: nowMs + 300_000)
+            guard case .show = out.result else { Issue.record("id\(i) \(out.result)"); return }
+            r = out.replay
+        }
+        let full = PushProcessor.process(outer: Data(q("overflow", nowMs + 600).utf8), keys: keys, replay: r, nowMs: nowMs + 300_000)
+        #expect(full.result == .drop(.capacity))
+        // 25 h later every entry is outside the window: a fresh push must show (pruned against the candidate's ts first)
+        let later = nowMs + 25 * 3600_000
+        let fresh = PushProcessor.process(outer: Data(q("fresh", later).utf8), keys: keys, replay: r, nowMs: later)
+        guard case .show = fresh.result else { Issue.record("table stayed full: \(fresh.result)"); return }
+        #expect(fresh.replay.replay(for: a.id).lastShown.count == 1)
+    }
+}
+
+final class OrderLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    func add(_ s: String) { lock.withLock { items.append(s) } }
+    var all: [String] { lock.withLock { items } }
 }

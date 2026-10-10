@@ -45,8 +45,33 @@ public struct ReplayStore: Sendable {
     private struct Floor: Codable { let v: Int; let notBeforeTs: Int64 }
 
     public func floor(workspace: ID16) -> Int64 {
-        guard let d = try? Data(contentsOf: floorURL(workspace: workspace)), let f = try? JSONDecoder().decode(Floor.self, from: d), f.v == 1 else { return Int64.min }
-        return f.notBeforeTs
+        if case .value(let v) = readFloor(workspace: workspace) { return v }
+        return Int64.min
+    }
+
+    private enum FloorState { case missing, value(Int64), corrupt }
+
+    private func readFloor(workspace: ID16) -> FloorState {
+        let d: Data
+        do { d = try Data(contentsOf: floorURL(workspace: workspace)) }
+        catch let e as NSError where (e.domain == NSCocoaErrorDomain && e.code == NSFileReadNoSuchFileError) || (e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT)) { return .missing }
+        catch { return .corrupt }
+        guard let f = try? JSONDecoder().decode(Floor.self, from: d), f.v == 1 else { return .corrupt }
+        return .value(f.notBeforeTs)
+    }
+
+    /// A floor file that exists but does not parse fails CLOSED: it is treated as `nowMs` and rewritten as such (a
+    /// missing file is the only "no history").
+    private func effectiveFloor(workspace: ID16, nowMs: Int64) throws -> Int64 {
+        switch readFloor(workspace: workspace) {
+        case .missing: return Int64.min
+        case .value(let v): return v
+        case .corrupt:
+            let url = floorURL(workspace: workspace)
+            try Self.makeDir(url.deletingLastPathComponent())
+            try Self.atomicWrite(try JSONEncoder().encode(Floor(v: 1, notBeforeTs: nowMs)), to: url, dir: url.deletingLastPathComponent())
+            return nowMs
+        }
     }
 
     /// Raises the floor to at least `ts` (monotonic). Also the hook for a workspace wipe: call with the wipe time.
@@ -75,21 +100,23 @@ public struct ReplayStore: Sendable {
     /// Corrupt state: the file is moved aside (`replay.<g>.json.corrupt`, one copy), a fresh state with
     /// `notBeforeTs = max(floor, nowMs)` is written at once, and `body` sees it: the push that hit the corruption and
     /// everything shown earlier cannot show again, only pushes strictly newer than the recovery.
-    public func transact<T>(workspace: ID16, generation: Int64, nowMs: Int64,
+    ///
+    /// `lockTimeout`: give up (throw `.io("lock")`) if the workspace's replay lock is not free in time.
+    public func transact<T>(workspace: ID16, generation: Int64, nowMs: Int64, lockTimeout: TimeInterval? = nil,
                             _ body: (PushProcessor.WorkspaceReplay) throws -> (T, PushProcessor.WorkspaceReplay?)) throws -> T {
         let dir = stateDir(workspace: workspace)
         try Self.makeDir(dir)
-        guard let r = try CoordinationFiles.withFlock(dir.appendingPathComponent("replay.lock").path, { () throws -> T in
+        guard let r = try CoordinationFiles.withFlock(dir.appendingPathComponent("replay.lock").path, timeout: lockTimeout, { () throws -> T in
             try dropOlderGenerations(workspace: workspace, generation: generation)
             var current: PushProcessor.WorkspaceReplay
             do {
                 if let s = try read(workspace: workspace, generation: generation) { current = s }
-                else { current = PushProcessor.WorkspaceReplay().with(notBeforeTs: floor(workspace: workspace)) }
+                else { current = PushProcessor.WorkspaceReplay().with(notBeforeTs: try effectiveFloor(workspace: workspace, nowMs: nowMs)) }
             } catch ReplayStoreError.corrupt {
                 let url = fileURL(workspace: workspace, generation: generation)
                 _ = try? FileManager.default.removeItem(at: url.appendingPathExtension("corrupt"))
                 try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("corrupt"))
-                current = PushProcessor.WorkspaceReplay().with(notBeforeTs: max(floor(workspace: workspace), nowMs))
+                current = PushProcessor.WorkspaceReplay().with(notBeforeTs: max(try effectiveFloor(workspace: workspace, nowMs: nowMs), nowMs))
                 try write(current, workspace: workspace, generation: generation)
             }
             let (result, next) = try body(current)

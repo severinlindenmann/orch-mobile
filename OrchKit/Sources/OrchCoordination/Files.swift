@@ -45,12 +45,20 @@ public enum CoordinationFiles {
 
     /// Runs `body` holding flock on `path` (created O_NOFOLLOW). `blocking: false` returns nil at once if the lock is
     /// taken (the body does not run).
-    public static func withFlock<T>(_ path: String, exclusive: Bool = true, blocking: Bool = true, _ body: () throws -> T) throws -> T? {
+    /// `timeout` (with `blocking: true`): poll `LOCK_NB` for at most that long, then return nil.
+    public static func withFlock<T>(_ path: String, exclusive: Bool = true, blocking: Bool = true, timeout: TimeInterval? = nil, _ body: () throws -> T) throws -> T? {
         let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw FileError.io("lock open \(errno)") }
         defer { close(fd) }
-        let op = (exclusive ? LOCK_EX : LOCK_SH) | (blocking ? 0 : LOCK_NB)
-        if flock(fd, op) != 0 {
+        let base = exclusive ? LOCK_EX : LOCK_SH
+        if let timeout, blocking {
+            let deadline = Date().addingTimeInterval(timeout)
+            while flock(fd, base | LOCK_NB) != 0 {
+                guard errno == EWOULDBLOCK else { throw FileError.io("flock \(errno)") }
+                if Date() >= deadline { return nil }
+                usleep(5_000)
+            }
+        } else if flock(fd, base | (blocking ? 0 : LOCK_NB)) != 0 {
             if !blocking && errno == EWOULDBLOCK { return nil }
             throw FileError.io("flock \(errno)")
         }

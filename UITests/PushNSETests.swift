@@ -104,11 +104,11 @@ final class PushNSETests: XCTestCase {
                 XCTAssertTrue(delivered.contains("|\(e["body"]!)|"), "\(name): expected delivered body \(e["body"]!): \(delivered)")
             }
             if name == "01_question" {
-                XCTAssertTrue(delivered.contains("|Fixture Workspace|Ship L-0042?|thread=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"), "question present, titled by the workspace and threaded by it: \(delivered)")
+                XCTAssertTrue(delivered.contains("[Fixture Workspace|Ship L-0042?|thread=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"), "question present, titled by the workspace and threaded by it: \(delivered)")
             }
             if name == "02_question_closed" {
                 XCTAssertFalse(delivered.contains("|Ship L-0042?|"), "the closure must have replaced the question: \(delivered)")
-                XCTAssertTrue(delivered.contains("|Fixture Workspace|Answered on laptop|"), "\(delivered)")
+                XCTAssertTrue(delivered.contains("[Fixture Workspace|Answered on laptop|"), "\(delivered)")
             }
         }
         check(0, expectations[0], marker: marker)

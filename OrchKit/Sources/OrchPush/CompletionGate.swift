@@ -39,4 +39,18 @@ public final class CompletionGate<Value>: @unchecked Sendable {
         lock.unlock()
         handler?(makeValue(ex))
     }
+
+    /// Claims the completion and delivers `value` (computed by the caller, possibly while it holds other locks). Returns
+    /// false, delivering nothing, if the completion was already consumed or no handler is installed yet. Claiming is one
+    /// short critical section, so it can never wait on I/O: the deadline path (`complete(with: generic)`) always works.
+    @discardableResult
+    public func complete(with value: Value) -> Bool {
+        lock.lock()
+        let handler = pending
+        pending = nil
+        lock.unlock()
+        guard let handler else { return false }
+        handler(value)
+        return true
+    }
 }

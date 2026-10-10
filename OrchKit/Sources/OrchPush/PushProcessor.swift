@@ -144,10 +144,13 @@ public enum PushProcessor {
             if let why = checkTimestamp(tsMs: p.tsMs, nowMs: nowMs, floorNowMs: state.maxShownTs, lastShown: state.last(id: p.id)) {
                 return (.drop(why), replay.updating(p.workspace, state))
             }
-            if state.last(id: p.id) == nil, state.lastShown.count >= maxEntriesPerWorkspace {
+            // Prune against the verified candidate timestamp BEFORE enforcing the cap: once the window has moved on, expired
+            // entries must not keep refusing fresh pushes.
+            let advanced = state.recording(p.id, p.tsMs)
+            if state.last(id: p.id) == nil, advanced.lastShown.count > maxEntriesPerWorkspace {
                 return (.drop(.capacity), replay.updating(p.workspace, state))
             }
-            return (.show(p), replay.updating(p.workspace, state.recording(p.id, p.tsMs)))
+            return (.show(p), replay.updating(p.workspace, advanced))
         }
     }
 

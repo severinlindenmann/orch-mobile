@@ -56,18 +56,35 @@ public struct PushHandler: Sendable {
     /// `PushPresentation.generic` first.
     public func recordExpired() { NSEMarker.record(.expired, pushDir: pushDir, nowMs: nowMs, bestEffort: true) }
 
-    /// Runs immediately before the content handler is called. Re-checks, under the same shared removal lock and the
-    /// workspace's replay lock, that the workspace is still present at the material's generation and that no NEWER push
-    /// for the same id has been accepted meanwhile (a question must not appear after its closure committed). Anything
-    /// else, including unreadable state, delivers generic text.
-    public func finalize(_ r: Result) -> PushPresentation {
-        guard let h = r.handoff else { return r.presentation }
+    /// Hands the content over INSIDE the protected check: holding the shared removal lock and the workspace's replay lock,
+    /// it re-checks that the workspace is still present at the material's generation and that no NEWER push for the
+    /// same id has been accepted (a question must not appear after its closure committed), and calls `deliver` with
+    /// the result while still holding both. A wipe or a closure can therefore only commit before the check or after
+    /// the handler was called, never between. `deliver` must be quick and must not take these locks.
+    ///
+    /// Waiting for the locks is bounded by `timeout`; on timeout, removal, supersession or any error `deliver` gets
+    /// `PushPresentation.generic`. `deliver` is called at most once from here (the caller's claim makes it idempotent
+    /// against the deadline path).
+    public func handoff(_ r: Result, timeout: TimeInterval = 3, deliver: (PushPresentation) -> Void) {
+        guard let h = r.handoff else { deliver(r.presentation); return }
+        var delivered = false
+        func once(_ p: PushPresentation) { if !delivered { delivered = true; deliver(p) } }
         do {
-            let stillCurrent = try coordination.ifNotRemoved(realm: realm, ws: h.workspace.hex, generation: h.generation) { () throws -> Bool in
-                try store.transact(workspace: h.workspace, generation: h.generation, nowMs: nowMs) { cur in (cur.last(id: h.id) == h.tsMs, nil) }
+            let ran: Void? = try coordination.ifNotRemoved(realm: realm, ws: h.workspace.hex, generation: h.generation, timeout: timeout) { () throws -> Void in
+                try store.transact(workspace: h.workspace, generation: h.generation, nowMs: nowMs, lockTimeout: timeout) { cur in
+                    once(cur.last(id: h.id) == h.tsMs ? r.presentation : .generic)
+                    return ((), nil)
+                }
             }
-            return stillCurrent == true ? r.presentation : .generic
-        } catch { return .generic }
+            if ran == nil { once(.generic) }
+        } catch { once(.generic) }
+    }
+
+    /// Convenience for tests and callers that only need the decision: the presentation `handoff` would deliver.
+    public func finalize(_ r: Result) -> PushPresentation {
+        var out = PushPresentation.generic
+        handoff(r) { out = $0 }
+        return out
     }
 
     var nowMs: Int64 { Int64((now().timeIntervalSince1970 * 1000).rounded()) }
