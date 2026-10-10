@@ -32,29 +32,47 @@ public enum Accessibility: String, Sendable, Hashable {
 }
 
 /// The tag of one stored secret: `(realm, ws?, purpose)`. Encoded into `kSecAttrService` / `kSecAttrAccount`.
+///
+/// Both parts are strict ASCII so that Swift's canonical-equivalence `String ==` and the keychain's byte
+/// comparison agree: `ws` is 32 lowercase hex characters (a 16-byte workspace id), `purpose` is 1 to 64 characters
+/// of `[a-z0-9._-]`. A workspace id can therefore never equal the "no workspace" marker `-`.
 public struct SecretID: Hashable, Sendable {
+    public static let wsLength = 32
+    public static let maxPurposeLength = 64
+
     public let realm: Realm
     public let ws: String?
     public let purpose: String
 
     public init(realm: Realm, ws: String? = nil, purpose: String) throws {
-        guard Self.valid(purpose), ws.map(Self.valid) ?? true else { throw VaultError.badName }
+        guard Self.validPurpose(purpose), ws.map(Self.validWS) ?? true else { throw VaultError.badName }
         self.realm = realm; self.ws = ws; self.purpose = purpose
     }
 
-    static func valid(_ s: String) -> Bool { !s.isEmpty && !s.contains(":") && !s.contains("\0") }
+    static func validWS(_ s: String) -> Bool {
+        let u = Array(s.utf8)
+        return u.count == wsLength && u.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }
+    }
 
-    /// `orch:<realm>:<ws or ->`
+    static func validPurpose(_ s: String) -> Bool {
+        let u = Array(s.utf8)
+        return (1...maxPurposeLength).contains(u.count) && u.allSatisfy {
+            ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D
+        }
+    }
+
+    /// `orch:<realm>:<32 hex>` for a workspace item, `orch:<realm>:-` for a realm-level item.
     var service: String { "orch:\(realm.rawValue):\(ws ?? "-")" }
     var account: String { purpose }
 
+    /// Parses a stored tag. Returns nil unless re-encoding gives back exactly the same bytes.
     init?(service: String, account: String) {
         let parts = service.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 3, parts[0] == "orch", let r = Realm(rawValue: String(parts[1])), Self.valid(account),
-              !parts[2].isEmpty else { return nil }
-        self.realm = r
-        self.ws = parts[2] == "-" ? nil : String(parts[2])
-        self.purpose = account
+        guard parts.count == 3, parts[0] == "orch", let r = Realm(rawValue: String(parts[1])) else { return nil }
+        let w: String? = parts[2] == "-" ? nil : String(parts[2])
+        guard let id = try? SecretID(realm: r, ws: w, purpose: account),
+              Array(id.service.utf8) == Array(service.utf8), Array(id.account.utf8) == Array(account.utf8) else { return nil }
+        self = id
     }
 }
 

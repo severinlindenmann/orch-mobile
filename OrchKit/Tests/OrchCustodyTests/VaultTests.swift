@@ -9,7 +9,7 @@ func makeVault(_ group: KeychainGroup = .keys, lock: SimulatedLock = SimulatedLo
 @Suite struct VaultTests {
     @Test func putGetDeleteRoundTrip() throws {
         let v = makeVault()
-        let id = try SecretID(realm: .live, ws: "w1", purpose: "wk.1")
+        let id = try SecretID(realm: .live, ws: "11111111111111111111111111111111", purpose: "wk.1")
         #expect(try v.contains(id) == false)
         try v.put(Data([1, 2]), for: id)
         #expect(try v.get(id) == Data([1, 2]))
@@ -50,8 +50,45 @@ func makeVault(_ group: KeychainGroup = .keys, lock: SimulatedLock = SimulatedLo
         #expect(throws: VaultError.badName) { try SecretID(realm: .live, purpose: "a:b") }
     }
 
+    @Test func strictNames() {
+        let hex = String(repeating: "a", count: 32)
+        let bad: [(String?, String)] = [
+            ("-", "p"), (nil, ""), (hex, ""), (String(repeating: "A", count: 32), "p"), (String(repeating: "a", count: 31), "p"),
+            (String(repeating: "a", count: 33), "p"), ("", "p"), (hex, "a:b"), (hex, "A"), (hex, "a b"),
+            (hex, String(repeating: "a", count: 65)),
+            (hex, "caf\u{E9}"), (hex, "cafe\u{301}"), (hex, "\u{FF41}"),  // NFC/NFD and full-width look-alikes
+            (String(repeating: "a", count: 31) + "\u{FF41}", "p"),
+            (hex + "\u{301}", "p"), (hex, "a\u{0}"),
+        ]
+        for (w, p) in bad {
+            #expect(throws: VaultError.badName) { try SecretID(realm: .live, ws: w, purpose: p) }
+        }
+        #expect(throws: Never.self) { try SecretID(realm: .live, ws: hex, purpose: "a.b_c-1") }
+    }
+
+    @Test func parserIsExact() throws {
+        let hex = String(repeating: "a", count: 32)
+        #expect(SecretID(service: "orch:live:-", account: "k") != nil)
+        #expect(SecretID(service: "orch:live:\(hex)", account: "k") != nil)
+        for (s, a) in [("orch:live:w", "k"), ("orch:live:--", "k"), ("orch:live:\(hex.uppercased())", "k"),
+                       ("orch:live:\(hex):x", "k"), ("orch:live:-", "K"), ("orch:live:-", "e\u{301}"),
+                       ("orch:Live:-", "k"), ("orch:live:", "k"), ("orch:live:\(hex)\u{301}", "k")] {
+            #expect(SecretID(service: s, account: a) == nil)
+        }
+    }
+
+    @Test func globalAndWorkspaceItemsNeverShareAService() throws {
+        let hex = String(repeating: "0", count: 32)
+        let g = try SecretID(realm: .live, purpose: "k"), w = try SecretID(realm: .live, ws: hex, purpose: "k")
+        #expect(g.service != w.service)
+        #expect(g != w)
+        #expect(g.service == "orch:live:-")
+        // A hex workspace id cannot equal the marker, so the two can never collide.
+        #expect(throws: VaultError.badName) { try SecretID(realm: .live, ws: "-", purpose: "k") }
+    }
+
     @Test func tagRoundTrip() throws {
-        let id = try SecretID(realm: .demo, ws: "w", purpose: "k")
+        let id = try SecretID(realm: .demo, ws: "22222222222222222222222222222222", purpose: "k")
         #expect(SecretID(service: id.service, account: id.account) == id)
         let r = try SecretID(realm: .live, purpose: "dk_sig")
         #expect(SecretID(service: r.service, account: r.account) == r)
@@ -63,34 +100,34 @@ func makeVault(_ group: KeychainGroup = .keys, lock: SimulatedLock = SimulatedLo
         for (r, w, p) in [(Realm.live, "a", "k"), (.live, "a", "j"), (.live, "b", "k"), (.live, nil, "dk_sig"), (.demo, "a", "k")] as [(Realm, String?, String)] {
             try v.put(Data([1]), for: SecretID(realm: r, ws: w, purpose: p))
         }
-        try v.wipe(realm: .live, ws: "a")
+        try v.wipe(realm: .live, ws: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         #expect(try v.ids().count == 3)
-        #expect(try v.contains(SecretID(realm: .demo, ws: "a", purpose: "k")))
+        #expect(try v.contains(SecretID(realm: .demo, ws: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", purpose: "k")))
         try v.wipe(realm: .live)
-        #expect(try v.ids() == [SecretID(realm: .demo, ws: "a", purpose: "k")])
+        #expect(try v.ids() == [SecretID(realm: .demo, ws: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", purpose: "k")])
     }
 
     @Test func orphansWithoutIndexAreCleaned() throws {
         let v = makeVault(.push)
-        try v.put(Data([1]), for: SecretID(realm: .live, ws: "known", purpose: "k"))
-        try v.put(Data([1]), for: SecretID(realm: .live, ws: "stale", purpose: "k"))
+        try v.put(Data([1]), for: SecretID(realm: .live, ws: "cccccccccccccccccccccccccccccccc", purpose: "k"))
+        try v.put(Data([1]), for: SecretID(realm: .live, ws: "dddddddddddddddddddddddddddddddd", purpose: "k"))
         try v.put(Data([1]), for: SecretID(realm: .live, purpose: "realm-level"))
-        let removed = try v.wipeUnindexed(realm: .live, knownWorkspaces: ["known"])
-        #expect(removed.map(\.ws) == ["stale"])
+        let removed = try v.wipeUnindexed(realm: .live, knownWorkspaces: ["cccccccccccccccccccccccccccccccc"])
+        #expect(removed.map(\.ws) == ["dddddddddddddddddddddddddddddddd"])
         #expect(try v.ids().count == 2)
     }
 
     @Test func demoCannotReadLive() throws {
         let v = makeVault()
-        try v.scoped(to: .live).put(Data([7]), ws: "w", purpose: "wk")
+        try v.scoped(to: .live).put(Data([7]), ws: "22222222222222222222222222222222", purpose: "wk")
         try v.scoped(to: .live).put(Data([8]), purpose: "dk_sig")
         let demo = v.scoped(to: .demo)
-        #expect(throws: VaultError.notFound) { try demo.get(ws: "w", purpose: "wk") }
+        #expect(throws: VaultError.notFound) { try demo.get(ws: "22222222222222222222222222222222", purpose: "wk") }
         #expect(throws: VaultError.notFound) { try demo.get(purpose: "dk_sig") }
-        try demo.put(Data([1]), ws: "w", purpose: "wk")
+        try demo.put(Data([1]), ws: "22222222222222222222222222222222", purpose: "wk")
         try demo.wipe()
-        #expect(try v.scoped(to: .live).get(ws: "w", purpose: "wk") == Data([7]))
-        try v.scoped(to: .live).wipe(ws: "w")
+        #expect(try v.scoped(to: .live).get(ws: "22222222222222222222222222222222", purpose: "wk") == Data([7]))
+        try v.scoped(to: .live).wipe(ws: "22222222222222222222222222222222")
         #expect(try v.ids().count == 1)
     }
 }

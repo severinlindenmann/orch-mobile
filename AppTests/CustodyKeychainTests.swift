@@ -31,7 +31,7 @@ final class CustodyKeychainTests: XCTestCase {
     func testRoundTripInBothGroups() throws {
         for g in KeychainGroup.allCases {
             let v = vault(g)
-            let id = try SecretID(realm: .live, ws: "w1", purpose: "k")
+            let id = try SecretID(realm: .live, ws: "11111111111111111111111111111111", purpose: "k")
             XCTAssertThrowsError(try v.get(id)) { XCTAssertEqual($0 as? VaultError, .notFound) }
             try v.put(Data([1, 2, 3]), for: id)
             try v.put(Data([4]), for: id) // update path
@@ -44,7 +44,7 @@ final class CustodyKeychainTests: XCTestCase {
     }
 
     func testGroupsAreSeparate() throws {
-        let id = try SecretID(realm: .live, ws: "w", purpose: "k")
+        let id = try SecretID(realm: .live, ws: "22222222222222222222222222222222", purpose: "k")
         try vault(.push).put(Data([1]), for: id)
         XCTAssertThrowsError(try vault(.keys).get(id)) { XCTAssertEqual($0 as? VaultError, .notFound) }
         XCTAssertEqual(try vault(.keys).ids(), [])
@@ -52,18 +52,18 @@ final class CustodyKeychainTests: XCTestCase {
 
     func testDemoCannotReadLive() throws {
         let v = vault(.keys)
-        try v.scoped(to: .live).put(Data([7]), ws: "w", purpose: "wk")
-        XCTAssertThrowsError(try v.scoped(to: .demo).get(ws: "w", purpose: "wk"))
-        try v.scoped(to: .demo).put(Data([1]), ws: "w", purpose: "wk")
+        try v.scoped(to: .live).put(Data([7]), ws: "22222222222222222222222222222222", purpose: "wk")
+        XCTAssertThrowsError(try v.scoped(to: .demo).get(ws: "22222222222222222222222222222222", purpose: "wk"))
+        try v.scoped(to: .demo).put(Data([1]), ws: "22222222222222222222222222222222", purpose: "wk")
         try v.scoped(to: .demo).wipe()
-        XCTAssertEqual(try v.scoped(to: .live).get(ws: "w", purpose: "wk"), Data([7]))
+        XCTAssertEqual(try v.scoped(to: .live).get(ws: "22222222222222222222222222222222", purpose: "wk"), Data([7]))
     }
 
     func testWipeAndOrphanCleanup() throws {
         let v = vault(.push)
-        try v.put(Data([1]), for: SecretID(realm: .live, ws: "a", purpose: "k"))
-        try v.put(Data([1]), for: SecretID(realm: .live, ws: "b", purpose: "k"))
-        try v.wipe(realm: .live, ws: "a")
+        try v.put(Data([1]), for: SecretID(realm: .live, ws: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", purpose: "k"))
+        try v.put(Data([1]), for: SecretID(realm: .live, ws: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", purpose: "k"))
+        try v.wipe(realm: .live, ws: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         XCTAssertEqual(try v.ids().count, 1)
         XCTAssertEqual(try v.wipeUnindexed(realm: .live, knownWorkspaces: []).count, 1)
         XCTAssertEqual(try v.ids().count, 0)
