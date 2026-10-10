@@ -5,8 +5,8 @@ import UIKit
 import AppKit
 #endif
 
-@MainActor
-private func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+/// Nonisolated: UIKit resolves dynamic colours on arbitrary threads (a MainActor closure traps at runtime).
+private nonisolated func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
     #if canImport(UIKit)
     return Color(uiColor: UIColor { traits in
         let value = traits.userInterfaceStyle == .dark ? dark : light
@@ -42,6 +42,7 @@ public enum OC {                           // colours, resolved against the curr
   public static let warn       = dyn(0x7A4E00, 0xFBBF24)
   public static let danger     = dyn(0xB42318, 0xF87171)   // alarm, destructive
   public static let info       = dyn(0x1F5FD1, 0x60A5FA)   // the primary's cert code frame
+  public static let onDanger   = dyn(0xFFFFFF, 0x2A0A07)
   public static let demo       = dyn(0x6D4AFF, 0xB392F0)   // demo stripe and chip, nothing else
   public static func soft(_ c: Color) -> Color { c.opacity(0.14) }   // chip backgrounds (dashboard *-soft)
   // Workspace hues: index = workspace_id[0] % 6. Never magenta, orange, red or violet (reserved above).

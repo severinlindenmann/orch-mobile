@@ -8,6 +8,7 @@ struct OrchApp: App {
     var body: some Scene {
         WindowGroup {
             HomeScreen(options: options)
+                .preferredColorScheme(options.appearance == "dark" ? .dark : options.appearance == "light" ? .light : nil)
         }
     }
 }
