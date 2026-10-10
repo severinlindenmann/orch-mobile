@@ -10,6 +10,8 @@ permissions:
   contents: read
 
 env:
+  # Passed into the simulator test host as CI, so hosted keychain tests fail instead of skip.
+  TEST_RUNNER_CI: '1'
   XCODE_VERSION: '16.4'
   XCODEGEN_VERSION: '2.46.0'
   XCODEGEN_SHA256: '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806'
@@ -64,20 +66,20 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('SIMULATOR_ID=' + candidates[0]['udid'] + '\n')
           PY
-      # NOTE: CODE_SIGNING_ALLOWED=NO strips entitlements, so hosted tests cannot exercise
-      # keychain or App Group access. M3 hosted keychain/App Group tests will need
-      # ad-hoc signing (CODE_SIGN_IDENTITY=-) instead.
+      # NOTE: CODE_SIGNING_ALLOWED=NO strips entitlements, so hosted keychain tests would skip.
+      # The hosted steps therefore sign ad hoc (CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES).
+      # The Release build below needs no entitlements and stays unsigned.
       - name: Build for hosted tests
         run: >-
           xcodebuild -project Orch.xcodeproj -scheme Orch
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
-          -derivedDataPath .build/dd CODE_SIGNING_ALLOWED=NO
+          -derivedDataPath .build/dd CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
           -only-testing:OrchTests build-for-testing
       - name: Run hosted tests
         run: >-
           xcodebuild -project Orch.xcodeproj -scheme Orch
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
-          -derivedDataPath .build/dd CODE_SIGNING_ALLOWED=NO
+          -derivedDataPath .build/dd CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
           -only-testing:OrchTests test-without-building
       - name: Build Release configuration
         run: >-

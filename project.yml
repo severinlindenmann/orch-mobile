@@ -29,6 +29,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: orch
+        OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -53,6 +54,7 @@ targets:
       path: NotificationService/Info.plist
       properties:
         CFBundleDisplayName: orch notifications
+        OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
@@ -89,6 +91,8 @@ targets:
     sources: [AppTests]
     dependencies:
       - target: Orch
+      - package: OrchKit
+        products: [OrchProtocol, OrchCustody]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.tests
