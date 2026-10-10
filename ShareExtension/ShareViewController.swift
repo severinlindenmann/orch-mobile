@@ -5,7 +5,10 @@ import OrchUI
 final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
-        let host = UIHostingController(rootView: ShareComposeView())
+        let host = UIHostingController(rootView: ShareComposeView(onCancel: { [weak self] in
+            self?.extensionContext?.cancelRequest(
+                withError: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError))
+        }))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
@@ -20,6 +23,8 @@ final class ShareViewController: UIViewController {
 }
 
 private struct ShareComposeView: View {
+    let onCancel: () -> Void
+
     var body: some View {
         NavigationStack {
             Form {
@@ -27,7 +32,7 @@ private struct ShareComposeView: View {
             }
             .navigationTitle("Share to orch")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") {}.disabled(true) }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
                 ToolbarItem(placement: .confirmationAction) { Button("Save") {}.disabled(true) }
             }
         }

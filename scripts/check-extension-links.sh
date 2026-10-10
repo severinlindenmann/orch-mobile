@@ -59,5 +59,30 @@ allowed.each do |name, permitted|
   end
   puts "#{name}: allowed dependency closure #{visited.sort.join(', ')}"
 end
+# Entitlements must stay minimal: a broader group would widen what a compromised extension can read.
+def entitlements(path)
+  out, status = Open3.capture2('plutil', '-convert', 'json', '-o', '-', path)
+  abort "Cannot read #{path}" unless status.success?
+  JSON.parse(out)
+end
+nse = entitlements('NotificationService/OrchNotify.entitlements')
+abort 'OrchNotify: app group must be exactly group.io.severin.orch' unless nse['com.apple.security.application-groups'] == ['group.io.severin.orch']
+keychain = nse['keychain-access-groups']
+abort 'OrchNotify: keychain group must be exactly one group ending io.severin.orch.push' unless keychain.is_a?(Array) && keychain.size == 1 && keychain[0].end_with?('io.severin.orch.push')
+abort 'OrchNotify: unexpected entitlements' unless (nse.keys - %w[com.apple.security.application-groups keychain-access-groups]).empty?
+share = entitlements('ShareExtension/OrchShare.entitlements')
+abort 'OrchShare: app group must be exactly group.io.severin.orch.share' unless share['com.apple.security.application-groups'] == ['group.io.severin.orch.share']
+abort 'OrchShare: keychain-access-groups is forbidden' if share.key?('keychain-access-groups')
+abort 'OrchShare: unexpected entitlements' unless (share.keys - %w[com.apple.security.application-groups]).empty?
+
+# Extensions must not touch crypto, biometrics or networking; scan their own sources and the modules they link.
+forbidden = %w[Security CryptoKit LocalAuthentication Network]
+extension_sources = Dir['NotificationService/**/*.swift'] + Dir['ShareExtension/**/*.swift']
+extension_sources.each do |file|
+  File.read(file).scan(/^\s*(?:@\w+\s+)*import\s+(?:\w+\s+)?(\w+)/).flatten.each do |imported|
+    abort "forbidden import #{imported} in #{file}" if forbidden.include?(imported)
+  end
+end
+puts 'Extension entitlements and imports OK'
 puts 'Extension links OK'
 RUBY

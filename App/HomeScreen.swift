@@ -71,7 +71,9 @@ struct HomeScreen: View {
                         Image(systemName: "questionmark.bubble").foregroundStyle(OC.you)
                         VStack(alignment: .leading, spacing: OS.s1) {
                             Text("Needs you").font(OF.section).foregroundStyle(OC.you)
-                            Text("Laptop · Ready to review the changes?").font(OF.body)
+                            if let first = PreviewWorkspace.samples.first {
+                                Text("\(first.name) · \(first.question)").font(OF.body)
+                            }
                             Text("Last checked in this preview").font(OF.meta).foregroundStyle(OC.textMuted)
                         }
                         Spacer(minLength: 0)

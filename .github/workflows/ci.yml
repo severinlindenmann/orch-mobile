@@ -1,15 +1,23 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 
 env:
   XCODE_VERSION: '16.4'
   XCODEGEN_VERSION: '2.46.0'
+  XCODEGEN_SHA256: '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806'
 
 jobs:
   core:
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Select pinned Xcode
@@ -18,8 +26,10 @@ jobs:
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
       - run: swift test --package-path OrchKit
       - run: scripts/check-extension-links.sh
+      - run: scripts/test-check-extension-links.sh
   app:
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Select pinned Xcode
@@ -28,18 +38,17 @@ jobs:
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
       - name: Install XcodeGen
         run: |
-          brew install xcodegen
-          # Keep generation deterministic even if Homebrew has advanced.
-          if [ "$(xcodegen --version)" != "Version: ${XCODEGEN_VERSION}" ]; then
-            git clone --depth 1 --branch "$XCODEGEN_VERSION" https://github.com/yonaskolb/XcodeGen.git "$RUNNER_TEMP/XcodeGen"
-            swift build --package-path "$RUNNER_TEMP/XcodeGen" -c release --product xcodegen
-            echo "$RUNNER_TEMP/XcodeGen/.build/release" >> "$GITHUB_PATH"
-          fi
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Generate project and audit extensions
         run: |
           test "$(xcodegen --version)" = "Version: ${XCODEGEN_VERSION}"
           xcodegen generate
           scripts/check-extension-links.sh
+          scripts/test-check-extension-links.sh
       - name: Select iPhone simulator
         run: |
           xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
@@ -55,6 +64,9 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('SIMULATOR_ID=' + candidates[0]['udid'] + '\n')
           PY
+      # NOTE: CODE_SIGNING_ALLOWED=NO strips entitlements, so hosted tests cannot exercise
+      # keychain or App Group access. M3 hosted keychain/App Group tests will need
+      # ad-hoc signing (CODE_SIGN_IDENTITY=-) instead.
       - name: Build for hosted tests
         run: >-
           xcodebuild -project Orch.xcodeproj -scheme Orch
@@ -67,3 +79,9 @@ jobs:
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
           -derivedDataPath .build/dd CODE_SIGNING_ALLOWED=NO
           -only-testing:OrchTests test-without-building
+      - name: Build Release configuration
+        run: >-
+          xcodebuild -project Orch.xcodeproj -scheme Orch
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath .build/dd-release -configuration Release
+          CODE_SIGNING_ALLOWED=NO build

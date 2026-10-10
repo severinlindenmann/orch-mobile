@@ -1,6 +1,7 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+// unsafeFlags is deliberate: this is a local root package only, never a remote dependency.
 let package = Package(
     name: "OrchKit",
     platforms: [.iOS(.v18), .macOS(.v15)],
