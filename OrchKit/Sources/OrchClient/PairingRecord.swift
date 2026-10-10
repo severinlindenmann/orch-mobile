@@ -54,6 +54,9 @@ struct PairingRecord: Equatable {
     var joinStartedMs: Int64?
     /// When `approved` was first pinned: the start of the hard window for join retries.
     var approvedMs: Int64?
+    // Converted once, then only shortened; later signed clock corrections cannot extend them.
+    var challengeDeadlineMs: Int64?
+    var joinDeadlineMs: Int64?
 
     var challengeExpiresMs: Int64? { challenge?.object?["o"]?.object?["expires_ms"]?.int }
     var challengeRequestID: ID16? { challenge?.object?["o"]?.object?.idField("request_id") }
@@ -77,6 +80,8 @@ struct PairingRecord: Equatable {
         put("cert_pending_since_ms", certPendingSinceMs.map { .int($0) })
         put("challenge", challenge)
         put("join_started_ms", joinStartedMs.map { .int($0) })
+        put("challenge_deadline_ms", challengeDeadlineMs.map { .int($0) })
+        put("join_deadline_ms", joinDeadlineMs.map { .int($0) })
         put("approved_ms", approvedMs.map { .int($0) })
         if let f = inflight {
             o["inflight"] = .object(["rid": .string(f.rid.hex), "is_pair": .bool(f.isPair), "envelope": .string(B64U.encode(f.envelope)),
@@ -103,6 +108,8 @@ struct PairingRecord: Equatable {
         var r = PairingRecord(generation: generation, origin: origin, ws: ws, offer: offer, secret: secret, wskPin: wskPin, pkPin: pkPin,
                               deviceID: device, label: label, createdKeys: created, existingCert: o["existing_cert"], phase: phase,
                               startedMs: started, lastProgressMs: progress)
+        r.challengeDeadlineMs = o["challenge_deadline_ms"]?.int
+        r.joinDeadlineMs = o["join_deadline_ms"]?.int
         r.offsetMs = offset; r.seq = UInt64(seq); r.lastPostMs = lastPost
         r.wskPub = o.b64uField("wsk_pub"); r.sasNonce = o.b64uField("sas_nonce"); r.pkPub = o.b64uField("pk_pub")
         r.primaryLabel = o["primary_label"]?.string; r.certPendingSinceMs = o["cert_pending_since_ms"]?.int

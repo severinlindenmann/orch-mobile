@@ -146,9 +146,16 @@ public final class WorkspaceIndex: Sendable {
 
     /// Index first (authoritative), then the coordination files fail-closed.
     public func isRemoved(ws: String, generation: Int64) async throws -> Bool {
-        let rows = try await db.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])
-        if !rows.isEmpty { return true }
-        return layout.tombstones.isRemovedFailClosed(realm: layout.realm, ws: ws, generation: generation)
+        await removalStatus(ws: ws, generation: generation) != .notRemoved
+    }
+
+    /// Read failures preserve pending work; only confirmed tombstones authorize cleanup.
+    public func removalStatus(ws: String, generation: Int64) async -> RemovalStatus {
+        do {
+            let rows = try await db.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])
+            if !rows.isEmpty { return .removed }
+        } catch { return .unknown }
+        return layout.tombstones.removalStatus(realm: layout.realm, ws: ws, generation: generation)
     }
 }
 

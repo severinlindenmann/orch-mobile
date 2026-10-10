@@ -14,6 +14,9 @@ public struct TombstoneRecord: Codable, Hashable, Sendable {
     }
 }
 
+/// Unknown must refuse writes, but must never authorize destructive recovery.
+public enum RemovalStatus: Sendable, Equatable { case removed, notRemoved, unknown }
+
 public enum TombstoneError: Error, Equatable, Sendable {
     case lockFailed(Int32)
     /// The coordination file could not be parsed. A partial `write` leaves it untouched (readers keep
@@ -43,11 +46,21 @@ public struct TombstoneCoordination: Sendable {
     /// Bare fail-closed check (unreadable counts as removed). Internal: only for callers whose action is
     /// itself ordered by the index tombstone (see WorkspaceIndex) and for tests.
     package func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
+        removalStatus(realm: realm, ws: ws, generation: generation) != .notRemoved
+    }
+
+    /// A confirmed removal wins over unreadable copies. A busy lock is unknown, never evidence of removal.
+    package func removalStatus(realm: String, ws: String, generation: Int64) -> RemovalStatus {
+        var unknown = false
         for dir in directories {
-            guard let records = try? Self.read(dir: dir) else { return true }
-            if Self.covers(records, realm, ws, generation) { return true }
+            do {
+                let records = try Self.withLocks([dir][...], exclusive: false, create: false, deadline: Date()) {
+                    try Self.readUnlocked(dir: dir)
+                }
+                if Self.covers(records, realm, ws, generation) { return .removed }
+            } catch { unknown = true }
         }
-        return false
+        return unknown ? .unknown : .notRemoved
     }
 
     /// Fail-open variant, for diagnostics and tests only: unreadable files count as "not removed".

@@ -128,11 +128,11 @@ package enum PairingWire {
         if isRefusal, !pend.offsetAdopted, meta["refusal"]?.string?.utf8Equal("stale_timestamp") == true, let hostMs = meta["host_ms"]?.int {
             pend.offsetAdopted = true
             let off = hostMs.subtractingReportingOverflow(nowMs)
-            if !off.overflow, abs(off.partialValue) <= Bridge.maxOffsetMs { offset = off.partialValue } else { clockWrong = true }
+            if !off.overflow, (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(off.partialValue) { offset = off.partialValue } else { clockWrong = true }
         } else {
             let ts = h.tsMs > UInt64(Int64.max) ? Int64.max : Int64(h.tsMs)
             let diff = local.subtractingReportingOverflow(ts)
-            if diff.overflow || abs(diff.partialValue) > Bridge.windowMs { return drop("stale_timestamp") }
+            if diff.overflow || !(-Bridge.windowMs...Bridge.windowMs).contains(diff.partialValue) { return drop("stale_timestamp") }
         }
         // the answer itself
         let body: Body

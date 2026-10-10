@@ -64,7 +64,32 @@ public actor PairingCoordinator {
     static let pairResendMs: Int64 = 15_000
     static let statusResendMs: Int64 = 30_000
 
-    public init(_ config: PairingConfig) { cfg = config }
+    private let elapsedMs: @Sendable () -> Int64
+    private var wallAnchorMs: Int64
+    private var elapsedAnchorMs: Int64 = 0
+
+    private static func elapsed<C: Clock<Duration>>(_ clock: C) -> @Sendable () -> Int64 {
+        let anchor = clock.now
+        return {
+            let d = anchor.duration(to: clock.now).components
+            return saturatingAdd(d.seconds * 1000, d.attoseconds / 1_000_000_000_000_000)
+        }
+    }
+
+    public init(_ config: PairingConfig) {
+        cfg = config
+        wallAnchorMs = config.wall.nowMs
+        elapsedMs = Self.elapsed(config.clock)
+    }
+
+    // Monotonic elapsed time bounds every active deadline, even if wall time moves backwards.
+    // Persisted absolute deadlines retain their original bounds on resume; monotonic instants cannot cross a reboot.
+    private var nowMs: Int64 {
+        let elapsed = elapsedMs()
+        wallAnchorMs = max(cfg.wall.nowMs, saturatingAdd(wallAnchorMs, elapsed - elapsedAnchorMs))
+        elapsedAnchorMs = elapsed
+        return wallAnchorMs
+    }
 
     // MARK: realm boundary
 
@@ -113,7 +138,7 @@ public actor PairingCoordinator {
     // MARK: observation
 
     /// The state as of now: a challenge's code is hidden the instant it expires, whatever was last polled.
-    public var state: PairingState { derive(at: cfg.wall.nowMs) }
+    public var state: PairingState { derive(at: nowMs) }
 
     /// A fresh single-consumer stream: the current state first, then every change.
     public func states() -> AsyncStream<PairingState> {
@@ -188,7 +213,7 @@ public actor PairingCoordinator {
             if Identifiers.pkPin(owner) != link.pkPin { await dropNewKeys(created); return fail(.otherPerson, mine) }
             existing = valid ? cert : nil          // an expired certificate keeps the owner binding but is not presented
         }
-        let now = cfg.wall.nowMs
+        let now = nowMs
         let generation: Int64
         do {
             generation = try await cfg.index.nextGeneration(ws: ws.hex)
@@ -268,10 +293,14 @@ public actor PairingCoordinator {
         guard (try? cfg.context.admit(origin: r.origin)) != nil else { return await endResumed(r, mine) }
         try? await crashPoint("resume.custody")
         guard mine == token else { return current }
-        let removed: Bool
-        do { removed = try await cfg.index.isRemoved(ws: ws.hex, generation: r.generation) } catch { return fail(.custody, mine) }
+        let removal = await cfg.index.removalStatus(ws: ws.hex, generation: r.generation)
         guard mine == token else { return current }
-        if removed { return await endResumed(r, mine) }
+        switch removal {
+        case .unknown: return fail(.custody, mine)
+        case .removed: return await endResumed(r, mine)
+        case .notRemoved: break
+        }
+        guard (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(r.offsetMs) else { return await endResumed(r, mine) }
         let id: DeviceIdentity
         do { id = try cfg.context.deviceIdentity(custody: cfg.custody, createIfMissing: false) }
         catch CustodyError.missing { return await endResumed(r, mine) }
@@ -281,8 +310,9 @@ public actor PairingCoordinator {
         guard mine == token else { return current }
         identity = id
         record = r
+        pinDeadlines()
         reverified = false
-        let now = cfg.wall.nowMs
+        let now = nowMs
         nextPostMs = now; nextGetMs = now; failures = 0; retryNotBeforeMs = 0
         if let end = await expireIfNeeded(now) { return end }
         guard mine == token else { return current }
@@ -348,7 +378,7 @@ public actor PairingCoordinator {
     public func run() async {
         while !dead, record != nil, !current.isTerminal {
             if Task.isCancelled { return }
-            let now = cfg.wall.nowMs
+            let now = nowMs
             if case .failed(.joiningTimedOut) = current {
                 let end = record.flatMap { hardJoinEndMs($0) } ?? now
                 await waitForWake(until: end)
@@ -371,7 +401,7 @@ public actor PairingCoordinator {
         let (stream, cont) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         wakers[id] = cont
         defer { wakers[id] = nil }
-        let wait = max(endMs - cfg.wall.nowMs, 0)
+        let wait = max(endMs - nowMs, 0)
         let clock = cfg.clock
         await withTaskGroup(of: Void.self) { g in
             g.addTask { try? await clock.sleep(for: .milliseconds(wait)) }
@@ -390,7 +420,7 @@ public actor PairingCoordinator {
 
     /// The earliest local deadline of the stored pairing: a longer Retry-After never delays it.
     private func earliestDeadlineMs(_ r: PairingRecord) -> Int64? {
-        let now = cfg.wall.nowMs
+        let now = nowMs
         var ds: [Int64] = []
         switch r.phase {
         case .connecting, .comparingHost:
@@ -413,7 +443,7 @@ public actor PairingCoordinator {
         busy = true; defer { busy = false }
         let mine = token
         do { try checkConfig() } catch { _ = fail(violation(error), mine); return }
-        var now = cfg.wall.nowMs
+        var now = nowMs
         if await expireIfNeeded(now) != nil { return }
         guard mine == token, let r0 = record else { return }
         // the join's 60 s cap is enforced before any backoff: a backoff that crosses it never postpones the timeout
@@ -433,7 +463,7 @@ public actor PairingCoordinator {
         if record?.inflight?.posted == false {
             guard await post(mine) else { return }
             if mine != token { return }
-            now = cfg.wall.nowMs
+            now = nowMs
         } else if now < nextGetMs { refreshState(now); return }
         // 3. GET the mailbox: once with each POST, then at most every 5 s while awaiting the answer
         await fetch(mine)
@@ -476,9 +506,9 @@ public actor PairingCoordinator {
             guard mine == token else { return false }
             if reply.status == 202 {
                 record?.inflight?.posted = true
-                record?.lastPostMs = cfg.wall.nowMs
+                record?.lastPostMs = nowMs
                 failures = 0
-                nextGetMs = cfg.wall.nowMs        // GET once with each POST
+                nextGetMs = nowMs        // GET once with each POST
                 return await persist(mine)
             }
             transportFailure(reply)
@@ -496,8 +526,8 @@ public actor PairingCoordinator {
         var wait = step
         if let reply, case .adapter(.rateLimited(let ra)) = HostAPI.failure(of: reply), let ra { wait = max(wait, Int64(ra) * 1000) }
         else if let reply, let ra = HostAPI.retryAfter(reply) { wait = max(wait, Int64(ra) * 1000) }
-        retryNotBeforeMs = cfg.wall.nowMs + wait
-        refreshState(cfg.wall.nowMs)
+        retryNotBeforeMs = nowMs + wait
+        refreshState(nowMs)
     }
 
     private func fetch(_ mine: Int) async {
@@ -515,7 +545,7 @@ public actor PairingCoordinator {
             return
         } catch { if mine == token { transportFailure(nil) }; return }
         failures = 0
-        let now = cfg.wall.nowMs
+        let now = nowMs
         // the deadlines are re-checked after the await: an answer that arrives past a cap does not extend it
         if await expireIfNeeded(now) != nil { return }
         guard mine == token else { return }
@@ -565,7 +595,7 @@ public actor PairingCoordinator {
         case .refusal(let code, _):
             if code == "stale_timestamp" {
                 if a.clockWrong { _ = await finish(.failed(.clockWrong), mine); return }
-                if let off = a.offsetMs { r.offsetMs = off; record = r; nextPostMs = now; _ = await persist(mine); return }
+                if let off = a.offsetMs, (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(off) { r.offsetMs = off; record = r; pinDeadlines(); nextPostMs = now; _ = await persist(mine); return }
                 _ = await finish(.failed(.clockWrong), mine); return
             }
             switch code {
@@ -578,7 +608,7 @@ public actor PairingCoordinator {
             if let pinned = r.sasNonce, pinned != nonce { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
             r.sasNonce = nonce
             r.phase = .comparingHost
-            record = r; failures = 0; nextPostMs = r.lastPostMs + interval()
+            record = r; pinDeadlines(); failures = 0; nextPostMs = r.lastPostMs + interval()
             guard await persist(mine) else { return }
             publish(derive(at: now))
         case .certPending(let label, let pk, let challenge):
@@ -599,7 +629,7 @@ public actor PairingCoordinator {
                 if r.challenge != nil { _ = await raiseAlarm(.regression, primaryLabel: label, mine); return }
                 r.phase = .waitingPrimary
             }
-            record = r; failures = 0; nextPostMs = r.lastPostMs + interval()
+            record = r; pinDeadlines(); failures = 0; nextPostMs = r.lastPostMs + interval()
             guard await persist(mine) else { return }
             publish(derive(at: now))
         case .approved(let scopes, let cert, let certificate, let pk, let epoch):
@@ -619,7 +649,7 @@ public actor PairingCoordinator {
             r.joinStartedMs = now
             r.approvedMs = now
             r.secret = nil                                  // `S` is not needed for the join: gone from the record the moment approval is pinned
-            record = r; failures = 0; retryNotBeforeMs = 0
+            record = r; pinDeadlines(); failures = 0; retryNotBeforeMs = 0
             guard await persist(mine) else { return }
             publish(.joining)
         case .rejected: _ = await finish(.rejected, mine)
@@ -643,8 +673,8 @@ public actor PairingCoordinator {
         guard let exp = r.challengeExpiresMs else { return nil }
         let local = exp.subtractingReportingOverflow(r.offsetMs)
         let e = local.overflow ? exp : local.partialValue
-        if let since = r.certPendingSinceMs { return min(e, saturatingAdd(since, Self.certificationMs)) }
-        return e
+        let cap = saturatingAdd(r.certPendingSinceMs ?? r.lastProgressMs, Self.certificationMs)
+        return min(e, cap, r.challengeDeadlineMs ?? Int64.max)
     }
 
     /// When a pairing in `cert_pending` ends here: the (clamped) challenge expiry or the 10 minutes of `cert_pending`, plus the grace
@@ -662,7 +692,14 @@ public actor PairingCoordinator {
             let local = e.subtractingReportingOverflow(r.offsetMs)
             end = min(end, local.overflow ? e : local.partialValue)
         }
-        return end
+        return min(end, r.joinDeadlineMs ?? Int64.max)
+    }
+
+    private func pinDeadlines() {
+        guard var r = record else { return }
+        r.challengeDeadlineMs = challengeExpiryLocalMs(r)
+        if r.approved != nil { r.joinDeadlineMs = hardJoinEndMs(r) }
+        record = r
     }
 
     /// Revalidates the local deadlines. Returns the terminal state if one was reached.
@@ -748,7 +785,7 @@ public actor PairingCoordinator {
             do {
                 try await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin, phase: "alarm",
                                                            terminal: "alarm:" + kind.rawValue, detail: alarm.primaryLabel, startedMs: r.startedMs,
-                                                           updatedMs: cfg.wall.nowMs, createdKeys: r.createdKeys))
+                                                           updatedMs: nowMs, createdKeys: r.createdKeys))
             } catch {}
             unlockGate()
             do { try await crashPoint("alarm.saved") } catch { dead = true; return current }
@@ -776,7 +813,7 @@ public actor PairingCoordinator {
         do {
             try perform { try vault().put(try r.encode(), ws: r.ws.hex, purpose: "pairing") }
             try await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin,
-                                                       phase: r.phase.rawValue, startedMs: r.startedMs, updatedMs: cfg.wall.nowMs, createdKeys: r.createdKeys))
+                                                       phase: r.phase.rawValue, startedMs: r.startedMs, updatedMs: nowMs, createdKeys: r.createdKeys))
             return .saved
         } catch { return .failed }
     }
@@ -831,7 +868,7 @@ public actor PairingCoordinator {
         let ok = await purgeResidue(ws: r.ws, createdKeys: r.createdKeys, keepRow: false, gate: false)
         if !ok, (try? await cfg.index.pairing(ws: r.ws.hex)) == nil {
             try? await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin, phase: "cleanup",
-                                                        terminal: "cleanup", startedMs: r.startedMs, updatedMs: cfg.wall.nowMs, createdKeys: r.createdKeys))
+                                                        terminal: "cleanup", startedMs: r.startedMs, updatedMs: nowMs, createdKeys: r.createdKeys))
         }
         return ok
     }
@@ -859,7 +896,7 @@ public actor PairingCoordinator {
         guard identityAvailable else { return .present(owner: pk, cert: cert, valid: true) }
         guard let id = identity ?? (try? cfg.context.deviceIdentity(custody: cfg.custody, createIfMissing: false)) else { return .unreadable }
         do {
-            let dc = try cfg.context.admitCertificate(cert, ownerKey: pk, nowMs: cfg.wall.nowMs)
+            let dc = try cfg.context.admitCertificate(cert, ownerKey: pk, nowMs: nowMs)
             guard dc.signingKey == id.publicKeys.sig, dc.agreementKey == id.publicKeys.kx else { return .corrupt }
             return .present(owner: pk, cert: cert, valid: true)
         } catch Refusal.certExpired {
@@ -878,7 +915,7 @@ public actor PairingCoordinator {
     public func adoptCertificate(_ cert: JSONValue, owner: SigningPublicKey) throws {
         try checkConfig()
         let id = try identity ?? cfg.context.deviceIdentity(custody: cfg.custody, createIfMissing: true)
-        let dc = try cfg.context.admitCertificate(cert, ownerKey: owner, nowMs: cfg.wall.nowMs)
+        let dc = try cfg.context.admitCertificate(cert, ownerKey: owner, nowMs: nowMs)
         guard dc.signingKey == id.publicKeys.sig, dc.agreementKey == id.publicKeys.kx else { throw Refusal.certInvalid }
         try storeCertificate(cert, owner: owner)
     }
@@ -895,7 +932,7 @@ public actor PairingCoordinator {
     public func retryJoin() async {
         guard !dead, var r = record, case .failed(.joiningTimedOut) = current else { return }
         let mine = token
-        let now = cfg.wall.nowMs
+        let now = nowMs
         if now >= hardJoinEndMs(r) { await finish(.expired(.afterApproval), mine); return }
         r.joinStartedMs = now
         record = r; retryNotBeforeMs = 0; failures = 0
@@ -932,6 +969,13 @@ public actor PairingCoordinator {
                 else { clean = await purgeResidue(ws: ws, createdKeys: row.createdKeys, keepRow: true, gate: true) && clean }
                 continue
             }
+            switch await cfg.index.removalStatus(ws: row.ws, generation: row.generation) {
+            case .unknown: live.insert(row.ws); clean = false; continue
+            case .removed:
+                clean = await purgeResidue(ws: ws, createdKeys: row.createdKeys, keepRow: false, gate: true) && clean
+                continue
+            case .notRemoved: break
+            }
             let read = readRecord(ws: row.ws)
             if case .transient = read { live.insert(row.ws); clean = false; continue }     // locked: keep it, retry at the next launch
             var hasRecord = false
@@ -966,6 +1010,7 @@ public actor PairingCoordinator {
 
 struct JoinFailure: Error { let reason: String }
 struct JoinPending: Error {}
+private enum JoinDeadlineError: Error { case expired, timedOut }
 
 extension PairingCoordinator {
     typealias JoinPendingError = JoinPending
@@ -1022,7 +1067,7 @@ extension PairingCoordinator {
         guard mine == token else { return }
         guard let r = record, let id = identity, let approved = r.approved, let pkData = r.pkPub, let pk = try? SigningPublicKey(x963: pkData),
               let wskData = r.wskPub, let wsk = try? SigningPublicKey(x963: wskData) else { _ = await finish(.failed(.custody), mine); return }
-        let now = cfg.wall.nowMs
+        let now = nowMs
         if now - (r.joinStartedMs ?? now) >= Self.joiningCapMs {
             // retryable until the window ends: the approval and the pins stay; nothing is installed
             if current != .failed(.joiningTimedOut) { publish(.failed(.joiningTimedOut)) }
@@ -1062,6 +1107,7 @@ extension PairingCoordinator {
                                            workspace: r.ws, origin: r.origin, wsk: wsk, pk: pk, approved: approved)
             }
             guard mine == token else { return }
+            try checkJoinDeadline(r)
             try await install(verified, record: r, identity: id, wsk: wsk, pk: pk, approved: approved, mine: mine)
         } catch {
             await joinError(error, now: now, mine)
@@ -1074,6 +1120,8 @@ extension PairingCoordinator {
         if error is CancellationError { return }
         guard mine == token else { return }
         switch error {
+        case JoinDeadlineError.expired: _ = await finish(.expired(.afterApproval), mine)
+        case JoinDeadlineError.timedOut: publish(.failed(.joiningTimedOut))
         case let f as JoinFailure: _ = await finish(.failed(.verification(reason: f.reason)), mine)
         case is JoinPending: joinRetry(now)
         case let t as TransportError:
@@ -1087,6 +1135,12 @@ extension PairingCoordinator {
             }
         default: _ = await finish(.failed(.verification(reason: "install")), mine)
         }
+    }
+
+    private func checkJoinDeadline(_ r: PairingRecord) throws {
+        let now = nowMs
+        if now >= hardJoinEndMs(r) { throw JoinDeadlineError.expired }
+        if now - (r.joinStartedMs ?? now) >= Self.joiningCapMs { throw JoinDeadlineError.timedOut }
     }
 
     private func joinRetry(_ now: Int64) {
@@ -1118,7 +1172,10 @@ extension PairingCoordinator {
         func rollback() async {
             await container?.close()
             restoreCert()
-            try? vault.wipe(ws: wsHex)
+            // Keep the approval for a retryable timeout. Terminal/cancel cleanup owns the pairing record.
+            for item in (try? cfg.vault.ids()) ?? [] where item.realm == cfg.context.realm && item.ws == wsHex && item.purpose != "pairing" {
+                try? cfg.vault.delete(item)
+            }
             await cfg.index.containers.suspendAll(ws: wsHex)
             if let dir = try? cfg.index.layout.wsDir(wsHex) { try? FileManager.default.removeItem(at: dir) }
         }
@@ -1146,8 +1203,9 @@ extension PairingCoordinator {
                                            clientHosted: v.card.delegation.clientHosted, hostedMarker: v.hosted.marker, hostedBy: v.hosted.hostedBy,
                                            wskPub: B64U.encode(wsk.x963), pkPub: B64U.encode(pk.x963), ownerPerson: v.card.ownerPersonID.hex,
                                            cardSeq: Int64(v.card.cardSeq), listSeq: v.list.listSeq, epoch: Int64(v.epoch), scopes: approved.scopes,
-                                           card: String(decoding: try canonicalJSON(v.cardJSON), as: UTF8.self), joinedMs: cfg.wall.nowMs)
+                                           card: String(decoding: try canonicalJSON(v.cardJSON), as: UTF8.self), joinedMs: nowMs)
             // the linearization point: the ownership check and the commit are one transaction
+            try checkJoinDeadline(r)
             try await cfg.index.commitJoin(generation: r.generation, profile: profile)
             committed = true
             try await crashPoint("install.committed")
