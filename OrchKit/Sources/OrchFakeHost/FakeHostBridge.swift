@@ -53,6 +53,7 @@ extension FakeHost {
     /// Rotation (section 7.2 host rules): `WK_{e+1}`, a grant for every remaining device, then the list.
     public func rotate(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
         let next = epoch + 1
+        try await publishHook?()
         endOpenStreams(newEpoch: next)
         listSeq += 1
         _ = wk(next)
@@ -105,11 +106,18 @@ extension FakeHost {
         case .accept(let a):
             let h = a.header
             if h.flagSet.contains(.stream) { streamOpen[h.rid] = (h.device, h.epoch, 0) }
+            let isRevocation = a.meta.object?["op"]?.string == "revocation"
+            if rotationRequired && !isRevocation {           // a retired key may still be active: nothing runs, nothing is sealed
+                streamOpen[h.rid] = nil
+                return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
+            }
             let reply = await run(a)
+            while let t = rotation { _ = await t.value; if rotation == t { rotation = nil } }     // seal only after a rotation completed
             if streamEnded.remove(h.rid) != nil { return [] }          // a rotation already ended this stream
             streamOpen[h.rid] = nil
-            let isRevocation = a.meta.object?["op"]?.string == "revocation"
+            // The revocation's own `{"revoked":true}` reply is the one exemption: it is sealed under the request's epoch (8.5), carries no data.
             let changed = core.revoked.contains(h.device) || core.members[h.device] == nil || (!isRevocation && core.epoch != h.epoch)
+                || (rotationRequired && !isRevocation)
             if changed { return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? [] }
             switch reply {
             case .refuse(let r):
@@ -150,22 +158,32 @@ extension FakeHost {
         switch probe.applyRevocation(a.meta, ownerKey: primary.publicKey) {
         case .refuse(let c): return .refuse(c == "other_person" ? .otherPerson : (c == "bad_signature" ? .badSignature : .malformed))
         case .ok(let device, let rotate):
-            if rotate {
-                guard let ctx = bridgeRelay else { return .refuse(.alreadyDone(status: "unknown")) }
+            if rotate || rotationRequired {
+                guard bridgeRelay != nil else { return .refuse(.alreadyDone(status: "unknown")) }
+                if rotate { rotationRequired = true }          // before the member leaves the roster
                 core = probe
                 for (rid, st) in streamOpen where st.device == device { streamEnded.insert(rid); streamOpen[rid] = nil }
-                let remaining = roster.filter { $0.key != device }.map { (key: $0.value.keys, scopes: $0.value.scopes) }
-                let t = Task<Bool, Never> {
-                    do { try await self.rotate(remaining: remaining.map { ($0.key, $0.scopes) }, relay: ctx.relay, session: ctx.session); return true }
-                    catch { return false }
-                }
-                rotation = t
-                let ok = await t.value
-                if rotation == t { rotation = nil }
-                guard ok else { return .refuse(.alreadyDone(status: "unknown")) }
+                guard await runRotation() else { return .refuse(.alreadyDone(status: "unknown")) }
             } else { core = probe }
             return .response(status: 200, headers: [:], data: (try? canonicalJSON(["host_api": 0, "revoked": true])) ?? Data())
         }
+    }
+
+    /// Publishes the pending rotation (grants, list, new epoch) for the roster minus every revoked device. Joins one in progress.
+    /// `rotationRequired` is cleared only on success.
+    @discardableResult
+    private func runRotation() async -> Bool {
+        if let t = rotation { return await t.value && !rotationRequired }
+        guard let ctx = bridgeRelay else { return false }
+        let remaining = roster.filter { !core.revoked.contains($0.key) }.map { ($0.value.keys, $0.value.scopes) }
+        let t = Task<Bool, Never> {
+            do { try await self.rotate(remaining: remaining, relay: ctx.relay, session: ctx.session); return true } catch { return false }
+        }
+        rotation = t
+        let ok = await t.value
+        if rotation == t { rotation = nil }
+        if ok { rotationRequired = false }
+        return ok
     }
 
     /// Seals response chunks under the request's own epoch key (so a `stale_epoch` refusal at an old epoch is readable by
@@ -204,6 +222,7 @@ extension FakeHost {
     @discardableResult
     public func pump(relay: FakeRelay, transport: any RelayTransport, session: RelaySession) async throws -> Int {
         bridgeRelay = (relay, session)
+        if rotationRequired { await runRotation() }
         try await flushOutbox(transport: transport, session: session)
         let inbox = try await relay.pendingRequests(workspace: workspace, token: session.token).filter { $0.arrival > lastArrival }
             .sorted { $0.arrival < $1.arrival }

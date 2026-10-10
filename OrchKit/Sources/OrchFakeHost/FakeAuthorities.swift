@@ -106,6 +106,11 @@ public actor FakeHost {
     var bridgeRelay: (relay: FakeRelay, session: RelaySession)?
     /// A rotation in progress. Requests wait for it, so nothing new is sealed under an epoch being retired.
     var rotation: Task<Bool, Never>?
+    /// Set BEFORE a revocation removes a member and cleared only after grants, list and the new epoch are installed. While set,
+    /// no data is sealed; the next pump retries the publication.
+    var rotationRequired = false
+    /// Tests: runs inside the publication, before the first grant.
+    package var publishHook: (@Sendable () async throws -> Void)?
     /// Streams (by request id) that are accepted but not finished: request epoch and next chunk index.
     var streamOpen: [ID16: (device: ID16, epoch: UInt32, next: UInt64)] = [:]
     /// Streams a rotation already ended; their handlers' late answers are discarded.

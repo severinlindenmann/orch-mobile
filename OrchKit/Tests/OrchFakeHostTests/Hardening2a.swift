@@ -621,3 +621,87 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(rig.core.rids.count == 3)
     }
 }
+
+@Suite struct RotationGate2a {
+    final class Fail: @unchecked Sendable { let l = NSLock(); var on = true
+        var value: Bool { get { l.withLock { on } } set { l.withLock { on = newValue } } } }
+
+    // A handler returning while the rotation's grants are being published must not seal data.
+    @Test func handlerFinishingDuringPublicationGetsNoData() async throws {
+        let w = try await World.make()
+        let hgate = HandlerGate(), pub = HandlerGate()
+        await w.host.setHandler({ _ in await hgate.wait(); return .response(status: 200, headers: [:], data: Data("secret".utf8)) })
+        let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0x61), meta: ["op": "http", "method": "GET", "path": "/x", "headers": .object([:])])
+        let host = w.host
+        let t = Task { await host.process(envelope: env, mailbox: h.rid) }
+        while !hgate.isEntered { await Task.yield() }
+        // pump registers the relay; then a revocation (of the primary) starts a rotation parked in publication
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        await w.host.setPublishHook { await pub.wait() }
+        let record = try await w.primary.revoke(device: w.primaryID)
+        let (renv, rh) = try await w.sealedRequest(rid: ID16.fresh(0x62), seq: 2, meta: ["op": "revocation", "record": record])
+        _ = rh
+        let rt = Task { await host.process(envelope: renv, mailbox: rh.rid) }
+        while !pub.isEntered { await Task.yield() }
+        hgate.open()                                   // handler returns mid-publication
+        for _ in 0..<200 { await Task.yield() }
+        pub.open()
+        let chunks = await t.value
+        _ = await rt.value
+        let o = try openChunk(chunks[0], wk: await w.host.wkFor(1))
+        #expect(chunks.count == 1 && o.meta == unknownRefusal.meta)
+        #expect(chunks[0].range(of: Data("secret".utf8)) == nil)
+    }
+
+    @Test func failedPublicationKeepsRotationRequiredAndRetries() async throws {
+        let w = try await World.make()
+        let counter = Counter()
+        await w.host.setHandler({ _ in counter.bump(); return .response(status: 200, headers: [:], data: Data("data".utf8)) })
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        let fail = Fail()
+        await w.host.setPublishHook { if fail.value { throw TestCrash() } }
+        let record = try await w.primary.revoke(device: w.primaryID)
+        let (renv, rh) = try await w.sealedRequest(rid: ID16.fresh(0x63), seq: 1, meta: ["op": "revocation", "record": record])
+        let c1 = await w.host.process(envelope: renv, mailbox: rh.rid)
+        let m1 = try openChunk(c1[0], wk: await w.host.wkFor(1)).meta
+        #expect(m1 == unknownRefusal.meta)
+        let rr = await w.host.rotationRequired, ep = await w.host.epoch
+        #expect(rr && ep == 1)
+        // requests during rotationRequired get no data and do not run
+        let (e2, h2) = try await w.sealedRequest(rid: ID16.fresh(0x64), seq: 2)
+        let c2 = await w.host.process(envelope: e2, mailbox: h2.rid)
+        let m2 = try openChunk(c2[0], wk: await w.host.wkFor(1)).meta
+        #expect(c2.count == 1 && m2 == unknownRefusal.meta && counter.value == 0)
+        // next pump retries; once it succeeds the epoch moves and requests work at epoch 2
+        fail.value = false
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        let rr2 = await w.host.rotationRequired, ep2 = await w.host.epoch
+        #expect(!rr2 && ep2 == 2)
+        let (e3, h3) = try await w.sealedRequest(rid: ID16.fresh(0x65), seq: 3, epoch: 2)
+        let c3 = await w.host.process(envelope: e3, mailbox: h3.rid)
+        let d3 = try openChunk(c3[0], wk: await w.host.wkFor(2)).data
+        #expect(d3 == Data("data".utf8))
+    }
+
+    @Test func resubmittedRevocationRotatesAfterAFailedPublication() async throws {
+        let w = try await World.make()
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        let fail = Fail()
+        await w.host.setPublishHook { if fail.value { throw TestCrash() } }
+        let record = try await w.primary.revoke(device: w.primaryID)
+        let (e1, h1) = try await w.sealedRequest(rid: ID16.fresh(0x66), seq: 1, meta: ["op": "revocation", "record": record])
+        _ = await w.host.process(envelope: e1, mailbox: h1.rid)
+        fail.value = false
+        let (e2, h2) = try await w.sealedRequest(rid: ID16.fresh(0x67), seq: 2, meta: ["op": "revocation", "record": record])
+        let c = await w.host.process(envelope: e2, mailbox: h2.rid)
+        let mc = try openChunk(c[0], wk: await w.host.wkFor(1)).meta
+        #expect(mc.object?["status"] == .int(200))
+        let rr3 = await w.host.rotationRequired, ep3 = await w.host.epoch
+        #expect(ep3 == 2 && !rr3)
+    }
+}
+
+extension FakeHost {
+    func setPublishHook(_ h: (@Sendable () async throws -> Void)?) { publishHook = h }
+    var rotationRequiredFlag: Bool { rotationRequired }
+}
