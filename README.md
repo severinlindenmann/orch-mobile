@@ -69,6 +69,33 @@ Home preview; `--ui-testing` marks a test launch. Release ignores both. With no
 workspaces, Welcome offers Try Demo and Pair a workspace. Try Demo opens the same
 static fixtures in either configuration.
 
+## TestFlight
+
+`scripts/testflight.sh` archives (Release, generic iOS), exports with method
+`app-store-connect`, and optionally uploads to App Store Connect (app "Orch
+Mobile", internal testing only: `testFlightInternalTestingOnly` is set).
+
+```
+scripts/testflight.sh               # same as --dry-run: archive + export a local .ipa
+scripts/testflight.sh --upload      # archive + export + upload to App Store Connect
+scripts/testflight.sh --add-internal  # --upload, then wait for processing and add the
+                                    # build to the internal group "Owner" (created if missing)
+```
+
+- Needs a clean git tree on a commit that exists on origin; runs `xcodegen generate`.
+- Marketing version comes from `MARKETING_VERSION` in `project.yml`; the build number is
+  UTC `yymmddHHMM` (override with `BUILD_NUMBER=...`), so it increases per upload.
+- Signing is automatic. By default xcodebuild uses the Apple account signed in to Xcode;
+  `USE_API_KEY=1` makes it use the App Store Connect key at
+  `~/.appstoreconnect/private_keys/AuthKey_HVML779F7U.p8` instead. The `--add-internal`
+  REST calls always use that key (ES256 JWT from `scripts/asc-jwt.swift`; the key and the
+  token are never printed or logged).
+- Logs and the .ipa land in `.build/testflight/` (gitignored).
+- Xcode's export uses rsync; the script runs it with a system-only `PATH` because a
+  Homebrew rsync breaks it.
+- Export compliance is intentionally not declared in the build, so a new build may show
+  "Missing Compliance" until answered in App Store Connect.
+
 ## Status
 
 M1 skeleton: Home shows Laptop and Client VM, a Needs you list, and Drop. Demo is
