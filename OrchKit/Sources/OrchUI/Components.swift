@@ -98,3 +98,28 @@ public struct CardBackground: ViewModifier {
 public extension View {
     func orchCard() -> some View { modifier(CardBackground()) }
 }
+
+/// Signed details (ws, question id, content hash): shown on the question and the sign sheet alike.
+public struct SignedDetails: View {
+    private let rows: [(String, String)]
+    @State private var open = false
+    public init(workspaceID: String, questionID: String, contentHash: String) {
+        rows = [("Workspace", workspaceID), ("Question id", questionID), ("Content hash", contentHash)]
+    }
+    public var body: some View {
+        DisclosureGroup(isExpanded: $open) {
+            VStack(alignment: .leading, spacing: OS.s2) {
+                ForEach(rows, id: \.0) { row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: row.0).font(OF.meta).foregroundStyle(OC.textMuted)
+                        Text(verbatim: SafeText.inline(row.1, limit: 100)).font(OF.machine)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }.padding(.top, OS.s2)
+        } label: {
+            Text("Signed details").font(OF.section)
+        }
+        .accessibilityIdentifier("sign.details")
+    }
+}

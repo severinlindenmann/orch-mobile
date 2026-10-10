@@ -132,7 +132,7 @@ struct HomeContent: View {
         ScrollView {
             VStack(alignment: .leading, spacing: OS.s3) {
                 if home.needsYouCount > 0, let oldest = home.oldestWaiting { needsYouStrip(oldest) }
-                Text("Last checked \(Fmt.relative(home.lastChecked))")
+                Text(verbatim: "Last checked \(Fmt.relative(home.lastChecked))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                     .accessibilityIdentifier("home.lastChecked")
                 ForEach(home.workspaces) { ws in
@@ -154,7 +154,7 @@ struct HomeContent: View {
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text(home.needsYouCount == 1 ? "1 needs you" : "\(home.needsYouCount) need you")
                         .font(OF.section).foregroundStyle(OC.you)
-                    Text("\(oldest.workspace.name) · \(oldest.question.firstLine)")
+                    Text(verbatim: "\(oldest.workspace.name) · \(oldest.question.firstLine)")
                         .font(OF.body).lineLimit(2)
                 }
                 Spacer(minLength: 0)
@@ -266,7 +266,7 @@ struct NeedsYouScreen: View {
                 }
             }
             Section {
-                Text("Last checked \(Fmt.relative(services.home.lastChecked))")
+                Text(verbatim: "Last checked \(Fmt.relative(services.home.lastChecked))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
             }
             if services.home.needsYouCount == 0 {
@@ -288,7 +288,7 @@ struct QuestionRow: View {
             WorkspaceRail(color: color).frame(height: 36).clipShape(Capsule())
             VStack(alignment: .leading, spacing: OS.s1) {
                 Text(question.firstLine).lineLimit(2)
-                Text("\(question.ticket) · \(workspaceName) · \(Fmt.relative(question.created))")
+                Text(verbatim: "\(SafeText.inline(question.ticket)) · \(workspaceName) · \(Fmt.relative(question.created))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
             }
         }

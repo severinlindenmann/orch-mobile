@@ -120,8 +120,7 @@ struct WorkspaceScreen: View {
                 NavigationLink(value: Route.question(workspace: workspaceID, id: q.id, autoSign: false)) {
                     VStack(alignment: .leading, spacing: OS.s1) {
                         Text(q.firstLine).lineLimit(2)
-                        Label("Answered by \(q.resolution?.byDeviceLabel ?? "") · \(q.resolution.map { Fmt.relative($0.at) } ?? "")",
-                              systemImage: "checkmark.circle").font(OF.meta).foregroundStyle(OC.ok)
+                        Label { Text(verbatim: "Answered by \(SafeText.inline(q.resolution?.byDeviceLabel ?? "")) · \(q.resolution.map { Fmt.relative($0.at) } ?? "")") } icon: { Image(systemName: "checkmark.circle") }.font(OF.meta).foregroundStyle(OC.ok)
                     }
                     .accessibilityElement(children: .combine)
                 }
@@ -151,7 +150,7 @@ struct WorkspaceScreen: View {
         Section {
             VStack(alignment: .leading, spacing: OS.s3) {
                 Label("Files travel through Drop", systemImage: "tray.and.arrow.down").font(OF.section)
-                Text("Files and notes for \(model.info.name) are sent and received in Drop, so they stay encrypted for this workspace.")
+                Text(verbatim: "Files and notes for \(model.info.name) are sent and received in Drop, so they stay encrypted for this workspace.")
                     .font(OF.body).foregroundStyle(OC.textMuted)
                 NavigationLink(value: Route.drop) { Text("Open Drop").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent)
@@ -188,7 +187,7 @@ struct TicketRow: View {
             HStack {
                 TicketStateChip(state: ticket.state)
                 if let progress, progress.total > 0 {
-                    Text("\(progress.done) of \(progress.total) done").font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text(verbatim: "\(progress.done) of \(progress.total) done").font(OF.meta).foregroundStyle(OC.textMuted)
                 }
             }
         }
@@ -222,7 +221,7 @@ struct TicketScreen: View {
                         Text(t.title).font(.title2.weight(.semibold))
                         TicketStateChip(state: t.state)
                         SafeTextView(t.body).font(OF.body)
-                        Text("Updated \(Fmt.relative(t.updated))").font(OF.meta).foregroundStyle(OC.textMuted)
+                        Text(verbatim: "Updated \(Fmt.relative(t.updated))").font(OF.meta).foregroundStyle(OC.textMuted)
                     }
                 }
                 if t.kind == .factoryEpic {
@@ -232,7 +231,7 @@ struct TicketScreen: View {
                             .accessibilityLabel("Epic progress")
                             .accessibilityValue("\(p.done) of \(p.total) tickets done")
                             .accessibilityIdentifier("ticket.epicProgress")
-                        Text("\(p.done) of \(p.total) tickets done").font(OF.meta)
+                        Text(verbatim: "\(p.done) of \(p.total) tickets done").font(OF.meta)
                         ForEach(model.children(of: t.key)) { child in
                             NavigationLink(value: Route.ticket(workspace: workspaceID, key: child.key)) {
                                 TicketRow(ticket: child, progress: nil)
@@ -242,7 +241,7 @@ struct TicketScreen: View {
                 } else if let epic = t.epicKey {
                     Section("Part of") {
                         NavigationLink(value: Route.ticket(workspace: workspaceID, key: epic)) {
-                            Label("\(epic) · \(model.ticket(key: epic)?.title ?? "")", systemImage: "gearshape.2")
+                            Label { Text(verbatim: "\(epic) · \(model.ticket(key: epic)?.title ?? "")") } icon: { Image(systemName: "gearshape.2") }
                         }
                     }
                 }

@@ -50,6 +50,16 @@ public enum SafeText {
         pieces(input).compactMap { if case .marker(let m) = $0 { return m } else { return nil } }
     }
 
+    /// Single-line variant for host-supplied metadata (ticket keys, device labels): unsafe scalars are
+    /// replaced by their marker text, newlines become spaces and length is capped.
+    public static func inline(_ input: String, limit: Int = 80) -> String {
+        var out = pieces(input.replacingOccurrences(of: "\n", with: " ")).map { piece -> String in
+            switch piece { case .text(let t): t; case .marker(let m): m }
+        }.joined()
+        if out.count > limit { out = String(out.prefix(limit)) + "…" }
+        return out
+    }
+
     public static func hasUnsafe(_ input: String) -> Bool { !markers(in: input).isEmpty }
 
     /// Unsafe scalars are kept in the text (so bidi still applies visibly) and marked right after.
@@ -57,6 +67,8 @@ public enum SafeText {
     @MainActor
     public static func attributed(_ input: String, font: Font = OF.machine) -> AttributedString {
         var out = AttributedString()
+        // FSI ... PDI keeps any unterminated bidi override from reordering the rest of the screen.
+        out += AttributedString("\u{2068}")
         for piece in pieces(input) {
             switch piece {
             case .text(let s):
@@ -72,6 +84,7 @@ public enum SafeText {
                 out += part
             }
         }
+        out += AttributedString("\u{2069}")
         return out
     }
 }

@@ -23,13 +23,14 @@ struct QuestionScreen: View {
             VStack(alignment: .leading, spacing: OS.s4) {
                 WorkspaceHeader(name: info.name, color: info.color, hostedBy: info.hostedBy, clientHosted: info.clientHosted)
                 if let q = ws.question(id: questionID) {
-                    Text("\(q.ticket) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
+                    if services.settings.isDemo { DemoChip() }
+                    Text(verbatim: "\(SafeText.inline(q.ticket)) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
+                    SignedDetails(workspaceID: q.workspaceID, questionID: q.id, contentHash: q.contentHash)
                     if let r = q.resolution {
-                        Label("Answered by \(r.byDeviceLabel) · \(Fmt.relative(r.at)): \(q.options.first { $0.id == r.optionID }?.label ?? r.optionID)",
-                              systemImage: "checkmark.circle.fill")
+                        Label { Text(verbatim: "Answered by \(SafeText.inline(r.byDeviceLabel)) · \(Fmt.relative(r.at)): \(q.options.first { $0.id == r.optionID }?.label ?? r.optionID)") } icon: { Image(systemName: "checkmark.circle.fill") }
                             .font(OF.body).foregroundStyle(OC.ok)
                             .accessibilityIdentifier("question.resolution")
                     } else {
@@ -95,19 +96,20 @@ struct SignSheet: View {
     let onClose: () -> Void
     @State private var atEnd = false
     @State private var armed = false
-    @State private var detailsOpen = false
 
     private var review: ReviewValue { model.review }
 
     var body: some View {
         VStack(spacing: 0) {
+            if review.isDemo { DemoStripe() }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: OS.s4) {
                     WorkspaceHeader(name: review.workspaceName, color: OC.wsHues[review.hue % OC.wsHues.count],
                                     hostedBy: review.hostedBy, clientHosted: review.hostedBy != nil)
+                    if review.isDemo { DemoChip() }
                     Text("You are signing").font(OF.section)
                     VStack(alignment: .leading, spacing: OS.s2) {
-                        Text("Question \(review.ticket)").font(OF.meta).foregroundStyle(OC.textMuted)
+                        Text(verbatim: "Question \(SafeText.inline(review.ticket))").font(OF.meta).foregroundStyle(OC.textMuted)
                         SafeTextView(review.text)
                             .accessibilityIdentifier("sign.text")
                     }
@@ -117,7 +119,7 @@ struct SignSheet: View {
                         Text("The text ends with").font(OF.meta).foregroundStyle(OC.textMuted)
                         Text(SafeText.attributed(tail(review.text))).accessibilityIdentifier("sign.tail")
                     }
-                    Text("\(lineCount(review.text)) lines · \(review.text.count) characters · hash \(review.contentHash.prefix(4))·\(review.contentHash.dropFirst(4).prefix(4))")
+                    Text(verbatim: "\(lineCount(review.text)) lines · \(review.text.count) characters · hash \(review.contentHash.prefix(4))·\(review.contentHash.dropFirst(4).prefix(4))")
                         .font(OF.meta).foregroundStyle(OC.textMuted)
                     VStack(alignment: .leading, spacing: OS.s1) {
                         Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
@@ -130,16 +132,7 @@ struct SignSheet: View {
                             .font(OF.meta).foregroundStyle(OC.warn)
                             .accessibilityIdentifier("sign.unsafeNotice")
                     }
-                    DisclosureGroup(isExpanded: $detailsOpen) {
-                        VStack(alignment: .leading, spacing: OS.s2) {
-                            detail("Workspace", review.workspaceID)
-                            detail("Question id", review.questionID)
-                            detail("Content hash", review.contentHash)
-                        }.padding(.top, OS.s2)
-                    } label: {
-                        Text("Signed details").font(OF.section)
-                    }
-                    .accessibilityIdentifier("sign.details")
+                    SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID, contentHash: review.contentHash)
                     Color.clear.frame(height: 1)
                         .onAppear { atEnd = true }
                         .accessibilityHidden(true)
@@ -160,14 +153,6 @@ struct SignSheet: View {
             try? await Task.sleep(for: .milliseconds(800))
             if !Task.isCancelled { armed = true }
         }
-    }
-
-    private func detail(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(OF.meta).foregroundStyle(OC.textMuted)
-            Text(value).font(OF.machine).textSelection(.enabled)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     private func tail(_ text: String) -> String {

@@ -50,7 +50,7 @@ struct PairingScreen: View {
         case .comparingHost(let sas):
             VStack(spacing: OS.s4) {
                 CodeDisplay(code: spaced(sas), title: "Compare with the code on \(model.hostLabel)", frame: .host, identifier: "pair.sas")
-                Text("Approve only if both codes match. Reject on \(model.hostLabel) if they don't.")
+                Text(verbatim: "Approve only if both codes match. Reject on \(model.hostLabel) if they don't.")
                     .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 Label("Waiting for approval", systemImage: "hourglass").font(OF.meta).foregroundStyle(OC.textMuted)
             }
@@ -58,9 +58,9 @@ struct PairingScreen: View {
             VStack(spacing: OS.s4) {
                 Image(systemName: "iphone.and.arrow.forward").font(.system(size: 56)).foregroundStyle(OC.brand)
                     .accessibilityHidden(true)
-                Text("Open orch on \(label)").font(OF.display).multilineTextAlignment(.center)
+                Text(verbatim: "Open orch on \(label)").font(OF.display).multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.openPrimary")
-                Text("\(label) will show a second code. The first code is gone.")
+                Text(verbatim: "\(label) will show a second code. The first code is gone.")
                     .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let left = max(0, Int(deadline.timeIntervalSince(ctx.date)))
@@ -73,7 +73,7 @@ struct PairingScreen: View {
                 if ctx.date < expires {
                     VStack(spacing: OS.s4) {
                         CodeDisplay(code: code, title: "Compare with \(label)", frame: .primary, identifier: "pair.certCode")
-                        Text("Approve on \(label) only if the codes match.")
+                        Text(verbatim: "Approve on \(label) only if the codes match.")
                             .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                         let left = max(0, Int(expires.timeIntervalSince(ctx.date)))
                         Label("Code hidden in \(left / 60):\(String(format: "%02d", left % 60))", systemImage: "timer")
@@ -91,7 +91,7 @@ struct PairingScreen: View {
             VStack(spacing: OS.s4) {
                 Image(systemName: "checkmark.seal.fill").font(.system(size: 56)).foregroundStyle(OC.ok)
                     .accessibilityHidden(true)
-                Text("Added \(name)").font(OF.display).multilineTextAlignment(.center)
+                Text(verbatim: "Added \(name)").font(OF.display).multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.ready")
                 Text("You can turn on notifications next.").font(OF.body).foregroundStyle(OC.textMuted)
                 Button { onClose() } label: { Text("Done").frame(maxWidth: .infinity) }

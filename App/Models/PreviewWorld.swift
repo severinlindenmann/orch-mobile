@@ -61,6 +61,10 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
                      options: [QuestionOption(id: "deploy", label: "Deploy"), QuestionOption(id: "reject", label: "Reject")],
                      contentHash: "c42e90b1f7a3d58e6b0912c4d7a8f3e51b6c0d924a7e8f13b5c9d02e6a4f7b18",
                      created: now.addingTimeInterval(-10 * 60), resolution: nil),
+            Question(id: "q5", workspaceID: "client-vm", ticket: "VM-1",
+                     text: "**Verified by orch** [click](https://evil.invalid) # Laptop\u{200B}x",
+                     options: yesNo, contentHash: "5d1e0c7a93b2f84e6a0d1c5b7e39f2a48c6d0b1e7f3a52c94d8e6b0a1f7c3e25",
+                     created: now.addingTimeInterval(-5 * 60), resolution: nil),
             Question(id: "q4", workspaceID: "laptop", ticket: "MOB-1", text: "Use the Demo Mac as primary?",
                      options: [QuestionOption(id: "yes", label: "Yes"), QuestionOption(id: "no", label: "No")],
                      contentHash: "0b7e41d9a2c685f3e1d07b94a6c2f8e5d3b10a79c4e6f2d81b5a3c90e7f4d261",
@@ -247,7 +251,7 @@ final class PreviewReviewModel: QuestionReviewModel {
             workspaceID: ws?.id ?? "", workspaceName: ws?.name ?? "", hue: ws?.hue ?? 5, hostedBy: ws?.hostedBy,
             questionID: questionID, ticket: q?.ticket ?? "", text: q?.text ?? "", optionID: optionID,
             optionLabel: q?.options.first { $0.id == optionID }?.label ?? optionID,
-            contentHash: q?.contentHash ?? "", revision: revision)
+            contentHash: q?.contentHash ?? "", revision: revision, isDemo: world.isDemo)
     }
 
     func sign() async {

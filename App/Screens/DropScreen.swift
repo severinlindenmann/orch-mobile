@@ -66,7 +66,7 @@ struct DropRow: View {
                     if item.unread { Circle().fill(OC.youMark).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                     Text(item.name).lineLimit(1)
                 }
-                Text("\(ws?.name ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))")
+                Text(verbatim: "\(ws?.name ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                 if item.direction == .sending {
                     Label("Sending", systemImage: "arrow.up.circle").font(OF.meta).foregroundStyle(OC.info)
@@ -90,7 +90,7 @@ struct DropItemScreen: View {
                     VStack(alignment: .leading, spacing: OS.s2) {
                         if let ws { WorkspaceHeader(name: ws.name, color: ws.color, hostedBy: ws.hostedBy, clientHosted: ws.clientHosted) }
                         Text(item.name).font(.title2.weight(.semibold))
-                        Text("\(item.kind.rawValue.capitalized) · \(Fmt.bytes(item.bytes)) · from \(item.from)")
+                        Text(verbatim: "\(item.kind.rawValue.capitalized) · \(Fmt.bytes(item.bytes)) · from \(item.from)")
                             .font(OF.meta).foregroundStyle(OC.textMuted)
                     }
                 }

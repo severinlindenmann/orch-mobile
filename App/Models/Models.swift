@@ -138,6 +138,7 @@ struct ReviewValue: Hashable, Sendable {
     let contentHash: String
     /// Bumped each time the question is re-read after `question_changed`.
     let revision: Int
+    var isDemo = false
 }
 
 enum SignPhase: Hashable, Sendable {
