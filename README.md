@@ -84,7 +84,8 @@ scripts/testflight.sh --add-internal  # --upload, then wait for processing and a
 
 - Needs a clean git tree on a commit that exists on origin; runs `xcodegen generate`.
 - Marketing version comes from `MARKETING_VERSION` in `project.yml`; the build number is
-  UTC `yymmddHHMM` (override with `BUILD_NUMBER=...`), so it increases per upload.
+  UTC `yymmdd.HHMMSS` (override with `BUILD_NUMBER=...`; 1-3 dotted integers), compared per
+  component by App Store Connect. Uploads are refused unless it exceeds the latest uploaded build.
 - Signing is automatic. By default xcodebuild uses the Apple account signed in to Xcode;
   `USE_API_KEY=1` makes it use the App Store Connect key at
   `~/.appstoreconnect/private_keys/AuthKey_HVML779F7U.p8` instead. The `--add-internal`
