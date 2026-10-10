@@ -27,9 +27,11 @@ let package = Package(
         .target(name: "OrchStore", dependencies: ["OrchProtocol"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchStoreTests", dependencies: ["OrchStore"]),
-        .target(name: "OrchPush", dependencies: ["OrchProtocol"],
+        .target(name: "OrchPush", dependencies: ["OrchProtocol", "OrchStore"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchTestVectors"]),
+        .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchStore", "OrchCustody", "OrchTestVectors", "OrchPushFixtures"]),
+        // Test-only: seals push fixtures from test keys. Not a product; the script and the UI tests compile this one file.
+        .target(name: "OrchPushFixtures", dependencies: ["OrchProtocol"], path: "Tests/OrchPushFixtures"),
         .target(name: "OrchClient", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchClientTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore"]),

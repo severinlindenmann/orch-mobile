@@ -31,4 +31,11 @@ expect_failure "notification service with extra app group"
 fresh_copy
 printf 'import CryptoKit\n' >> "$tmp/repo/NotificationService/NotificationService.swift"
 expect_failure "forbidden import CryptoKit in extension"
+fresh_copy
+printf 'import OrchCustody\n' >> "$tmp/repo/OrchKit/Sources/OrchPush/PushHandler.swift"
+expect_failure "OrchPush importing OrchCustody (signing code in the extension closure)"
+
+fresh_copy
+printf 'import OrchFakeHost\n' >> "$tmp/repo/NotificationService/NotificationService.swift"
+expect_failure "FakeHost in the extension"
 echo 'Negative tests OK'

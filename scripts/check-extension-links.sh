@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 # Ruby's standard-library YAML parser avoids adding a build dependency.
 ruby -ryaml -rjson -ropen3 <<'RUBY'
 project = YAML.load_file('project.yml')
-allowed = { 'OrchNotify' => %w[OrchPush OrchProtocol], 'OrchShare' => %w[OrchUI] }
+allowed = { 'OrchNotify' => %w[OrchPush OrchProtocol OrchStore], 'OrchShare' => %w[OrchUI] }
 # Keep compiler caches in the worktree; manifest evaluation needs no nested sandbox
 # (there are no remote dependencies or build plugins).
 ENV['CLANG_MODULE_CACHE_PATH'] ||= File.expand_path('.build/clang-cache')
