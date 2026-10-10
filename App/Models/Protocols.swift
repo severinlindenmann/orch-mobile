@@ -1,0 +1,104 @@
+import Foundation
+import Observation
+
+// View-model protocols for the screens. They sit next to host-api-v0 §1 names
+// (snapshot, review, decide, pendingDecisions, events) so real wiring replaces only the implementations.
+
+@MainActor
+protocol HomeModel: AnyObject, Observable {
+    var isDemo: Bool { get }
+    var workspaces: [WorkspaceInfo] { get }
+    /// Cross-workspace, grouped by workspace, oldest question first within and across groups (U3).
+    var needsYou: [NeedsYouGroup] { get }
+    var needsYouCount: Int { get }
+    var oldestWaiting: (question: Question, workspace: WorkspaceInfo)? { get }
+    func waitingCount(in workspaceID: String) -> Int
+    var lastChecked: Date { get }
+    var dropSummary: DropSummary { get }
+    func enterDemo()
+}
+
+@MainActor
+protocol WorkspaceModel: AnyObject, Observable {
+    var info: WorkspaceInfo { get }
+    var waiting: [Question] { get }
+    var answered: [Question] { get }
+    var tickets: [Ticket] { get }
+    func ticket(key: String) -> Ticket?
+    func epicProgress(for epicKey: String) -> EpicProgress
+    func children(of epicKey: String) -> [Ticket]
+    func question(id: String) -> Question?
+}
+
+@MainActor
+protocol QuestionReviewModel: AnyObject, Observable {
+    var review: ReviewValue { get }
+    var phase: SignPhase { get }
+    /// Signs and sends. Only reachable from the sign sheet after arming.
+    func sign() async
+    /// After `question_changed`: authoritative re-read and a fresh immutable review.
+    func reread() async
+    /// After a lost response: reconcile first, never re-sign a changed answer.
+    func checkWhetherReceived() async
+    /// Lock/background drops the staged review.
+    func invalidate()
+    func retryAfterUnlock()
+}
+
+@MainActor
+protocol PairingFlowModel: AnyObject, Observable {
+    var state: PairingState { get }
+    var isDemo: Bool { get }
+    var hostLabel: String { get }
+    /// What the host's own screen shows (Demo host panel only).
+    var demoHostCode: String { get }
+    var demoPrimaryCertCode: String { get }
+    var demoPrimaryHasChallenge: Bool { get }
+    func submitLink(_ text: String)
+    func useDemoInvitation()
+    func cancel()
+    func hostApprove()
+    func hostReject()
+    func primaryOpenRequest()
+    func primaryApprove()
+    func primaryReject()
+    func primaryTimeElapses()
+}
+
+@MainActor
+protocol DropModel: AnyObject, Observable {
+    var workspaces: [WorkspaceInfo] { get }
+    func items(_ direction: DropDirection) -> [DropItem]
+    func item(id: String) -> DropItem?
+    func send(_ draft: DropDraft)
+    func markRead(id: String)
+}
+
+@MainActor
+protocol SettingsModel: AnyObject, Observable {
+    var isDemo: Bool { get }
+    var deviceLabel: String { get set }
+    var custody: String { get }
+    var notificationStatus: NotificationStatus { get }
+    var workspaces: [WorkspaceInfo] { get }
+    var pairingScenario: PairingScenario { get set }
+    var signOutcome: SignOutcome { get set }
+    func setNotifications(_ on: Bool, workspaceID: String)
+    /// Leave = "Remove from this iPhone": local wipe first, server cleanup reported separately (U9).
+    func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport
+    func resetThisiPhone()
+    func exitDemo()
+    func resetDemoData()
+}
+
+/// Entry point screens receive (A4): never FakeHost or custody.
+@MainActor
+protocol AppServices: AnyObject {
+    var home: any HomeModel { get }
+    var drop: any DropModel { get }
+    var settings: any SettingsModel { get }
+    func workspace(_ id: String) -> any WorkspaceModel
+    func review(workspaceID: String, questionID: String, optionID: String) -> any QuestionReviewModel
+    func makePairing(start: PairingState?) -> any PairingFlowModel
+    func workspaceID(forQuestion id: String) -> String?
+}
