@@ -38,11 +38,10 @@ public indirect enum JSONValue: Equatable, Sendable {
 }
 
 extension JSONValue: ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByBooleanLiteral,
-                     ExpressibleByNilLiteral, ExpressibleByArrayLiteral, ExpressibleByDictionaryLiteral {
+                     ExpressibleByArrayLiteral, ExpressibleByDictionaryLiteral {
     public init(stringLiteral v: String) { self = .string(v) }
     public init(integerLiteral v: Int64) { self = .int(v) }
     public init(booleanLiteral v: Bool) { self = .bool(v) }
-    public init(nilLiteral: ()) { self = .null }
     public init(arrayLiteral elements: JSONValue...) { self = .array(elements) }
     public init(dictionaryLiteral elements: (String, JSONValue)...) {
         self = .object(Dictionary(elements, uniquingKeysWith: { _, b in b }))

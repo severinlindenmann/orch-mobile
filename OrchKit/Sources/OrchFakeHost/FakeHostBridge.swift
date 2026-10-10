@@ -255,6 +255,7 @@ extension FakeHost {
                 return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
             }
             return chunks
+        case .pair(let reply, let h): return (try? respondPairing(to: h, reply: reply)) ?? []
         case .accept(let a):
             let h = a.header
             if h.flagSet.contains(.stream) { streamOpen[h.rid] = (h.device, h.epoch, 0) }
@@ -403,4 +404,9 @@ extension FakeHost {
             _ = try HostAPI.expect(r, status: 202)
         }
     }
+}
+
+extension FakeHost {
+    /// The roster as published (device keys and scopes).
+    public func rosterEntries() -> [(DemoKeys, [String])] { roster.values.map { ($0.keys, $0.scopes) } }
 }

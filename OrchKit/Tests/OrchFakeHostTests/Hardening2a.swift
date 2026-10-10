@@ -583,6 +583,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
             case .refuse(let x, _): results.append(x.code)
             case .drop(let why): results.append("drop:" + why)
             case .replay: results.append("replay")
+            case .pair: results.append("pair")
             }
             if n == 3 { #expect(rig.core.rids.count == 3) }
         }
@@ -609,6 +610,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
             case .refuse(let x, _): results.append(x.code)
             case .drop(let why): results.append("drop:" + why)
             case .replay: results.append("replay")
+            case .pair: results.append("pair")
             }
         }
         #expect(results == ["accept", "accept", "accept", "drop:store_full", "drop:store_full"])
