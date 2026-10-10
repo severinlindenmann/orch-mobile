@@ -45,9 +45,10 @@ public final class LocalWipe: Sendable {
     /// Finishes every tombstone whose phase is below done. Returns the workspaces resumed.
     @discardableResult
     public func resumePendingWipes() async throws -> [String] {
-        try await index.republishTombstones()
         var resumed: [String] = []
         var errors: [String] = []
+        // A failing republish must not stop wipes that are past phase 1; run() retries phase 1 itself.
+        do { try await index.republishTombstones() } catch { errors.append("republish: \(error)") }
         for t in try await index.tombstones() where t.phase < Self.donePhase {
             do {
                 try await run(ws: t.record.ws, generation: t.record.generation, from: t.phase)

@@ -248,7 +248,7 @@ struct WipeTests {
         try await w.wipe(ws: A, generation: 1)
         try await w.cleanupPass(ws: A)
         try assertWiped(l, A)
-        #expect(l.tombstones.records().count == 1)
+        #expect(try l.tombstones.records().count == 1)
         #expect(try await idx.tombstones().count == 1)
         #expect(try await w.resumePendingWipes().isEmpty)
     }
@@ -295,6 +295,6 @@ struct WipeTests {
             }
         }
         #expect(t.isRemovedFailClosed(realm: "live", ws: A, generation: 19))
-        #expect(t.records().count == 20)
+        #expect(try t.records().count == 20)
     }
 }

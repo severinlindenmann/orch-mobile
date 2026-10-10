@@ -24,6 +24,9 @@ public enum TombstoneError: Error, Equatable, Sendable {
 
 /// Extensions construct this with the single directory they can see (`StoreLayout.pushCoordination` /
 /// `shareCoordination`); the app uses both.
+///
+/// The NSE and the share extension must write replay state / staged jobs ONLY inside `ifNotRemoved`
+/// (check and action under one shared lock); a bare check followed by a write is a race with the wipe.
 public struct TombstoneCoordination: Sendable {
     public let directories: [URL]
     public init(directories: [URL]) { self.directories = directories }
@@ -69,8 +72,9 @@ public struct TombstoneCoordination: Sendable {
         }
     }
 
-    public func records() -> [TombstoneRecord] {
-        Set(directories.flatMap { (try? Self.read(dir: $0)) ?? [] }).sorted { ($0.realm, $0.ws, $0.generation) < ($1.realm, $1.ws, $1.generation) }
+    /// Throws if any directory is unreadable, so `[]` always means "no tombstones".
+    public func records() throws -> [TombstoneRecord] {
+        Set(try directories.flatMap { try Self.read(dir: $0) }).sorted { ($0.realm, $0.ws, $0.generation) < ($1.realm, $1.ws, $1.generation) }
     }
 
     /// Partial add (idempotent), sequentially per directory (a crash between directories leaves one file

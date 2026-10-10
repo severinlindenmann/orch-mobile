@@ -77,7 +77,7 @@ import Testing
             let ext = TombstoneCoordination(directories: [dir])
             #expect(ext.isRemovedFailClosed(realm: "live", ws: A, generation: 5))
             #expect(ext.isRemovedFailClosed(realm: "live", ws: B, generation: 1))
-            #expect(ext.records().count == 2)
+            #expect(try ext.records().count == 2)
         }
         let siblings = try FileManager.default.contentsOfDirectory(atPath: l.shareDir.path)
         #expect(siblings.contains { $0.hasPrefix("tombstones.json.corrupt-") })
@@ -176,7 +176,7 @@ import Testing
         let dir = tempDir().appendingPathComponent("missing", isDirectory: true)
         let c = TombstoneCoordination(directories: [dir])
         #expect(!c.isRemovedFailClosed(realm: "live", ws: A, generation: 1))
-        #expect(c.records().isEmpty)
+        #expect((try? c.records().isEmpty) == true)
         #expect(!FileManager.default.fileExists(atPath: dir.path))
     }
 
@@ -342,6 +342,24 @@ import Testing
             #expect(!FileManager.default.fileExists(atPath: try l.wsDir(A).path))
             #expect(try await idx.isRemoved(ws: A, generation: 1))
         }
+    }
+
+    @Test func failingRepublishDoesNotStopWipePastPhase1() async throws {
+        struct Crash: Error {}
+        let l = try makeLayout(tempDir())
+        let idx = try await WorkspaceIndex(layout: l)
+        try await idx.addWorkspace(ws: A, generation: 1)
+        let c = try await WorkspaceContainer(index: idx, ws: A, generation: 1)
+        _ = try await c.recordRequestId("r")
+        await #expect(throws: Crash.self) { try await LocalWipe(index: idx, afterPhase: { if $0 == 1 { throw Crash() } }).wipe(ws: A, generation: 1) }
+        // Break the share directory's lock so republish fails.
+        let lock = l.shareDir.appendingPathComponent("tombstones.lock")
+        try? FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: l.shareDir.appendingPathComponent("elsewhere"))
+        await #expect(throws: WipeError.self) { try await LocalWipe(index: idx).resumePendingWipes() }
+        #expect(!FileManager.default.fileExists(atPath: try l.wsDir(A).path))
+        #expect(try await idx.tombstones().first?.phase == 4)
+        #expect(throws: TombstoneError.self) { _ = try l.shareCoordination.records() }
     }
 }
 
