@@ -31,6 +31,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: orch
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
@@ -57,6 +59,8 @@ targets:
       path: NotificationService/Info.plist
       properties:
         CFBundleDisplayName: orch notifications
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
@@ -78,6 +82,8 @@ targets:
       path: ShareExtension/Info.plist
       properties:
         CFBundleDisplayName: orch
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
