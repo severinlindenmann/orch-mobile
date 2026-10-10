@@ -97,7 +97,7 @@ func makeVault(_ group: KeychainGroup = .keys, lock: SimulatedLock = SimulatedLo
 
     @Test func wipeWorkspaceAndRealm() throws {
         let v = makeVault()
-        for (r, w, p) in [(Realm.live, "a", "k"), (.live, "a", "j"), (.live, "b", "k"), (.live, nil, "dk_sig"), (.demo, "a", "k")] as [(Realm, String?, String)] {
+        for (r, w, p) in [(Realm.live, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "k"), (.live, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "j"), (.live, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "k"), (.live, nil, "dk_sig"), (.demo, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "k")] as [(Realm, String?, String)] {
             try v.put(Data([1]), for: SecretID(realm: r, ws: w, purpose: p))
         }
         try v.wipe(realm: .live, ws: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
