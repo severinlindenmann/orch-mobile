@@ -60,9 +60,7 @@ extension FakeHost {
     private func beginRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) -> Task<Void, Error> {
         rotationRequired = true
         let sameRoster = lastRotationRoster.map { previous in
-            previous.count == remaining.count && previous.allSatisfy { keys, scopes in
-                remaining.contains { $0.0 == keys && Set($0.1) == Set(scopes) }
-            }
+            rostersEqual(previous, remaining)
         } ?? false
         if !sameRoster {
             let previousIDs = lastRotationRoster.map { Set($0.map { $0.0.deviceID }) } ?? Set(roster.keys)
@@ -80,7 +78,9 @@ extension FakeHost {
         if let rotation { return rotation }
         let task = Task {
             defer { rotation = nil }
-            while let pending = pendingRotations.first {
+            while !pendingRotations.isEmpty {
+                await refreshPendingRotations()
+                let pending = pendingRotations[0]
                 try await publishRotation(remaining: pending.remaining, relay: pending.relay, session: pending.session)
                 pendingRotations.removeFirst()
             }
@@ -90,6 +90,37 @@ extension FakeHost {
         }
         rotation = task
         return task
+    }
+
+    private func rostersEqual(_ lhs: [(DemoKeys, [String])], _ rhs: [(DemoKeys, [String])]) -> Bool {
+        lhs.count == rhs.count && lhs.allSatisfy { keys, scopes in
+            rhs.contains { $0.0 == keys && Set($0.1) == Set(scopes) }
+        }
+    }
+
+    /// Refresh every outstanding request before publication, including the failed head on retry.
+    private func refreshPendingRotations() async {
+        var revoked: Set<ID16> = []
+        var index = 0
+        // Enqueueing can happen while reading a relay; include those entries before filtering.
+        while index < pendingRotations.count {
+            revoked.formUnion(await pendingRotations[index].relay.revokedDevices())
+            index += 1
+        }
+        revoked.formUnion(core.revoked)
+        rotationRemoved.formUnion(revoked)
+        for index in pendingRotations.indices {
+            pendingRotations[index].remaining.removeAll { revoked.contains($0.0.deviceID) }
+        }
+        // Adjacent equal rosters need one publication. Preserve distinct transitions and relay/session contexts.
+        var next = 1
+        while next < pendingRotations.count {
+            let previous = pendingRotations[next - 1], current = pendingRotations[next]
+            if previous.relay === current.relay && previous.session == current.session
+                && rostersEqual(previous.remaining, current.remaining) {
+                pendingRotations.remove(at: next)
+            } else { next += 1 }
+        }
     }
 
     private func publishRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
@@ -224,13 +255,8 @@ extension FakeHost {
     @discardableResult
     private func runRotation() async -> Bool {
         let task: Task<Void, Error>
-        if let pending = pendingRotations.last {
-            let remaining = pending.remaining.filter { !core.revoked.contains($0.0.deviceID) }
-            if remaining.count != pending.remaining.count {
-                task = beginRotation(remaining: remaining, relay: pending.relay, session: pending.session)
-            } else {
-                task = drainRotations()
-            }
+        if !pendingRotations.isEmpty {
+            task = drainRotations()
         } else {
             guard let ctx = bridgeRelay else { return false }
             let remaining = roster.filter { !core.revoked.contains($0.key) }.map { ($0.value.keys, $0.value.scopes) }

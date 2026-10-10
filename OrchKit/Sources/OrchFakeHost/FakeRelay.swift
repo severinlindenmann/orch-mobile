@@ -130,6 +130,9 @@ public actor FakeRelay: RequestSender {
         } catch let r as Refusal { throw Self.relayError(r) }
     }
 
+    /// The fake host refreshes queued rotations against relay revocations before retrying.
+    func revokedDevices() -> Set<ID16> { revoked }
+
     public func publishRevocation(_ record: JSONValue) throws {
         try checkLive()
         guard let o = record.object?["o"]?.object, let person = o["person_id"]?.string.flatMap({ ID16(hex: $0) }),

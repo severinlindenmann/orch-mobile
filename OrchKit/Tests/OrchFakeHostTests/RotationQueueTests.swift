@@ -14,6 +14,50 @@ extension FakeHost {
 }
 
 @Suite struct RotationQueueTests {
+    @Test(arguments: ["relay", "host", "both"])
+    func retryFiltersRevokedDevicesAndCoalescesRosters(revokedAt: String) async throws {
+        let w = try await World.make()
+        let publication = OpenGate(open: false), entered = OpenGate(open: false)
+        let calls = Counter()
+        await w.host.setPublishHook {
+            calls.bump()
+            await publication.pass()
+            if calls.value == 1 { throw TestCrash() }
+        }
+        let first = Task {
+            try await w.host.rotate(remaining: [(w.primary.deviceKeys, World.all), (w.phone, ["look", "decide"])],
+                                    relay: w.relay, session: w.hostSession)
+        }
+        while publication.entered == 0 { await Task.yield() }
+        let second = Task {
+            try await w.host.signalledRotate([(w.phone, ["decide", "look"]), (w.primary.deviceKeys, ["look"])],
+                                            relay: w.relay, session: w.hostSession, entered: entered)
+        }
+        await entered.pass()
+        publication.open()
+        await #expect(throws: TestCrash.self) { try await first.value }
+        await #expect(throws: TestCrash.self) { try await second.value }
+        #expect(await w.host.rotationRequired)
+        #expect(await w.host.epoch == 1)
+
+        if revokedAt != "host" {
+            try await w.relay.publishRevocation(try await w.primary.revoke(device: w.primaryID))
+        }
+        if revokedAt != "relay" { await w.host.markRevoked(w.primaryID) }
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+
+        #expect(await w.host.rotationRequired == false)
+        #expect(await w.host.epoch == 2)
+        #expect(calls.value == 2)
+        #expect(await w.host.coreState().members[w.primaryID] == nil)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 2) == false)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 2))
+        let fetched = try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession)
+        let verified = try MemberList.verify(fetched, wsk: w.host.wskPublic)
+        #expect(verified.epoch == 2)
+        #expect(verified.members.map(\.deviceID) == [w.phoneID])
+    }
+
     @Test(arguments: [false, true], [false, true])
     func differingRostersPreserveRemovals(removalFirst: Bool, failFirst: Bool) async throws {
         let w = try await World.make()
@@ -48,10 +92,12 @@ extension FakeHost {
             try await first.value
             try await second.value
         }
-        #expect(calls.value == (failFirst ? 3 : 2))
+        // A failed removal followed by an attempted re-add leaves identical pending rosters.
+        let publications = failFirst && removalFirst ? 1 : 2
+        #expect(calls.value == publications + (failFirst ? 1 : 0))
         #expect(await w.host.rotationRequired == false)
         let epoch = await w.host.epoch
-        #expect(epoch == 3)
+        #expect(epoch == UInt32(1 + publications))
         #expect(await w.host.coreState().members[w.primaryID] == nil)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: epoch) == false)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: epoch))
