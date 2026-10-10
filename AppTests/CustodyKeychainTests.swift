@@ -1,4 +1,5 @@
 import CryptoKit
+import Security
 @testable import OrchCustody
 @testable import OrchProtocol
 import XCTest
@@ -7,26 +8,64 @@ import XCTest
 /// run must be ad-hoc signed (CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES), see .github/workflows/ci.yml.
 /// The Secure Enclave itself does not exist in the Simulator: see the SE checklist in the M3a report.
 final class CustodyKeychainTests: XCTestCase {
-    var prefix: String?
+    var backend: KeychainBackend!
 
     override func setUpWithError() throws {
-        prefix = KeychainBackend.discoverAccessGroupPrefix()
-        try XCTSkipIf(prefix == nil, "no keychain entitlement in this test host (build was not signed with entitlements)")
-        for g in KeychainGroup.allCases {
-            let v = SecretVault(group: g, backend: KeychainBackend(accessGroupPrefix: prefix))
-            for r in Realm.allCases { try v.wipe(realm: r) }
+        guard let b = KeychainBackend.fromBundle(.main) else {
+            // On CI a missing entitlement prefix must fail the run, not hide the keychain tests.
+            if ProcessInfo.processInfo.environment["CI"] != nil {
+                XCTFail("no OrchAppIdentifierPrefix in the test host: keychain tests cannot run")
+            }
+            throw XCTSkip("no OrchAppIdentifierPrefix / keychain entitlement in this test host")
         }
+        backend = b
+        try resetAll()
     }
 
-    override func tearDownWithError() throws {
-        guard prefix != nil else { return }
-        for g in KeychainGroup.allCases {
-            let v = SecretVault(group: g, backend: KeychainBackend(accessGroupPrefix: prefix))
-            for r in Realm.allCases { try v.wipe(realm: r) }
+    override func tearDownWithError() throws { if backend != nil { try resetAll() } }
+
+    func resetAll() throws { for g in KeychainGroup.allCases { try SecretVault(group: g, backend: backend).resetAll() } }
+
+    func vault(_ g: KeychainGroup) -> SecretVault { SecretVault(group: g, backend: backend) }
+
+    func testConcurrentCreateOnRealKeychain() throws {
+        let custody = DefaultCustody.make(vault: vault(.keys))
+        let box = Box()
+        DispatchQueue.concurrentPerform(iterations: 6) { _ in
+            do { let id = try custody.create(realm: .live); box.win(id.publicKeys) }
+            catch CustodyError.alreadyExists { box.lose() }
+            catch { XCTFail("\(error)") }
         }
+        XCTAssertEqual(box.wins.count, 1)
+        XCTAssertEqual(box.losses, 5)
+        XCTAssertEqual(try custody.load(realm: .live).publicKeys, box.wins.first)
     }
 
-    func vault(_ g: KeychainGroup) -> SecretVault { SecretVault(group: g, backend: KeychainBackend(accessGroupPrefix: prefix)) }
+    func testUpdateKeepsAccessibilityAndResetRemovesUnparseable() throws {
+        let v = vault(.keys)
+        let id = try SecretID(realm: .live, purpose: "k")
+        try v.put(Data([1]), for: id)
+        try v.put(Data([2]), for: id)
+        var q = backend.groupQuery(.keys)
+        q[kSecAttrService] = id.service; q[kSecAttrAccount] = id.account
+        q[kSecReturnAttributes] = true
+        var out: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(q as CFDictionary, &out), errSecSuccess)
+        let attrs = out as? [String: Any]
+        XCTAssertEqual(attrs?[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly as String)
+        // A leftover whose tag does not parse is invisible to ids() but must go on a full reset.
+        var junk = backend.groupQuery(.keys)
+        junk[kSecAttrService] = "legacy"; junk[kSecAttrAccount] = "Junk"; junk[kSecValueData] = Data([9])
+        junk[kSecAttrAccessible] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+        XCTAssertEqual(SecItemAdd(junk as CFDictionary, nil), errSecSuccess)
+        XCTAssertEqual(try v.ids(), [id])
+        try v.resetAll()
+        var all = backend.groupQuery(.keys)
+        all[kSecAttrSynchronizable] = kSecAttrSynchronizableAny
+        all[kSecReturnAttributes] = true
+        all[kSecMatchLimit] = kSecMatchLimitAll
+        XCTAssertEqual(SecItemCopyMatching(all as CFDictionary, nil), errSecItemNotFound)
+    }
 
     func testRoundTripInBothGroups() throws {
         for g in KeychainGroup.allCases {
@@ -81,4 +120,13 @@ final class CustodyKeychainTests: XCTestCase {
         try custody.delete(realm: .live)
         XCTAssertEqual(custody.status(realm: .live), .missing)
     }
+}
+
+private final class Box: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _wins: [DevicePublicKeys] = [], _losses = 0
+    var wins: [DevicePublicKeys] { lock.withLock { _wins } }
+    var losses: Int { lock.withLock { _losses } }
+    func win(_ k: DevicePublicKeys) { lock.withLock { _wins.append(k) } }
+    func lose() { lock.withLock { _losses += 1 } }
 }

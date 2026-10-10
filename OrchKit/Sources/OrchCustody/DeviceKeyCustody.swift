@@ -7,7 +7,7 @@ public enum CustodyError: Error, Equatable, Sendable {
     case locked
     /// No device identity in this realm. Callers that expected one fail closed.
     case missing
-    /// Keys exist but only partly, or cannot be restored. Fail closed.
+    /// Only one of the two keys exists, or a stored key is confirmed undecodable. Fail closed.
     case orphaned
     case alreadyExists
     /// No Secure Enclave on a build that requires one. Never falls back to software.
@@ -15,10 +15,12 @@ public enum CustodyError: Error, Equatable, Sendable {
     case vault(VaultError)
 }
 
-/// `present`: usable now. `locked`: exists but unreachable for now. `missing` and `orphaned` fail closed: the
-/// caller cleans dependent stores and push keys. `locked` never does.
+/// `present`: usable now. `locked`: exists but unreachable for now. `unavailable`: the state cannot be determined
+/// (unknown keychain error, key blob that cannot be restored yet): refuse to sign, but never clean up. `missing`
+/// and `orphaned` fail closed: the caller cleans dependent stores and push keys. `locked` and `unavailable` never do.
+/// `orphaned` is only reported for exactly one blob present or a confirmed decode failure.
 public enum CustodyStatus: Equatable, Sendable {
-    case present, locked, missing, orphaned
+    case present, locked, unavailable, missing, orphaned
     public var failsClosed: Bool { self == .missing || self == .orphaned }
 }
 
@@ -65,10 +67,27 @@ struct KeyBlobStore: Sendable {
         catch let e as VaultError { throw CustodyError.vault(e) }
     }
 
-    func write(_ realm: Realm, _ purpose: String, _ data: Data) throws {
-        do { try vault.put(data, for: id(realm, purpose)) }
+    /// Add-only: never replaces a stored key. `alreadyExists` if the item is there.
+    func writeNew(_ realm: Realm, _ purpose: String, _ data: Data) throws {
+        do { try vault.putNew(data, for: id(realm, purpose)) }
+        catch VaultError.duplicate { throw CustodyError.alreadyExists }
         catch VaultError.locked { throw CustodyError.locked }
         catch let e as VaultError { throw CustodyError.vault(e) }
+    }
+
+    /// Serializes `create` inside the process, so two racing creates cannot interleave their two writes.
+    static let createLock = NSLock()
+
+    /// Add both blobs or neither. Only items this call added are rolled back.
+    func createPair(_ realm: Realm, sig: Data, kx: Data) throws {
+        Self.createLock.lock(); defer { Self.createLock.unlock() }
+        guard try !exists(realm) else { throw CustodyError.alreadyExists }
+        try writeNew(realm, KeyPurpose.sig, sig)
+        do { try writeNew(realm, KeyPurpose.kx, kx) }
+        catch {
+            try? vault.delete(id(realm, KeyPurpose.sig))
+            throw error
+        }
     }
 
     /// Both blobs, or the right error: `missing` (neither), `orphaned` (one), `locked`.
@@ -93,14 +112,19 @@ struct KeyBlobStore: Sendable {
         catch let e as VaultError { throw CustodyError.vault(e) }
     }
 
+    /// `restore` throws `CustodyError.orphaned` for a confirmed decode failure; any other error means "cannot tell".
     func status(_ realm: Realm, restore: (Data, Data) throws -> Void) -> CustodyStatus {
         do {
             let (s, k) = try readBoth(realm)
-            do { try restore(s, k) } catch { return .orphaned }
+            do { try restore(s, k) }
+            catch CustodyError.orphaned { return .orphaned }
+            catch CustodyError.locked { return .locked }
+            catch { return .unavailable }
             return .present
         } catch CustodyError.locked { return .locked }
         catch CustodyError.missing { return .missing }
-        catch { return .orphaned }
+        catch CustodyError.orphaned { return .orphaned }
+        catch { return .unavailable }
     }
 }
 

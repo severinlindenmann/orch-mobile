@@ -29,6 +29,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: orch
+        OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -53,6 +54,7 @@ targets:
       path: NotificationService/Info.plist
       properties:
         CFBundleDisplayName: orch notifications
+        OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService

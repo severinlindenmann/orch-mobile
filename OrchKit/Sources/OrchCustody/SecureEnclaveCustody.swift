@@ -22,16 +22,13 @@ public struct SecureEnclaveCustody: DeviceKeyCustody {
 
     public func create(realm: Realm) throws -> DeviceIdentity {
         guard SecureEnclave.isAvailable else { throw CustodyError.unavailable }
-        guard try !blobs.exists(realm) else { throw CustodyError.alreadyExists }
         let ac = try Self.accessControl()
         let sig: SecureEnclave.P256.Signing.PrivateKey, kx: SecureEnclave.P256.KeyAgreement.PrivateKey
         do {
             sig = try SecureEnclave.P256.Signing.PrivateKey(accessControl: ac)
             kx = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: ac)
         } catch { throw CustodyError.unavailable }
-        try blobs.write(realm, KeyPurpose.sig, sig.dataRepresentation)
-        do { try blobs.write(realm, KeyPurpose.kx, kx.dataRepresentation) }
-        catch { try? blobs.deleteBoth(realm); throw error }
+        try blobs.createPair(realm, sig: sig.dataRepresentation, kx: kx.dataRepresentation)
         return try Self.identity(sigBlob: sig.dataRepresentation, kxBlob: kx.dataRepresentation)
     }
 
@@ -44,7 +41,11 @@ public struct SecureEnclaveCustody: DeviceKeyCustody {
         do {
             return DeviceIdentity(
                 sig: try SecureEnclaveSigner(blob: sigBlob), kx: try SecureEnclaveKeyAgreer(blob: kxBlob))
-        } catch { throw CustodyError.orphaned }
+        } catch {
+            // A blob that the Secure Enclave will not restore could be a lock, a transient failure or a dead
+            // key (passcode removed): it cannot be told apart here, so refuse to use it without declaring it lost.
+            throw CustodyError.unavailable
+        }
     }
 
     public func delete(realm: Realm) throws { try blobs.deleteBoth(realm) }
@@ -54,7 +55,7 @@ public struct SecureEnclaveCustody: DeviceKeyCustody {
     }
 }
 
-struct SecureEnclaveSigner: Signer, @unchecked Sendable {
+struct SecureEnclaveSigner: Signer {
     let key: SecureEnclave.P256.Signing.PrivateKey
     let publicKey: SigningPublicKey
 
@@ -63,10 +64,12 @@ struct SecureEnclaveSigner: Signer, @unchecked Sendable {
         publicKey = try SigningPublicKey(x963: key.publicKey.x963Representation)
     }
 
-    func rawSignature(over message: Data) throws -> Data { try key.signature(for: message).rawRepresentation }
+    func rawSignature(over message: Data) throws -> Data {
+        do { return try key.signature(for: message).rawRepresentation } catch { throw mapSecureEnclaveError(error) }
+    }
 }
 
-struct SecureEnclaveKeyAgreer: KeyAgreer, @unchecked Sendable {
+struct SecureEnclaveKeyAgreer: KeyAgreer {
     let key: SecureEnclave.P256.KeyAgreement.PrivateKey
     let publicKey: AgreementPublicKey
 
@@ -76,6 +79,19 @@ struct SecureEnclaveKeyAgreer: KeyAgreer, @unchecked Sendable {
     }
 
     func sharedSecret(with peer: AgreementPublicKey) throws -> Data {
-        try key.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: peer.x963)).withUnsafeBytes { Data($0) }
+        do {
+            return try key.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: peer.x963))
+                .withUnsafeBytes { Data($0) }
+        } catch { throw mapSecureEnclaveError(error) }
     }
+}
+
+/// A Secure Enclave operation that fails because the device is locked surfaces as errSecInteractionNotAllowed,
+/// either as a CryptoKit core-crypto status or as an OSStatus NSError. Those become `.locked`; anything else
+/// passes through unchanged.
+func mapSecureEnclaveError(_ error: Error) -> Error {
+    if case CryptoKitError.underlyingCoreCryptoError(let code) = error, code == errSecInteractionNotAllowed { return CustodyError.locked }
+    let ns = error as NSError
+    if ns.domain == NSOSStatusErrorDomain, ns.code == Int(errSecInteractionNotAllowed) { return CustodyError.locked }
+    return error
 }

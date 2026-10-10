@@ -82,6 +82,8 @@ public enum VaultError: Error, Equatable, Sendable {
     case notFound
     /// Interaction not allowed: device locked / data not yet available. Temporary.
     case locked
+    /// An add-only write found the item already there.
+    case duplicate
     case badName
     case unexpected(Int32)
 }

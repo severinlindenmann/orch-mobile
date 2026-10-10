@@ -17,11 +17,8 @@ public struct SoftwareCustody: DeviceKeyCustody {
 
     public func create(realm: Realm) throws -> DeviceIdentity {
         try checkLock()
-        guard try !blobs.exists(realm) else { throw CustodyError.alreadyExists }
         let sig = P256.Signing.PrivateKey(), kx = P256.KeyAgreement.PrivateKey()
-        try blobs.write(realm, KeyPurpose.sig, sig.rawRepresentation)
-        do { try blobs.write(realm, KeyPurpose.kx, kx.rawRepresentation) }
-        catch { try? blobs.deleteBoth(realm); throw error }
+        try blobs.createPair(realm, sig: sig.rawRepresentation, kx: kx.rawRepresentation)
         return try Self.identity(sigBlob: sig.rawRepresentation, kxBlob: kx.rawRepresentation, lock: lock)
     }
 
