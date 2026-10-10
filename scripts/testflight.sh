@@ -47,11 +47,20 @@ say "mode=$MODE version=$VERSION build=$BUILD commit=$(git rev-parse --short HEA
 
 ARCHIVE="$OUT/Orch.xcarchive"; EXPORT="$OUT/export"
 rm -rf "$ARCHIVE" "$EXPORT"
-AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY_PATH"
-      -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER")
+# Signing auth: by default xcodebuild uses the Xcode-signed-in Apple account.
+# USE_API_KEY=1 makes xcodebuild authenticate with the ASC key instead (the key
+# currently gets "Authentication failed" from xcodebuild's portal calls, so it
+# is opt-in; the ASC REST API steps below always use the key).
+AUTH=(-allowProvisioningUpdates)
+if [ "${USE_API_KEY:-0}" = 1 ]; then
+  AUTH+=(-authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER")
+fi
+# Xcode's export shells out to rsync; a Homebrew rsync earlier on PATH breaks it
+# ("rsync: unexpected end of file" -> "exportArchive Copy failed"). Use system tools.
+XB_PATH=/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin
 
 say "archiving (log: $OUT/archive.log)"
-xcodebuild archive -project Orch.xcodeproj -scheme Orch -configuration Release \
+env PATH="$XB_PATH" xcodebuild archive -project Orch.xcodeproj -scheme Orch -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" \
   CURRENT_PROJECT_VERSION="$BUILD" "${AUTH[@]}" >"$OUT/archive.log" 2>&1 \
   || { tail -30 "$OUT/archive.log"; die "archive failed"; }
@@ -59,12 +68,15 @@ xcodebuild archive -project Orch.xcodeproj -scheme Orch -configuration Release \
 DEST=export; [ "$MODE" = upload ] && DEST=upload
 sed "s/__DESTINATION__/$DEST/" scripts/ExportOptions.plist > "$OUT/ExportOptions.plist"
 say "exporting destination=$DEST (log: $OUT/export.log)"
-xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT" \
+env PATH="$XB_PATH" xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT" \
   -exportOptionsPlist "$OUT/ExportOptions.plist" "${AUTH[@]}" >"$OUT/export.log" 2>&1 \
   || { tail -30 "$OUT/export.log"; die "export failed"; }
 
 if [ "$MODE" = dry-run ]; then
   ls "$EXPORT"/*.ipa >/dev/null 2>&1 || die "no .ipa produced"
+  unzip -p "$EXPORT/Orch.ipa" 'Payload/Orch.app/embedded.mobileprovision' 2>/dev/null \
+    | security cms -D 2>/dev/null | plutil -extract Entitlements json -o - - 2>/dev/null \
+    | jq -c '{aps:."aps-environment",groups:."com.apple.security.application-groups",get_task_allow:."get-task-allow"}' | tee -a "$LOG" || true
   say "dry-run OK: $(ls "$EXPORT"/*.ipa) (version $VERSION build $BUILD)"
   exit 0
 fi
