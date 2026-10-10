@@ -22,8 +22,8 @@ public actor FakePrimary {
     private let pvk: SymmetricKey
     private let sig = SoftwareSigner()
     private let kx = SoftwareKeyAgreer()
-    private let wall: any WallClock
-    private let capability: DemoCapability
+    let wall: any WallClock
+    let capability: DemoCapability
     public nonisolated let publicKey: SigningPublicKey
     public nonisolated let personID: ID16
     public nonisolated let deviceID: ID16
@@ -81,21 +81,27 @@ public actor FakePrimary {
 public actor FakeHost {
     public nonisolated let workspace: ID16
     public nonisolated let wskPublic: SigningPublicKey
-    private let wsk = SoftwareSigner()
-    private let wxk = SoftwareKeyAgreer()
-    private let primary: FakePrimary
-    private let capability: DemoCapability
-    private let wall: any WallClock
-    private let entropy: any Entropy
-    private let origin: String
+    let wsk = SoftwareSigner()
+    let wxk = SoftwareKeyAgreer()
+    let primary: FakePrimary
+    let capability: DemoCapability
+    let wall: any WallClock
+    let entropy: any Entropy
+    let origin: String
     private let clientHosted: Bool
     private let name: String
     private let hostedBy: String?
-    private var wks: [UInt32: SymmetricKey] = [:]
-    private var cks: [UInt32: SymmetricKey] = [:]
+    var wks: [UInt32: SymmetricKey] = [:]
+    var cks: [UInt32: SymmetricKey] = [:]
     private var cardSeq: UInt32 = 0
-    private var listSeq: Int64 = 0
-    public private(set) var epoch: UInt32 = 0
+    var listSeq: Int64 = 0
+    public internal(set) var epoch: UInt32 = 0
+    var core: HostBridgeCore
+    var handler: HostHandler = defaultHostHandler
+    var lastArrival: UInt64 = 0
+    /// Adversarial tests: sign responses with another key (a member device, not the host).
+    package var responseSigner: SoftwareSigner?
+    var roster: [ID16: (keys: DemoKeys, scopes: [String])] = [:]
 
     public init(capability: DemoCapability, context: RealmContext, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
                 hostedBy: String? = nil, workspace: ID16? = nil, wall: any WallClock, entropy: any Entropy) throws {
@@ -105,9 +111,10 @@ public actor FakeHost {
         self.primary = primary; self.wall = wall; self.entropy = entropy; self.origin = context.origin
         self.name = name; self.clientHosted = clientHosted; self.hostedBy = hostedBy
         wskPublic = wsk.publicKey
+        core = HostBridgeCore(workspace: self.workspace, epoch: 0)
     }
 
-    private func wk(_ e: UInt32) -> SymmetricKey {
+    func wk(_ e: UInt32) -> SymmetricKey {
         if let k = wks[e] { return k }
         let k = SymmetricKey(data: entropy.bytes(32)); wks[e] = k; return k
     }
@@ -170,6 +177,8 @@ public actor FakeHost {
             try await relay.putCardKeyWrap(device: Identifiers.deviceID(d.keys.sig), cardSeq: 1, sealed: try cardKeyWrap(for: d.keys), token: session.token)
         }
         try await relay.publishMemberList(try memberList(devices.map { (Identifiers.deviceID($0.keys.sig), $0.scopes) }, epoch: 1, listSeq: 1), token: session.token)
+        installEpoch(1)
+        setRoster(devices.map { ($0.keys, $0.scopes) })
         return session
     }
 }

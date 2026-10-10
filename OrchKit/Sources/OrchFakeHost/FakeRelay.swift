@@ -33,7 +33,7 @@ public actor FakeRelay: RequestSender {
     // MARK: state
 
     private struct Session { let kind: RelayAuth.Kind; let id: ID16; let expiresMs: Int64 }
-    private struct Stored { let idx: UInt64; let flags: UInt8; let envelope: Data; let receivedMs: Int64; let digest: Data }
+    private struct Stored { let idx: UInt64; let flags: UInt8; let envelope: Data; let receivedMs: Int64; let digest: Data; var arrival: UInt64 = 0 }
     private struct Box { var requests: [Stored] = []; var responses: [Stored] = [] }
     private struct BoxKey: Hashable { let ws: ID16; let device: ID16?; let offer: ID16?; let rid: ID16 }
     private struct Window {
@@ -67,6 +67,7 @@ public actor FakeRelay: RequestSender {
     private var pairPostsByAddress: [String: Window] = [:]
     private var pairPollsByAddress: [String: Window] = [:]
     public private(set) var accepted = 0
+    private var arrivals: UInt64 = 0
     /// Requests that reached `send`, for tests that prove something was refused before any request.
     public private(set) var requestsReceived = 0
     public private(set) var rateLimited = 0
@@ -266,12 +267,12 @@ public actor FakeRelay: RequestSender {
     public func challengeCount() -> Int { challenges.count }
 
     /// The host's view of its inbox: requests waiting for it, non-consuming, until their body lifetime ends.
-    public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data)] {
+    public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data, arrival: UInt64)] {
         try checkLive()
         guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
         let now = wall.nowMs
         return boxes.filter { $0.key.ws == workspace && $0.key.device != nil && $0.key.offer == nil }
-            .flatMap { k, v in live(v, now).requests.map { (device: k.device!, rid: k.rid, envelope: $0.envelope) } }
+            .flatMap { k, v in live(v, now).requests.map { (device: k.device!, rid: k.rid, envelope: $0.envelope, arrival: $0.arrival) } }
     }
 
     /// Epoch-0 requests of a pairing offer, for the host.
@@ -573,10 +574,13 @@ public actor FakeRelay: RequestSender {
         let now = wall.nowMs
         var box = live(boxes[key] ?? Box(), now)
         let digest = parsed.parts.digest
-        let item = Stored(idx: parsed.header.seq, flags: parsed.header.flags, envelope: envelope, receivedMs: now, digest: digest)
+        arrivals += 1
+        let item = Stored(idx: parsed.header.seq, flags: parsed.header.flags, envelope: envelope, receivedMs: now, digest: digest, arrival: arrivals)
         if response {
             if !box.responses.contains(where: { $0.digest == digest }) { box.responses.append(item) }
-        } else if !box.requests.contains(where: { $0.digest == digest }) { box.requests.append(item) }
+        } else if let i = box.requests.firstIndex(where: { $0.digest == digest }) {
+            box.requests[i] = item          // an identical re-send is a new arrival: the host answers it from its record
+        } else { box.requests.append(item) }
         boxes[key] = box
     }
 

@@ -17,6 +17,19 @@ public actor WorkspaceContainer {
             "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)",
             "CREATE TABLE request_ids (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)",
         ]),
+        // Slice 2a: durable bridge requests. A request row (with its exact envelope bytes) is written in the same
+        // transaction that allocates its seq, before anything is sent; `meta` also holds next_seq, clock_offset_ms and
+        // pin_failures. `logical` links the attempts of one logical request (resend after stale_epoch/stale_timestamp).
+        Migration(version: 2, statements: [
+            """
+            CREATE TABLE bridge_requests (
+              rid TEXT PRIMARY KEY, logical TEXT NOT NULL, seq INTEGER NOT NULL, epoch INTEGER NOT NULL,
+              envelope BLOB NOT NULL, plaintext BLOB NOT NULL, next_idx INTEGER NOT NULL DEFAULT 0,
+              stream INTEGER NOT NULL DEFAULT 0, offset_adopted INTEGER NOT NULL DEFAULT 0,
+              sent_ms INTEGER NOT NULL, created_ms INTEGER NOT NULL)
+            """,
+            "CREATE INDEX bridge_requests_logical ON bridge_requests(logical)",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
