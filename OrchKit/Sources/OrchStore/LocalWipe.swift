@@ -38,24 +38,29 @@ public final class LocalWipe: Sendable {
     public func wipe(ws: String, generation: Int64) async throws {
         try StoreLayout.validate(ws: ws)
         // Phase 1: index record first (it drives resume), then both coordination files.
-        try await index.recordTombstone(ws: ws, generation: generation)
-        try await run(ws: ws, generation: generation, from: 0)
+        let g = try await index.recordTombstone(ws: ws, generation: generation)
+        try await run(ws: ws, generation: g, from: 0)
     }
 
     /// Finishes every tombstone whose phase is below done. Returns the workspaces resumed.
     @discardableResult
     public func resumePendingWipes() async throws -> [String] {
         var resumed: [String] = []
+        var errors: [String] = []
         for t in try await index.tombstones() where t.phase < Self.donePhase {
-            try await run(ws: t.record.ws, generation: t.record.generation, from: t.phase)
-            resumed.append(t.record.ws)
+            do {
+                try await run(ws: t.record.ws, generation: t.record.generation, from: t.phase)
+                resumed.append(t.record.ws)
+            } catch { errors.append("\(t.record.ws)@\(t.record.generation): \(error)") }
         }
+        if !errors.isEmpty { throw WipeError.partial(errors) }
         return resumed
     }
 
     /// Second cleanup pass after wipe (late writers, notifications handed to the OS in the meantime).
     public func cleanupPass(ws: String) async throws {
         let layout = index.layout
+        await index.containers.suspendAll(ws: ws)
         try await purgeFiles(ws: ws)
         try await hooks.purgeNotifications(realm: layout.realm, ws: ws)
         try? FileManager.default.removeItem(at: layout.wsDir(ws))
@@ -65,15 +70,22 @@ public final class LocalWipe: Sendable {
         let layout = index.layout
         let realm = layout.realm
         if from < 1 {
-            try layout.tombstones.write(TombstoneRecord(realm: realm, ws: ws, generation: generation))
+            // Publish every index tombstone, not just this one: repairs a coordination file that was moved
+            // aside as corrupt, or missed in an earlier crash between the two App Group writes (the index is
+            // authoritative; until phase 1 completes an extension on the stale side may still publish).
+            var records = try await index.tombstones().map(\.record)
+            records.append(TombstoneRecord(realm: realm, ws: ws, generation: generation))
+            try layout.tombstones.write(records)
             try await finish(1, ws, generation)
         }
         if from < 2 {
             try await hooks.quiesce(realm: realm, ws: ws)
+            await index.containers.suspendAll(ws: ws)
             try await index.removeWorkspaceRow(ws: ws)
             try await finish(2, ws, generation)
         }
         if from < 3 {
+            await index.containers.suspendAll(ws: ws)  // also covers a wipe resumed in a fresh process
             var errors: [String] = []
             do { try await hooks.purgeSecrets(realm: realm, ws: ws) } catch { errors.append("secrets: \(error)") }
             do { try await purgeFiles(ws: ws) } catch { errors.append("files: \(error)") }
@@ -98,7 +110,7 @@ public final class LocalWipe: Sendable {
         let layout = index.layout
         let fm = FileManager.default
         for f in StoreLayout.sqliteFiles(try layout.wsDatabaseURL(ws)) where fm.fileExists(atPath: f.path) { try fm.removeItem(at: f) }
-        for d in [try layout.filesDir(ws), try layout.tmpDir(ws), try layout.stagedJobsDir(ws), try layout.quarantineDir(ws)]
+        for d in [try layout.filesDir(ws), try layout.tmpDir(ws), try layout.stagedJobsDir(ws), try layout.quarantineDir(ws), try layout.pushStateDir(ws)]
         where fm.fileExists(atPath: d.path) { try fm.removeItem(at: d) }
     }
 }

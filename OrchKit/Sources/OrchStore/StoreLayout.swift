@@ -27,10 +27,22 @@ public struct StoreLayout: Sendable {
     public var shareDir: URL { shareGroupRoot.appendingPathComponent("share", isDirectory: true) }
     /// Coordination (tombstone) directories in both App Group roots.
     public var tombstoneDirectories: [URL] { [pushDir, shareDir] }
+    /// App view: writes to both App Group roots.
     public var tombstones: TombstoneCoordination { TombstoneCoordination(directories: tombstoneDirectories) }
+    /// Notification service extension view: sees only the push group.
+    public var pushCoordination: TombstoneCoordination { TombstoneCoordination(directories: [pushDir]) }
+    /// Share extension view: sees only the share group.
+    public var shareCoordination: TombstoneCoordination { TombstoneCoordination(directories: [shareDir]) }
+    /// Per-workspace replay/removal state in the push group (removed by wipe).
+    public func pushStateDir(_ ws: String) throws -> URL {
+        try Self.validate(ws: ws)
+        return pushDir.appendingPathComponent("state", isDirectory: true)
+            .appendingPathComponent(realm, isDirectory: true).appendingPathComponent(ws, isDirectory: true)
+    }
 
     public static func validate(ws: String) throws {
-        guard !ws.isEmpty, ws.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) else {
+        // Exactly 32 lowercase hex (16 bytes), aligned with the custody secret ids.
+        guard ws.utf8.count == 32, ws.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) else {
             throw LayoutError.invalidWorkspace(ws)
         }
     }

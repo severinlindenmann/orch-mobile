@@ -19,9 +19,12 @@ public enum StoreError: Error, Equatable, Sendable {
 }
 
 /// Realm-scoped index: workspace ids, order, tombstones with generation. One file per realm,
-/// so a demo realm physically cannot see live data.
+/// so a demo realm physically cannot see live data. The index tombstones table is authoritative;
+/// the coordination files are the copy extensions can read.
 public final class WorkspaceIndex: Sendable {
     public let layout: StoreLayout
+    /// Open workspace containers, so a wipe can close them before deleting files.
+    public let containers = ContainerRegistry()
     let db: SQLiteDatabase
 
     static let migrations = [
@@ -53,11 +56,16 @@ public final class WorkspaceIndex: Sendable {
         }
     }
 
-    /// Adds at the end of the order. Rejects a generation that a tombstone already covers (stale rejoin).
+    /// Adds at the end of the order. The tombstone check and the insert run in one transaction, so a
+    /// concurrent wipe cannot interleave. Rejects a generation a tombstone already covers (stale rejoin).
     public func addWorkspace(ws: String, generation: Int64) async throws {
         try StoreLayout.validate(ws: ws)
-        if try await isRemoved(ws: ws, generation: generation) { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
+        if layout.tombstones.isRemovedFailClosed(realm: layout.realm, ws: ws, generation: generation) {
+            throw StoreError.workspaceRemoved(ws: ws, generation: generation)
+        }
         try await db.transaction { tx in
+            let t = try tx.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])
+            if !t.isEmpty { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
             let next = try tx.query("SELECT COALESCE(MAX(position)+1, 0) AS n FROM workspaces").first?.int("n") ?? 0
             try tx.execute("INSERT OR REPLACE INTO workspaces(ws, generation, position) VALUES(?,?,?)", [.text(ws), .int(generation), .int(next)])
         }
@@ -73,9 +81,18 @@ public final class WorkspaceIndex: Sendable {
         try await db.execute("DELETE FROM workspaces WHERE ws=?", [.text(ws)])
     }
 
-    /// Index half of A11 (1): idempotent.
-    public func recordTombstone(ws: String, generation: Int64) async throws {
-        try await db.execute("INSERT OR IGNORE INTO tombstones(ws, generation, phase) VALUES(?,?,0)", [.text(ws), .int(generation)])
+    /// Index half of A11 (1): idempotent. The recorded generation is the max of the supplied one, the
+    /// indexed workspace's current one and any earlier tombstone, so a stale caller cannot leave a newer
+    /// generation unprotected. Returns the effective generation.
+    @discardableResult
+    public func recordTombstone(ws: String, generation: Int64) async throws -> Int64 {
+        try await db.transaction { tx in
+            var g = generation
+            if let w = try tx.query("SELECT generation FROM workspaces WHERE ws=?", [.text(ws)]).first?.int("generation") { g = max(g, w) }
+            if let t = try tx.query("SELECT MAX(generation) AS g FROM tombstones WHERE ws=?", [.text(ws)]).first?.int("g") { g = max(g, t) }
+            try tx.execute("INSERT OR IGNORE INTO tombstones(ws, generation, phase) VALUES(?,?,0)", [.text(ws), .int(g)])
+            return g
+        }
     }
 
     public func tombstones() async throws -> [TombstoneEntry] {
@@ -89,8 +106,29 @@ public final class WorkspaceIndex: Sendable {
         try await db.execute("UPDATE tombstones SET phase=MAX(phase, ?) WHERE ws=? AND generation=?", [.int(Int64(phase)), .text(ws), .int(generation)])
     }
 
+    /// Index first (authoritative), then the coordination files fail-closed.
     public func isRemoved(ws: String, generation: Int64) async throws -> Bool {
         let rows = try await db.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])
-        return !rows.isEmpty || layout.tombstones.isRemoved(realm: layout.realm, ws: ws, generation: generation)
+        if !rows.isEmpty { return true }
+        return layout.tombstones.isRemovedFailClosed(realm: layout.realm, ws: ws, generation: generation)
+    }
+}
+
+/// Weak registry of open containers, so a wipe can quiesce them.
+public final class ContainerRegistry: @unchecked Sendable {
+    private final class Box { weak var container: WorkspaceContainer?; init(_ c: WorkspaceContainer) { container = c } }
+    private let lock = NSLock()
+    private var boxes: [Box] = []
+
+    func register(_ c: WorkspaceContainer) {
+        lock.lock(); defer { lock.unlock() }
+        boxes.removeAll { $0.container == nil }
+        boxes.append(Box(c))
+    }
+
+    /// Suspends (closes the handle of) every live container for `ws`.
+    public func suspendAll(ws: String) async {
+        let live: [WorkspaceContainer] = { lock.lock(); defer { lock.unlock() }; return boxes.compactMap(\.container) }()
+        for c in live where c.ws == ws { await c.suspend() }
     }
 }

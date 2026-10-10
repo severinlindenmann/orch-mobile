@@ -2,12 +2,15 @@ import Foundation
 
 /// Opens and closes one workspace's `ws.sqlite`. On protected-data loss the app calls `suspend()`
 /// (handles closed, operations throw `.suspended`) and `resume()` when data is available again.
+/// The index tombstones are consulted on every open, so a wiped generation can never reopen.
 public actor WorkspaceContainer {
-    public let layout: StoreLayout
+    public let index: WorkspaceIndex
     public let ws: String
     public let generation: Int64
     private var db: SQLiteDatabase?
-    private var suspended = false
+    private var suspended = true
+    private var lifecycle = 0
+    private var opening: Task<Void, Error>?
 
     static let migrations = [
         Migration(version: 1, statements: [
@@ -16,40 +19,49 @@ public actor WorkspaceContainer {
         ]),
     ]
 
-    public init(layout: StoreLayout, ws: String, generation: Int64) async throws {
-        self.layout = layout; self.ws = ws; self.generation = generation
-        try await openDatabase()
+    public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
+        try StoreLayout.validate(ws: ws)
+        self.index = index; self.ws = ws; self.generation = generation
+        index.containers.register(self)
+        try await resume()
     }
 
-    private func openDatabase() async throws {
-        if layout.tombstones.isRemoved(realm: layout.realm, ws: ws, generation: generation) {
-            throw StoreError.workspaceRemoved(ws: ws, generation: generation)
-        }
-        try layout.prepareWorkspace(ws)
-        let d = try SQLiteDatabase(url: layout.wsDatabaseURL(ws))
-        try await d.migrate(Self.migrations)
-        db = d
-    }
-
+    public var layout: StoreLayout { index.layout }
     public var isSuspended: Bool { suspended }
 
-    public func suspend() async {
-        suspended = true
-        await db?.close()
-        db = nil
-    }
-
-    public func resume() async throws {
-        guard suspended || db == nil else { return }
-        try await openDatabase()
+    private func performOpen(_ start: Int) async throws {
+        if try await index.isRemoved(ws: ws, generation: generation) {
+            throw StoreError.workspaceRemoved(ws: ws, generation: generation)
+        }
+        let layout = index.layout
+        try layout.prepareWorkspace(ws)
+        let d = try SQLiteDatabase(url: layout.wsDatabaseURL(ws))
+        do { try await d.migrate(Self.migrations) } catch { await d.close(); throw error }
+        // suspend()/close() may have run while we awaited: do not resurrect a handle.
+        guard start == lifecycle else { await d.close(); throw StoreError.suspended }
+        db = d
         suspended = false
     }
 
-    public func close() async {
-        await db?.close()
-        db = nil
+    public func suspend() async {
+        lifecycle += 1
         suspended = true
+        let d = db
+        db = nil
+        await d?.close()
     }
+
+    public func resume() async throws {
+        if !suspended { return }
+        if let t = opening { return try await t.value }
+        let start = lifecycle
+        let t = Task { try await self.performOpen(start) }
+        opening = t
+        defer { opening = nil }
+        try await t.value
+    }
+
+    public func close() async { await suspend() }
 
     /// The raw database for later milestones; throws while suspended.
     public func database() throws -> SQLiteDatabase {

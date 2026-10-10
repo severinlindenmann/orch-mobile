@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import OrchStore
 
+let A = String(repeating: "a", count: 32)
+let B = String(repeating: "b", count: 32)
+let C = String(repeating: "c", count: 32)
+let D = String(repeating: "d", count: 32)
+let E = String(repeating: "e", count: 32)
+let F = String(repeating: "f", count: 32)
+
 func tempDir() -> URL {
     let u = FileManager.default.temporaryDirectory.appendingPathComponent("orchstore-\(UUID().uuidString)", isDirectory: true)
     try! FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
@@ -110,13 +117,13 @@ struct LayoutAndContainerTests {
         let base = tempDir()
         let l = try makeLayout(base)
         #expect(l.indexURL.path.hasSuffix("app/orch/live/index.sqlite"))
-        #expect(try l.wsDatabaseURL("ab12").path.hasSuffix("orch/live/ws/ab12/ws.sqlite"))
+        #expect(try l.wsDatabaseURL(C).path.hasSuffix("orch/live/ws/\(C)/ws.sqlite"))
         #expect(l.pushDir.path.hasSuffix("push/push"))
         #expect(l.shareDir.path.hasSuffix("share/share"))
         #expect(throws: LayoutError.self) { try l.wsDir("../x") }
         #expect(throws: LayoutError.self) { try StoreLayout(appRoot: base, pushGroupRoot: base, shareGroupRoot: base, realm: "../x") }
-        try l.prepareWorkspace("ab12")
-        var excluded = try l.wsDir("ab12").resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        try l.prepareWorkspace(C)
+        var excluded = try l.wsDir(C).resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
         #expect(excluded == true)
         excluded = try l.realmDir.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
         #expect(excluded == true)
@@ -124,12 +131,13 @@ struct LayoutAndContainerTests {
 
     @Test func durabilityAcrossReopen() async throws {
         let l = try makeLayout(tempDir())
-        let c = try await WorkspaceContainer(layout: l, ws: "aa", generation: 1)
+        let i1 = try await WorkspaceIndex(layout: l)
+        let c = try await WorkspaceContainer(index: i1, ws: A, generation: 1)
         #expect(try await c.recordRequestId("req-1") == true)
         #expect(try await c.recordRequestId("req-1") == false)
         try await c.raiseEpochHighWater(7)
         // "Crash": drop the container without close(); reopen from disk.
-        let c2 = try await WorkspaceContainer(layout: l, ws: "aa", generation: 1)
+        let c2 = try await WorkspaceContainer(index: try await WorkspaceIndex(layout: l), ws: A, generation: 1)
         #expect(try await c2.hasRequestId("req-1"))
         #expect(try await c2.epochHighWater() == 7)
         #expect(try await c2.raiseEpochHighWater(3) == 7)  // never lowers
@@ -138,7 +146,7 @@ struct LayoutAndContainerTests {
 
     @Test func suspendAndResume() async throws {
         let l = try makeLayout(tempDir())
-        let c = try await WorkspaceContainer(layout: l, ws: "aa", generation: 1)
+        let c = try await WorkspaceContainer(index: try await WorkspaceIndex(layout: l), ws: A, generation: 1)
         _ = try await c.recordRequestId("r")
         await c.suspend()
         await #expect(throws: StoreError.suspended) { try await c.hasRequestId("r") }
@@ -151,16 +159,16 @@ struct LayoutAndContainerTests {
         let live = try makeLayout(base, realm: "live")
         let demo = try makeLayout(base, realm: "demo")
         let li = try await WorkspaceIndex(layout: live)
-        try await li.addWorkspace(ws: "aa", generation: 1)
+        try await li.addWorkspace(ws: A, generation: 1)
         let di = try await WorkspaceIndex(layout: demo)
         #expect(try await di.workspaces().isEmpty)
         #expect(live.indexURL != demo.indexURL)
         // Wiping in demo leaves live untouched.
-        try await LocalWipe(index: di).wipe(ws: "aa", generation: 1)
+        try await LocalWipe(index: di).wipe(ws: A, generation: 1)
         #expect(try await li.workspaces().count == 1)
         // Tombstones are keyed by realm: the live realm is not affected by the demo tombstone.
-        #expect(live.tombstones.isRemoved(realm: "live", ws: "aa", generation: 1) == false)
-        #expect(live.tombstones.isRemoved(realm: "demo", ws: "aa", generation: 1))
+        #expect(live.tombstones.isRemovedFailClosed(realm: "live", ws: A, generation: 1) == false)
+        #expect(live.tombstones.isRemovedFailClosed(realm: "demo", ws: A, generation: 1))
         // An index file of another realm is refused.
         try? FileManager.default.removeItem(at: demo.indexURL)
         let wrong = try makeLayout(base, realm: "other")
@@ -173,14 +181,14 @@ struct LayoutAndContainerTests {
     @Test func orderAndStaleRejoin() async throws {
         let l = try makeLayout(tempDir())
         let i = try await WorkspaceIndex(layout: l)
-        try await i.addWorkspace(ws: "aa", generation: 1)
-        try await i.addWorkspace(ws: "bb", generation: 1)
-        try await i.setOrder(["bb", "aa"])
-        #expect(try await i.workspaces().map(\.ws) == ["bb", "aa"])
-        try await LocalWipe(index: i).wipe(ws: "aa", generation: 1)
-        await #expect(throws: StoreError.workspaceRemoved(ws: "aa", generation: 1)) { try await i.addWorkspace(ws: "aa", generation: 1) }
-        try await i.addWorkspace(ws: "aa", generation: 2)  // genuine rejoin with a newer generation
-        await #expect(throws: StoreError.self) { _ = try await WorkspaceContainer(layout: l, ws: "aa", generation: 1) }
+        try await i.addWorkspace(ws: A, generation: 1)
+        try await i.addWorkspace(ws: B, generation: 1)
+        try await i.setOrder([B, A])
+        #expect(try await i.workspaces().map(\.ws) == [B, A])
+        try await LocalWipe(index: i).wipe(ws: A, generation: 1)
+        await #expect(throws: StoreError.workspaceRemoved(ws: A, generation: 1)) { try await i.addWorkspace(ws: A, generation: 1) }
+        try await i.addWorkspace(ws: A, generation: 2)  // genuine rejoin with a newer generation
+        await #expect(throws: StoreError.self) { _ = try await WorkspaceContainer(index: i, ws: A, generation: 1) }
     }
 }
 
@@ -190,7 +198,7 @@ struct WipeTests {
     func populate(_ l: StoreLayout, _ ws: String) async throws -> WorkspaceIndex {
         let idx = try await WorkspaceIndex(layout: l)
         try await idx.addWorkspace(ws: ws, generation: 1)
-        let c = try await WorkspaceContainer(layout: l, ws: ws, generation: 1)
+        let c = try await WorkspaceContainer(index: idx, ws: ws, generation: 1)
         _ = try await c.recordRequestId("r")  // leaves -wal/-shm while open
         try Data("plain".utf8).write(to: l.filesDir(ws).appendingPathComponent("p.txt"))
         let staged = try l.stagedJobsDir(ws)
@@ -208,38 +216,38 @@ struct WipeTests {
 
     @Test func wipeDeletesEverythingIncludingSidecars() async throws {
         let l = try makeLayout(tempDir())
-        let idx = try await populate(l, "aa")
-        let db = try l.wsDatabaseURL("aa")
+        let idx = try await populate(l, A)
+        let db = try l.wsDatabaseURL(A)
         #expect(FileManager.default.fileExists(atPath: db.path + "-wal"))
-        try await LocalWipe(index: idx).wipe(ws: "aa", generation: 1)
-        try assertWiped(l, "aa")
+        try await LocalWipe(index: idx).wipe(ws: A, generation: 1)
+        try assertWiped(l, A)
         #expect(try await idx.workspaces().isEmpty)
         #expect(try await idx.tombstones().first?.phase == 4)
     }
 
     @Test func tombstoneVisibleFromCoordinationFiles() async throws {
         let l = try makeLayout(tempDir())
-        let idx = try await populate(l, "aa")
-        try await LocalWipe(index: idx).wipe(ws: "aa", generation: 1)
+        let idx = try await populate(l, A)
+        try await LocalWipe(index: idx).wipe(ws: A, generation: 1)
         // Extension view: only one group root, no sqlite.
         for dir in l.tombstoneDirectories {
             let ext = TombstoneCoordination(directories: [dir])
-            #expect(ext.isRemoved(realm: "live", ws: "aa", generation: 1))
-            #expect(ext.isRemoved(realm: "live", ws: "aa", generation: 0))
-            #expect(!ext.isRemoved(realm: "live", ws: "aa", generation: 2))
-            #expect(!ext.isRemoved(realm: "demo", ws: "aa", generation: 1))
-            #expect(!ext.isRemoved(realm: "live", ws: "bb", generation: 1))
+            #expect(ext.isRemovedFailClosed(realm: "live", ws: A, generation: 1))
+            #expect(ext.isRemovedFailClosed(realm: "live", ws: A, generation: 0))
+            #expect(!ext.isRemovedFailClosed(realm: "live", ws: A, generation: 2))
+            #expect(!ext.isRemovedFailClosed(realm: "demo", ws: A, generation: 1))
+            #expect(!ext.isRemovedFailClosed(realm: "live", ws: B, generation: 1))
         }
     }
 
     @Test func wipeIsIdempotent() async throws {
         let l = try makeLayout(tempDir())
-        let idx = try await populate(l, "aa")
+        let idx = try await populate(l, A)
         let w = LocalWipe(index: idx)
-        try await w.wipe(ws: "aa", generation: 1)
-        try await w.wipe(ws: "aa", generation: 1)
-        try await w.cleanupPass(ws: "aa")
-        try assertWiped(l, "aa")
+        try await w.wipe(ws: A, generation: 1)
+        try await w.wipe(ws: A, generation: 1)
+        try await w.cleanupPass(ws: A)
+        try assertWiped(l, A)
         #expect(l.tombstones.records().count == 1)
         #expect(try await idx.tombstones().count == 1)
         #expect(try await w.resumePendingWipes().isEmpty)
@@ -248,17 +256,17 @@ struct WipeTests {
     @Test(arguments: [1, 2, 3, 4])
     func crashAfterEachPhaseThenResume(phase: Int) async throws {
         let l = try makeLayout(tempDir())
-        let idx = try await populate(l, "aa")
+        let idx = try await populate(l, A)
         let crashing = LocalWipe(index: idx, afterPhase: { if $0 == phase { throw Crash() } })
-        await #expect(throws: Crash.self) { try await crashing.wipe(ws: "aa", generation: 1) }
+        await #expect(throws: Crash.self) { try await crashing.wipe(ws: A, generation: 1) }
         // The tombstone is already durable in both coordination files once phase 1 completed.
-        #expect(l.tombstones.isRemoved(realm: "live", ws: "aa", generation: 1))
+        #expect(l.tombstones.isRemovedFailClosed(realm: "live", ws: A, generation: 1))
         // "Relaunch": new index handle on the same files, then resume.
         await idx.close()
         let idx2 = try await WorkspaceIndex(layout: l)
         let resumed = try await LocalWipe(index: idx2).resumePendingWipes()
-        #expect(resumed == (phase == 4 ? [] : ["aa"]))
-        try assertWiped(l, "aa")
+        #expect(resumed == (phase == 4 ? [] : [A]))
+        try assertWiped(l, A)
         #expect(try await idx2.tombstones().allSatisfy { $0.phase == 4 })
     }
 
@@ -268,13 +276,13 @@ struct WipeTests {
             func purgeSecrets(realm: String, ws: String) async throws { if fail { throw Crash() } }
         }
         let l = try makeLayout(tempDir())
-        let idx = try await populate(l, "aa")
-        await #expect(throws: WipeError.self) { try await LocalWipe(index: idx, hooks: Hooks(fail: true)).wipe(ws: "aa", generation: 1) }
+        let idx = try await populate(l, A)
+        await #expect(throws: WipeError.self) { try await LocalWipe(index: idx, hooks: Hooks(fail: true)).wipe(ws: A, generation: 1) }
         #expect(try await idx.tombstones().first?.phase == 2)
         // Files were still deleted in that pass; the secrets step retries on resume.
         try await LocalWipe(index: idx, hooks: Hooks(fail: false)).resumePendingWipes()
         #expect(try await idx.tombstones().first?.phase == 4)
-        try assertWiped(l, "aa")
+        try assertWiped(l, A)
     }
 
     @Test func concurrentReadersAndWriterOfCoordinationFile() async throws {
@@ -282,11 +290,11 @@ struct WipeTests {
         let t = l.tombstones
         await withTaskGroup(of: Void.self) { g in
             for i in 0..<20 {
-                g.addTask { try? t.write(TombstoneRecord(realm: "live", ws: "aa", generation: Int64(i))) }
-                g.addTask { _ = t.isRemoved(realm: "live", ws: "aa", generation: 5) }
+                g.addTask { try? t.write(TombstoneRecord(realm: "live", ws: A, generation: Int64(i))) }
+                g.addTask { _ = t.isRemovedFailClosed(realm: "live", ws: A, generation: 5) }
             }
         }
-        #expect(t.isRemoved(realm: "live", ws: "aa", generation: 19))
+        #expect(t.isRemovedFailClosed(realm: "live", ws: A, generation: 19))
         #expect(t.records().count == 20)
     }
 }

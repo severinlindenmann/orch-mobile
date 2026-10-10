@@ -40,6 +40,7 @@ public enum SQLiteError: Error, Equatable, Sendable {
     case misuse(String)
     case closed
     case migrationFailed(version: Int, message: String)
+    case schemaTooNew(found: Int, known: Int)
     case failure(code: Int32, message: String)
 
     static func map(code: Int32, message: String) -> SQLiteError {
@@ -89,13 +90,25 @@ final class SQLiteHandle: @unchecked Sendable {
     func run(_ sql: String, _ params: [SQLValue] = []) throws -> (rows: [SQLRow], changes: Int) {
         guard let db else { throw SQLiteError.closed }
         var stmt: OpaquePointer?
-        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        guard rc == SQLITE_OK, let stmt else {
+        var rest = ""
+        let rc: Int32 = sql.withCString { c in
+            var tail: UnsafePointer<CChar>?
+            let r = sqlite3_prepare_v2(db, c, -1, &stmt, &tail)
+            if let tail { rest = String(cString: tail) }  // tail points into `c`: copy inside the closure
+            return r
+        }
+        guard rc == SQLITE_OK else {
             let e = fail(rc)
             sqlite3_finalize(stmt)
             throw e
         }
+        guard let stmt else { throw SQLiteError.misuse("empty statement") }
         defer { sqlite3_finalize(stmt) }
+        // sqlite prepares only the first statement; silently dropping the rest would hide bugs
+        // (e.g. a multi-statement migration recorded as applied with half its effect).
+        if !rest.allSatisfy({ $0.isWhitespace || $0 == ";" }) {
+            throw SQLiteError.misuse("multiple statements in one call are not allowed")
+        }
         guard Int(sqlite3_bind_parameter_count(stmt)) == params.count else {
             throw SQLiteError.misuse("expected \(sqlite3_bind_parameter_count(stmt)) parameters, got \(params.count)")
         }
@@ -106,7 +119,15 @@ final class SQLiteHandle: @unchecked Sendable {
             case .null: brc = sqlite3_bind_null(stmt, idx)
             case .int(let v): brc = sqlite3_bind_int64(stmt, idx, v)
             case .real(let v): brc = sqlite3_bind_double(stmt, idx, v)
-            case .text(let s): brc = sqlite3_bind_text(stmt, idx, s, -1, sqliteTransient)
+            case .text(let s):
+                // Explicit UTF-8 byte count: -1 would stop at an embedded NUL and make distinct strings collide.
+                var copy = s
+                brc = copy.withUTF8 { buf in
+                    if let base = buf.baseAddress {
+                        return sqlite3_bind_text(stmt, idx, UnsafeRawPointer(base).assumingMemoryBound(to: CChar.self), Int32(buf.count), sqliteTransient)
+                    }
+                    return sqlite3_bind_text(stmt, idx, "", 0, sqliteTransient)
+                }
             case .blob(let d):
                 if d.isEmpty {
                     brc = sqlite3_bind_zeroblob(stmt, idx, 0)
@@ -179,8 +200,14 @@ public actor SQLiteDatabase {
 
     /// - Parameter fileProtection: request `SQLITE_OPEN_FILEPROTECTION_COMPLETE` (honoured on iOS only).
     public init(url: URL, fileProtection: Bool = true) throws {
+        // SQLite's NOFOLLOW rejects a symlink anywhere in the path (/var -> /private/var on Apple platforms),
+        // so resolve the parent directory ourselves; the database file itself must not be a symlink.
+        // (URL.resolvingSymlinksInPath would strip /private again, so use realpath.)
+        let parent = url.deletingLastPathComponent().path
+        let resolvedParent = realpath(parent, nil).map { p -> String in defer { free(p) }; return String(cString: p) } ?? parent
+        let url = URL(fileURLWithPath: resolvedParent, isDirectory: true).appendingPathComponent(url.lastPathComponent)
         self.url = url
-        var flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        var flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW
         #if os(iOS)
         if fileProtection { flags |= openFileProtectionComplete }
         #endif
@@ -193,6 +220,7 @@ public actor SQLiteDatabase {
         }
         let h = SQLiteHandle(db: raw)
         do {
+            // Bounded wait (5 s) when another connection (an extension) holds the write lock; then .busy.
             sqlite3_busy_timeout(raw, 5000)
             let mode = try h.run("PRAGMA journal_mode=WAL").rows.first?[0]
             guard case .text(let m)? = mode, m.lowercased() == "wal" else {
@@ -264,6 +292,9 @@ public actor SQLiteDatabase {
         }
         let h = try h()
         let applied = Set(try appliedMigrations())
+        if let newest = applied.max(), newest > (versions.max() ?? 0) {
+            throw SQLiteError.schemaTooNew(found: newest, known: versions.max() ?? 0)
+        }
         for m in migrations where !applied.contains(m.version) {
             do {
                 try h.transaction { tx in
