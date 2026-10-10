@@ -322,15 +322,19 @@ extension PairHarness {
         let offer = try await h.rig.newOffer()
         _ = await h.coordinator.start(link: try h.link(offer))
         let runner = Task { await h.coordinator.run() }
-        for _ in 0..<40 { await Task.yield() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         var ended = false
-        for _ in 0..<20 {
-            h.clock.advance(milliseconds: 5_000)
-            for _ in 0..<30 { await Task.yield() }
+        while ContinuousClock.now < deadline {
             if (await h.coordinator.state).isTerminal { ended = true; break }
+            guard h.clock.nowMs < 1_790_000_000_000 + 100_000 else { break }
+            // Yields do not guarantee that run() has finished its storage/crypto work. Only tick
+            // once it has registered a sleep, including after waking at the first-answer deadline.
+            if h.clock.sleeperCount > 0 { h.clock.advance(milliseconds: 5_000) }
+            await Task.yield()
         }
         #expect(ended)
         #expect(await h.coordinator.state == .failed(.linkUsed) && h.clock.nowMs <= 1_790_000_000_000 + 70_000)
+        if !ended { runner.cancel() }
         await runner.value
         #expect(h.vaultItems.isEmpty)
     }
