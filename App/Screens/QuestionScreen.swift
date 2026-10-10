@@ -21,7 +21,7 @@ struct QuestionScreen: View {
         let info = ws.info
         ScrollView {
             VStack(alignment: .leading, spacing: OS.s4) {
-                HStack {
+                AdaptiveStack {
                     WorkspaceHeader(name: info.name, color: info.color, hostedBy: info.hostedBy, clientHosted: info.clientHosted)
                     if services.settings.isDemo { DemoChip() }
                 }
@@ -58,8 +58,9 @@ struct QuestionScreen: View {
         .onChange(of: scenePhase) { _, phase in
             // Lock/background: an unsent review is dropped for good (U7). A submission already sent
             // or being checked is never "cancelled" (U8): the sheet keeps its state.
-            guard phase == .background, let item = signing, item.model.phase == .ready else { return }
+            guard phase == .background, let item = signing else { return }
             item.model.invalidate()
+            guard item.model.phase == .invalidated else { return }   // sending/checking keep going
             signing = nil
             notice = "Review dropped because the app was left. Choose your answer again to read the question afresh."
         }
@@ -75,7 +76,7 @@ struct QuestionScreen: View {
                 SafeTextView(label)
             }
         }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("question.resolution")
     }
 
@@ -86,10 +87,14 @@ struct QuestionScreen: View {
         let block = info.answerBlock
         if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
         if pending != nil {
-            Button { startSigning(q.options.first?.id ?? "") } label: {
-                Label("Checking whether your answer was received", systemImage: "clock.arrow.circlepath")
+            VStack(alignment: .leading, spacing: OS.s2) {
+                Text("You submitted").font(OF.meta).foregroundStyle(OC.textMuted)
+                SafeTextView(pending?.optionLabel ?? "").accessibilityIdentifier("question.pending.answer")
+                Button { startSigning(pending?.optionID ?? "") } label: {
+                    Label("Checking whether your answer was received", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.bordered).accessibilityIdentifier("question.pending")
             }
-            .buttonStyle(.bordered).accessibilityIdentifier("question.pending")
         } else {
             Text("Choose an answer").font(OF.section)
             ForEach(q.options) { option in
@@ -120,8 +125,8 @@ private struct ArmKey: Hashable { let atEnd: Bool; let revision: Int }
 struct SignSheet: View {
     let model: any QuestionReviewModel
     let onClose: () -> Void
-    @State private var atEnd = false
-    @State private var armed = false
+    @State private var atEndRevision: Int?
+    @State private var armedRevision: Int?
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -154,7 +159,7 @@ struct SignSheet: View {
         if review.isDemo { DemoStripe() }
         ScrollView {
             VStack(alignment: .leading, spacing: OS.s4) {
-                HStack {
+                AdaptiveStack {
                     WorkspaceHeader(name: review.workspaceName, color: OC.wsHues[review.hue % OC.wsHues.count],
                                     hostedBy: review.hostedBy, clientHosted: review.clientHosted)
                     if review.isDemo { DemoChip() }
@@ -192,15 +197,15 @@ struct SignSheet: View {
         .onScrollGeometryChange(for: Bool.self) { g in
             g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 4
         } action: { _, reached in
-            if reached { atEnd = true }
+            if reached { atEndRevision = review.revision }
         }
         .scrollBounceBehavior(.basedOnSize)
         .id(review.revision)
-        .task(id: ArmKey(atEnd: atEnd, revision: review.revision)) {
-            armed = false
-            guard atEnd else { return }
+        .task(id: ArmKey(atEnd: atEndRevision == review.revision, revision: review.revision)) {
+            armedRevision = nil
+            guard atEndRevision == review.revision else { return }
             try? await Task.sleep(for: .milliseconds(800))
-            if !Task.isCancelled { armed = true }
+            if !Task.isCancelled { armedRevision = review.revision }
         }
         if !typeSize.isAccessibilitySize {
             Divider()
@@ -229,15 +234,17 @@ struct SignSheet: View {
                 } else {
                     Button { Task { await model.sign() } } label: { Text("Sign and send") }
                         .buttonStyle(.orchProminent)
-                        .disabled(!armed)
+                        .disabled(armedRevision != review.revision)
                         .accessibilityIdentifier("sign.confirm")
-                        .accessibilityHint(armed ? "" : "Scroll to the end of the text to continue")
-                    if !armed {
-                        Text(atEnd ? "Hold on…" : "Scroll to the end to continue")
+                        .accessibilityHint(armedRevision == review.revision ? "" : "Scroll to the end of the text to continue")
+                    if armedRevision != review.revision {
+                        Text(atEndRevision == review.revision ? "Hold on…" : "Scroll to the end to continue")
                             .font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("sign.hint")
                     }
                     Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
                 }
+            case .rereading:
+                ProgressView("Reading the question again…").accessibilityIdentifier("sign.rereading")
             case .invalidated:
                 stateView("hourglass.bottomhalf.filled", OC.warn, "Review expired",
                           "The question must be read afresh. Close this and choose your answer again.", id: "sign.invalidated")
@@ -255,18 +262,18 @@ struct SignSheet: View {
             case .questionChanged:
                 stateView("arrow.triangle.2.circlepath", OC.warn, "The question changed",
                           "Read it again before you answer.", id: "sign.questionChanged")
-                Button { atEnd = false; armed = false; Task { await model.reread() } } label: { Text("Read it again") }
+                Button { Task { await model.reread() } } label: { Text("Read it again") }
                     .buttonStyle(.orchProminent).accessibilityIdentifier("sign.reread")
                 Button("Cancel", role: .cancel, action: onClose)
             case .checking:
                 stateView("clock.arrow.circlepath", OC.info, "Checking whether your answer was received",
-                          "Your answer is not sent again until this is settled. You can close this; it keeps checking.", id: "sign.checking")
+                          "Your answer is not sent again until this is settled. If you close this, orch keeps checking for a short while and shows it on Home.", id: "sign.checking")
                 Button { Task { await model.checkWhetherReceived() } } label: { Text("Check again").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
                     .buttonStyle(.bordered).accessibilityIdentifier("sign.recheck")
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("sign.closeChecking")
             case .unlockToContinue:
                 stateView("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone to sign.", id: "sign.unlock")
-                Button("Try again") { model.retryAfterUnlock() }.buttonStyle(.bordered)
+                Button("Read it again and continue") { model.retryAfterUnlock() }.buttonStyle(.bordered).accessibilityIdentifier("sign.unlockRetry")
                 Button("Cancel", role: .cancel, action: onClose)
             case .custodyUnavailable:
                 stateView("key.slash", OC.danger, "Signing key not available",

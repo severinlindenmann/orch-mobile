@@ -5,8 +5,8 @@ import UIKit
 import AppKit
 #endif
 
-@MainActor
-private func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+/// Nonisolated: UIKit resolves dynamic colours on arbitrary threads (a MainActor closure traps at runtime).
+private nonisolated func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
     #if canImport(UIKit)
     return Color(uiColor: UIColor { traits in
         let value = traits.userInterfaceStyle == .dark ? dark : light

@@ -55,6 +55,12 @@ import Testing
         #expect(!SafeText.hasAmbiguousOptions(["Yes", "Yes\u{200B}"]))
         #expect(!SafeText.hasAmbiguousOptions(["Approve", "Reject"]))
     }
+    @Test func cyrillicAndGreekLookAlikesAreAmbiguous() {
+        #expect(SafeText.hasAmbiguousOptions(["Approve", "\u{0410}pprove"]))
+        #expect(SafeText.hasAmbiguousOptions(["Yes", "Y\u{0435}s"]))
+        #expect(SafeText.hasAmbiguousOptions(["NO", "N\u{039F}"]))
+        #expect(!SafeText.hasAmbiguousOptions(["Approve", "Reject"]))
+    }
     @Test func markdownIsLeftLiteral() {
         let p = SafeText.pieces("**x** [a](http://b)")
         #expect(p == [.text("**x** [a](http://b)")])

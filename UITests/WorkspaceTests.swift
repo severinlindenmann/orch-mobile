@@ -36,5 +36,8 @@ final class WorkspaceTests: XCTestCase {
         let app = launch("workspace/laptop", extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXL"])
         XCTAssertTrue(app.el("ws.segment.menu").waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["ws.segment.tickets"].exists)
+        let header = app.el("workspace.header")
+        XCTAssertTrue(header.exists)
+        XCTAssertTrue(header.label.contains("Laptop"), header.label)
     }
 }

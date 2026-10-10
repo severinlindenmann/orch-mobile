@@ -48,6 +48,7 @@ protocol QuestionReviewModel: AnyObject, Observable {
     func checkWhetherReceived() async
     /// Terminal: lock/background/content change. A fresh model (fresh review) is required afterwards.
     func invalidate()
+    /// Issues a fresh review (new revision): the old one and its arming are never reused.
     func retryAfterUnlock()
 }
 

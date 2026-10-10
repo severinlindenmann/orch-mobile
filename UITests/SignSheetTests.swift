@@ -138,4 +138,60 @@ final class SignSheetStateTests: XCTestCase {
         for _ in 0..<3 { app.swipeUp() }
         XCTAssertTrue(confirm.waitForEnabled())
     }
+
+    @MainActor
+    func testReopenedPendingSubmissionKeepsSubmittedOption() {
+        let app = launch("question/q1/uncertain")
+        app.buttons["question.option.reject"].tap()
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForEnabled())
+        confirm.tap()
+        XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 5))
+        app.buttons["sign.closeChecking"].tap()
+        let pendingAnswer = app.el("question.pending.answer")
+        XCTAssertTrue(pendingAnswer.waitForExistence(timeout: 5))
+        XCTAssertTrue(pendingAnswer.label.contains("Reject"), pendingAnswer.label)
+        app.buttons["question.pending"].tap()
+        XCTAssertTrue(app.el("sign.answer").waitForExistence(timeout: 5))
+        XCTAssertTrue(app.el("sign.answer").label.contains("Reject"))
+        app.buttons["sign.recheck"].tap()
+        XCTAssertTrue(app.el("sign.accepted").waitForExistence(timeout: 5))
+        app.buttons["sign.done"].tap()
+        let resolution = app.el("question.resolution")
+        XCTAssertTrue(resolution.waitForExistence(timeout: 5))
+        XCTAssertTrue(resolution.label.contains("Reject"), resolution.label)
+        XCTAssertFalse(resolution.label.contains("Approve"))
+    }
+
+    @MainActor
+    func testBackgroundWhileQuestionChangedNeedsFreshReview() {
+        let app = launch("sign/q1/questionChanged")
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForEnabled())
+        confirm.tap()
+        XCTAssertTrue(app.el("sign.questionChanged").waitForExistence(timeout: 5))
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
+        app.activate()
+        XCTAssertTrue(app.el("question.option.approve").waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["sign.confirm"].exists)
+    }
+
+    @MainActor
+    func testUnlockRetryNeedsFreshArming() {
+        let app = launch("sign/q1/locked")
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForEnabled())
+        confirm.tap()
+        XCTAssertTrue(app.el("sign.unlock").waitForExistence(timeout: 5))
+        app.buttons["sign.unlockRetry"].tap()
+        let again = app.buttons["sign.confirm"]
+        XCTAssertTrue(again.waitForExistence(timeout: 5))
+        // Not-carried-over arming is asserted deterministically in ReviewModelTests (revision bump);
+        // here the button must re-arm through the delay.
+        XCTAssertTrue(again.waitForEnabled())
+    }
 }

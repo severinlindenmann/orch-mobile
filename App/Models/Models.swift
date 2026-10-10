@@ -181,12 +181,16 @@ struct DecisionStatus: Identifiable, Hashable, Sendable {
     let decisionID: String
     let questionID: String
     let workspaceID: String
+    let optionID: String
     let optionLabel: String
+    /// The immutable review this decision was signed from; reopening shows exactly this.
+    let review: ReviewValue
     var outcome: DecisionOutcomeState
 }
 
 enum SignPhase: Hashable, Sendable {
     case ready
+    case rereading
     /// Lock, background or content change: a fresh review is required.
     case invalidated
     case sending

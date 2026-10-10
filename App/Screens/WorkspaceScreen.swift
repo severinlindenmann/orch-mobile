@@ -52,9 +52,10 @@ struct WorkspaceScreen: View {
         VStack(alignment: .leading, spacing: OS.s2) {
             WorkspaceHeader(name: model.info.name, color: model.info.color, hostedBy: model.info.hostedBy,
                             clientHosted: model.info.clientHosted)
-            HStack(spacing: OS.s3) {
+            AdaptiveStack {
                 ConnectionChip(state: model.info.connection)
-                Text(verbatim: model.info.displayHost).font(OF.meta).foregroundStyle(OC.textMuted).lineLimit(1)
+                Text(verbatim: model.info.displayHost).font(OF.meta).foregroundStyle(OC.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let block = model.info.answerBlock, model.info.scopes.contains(.decide) {
                 Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted)

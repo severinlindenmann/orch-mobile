@@ -50,6 +50,19 @@ extension DropItem {
     var displayFrom: String { SafeText.inline(from, limit: 30) }
 }
 
+/// Horizontal at normal sizes, vertical (leading) at accessibility sizes so nothing is truncated or split.
+struct AdaptiveStack<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ViewBuilder let content: Content
+    var body: some View {
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: OS.s2) { content }
+        } else {
+            HStack { content }
+        }
+    }
+}
+
 /// Compact identity row: rail, name and (when hosted) the hosted warning. Names come from the workspace
 /// record, never from question text.
 struct WorkspaceHeader: View {
@@ -58,8 +71,18 @@ struct WorkspaceHeader: View {
     let hostedBy: String?
     var clientHosted: Bool = false
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         let hosted = clientHosted || hostedBy != nil
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: OS.s2) {
+                nameRow
+                if hosted { HostedMarker(hostedBy: hostedBy) }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("workspace.header")
+        } else {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: OS.s3) {
                 nameRow
@@ -75,12 +98,13 @@ struct WorkspaceHeader: View {
         .accessibilityLabel(Text(verbatim: SafeText.inline(name, limit: 40)
                                  + (hosted ? ", " + (hostedBy.map { "hosted by " + SafeText.inline($0, limit: 40) } ?? "hosted by unknown") : "")))
         .accessibilityIdentifier("workspace.header")
+        }
     }
 
     private var nameRow: some View {
         HStack(spacing: OS.s2) {
             WorkspaceRail(color: color).frame(height: 22).clipShape(Capsule())
-            Text(verbatim: SafeText.inline(name, limit: 40)).font(OF.wsName).lineLimit(2)
+            Text(verbatim: SafeText.inline(name, limit: 40)).font(OF.wsName).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

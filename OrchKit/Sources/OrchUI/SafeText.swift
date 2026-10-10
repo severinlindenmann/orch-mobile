@@ -116,10 +116,25 @@ public enum SafeText {
         return out
     }
 
-    /// Two answers whose marked renderings are equal cannot be told apart by the reader: refuse.
+    private static let confusables: [Character: Character] = {
+        var m: [Character: Character] = [:]
+        let pairs: [(String, String)] = [
+            ("АВЕКМНОРСТХаеорсухі", "ABEKMHOPCTXaeopcuxi"),     // Cyrillic
+            ("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧο", "ABEZHIKMNOPTYXo"),           // Greek
+        ]
+        for (from, to) in pairs { for (f, t) in zip(from, to) { m[f] = t } }
+        return m
+    }()
+
+    /// Reduces common Cyrillic/Greek look-alikes to Latin so "Approve" and "Аpprove" collide.
+    public static func skeleton(_ input: String) -> String {
+        String(inline(input, limit: 400).trimmingCharacters(in: .whitespaces).map { confusables[$0] ?? $0 })
+    }
+
+    /// Two answers whose skeletons are equal cannot be told apart by the reader: refuse.
     public static func hasAmbiguousOptions(_ labels: [String]) -> Bool {
-        let marked = labels.map { inline($0, limit: 400).trimmingCharacters(in: .whitespaces) }
-        return Set(marked).count != marked.count || marked.contains { $0.isEmpty }
+        let skeletons = labels.map(skeleton)
+        return Set(skeletons).count != skeletons.count || skeletons.contains { $0.isEmpty }
     }
 
     public enum Style: Sendable { case signing, prose }

@@ -54,7 +54,7 @@ enum InitialRouteParser {
         case "question", "sign":
             if let qid = arg, let ws = services.workspaceID(forQuestion: qid) {
                 let sign = head == "sign"
-                if sign, parts.count > 2, let outcome = SignOutcome(rawValue: parts[2]) {
+                if parts.count > 2, let outcome = SignOutcome(rawValue: parts[2]) {
                     services.settings.signOutcome = outcome
                 }
                 result.path = [.workspace(ws, .questions), .question(workspace: ws, id: qid, autoSign: sign)]

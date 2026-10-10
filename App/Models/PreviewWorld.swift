@@ -15,6 +15,9 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
     var pairingScenario: PairingScenario = .firstTime
     var signOutcome: SignOutcome = .accepted
     var pendingDecisions: [DecisionStatus] = []
+    @ObservationIgnored var reconcileTasks: [String: Task<Void, Never>] = [:]
+    /// Seconds between background reconcile attempts.
+    @ObservationIgnored var reconcileInterval = 5.0
     let custody = "Software key (Simulator)"
     var lastChecked: Date
     let now: Date
@@ -187,6 +190,34 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
         }
     }
 
+    // MARK: Pending decisions (U8)
+
+    func dropPending(_ id: String) { pendingDecisions.removeAll { $0.decisionID == id } }
+
+    /// Applies the stored decision exactly as signed (its own option), never anything re-derived.
+    func applyAccepted(_ id: String) {
+        guard let d = pendingDecisions.first(where: { $0.decisionID == id }) else { return }
+        if let i = questions.firstIndex(where: { $0.id == d.questionID }), questions[i].isOpen {
+            questions[i].resolution = Resolution(decisionID: id, optionID: d.optionID, byDeviceLabel: deviceLabel, at: Date())
+        }
+        dropPending(id)
+    }
+
+    /// Background reconciliation: bounded retries while the app runs; state stays visible on Home.
+    func markUncertain(_ id: String) {
+        if let i = pendingDecisions.firstIndex(where: { $0.decisionID == id }) { pendingDecisions[i].outcome = .uncertain }
+        reconcileTasks[id]?.cancel()
+        reconcileTasks[id] = Task { [weak self] in
+            for attempt in 1...3 {
+                guard let interval = self?.reconcileInterval else { return }
+                do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+                guard let self, self.pendingDecisions.contains(where: { $0.decisionID == id }) else { return }
+                // The fake host confirms receipt on the second attempt.
+                if attempt >= 2 { self.applyAccepted(id); return }
+            }
+        }
+    }
+
     func markRead(id: String) {
         if let i = dropItems.firstIndex(where: { $0.id == id }) { dropItems[i].unread = false }
     }
@@ -258,8 +289,10 @@ final class PreviewWorkspaceModel: WorkspaceModel {
 final class PreviewReviewModel: QuestionReviewModel {
     private let world: PreviewWorld
     private let questionID: String
-    private let optionID: String
+    private var optionID: String
     private var session: QuestionReviewSession?
+    /// Bumped by every invalidation and every new review request; async completions from an older token are dropped.
+    private var token = 0
     private(set) var load: ReviewLoad = .loading
     private(set) var review: ReviewValue?
     private(set) var phase: SignPhase = .ready
@@ -268,9 +301,11 @@ final class PreviewReviewModel: QuestionReviewModel {
         self.world = world
         self.questionID = questionID
         self.optionID = optionID
-        // U8: a persisted unresolved submission reopens straight into the checking state.
-        if world.pendingDecisions.contains(where: { $0.questionID == questionID && $0.outcome != .resolved }) {
-            issue(revision: 0)
+        // U8: reopening an unresolved submission shows exactly what was signed, never re-derived.
+        if let pending = world.pendingDecisions.first(where: { $0.questionID == questionID && $0.outcome != .resolved }) {
+            self.optionID = pending.optionID
+            review = pending.review
+            load = .loaded
             phase = .checking
         }
     }
@@ -292,9 +327,12 @@ final class PreviewReviewModel: QuestionReviewModel {
     }
 
     func loadReview() async {
-        guard session == nil else { return }
+        guard session == nil, phase == .ready else { return }
+        token += 1
+        let mine = token
         load = .loading
         try? await Task.sleep(for: .milliseconds(120))
+        guard mine == token else { return }
         if world.signOutcome == .loadFails {
             world.signOutcome = .accepted
             load = .failed("The question could not be read from the workspace. Nothing was signed.")
@@ -306,68 +344,75 @@ final class PreviewReviewModel: QuestionReviewModel {
     func sign() async {
         guard phase == .ready, let session, let review, !review.optionsAmbiguous else { return }
         phase = .sending
+        let mine = token
         let decisionID = "d-\(session.question.id)"
-        let label = review.optionLabel
-        // Persist before send (U8).
-        world.pendingDecisions.append(DecisionStatus(decisionID: decisionID, questionID: session.question.id,
-                                                     workspaceID: session.workspaceID, optionLabel: label, outcome: .pending))
+        // Persist before send (U8), with the exact review and option.
+        world.pendingDecisions.append(DecisionStatus(
+            decisionID: decisionID, questionID: session.question.id, workspaceID: session.workspaceID,
+            optionID: optionID, optionLabel: review.optionLabel, review: review, outcome: .pending))
         try? await Task.sleep(for: .milliseconds(500))
+        // The send is already persisted and in flight; its result is always applied (never dropped as stale).
+        _ = mine
         let outcome = world.signOutcome
         world.signOutcome = .accepted   // one-shot
         switch outcome {
         case .accepted, .loadFails:
-            resolve(decisionID)
-            if let i = world.questions.firstIndex(where: { $0.id == session.question.id }) {
-                world.questions[i].resolution = Resolution(
-                    decisionID: decisionID, optionID: optionID, byDeviceLabel: world.deviceLabel, at: Date())
-            }
+            world.applyAccepted(decisionID)
             phase = .accepted
         case .alreadyAnswered:
-            resolve(decisionID)
+            world.dropPending(decisionID)
             phase = .alreadyAnswered(by: "Demo Mac", at: Date().addingTimeInterval(-90))
         case .questionChanged:
-            resolve(decisionID)
+            world.dropPending(decisionID)
             phase = .questionChanged
         case .uncertain:
-            mark(decisionID, .uncertain)
+            world.markUncertain(decisionID)
             phase = .checking
         case .locked:
-            resolve(decisionID)
+            world.dropPending(decisionID)
             phase = .unlockToContinue
         case .custodyUnavailable:
-            resolve(decisionID)
+            world.dropPending(decisionID)
             phase = .custodyUnavailable
         }
     }
 
-    private func mark(_ id: String, _ state: DecisionOutcomeState) {
-        if let i = world.pendingDecisions.firstIndex(where: { $0.decisionID == id }) { world.pendingDecisions[i].outcome = state }
-    }
-    private func resolve(_ id: String) { world.pendingDecisions.removeAll { $0.decisionID == id } }
-
     func reread() async {
+        guard phase == .questionChanged else { return }
+        token += 1
+        let mine = token
+        phase = .rereading
         try? await Task.sleep(for: .milliseconds(300))
-        let next = (review?.revision ?? 0) + 1
-        issue(revision: next)
+        guard mine == token, phase == .rereading else { return }   // invalidated meanwhile: stay invalidated
+        issue(revision: (review?.revision ?? 0) + 1)
         phase = .ready
     }
 
     func checkWhetherReceived() async {
-        phase = .checking
+        guard phase == .checking else { return }
         try? await Task.sleep(for: .milliseconds(600))
-        // Reconcile first: the simulated host reports the stored decision as received.
         let id = "d-\(questionID)"
-        resolve(id)
-        if let i = world.questions.firstIndex(where: { $0.id == questionID }), world.questions[i].isOpen {
-            world.questions[i].resolution = Resolution(
-                decisionID: id, optionID: optionID, byDeviceLabel: world.deviceLabel, at: Date())
-        }
+        if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }
         phase = .accepted
     }
 
+    /// Lock/background/content change. Only unsent or unconfirmed-by-user states are dropped; sending and
+    /// checking keep going (U8).
     func invalidate() {
-        if phase == .ready { phase = .invalidated; session = nil }
+        switch phase {
+        case .ready, .rereading, .questionChanged, .unlockToContinue, .invalidated:
+            token += 1
+            session = nil
+            phase = .invalidated
+        default: break
+        }
+        if load == .loading { token += 1 }
     }
 
-    func retryAfterUnlock() { phase = .ready }
+    func retryAfterUnlock() {
+        guard phase == .unlockToContinue else { return }
+        token += 1
+        issue(revision: (review?.revision ?? 0) + 1)
+        phase = .ready
+    }
 }
