@@ -1,0 +1,114 @@
+name: Orch
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  OrchKit:
+    path: OrchKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: 77D4THRYUN
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Orch:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch
+        CODE_SIGN_ENTITLEMENTS: App/Orch.entitlements
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: orch
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    dependencies:
+      - package: OrchKit
+        products: [OrchProtocol, OrchCustody, OrchStore, OrchPush, OrchClient, OrchFakeHost, OrchUI]
+      - target: OrchNotify
+        embed: true
+      - target: OrchShare
+        embed: true
+  OrchNotify:
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.notify
+        CODE_SIGN_ENTITLEMENTS: NotificationService/OrchNotify.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: orch notifications
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    dependencies:
+      - package: OrchKit
+        product: OrchPush
+  OrchShare:
+    type: app-extension
+    platform: iOS
+    sources: [ShareExtension]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.share
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/OrchShare.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: orch
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsFileWithMaxCount: 5
+    dependencies:
+      - package: OrchKit
+        product: OrchUI
+  OrchTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AppTests]
+    dependencies:
+      - target: Orch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.tests
+        GENERATE_INFOPLIST_FILE: YES
+  OrchUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Orch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Orch:
+    build:
+      targets:
+        Orch: all
+    test:
+      targets: [OrchTests, OrchUITests]
+      parallelizeBuild: false
+      randomExecutionOrder: false
