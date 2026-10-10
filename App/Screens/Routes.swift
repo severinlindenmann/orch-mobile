@@ -21,6 +21,8 @@ enum Route: Hashable {
     case dropItem(String)
     case settings
     case workspaceSettings(String, confirmLeave: Bool)
+    /// DEBUG-only fixture that presents a real UIActivityViewController (decision T2).
+    case shareFixture
 }
 
 /// Result of parsing `--initial-route`.
@@ -66,6 +68,7 @@ enum InitialRouteParser {
             result.path = [.drop]
             if arg == "compose" { result.composeDrop = true }
             if arg == "item", parts.count > 2 { result.path.append(.dropItem(parts[2])) }
+        case "share-fixture": result.path = [.shareFixture]
         case "settings":
             result.path = [.settings]
             if arg == "workspace" || arg == "leave", parts.count > 2 {

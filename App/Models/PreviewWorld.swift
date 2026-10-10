@@ -18,6 +18,9 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
     @ObservationIgnored var reconcileTasks: [String: Task<Void, Never>] = [:]
     /// Seconds between background reconcile attempts.
     @ObservationIgnored var reconcileInterval = 5.0
+    /// Set by `ShareBridge`: moves a quarantined share job to the chosen workspace.
+    @ObservationIgnored var beforeWorkspaceRemoval: ((String) -> Bool)?
+    @ObservationIgnored var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)?
     let custody = "Software key (Simulator)"
     var lastChecked: Date
     let now: Date
@@ -190,6 +193,46 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
         }
     }
 
+    // MARK: Share import (A10): the phone-local part; real sealing and upload arrive with the Drop slice
+
+    struct SharedItem: Sendable {
+        let id: String
+        let name: String
+        let bytes: Int
+        let kind: DropKind
+        let text: String?
+    }
+
+    /// Adds claimed share items to Sending. Idempotent per item id (a crash between import and cleanup re-claims the job).
+    func importShared(workspaceID: String, items: [SharedItem], expires: Date) {
+        for item in items where !dropItems.contains(where: { $0.id == item.id }) {
+            dropItems.insert(DropItem(id: item.id, workspaceID: workspaceID, name: item.name, bytes: item.bytes, kind: item.kind,
+                                      direction: .sending, expires: expires, versions: 1, unread: false, text: item.text,
+                                      from: "This iPhone"), at: 0)
+            let newID = item.id
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
+                self.dropItems[i].simulatedDone = true
+            }
+        }
+    }
+
+    /// Replaces the quarantined entries (shown in Sending until the user chooses another destination).
+    func setQuarantined(_ entries: [(job: String, workspaceID: String, name: String, bytes: Int, kind: DropKind, expires: Date)]) {
+        dropItems.removeAll { $0.quarantineJob != nil }
+        for e in entries {
+            dropItems.insert(DropItem(id: "share-q-\(e.job)", workspaceID: e.workspaceID, name: e.name, bytes: e.bytes, kind: e.kind,
+                                      direction: .sending, expires: e.expires, versions: 1, unread: false, text: nil,
+                                      from: "This iPhone", quarantineJob: e.job), at: 0)
+        }
+    }
+
+    func redirectQuarantined(id: String, to workspaceID: String) {
+        guard let job = dropItems.first(where: { $0.id == id })?.quarantineJob else { return }
+        onRedirectQuarantined?(job, workspaceID)
+    }
+
     // MARK: Pending decisions (U8)
 
     func dropPending(_ id: String) { pendingDecisions.removeAll { $0.decisionID == id } }
@@ -230,6 +273,9 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
 
     func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport {
         let ws = workspaces.first { $0.id == workspaceID }
+        guard beforeWorkspaceRemoval?(workspaceID) != false else {
+            return LeaveReport(workspaceName: ws?.name ?? "Workspace", server: .pendingOffline)
+        }
         // Local wipe first and network-independent.
         workspaces.removeAll { $0.id == workspaceID }
         questions.removeAll { $0.workspaceID == workspaceID }

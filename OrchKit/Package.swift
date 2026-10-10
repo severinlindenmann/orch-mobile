@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "OrchCustody", targets: ["OrchCustody"]),
         .library(name: "OrchCoordination", targets: ["OrchCoordination"]),
         .library(name: "OrchStore", targets: ["OrchStore"]),
+        .library(name: "OrchShareStaging", targets: ["OrchShareStaging"]),
         .library(name: "OrchPush", targets: ["OrchPush"]),
         .library(name: "OrchClient", targets: ["OrchClient"]),
         .library(name: "OrchFakeHost", targets: ["OrchFakeHost"]),
@@ -32,6 +33,10 @@ let package = Package(
         .target(name: "OrchStore", dependencies: ["OrchProtocol", "OrchCoordination"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchStoreTests", dependencies: ["OrchStore"]),
+        // Extension-safe share staging (Foundation only): with OrchUI and OrchCoordination, all the share extension links.
+        .target(name: "OrchShareStaging", dependencies: ["OrchCoordination"],
+                swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
+        .testTarget(name: "OrchShareStagingTests", dependencies: ["OrchShareStaging", "OrchCoordination", "OrchStore"]),
         .target(name: "OrchPush", dependencies: ["OrchProtocol", "OrchCoordination"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchStore", "OrchCoordination", "OrchCustody", "OrchTestVectors", "OrchPushFixtures"]),

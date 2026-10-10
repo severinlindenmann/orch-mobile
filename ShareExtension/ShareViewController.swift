@@ -1,14 +1,24 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import OrchUI
+import OrchShareStaging
 
+/// Native compose for "Share to orch" (A10). It stages plaintext into the share App Group and nothing else: no
+/// keychain, custody, signing or network. The app seals and uploads on its next activation.
 final class ShareViewController: UIViewController {
+    private var model: ShareModel?
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        let host = UIHostingController(rootView: ShareComposeView(onCancel: { [weak self] in
-            self?.extensionContext?.cancelRequest(
-                withError: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError))
-        }))
+        let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
+        let model = ShareModel(providers: providers) { [weak self] in
+            self?.extensionContext?.completeRequest(returningItems: nil)
+        } cancel: { [weak self] in
+            self?.extensionContext?.cancelRequest(withError: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError))
+        }
+        self.model = model
+        let host = UIHostingController(rootView: ShareComposeView(model: model))
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
@@ -19,23 +29,209 @@ final class ShareViewController: UIViewController {
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         host.didMove(toParent: self)
+        model.start()
     }
 }
 
+// MARK: Model
+
+@MainActor @Observable
+final class ShareModel {
+    enum Phase: Equatable {
+        case loading
+        case choosing
+        case saving
+        case saved
+        case noWorkspaces
+        case unreadable
+        case failed(String)
+    }
+
+    private(set) var phase: Phase = .loading
+    private(set) var targets: [ShareTarget] = []
+    var destination: String?
+    var note = ""
+    let summary: [String]
+
+    private let providers: [NSItemProvider]
+    private let finish: () -> Void
+    private let cancelRequest: () -> Void
+    private var area: ShareArea?
+    private var session: StagingSession?
+    private var saveTask: Task<Void, Never>?
+
+    init(providers: [NSItemProvider], finish: @escaping () -> Void, cancel: @escaping () -> Void) {
+        self.providers = providers; self.finish = finish; self.cancelRequest = cancel
+        summary = providers.prefix(ShareLimits.maxItems + 1).map { ShareModel.describe($0) }
+    }
+
+    /// Reads the destinations index; unreadable or empty means nothing is retained and nothing can be saved.
+    func start() {
+        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.io.severin.orch.share") else {
+            phase = .unreadable; return
+        }
+        let area = ShareArea(shareGroupRoot: root)
+        self.area = area
+        Task.detached { ShareInbox(area: area).sweep() }   // expiry janitor
+        do {
+            targets = try ShareTargetIndex.load(from: area)
+            phase = .choosing
+        } catch ShareError.noWorkspaces { phase = .noWorkspaces }
+        catch { phase = .unreadable }
+    }
+
+    var canSave: Bool { phase == .choosing && destination != nil && !providers.isEmpty }
+
+    func save() {
+        guard canSave, let area, let target = targets.first(where: { $0.id == destination }) else { return }
+        guard providers.count <= ShareLimits.maxItems else { phase = .failed("You can share up to 5 items at a time."); return }
+        phase = .saving
+        let providers = providers
+        let note = note
+        // No App Group container may ever be a copy source (the share group is refused by the stager itself).
+        let forbidden = ["group.io.severin.orch", "group.io.severin.orch.share"].compactMap {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
+        }
+        saveTask = Task { [weak self] in
+            do {
+                let session = try StagingSession(area: area, target: target, extraForbiddenRoots: forbidden)
+                self?.session = session
+                for p in providers {
+                    try Task.checkCancellation()
+                    try await ProviderStager.stage(p, into: session)
+                }
+                try Task.checkCancellation()
+                try session.commit(note: note)
+                self?.phase = .saved
+            } catch {
+                self?.session?.cancel()
+                if error is CancellationError { return }
+                self?.phase = .failed(ShareModel.message(for: error))
+            }
+        }
+    }
+
+    func cancel() {
+        saveTask?.cancel()
+        session?.cancel()
+        cancelRequest()
+    }
+
+    func done() { finish() }
+
+    func retry() { phase = .choosing }
+
+    static func message(for error: Error) -> String {
+        switch error as? ShareError {
+        case .tooManyItems: "You can share up to 5 items at a time."
+        case .tooLarge: "That is more than 25 MB. Nothing was saved."
+        case .destinationRemoved: "That workspace was removed from this iPhone. Nothing was saved."
+        case .unsupported: "orch can't send one of these items. Nothing was saved."
+        case .empty: "There is nothing to save."
+        default: "Couldn't save. Nothing was kept."
+        }
+    }
+
+    // MARK: Providers
+
+    static func describe(_ p: NSItemProvider) -> String {
+        if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) || p.registeredContentTypes.contains(where: { $0.conforms(to: .data) && !$0.conforms(to: .text) && !$0.conforms(to: .url) }) {
+            return SafeText.inline(p.suggestedName ?? "File", limit: 40)
+        }
+        if p.hasItemConformingToTypeIdentifier(UTType.url.identifier) { return "Link" }
+        if p.hasItemConformingToTypeIdentifier(UTType.text.identifier) { return "Text" }
+        return SafeText.inline(p.suggestedName ?? "Item", limit: 40)
+    }
+}
+
+// MARK: View
+
 private struct ShareComposeView: View {
-    let onCancel: () -> Void
+    @Bindable var model: ShareModel
 
     var body: some View {
         NavigationStack {
-            Form {
-                Text("Sharing comes in a later milestone.").foregroundStyle(OC.textMuted)
-            }
-            .navigationTitle("Share to orch")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
-                ToolbarItem(placement: .confirmationAction) { Button("Save") {}.disabled(true) }
-            }
+            content
+                .navigationTitle("Share to orch")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { model.cancel() }.accessibilityIdentifier("share.cancel")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        if model.phase == .saved {
+                            Button("Done") { model.done() }.accessibilityIdentifier("share.done")
+                        } else {
+                            Button("Save to send") { model.save() }
+                                .disabled(!model.canSave).accessibilityIdentifier("share.save")
+                        }
+                    }
+                }
         }
         .tint(OC.brand)
+    }
+
+    @ViewBuilder private var content: some View {
+        switch model.phase {
+        case .loading:
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .noWorkspaces:
+            Message(text: "Open orch and pair a workspace", detail: "Then share again. Nothing was saved.", id: "share.status.none")
+        case .unreadable:
+            Message(text: "orch can't read its workspaces", detail: "Open orch and try again. Nothing was saved.", id: "share.status.unreadable")
+        case .saved:
+            Message(text: "Saved. Open orch to send.", detail: nil, id: "share.status.saved")
+        case .failed(let text):
+            VStack {
+                Message(text: text, detail: nil, id: "share.status.failed")
+                Button("Try again") { model.retry() }.accessibilityIdentifier("share.retry")
+            }
+        case .choosing, .saving:
+            Form {
+                Section("Send to") {
+                    ForEach(model.targets) { t in
+                        Button {
+                            model.destination = t.id
+                        } label: {
+                            HStack {
+                                Capsule().fill(OC.wsHues[abs(t.hue) % OC.wsHues.count]).frame(width: 4, height: 24)
+                                Text(verbatim: SafeText.inline(t.name, limit: 40)).foregroundStyle(OC.text)
+                                Spacer()
+                                if model.destination == t.id { Image(systemName: "checkmark").foregroundStyle(OC.brand) }
+                            }
+                        }
+                        .accessibilityIdentifier("share.destination.\(t.ws)")
+                        .accessibilityAddTraits(model.destination == t.id ? .isSelected : [])
+                    }
+                }
+                Section("Items") {
+                    ForEach(Array(model.summary.enumerated()), id: \.offset) { _, line in
+                        Text(verbatim: line).lineLimit(1)
+                    }
+                }
+                Section("Note") {
+                    TextField("Short note (optional)", text: $model.note, axis: .vertical).lineLimit(1...3)
+                        .accessibilityIdentifier("share.note")
+                }
+                if model.phase == .saving {
+                    Section { ProgressView("Saving").accessibilityIdentifier("share.saving") }
+                }
+            }
+            .disabled(model.phase == .saving)
+        }
+    }
+}
+
+private struct Message: View {
+    let text: String
+    let detail: String?
+    let id: String
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(text).font(.headline).multilineTextAlignment(.center).accessibilityIdentifier(id)
+            if let detail { Text(detail).font(.subheadline).foregroundStyle(OC.textMuted).multilineTextAlignment(.center) }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

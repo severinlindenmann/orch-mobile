@@ -69,7 +69,10 @@ struct DropRow: View {
                 }
                 Text(verbatim: "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
-                if item.direction == .sending {
+                if item.quarantineJob != nil {
+                    Label("Destination removed. Choose another destination.", systemImage: "exclamationmark.triangle")
+                        .font(OF.meta).foregroundStyle(OC.warn)
+                } else if item.direction == .sending {
                     Label(item.simulatedDone ? "Sent (simulated)" : "Sending (simulated)",
                           systemImage: item.simulatedDone ? "checkmark.circle" : "arrow.up.circle")
                         .font(OF.meta).foregroundStyle(item.simulatedDone ? OC.ok : OC.info)
@@ -101,6 +104,21 @@ struct DropItemScreen: View {
                     LabeledContent("Expires", value: Fmt.relative(item.expires))
                     LabeledContent("Versions", value: "\(item.versions)")
                     LabeledContent("Direction", value: item.direction == .received ? "Received" : "Sending")
+                }
+                if item.quarantineJob != nil {
+                    Section("Choose another destination") {
+                        Text("The workspace this was meant for was removed from this iPhone. Nothing was sent. It is kept here until you pick where it goes, or it expires.")
+                            .font(OF.meta).foregroundStyle(OC.textMuted)
+                        ForEach(model.workspaces) { ws in
+                            Button { model.redirectQuarantined(id: item.id, to: ws.id) } label: {
+                                HStack {
+                                    WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
+                                    Text(verbatim: ws.displayName).foregroundStyle(OC.text)
+                                }
+                            }
+                            .accessibilityIdentifier("drop.redirect.\(ws.id)")
+                        }
+                    }
                 }
                 if let text = item.text {
                     Section(item.kind == .url ? "Link (shown as text, never opened)" : "Note") {
