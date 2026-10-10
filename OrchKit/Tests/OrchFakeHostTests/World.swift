@@ -189,10 +189,15 @@ extension World {
             defer { done.set() }
             do { return .success(try await body()) } catch { return .failure(error) }
         }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         for _ in 0..<steps {
             if done.value { break }
-            for _ in 0..<200 where !done.value && phone.clock.sleeperCount == 0 { await Task.yield() }
-            if done.value { break }
+            // Scheduler yields are not simulated elapsed time. Wait for the client to finish its storage/crypto
+            // work and park in polling before ticking; otherwise a near-boundary replay can age out in flight.
+            while !done.value && phone.clock.sleeperCount == 0 && ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+            if done.value || ContinuousClock.now >= deadline { break }
             _ = try await host.pump(relay: relay, transport: transport, session: hostSession)
             clock.advance(milliseconds: 500); phone.clock.advance(milliseconds: 500)
             await Task.yield()
