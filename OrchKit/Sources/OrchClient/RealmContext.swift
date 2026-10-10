@@ -45,8 +45,16 @@ public final class DemoGeneration: @unchecked Sendable {
     private var valid = true
     package init() {}
     public var isCurrent: Bool { lock.withLock { valid } }
+    /// Takes the gate, so it waits for every `perform` in flight: when it returns, no lookup that passed the check is still running.
     package func invalidate() { lock.withLock { valid = false } }
     package func check() throws { if !isCurrent { throw RealmViolation.staleGeneration } }
+    /// Runs `body` with the generation held current: check and body are one step with respect to `invalidate`, so a reset
+    /// cannot complete between them (custody access that creates keys must never outlive the reset that deleted them).
+    package func perform<T>(_ body: () throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        guard valid else { throw RealmViolation.staleGeneration }
+        return try body()
+    }
 }
 
 /// The person ids of every Demo authority created in this process. A live context refuses a certificate or card owned by
@@ -124,11 +132,15 @@ public struct RealmContext: Sendable {
     /// answers a Demo request with live keys (or the reverse) is refused with `RealmViolation.wrongStore`.
     public func deviceIdentity(custody: any DeviceKeyCustody, createIfMissing: Bool) throws -> DeviceIdentity {
         // A stale Demo context must not touch custody at all (it would recreate keys a reset just deleted).
-        try generation?.check()
-        let identity: DeviceIdentity
-        do { identity = try custody.load(realm: realm) }
-        catch CustodyError.missing where createIfMissing { identity = try custody.create(realm: realm) }
-        try admit(identity: identity)
+        let lookup = {
+            let identity: DeviceIdentity
+            do { identity = try custody.load(realm: realm) }
+            catch CustodyError.missing where createIfMissing { identity = try custody.create(realm: realm) }
+            try admit(identity: identity)
+            return identity
+        }
+        // Check and custody access are one step against `DemoGeneration.invalidate` (see `perform`).
+        let identity = try generation.map { try $0.perform(lookup) } ?? lookup()
         // Every Demo identity is leased to the context's generation: its handles stop signing when the Demo is reset.
         guard let g = generation else { return identity }
         return DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: g), kx: LeasedKeyAgreer(inner: identity.kx, generation: g), realm: identity.realm)

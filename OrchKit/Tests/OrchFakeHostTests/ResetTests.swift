@@ -22,6 +22,10 @@ final class CountingHooks: WipeHooks, @unchecked Sendable {
     }
 }
 
+func blockingWait(_ s: DispatchSemaphore) async {
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in DispatchQueue.global().async { s.wait(); c.resume() } }
+}
+
 @Suite struct ResetTests {
     func addWorkspace(_ w: World) async throws -> (ws: String, file: URL) {
         let ws = ID16.random().hex
@@ -87,5 +91,73 @@ final class CountingHooks: WipeHooks, @unchecked Sendable {
         _ = try await session.openDeviceSession(identity: id, deviceID: w.phoneID)         // works while current
         w.env.generation.invalidate()
         await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await session.openDeviceSession(identity: id, deviceID: w.phoneID) }
+    }
+
+    /// Custody whose `create` parks until released, to hold a lookup inside custody while a reset runs.
+    final class ParkedCustody: DeviceKeyCustody, @unchecked Sendable {
+        let inner: any DeviceKeyCustody
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        init(_ inner: any DeviceKeyCustody) { self.inner = inner }
+        func create(realm: Realm) throws -> DeviceIdentity { entered.signal(); release.wait(); return try inner.create(realm: realm) }
+        func load(realm: Realm) throws -> DeviceIdentity { try inner.load(realm: realm) }
+        func delete(realm: Realm) throws { try inner.delete(realm: realm) }
+        func status(realm: Realm) -> CustodyStatus { inner.status(realm: realm) }
+    }
+
+    @Test func aLookupInsideCustodyCannotRecreateKeysAfterTheResetCompletes() async throws {
+        let w = try await World.make()
+        try w.custody.delete(realm: .demo)                           // the lookup will take the create path
+        let parked = ParkedCustody(w.custody)
+        let ctx = w.env.context
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var lookupResult: Result<Void, any Error> = .success(())
+        Thread.detachNewThread {
+            lookupResult = Result { _ = try ctx.deviceIdentity(custody: parked, createIfMissing: true) }
+            done.signal()
+        }
+        await blockingWait(parked.entered)                                        // the lookup passed the generation check and is inside custody
+        let (env, c, v) = (w.env, w.custody, w.vault)
+        let reset = Task { try await DemoSetup.reset(env, custody: c, vaults: [v]) }
+        try await Task.sleep(for: .milliseconds(100))                // the reset is now waiting for the lookup, not racing it
+        parked.release.signal()
+        await blockingWait(done)
+        try await reset.value
+        _ = lookupResult
+        #expect(w.custody.status(realm: .demo) == .missing)          // nothing recreated after the reset's deletion
+    }
+
+    final class FlakyBackend: VaultBackend, @unchecked Sendable {
+        let inner = InMemoryVaultBackend()
+        private let lock = NSLock(); private var failList: Bool
+        init(failList: Bool) { self.failList = failList }
+        func heal() { lock.withLock { failList = false } }
+        func write(_ d: Data, at a: VaultAddress) throws { try inner.write(d, at: a) }
+        func add(_ d: Data, at a: VaultAddress) throws { try inner.add(d, at: a) }
+        func read(_ a: VaultAddress) throws -> Data { try inner.read(a) }
+        func remove(_ a: VaultAddress) throws { try inner.remove(a) }
+        func list(group: KeychainGroup) throws -> [SecretID] {
+            if lock.withLock({ failList }) { throw VaultError.unexpected(-1) }
+            return try inner.list(group: group)
+        }
+        func removeAll(group: KeychainGroup) throws { try inner.removeAll(group: group) }
+    }
+
+    @Test func eachVaultIsCleanedIndependentlyAndOnlyTheFailedOneIsRetried() async throws {
+        let w = try await World.make()
+        let flaky = FlakyBackend(failList: true)
+        let bad = SecretVault(group: .push, backend: flaky)
+        let good = SecretVault(group: .keys, backend: InMemoryVaultBackend())
+        let id = try SecretID(realm: .demo, ws: ID16.random().hex, purpose: "wk")
+        try good.put(Data([1]), for: id)
+        try bad.put(Data([2]), for: SecretID(realm: .demo, ws: ID16.random().hex, purpose: "wk"))
+        try bad.put(Data([3]), for: SecretID(realm: .live, ws: ID16.random().hex, purpose: "wk"))
+        let (env, c) = (w.env, w.custody)
+        // The failing vault is first, so a single throwing phase would never reach the good one.
+        await #expect(throws: (any Error).self) { try await DemoSetup.reset(env, custody: c, vaults: [bad, good]) }
+        #expect(try good.ids().isEmpty)                              // the good vault was cleaned despite the earlier failure
+        flaky.heal()
+        try await DemoSetup.reset(env, custody: c, vaults: [bad, good])
+        #expect(try bad.ids().map(\.realm) == [.live])              // demo item gone, live item intact
+        #expect(c.status(realm: .demo) == .missing)
     }
 }

@@ -5,7 +5,7 @@ import OrchProtocol
 import OrchStore
 
 final class ResetState: @unchecked Sendable {
-    enum Phase: Hashable { case wipe, removeRealm, custody, vaults }
+    enum Phase: Hashable { case wipe, removeRealm, custody, vault(Int) }
     private let lock = NSLock()
     private var task: Task<Void, any Error>?
     private var done: Set<Phase> = []
@@ -124,7 +124,7 @@ public enum DemoSetup {
             }
         }
         await attempt(.custody) { do { try custody.delete(realm: .demo) } catch CustodyError.missing {} catch CustodyError.orphaned {} }
-        await attempt(.vaults) { for v in vaults { try v.wipe(realm: .demo) } }
+        for (i, v) in vaults.enumerated() { await attempt(.vault(i)) { try v.wipe(realm: .demo) } }
         if let e = firstError { throw e }
     }
 
