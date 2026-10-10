@@ -92,17 +92,33 @@ final class PushNSETests: XCTestCase {
             throw XCTSkip("UNVERIFIED: simctl push did not launch the notification service extension on this runtime (no NSE-written marker). \(evidence)")
         }
 
-        // The extension ran. Check its own evidence, then the rest of the sequence in order.
-        XCTAssertTrue(marker.contains("count=1") && marker.contains("outcome=\(expectations[0]["outcome"]!)"), "first fixture: \(marker)")
-        XCTAssertTrue(text("push.replay").contains("replay: max="), "NSE must persist replay state: \(text("push.replay"))")
+        // The extension ran. Check its own evidence per fixture: marker, exact replay high-water mark, and what the OS delivered.
+        func check(_ i: Int, _ e: [String: String], marker m: String) {
+            let name = e["name"]!
+            XCTAssertTrue(m.contains("count=\(i + 1)") && m.contains("outcome=\(e["outcome"]!)"), "\(name): expected \(e["outcome"]!), marker \(m)")
+            XCTAssertTrue(text("push.replay").contains("replay: max=\(e["maxTs"]!) "), "\(name): replay high-water mark should be \(e["maxTs"]!): \(text("push.replay"))")
+            let delivered = text("push.delivered")
+            if e["body"] == "generic" {
+                XCTAssertTrue(delivered.contains("|New activity in orch|"), "\(name): a drop must show the app-authored generic text: \(delivered)")
+            } else {
+                XCTAssertTrue(delivered.contains("|\(e["body"]!)|"), "\(name): expected delivered body \(e["body"]!): \(delivered)")
+            }
+            if name == "01_question" {
+                XCTAssertTrue(delivered.contains("|Fixture Workspace|Ship L-0042?|thread=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"), "question present, titled by the workspace and threaded by it: \(delivered)")
+            }
+            if name == "02_question_closed" {
+                XCTAssertFalse(delivered.contains("|Ship L-0042?|"), "the closure must have replaced the question: \(delivered)")
+                XCTAssertTrue(delivered.contains("|Fixture Workspace|Answered on laptop|"), "\(delivered)")
+            }
+        }
+        check(0, expectations[0], marker: marker)
         for (i, e) in expectations.enumerated().dropFirst() {
             let m = try send(i + 1, settle: 5)
             touch("checked-\(i + 1)", m)
-            XCTAssertTrue(m.contains("count=\(i + 1)") && m.contains("outcome=\(e["outcome"]!)"), "\(e["name"]!): expected \(e["outcome"]!), marker \(m)")
+            check(i, e, marker: m)
         }
         let delivered = text("push.delivered")
         XCTAssertFalse(delivered.contains("attacker") || delivered.contains("URGENT") || delivered.contains("Wire 5000"), "relay-chosen text reached the user: \(delivered)")
         XCTAssertTrue(delivered.contains("thread=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"), "notifications are threaded by workspace: \(delivered)")
-        XCTAssertFalse(delivered.contains("|Ship L-0042?|"), "the question must have been replaced by its closure: \(delivered)")
     }
 }

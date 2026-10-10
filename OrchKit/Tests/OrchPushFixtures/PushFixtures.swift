@@ -73,6 +73,8 @@ public enum PushFixtures {
         /// What the extension must record in its marker, and what it must show (nil body: generic text).
         public let expectedOutcome: String
         public let expectedBody: String?
+        /// The workspace A replay high-water mark (`ts_ms`) after this fixture was processed.
+        public let expectedMaxTs: Int64
     }
 
     public static let questionID = "q-fixture-0001"
@@ -97,15 +99,15 @@ public enum PushFixtures {
         let hostileAPS: [String: Any] = ["alert": ["title": "URGENT: tap to approve", "subtitle": "Bank", "body": "Wire 5000 EUR to attacker.example"],
                                          "category": "APPROVE_ACTION", "thread-id": "attacker-thread", "mutable-content": 1, "sound": "evil.caf"]
         return [
-            .init(name: "01_question", apns: apns(outer: q), expectedOutcome: "shown", expectedBody: questionLabel),
-            .init(name: "02_question_closed", apns: apns(outer: closed), expectedOutcome: "closed", expectedBody: "Answered on laptop"),
-            .init(name: "03_replay", apns: apns(outer: replay), expectedOutcome: "droppedReplay", expectedBody: nil),
-            .init(name: "04_stale_25h", apns: apns(outer: stale), expectedOutcome: "droppedReplay", expectedBody: nil),
-            .init(name: "05_unknown_workspace", apns: apns(outer: unknown), expectedOutcome: "droppedNoMaterial", expectedBody: nil),
-            .init(name: "06_forged_wsk", apns: apns(outer: forged), expectedOutcome: "droppedVerification", expectedBody: nil),
-            .init(name: "07_tampered", apns: apns(outer: String(decoding: tampered, as: UTF8.self)), expectedOutcome: "droppedVerification", expectedBody: nil),
+            .init(name: "01_question", apns: apns(outer: q), expectedOutcome: "shown", expectedBody: questionLabel, expectedMaxTs: nowMs),
+            .init(name: "02_question_closed", apns: apns(outer: closed), expectedOutcome: "closed", expectedBody: "Answered on laptop", expectedMaxTs: nowMs + 1000),
+            .init(name: "03_replay", apns: apns(outer: replay), expectedOutcome: "droppedReplay", expectedBody: nil, expectedMaxTs: nowMs + 1000),
+            .init(name: "04_stale_25h", apns: apns(outer: stale), expectedOutcome: "droppedReplay", expectedBody: nil, expectedMaxTs: nowMs + 1000),
+            .init(name: "05_unknown_workspace", apns: apns(outer: unknown), expectedOutcome: "droppedNoMaterial", expectedBody: nil, expectedMaxTs: nowMs + 1000),
+            .init(name: "06_forged_wsk", apns: apns(outer: forged), expectedOutcome: "droppedVerification", expectedBody: nil, expectedMaxTs: nowMs + 1000),
+            .init(name: "07_tampered", apns: apns(outer: String(decoding: tampered, as: UTF8.self)), expectedOutcome: "droppedVerification", expectedBody: nil, expectedMaxTs: nowMs + 1000),
             .init(name: "08_malicious_outer", apns: apns(outer: hostile, aps: hostileAPS, extra: ["orch_key": "attacker/q-1", "route": "orch://approve"]),
-                  expectedOutcome: "shown", expectedBody: "Real label"),
+                  expectedOutcome: "shown", expectedBody: "Real label", expectedMaxTs: nowMs + 5000),
         ]
     }
 }

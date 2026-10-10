@@ -25,7 +25,7 @@ enum MakePushFixture {
         var expectations: [[String: Any]] = []
         for f in PushFixtures.sequence(nowMs: now) {
             try f.apns.write(to: dir.appendingPathComponent("\(f.name).apns"))
-            expectations.append(["name": f.name, "outcome": f.expectedOutcome, "body": f.expectedBody ?? "generic"])
+            expectations.append(["name": f.name, "outcome": f.expectedOutcome, "body": f.expectedBody ?? "generic", "maxTs": String(f.expectedMaxTs)])
         }
         let w = PushFixtures.workspaceA
         try Data("\(w.id.hex):\(B64U.encode(PushFixtures.materialJSON(w)))".utf8).write(to: dir.appendingPathComponent("material.arg"))

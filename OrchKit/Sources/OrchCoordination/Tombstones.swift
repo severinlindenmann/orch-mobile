@@ -1,7 +1,7 @@
 import Foundation
 
 /// Durable `(realm, ws, generation)` removal records kept as coordination files (A11/C2).
-/// Pure Foundation (no SQLite): usable from the NSE and share extension.
+/// Pure Foundation (no SQLite): usable from the NSE and share extension. Lives in OrchCoordination, not OrchStore.
 ///
 /// Semantics: a tombstone with generation `g` means every generation `<= g` of that workspace is removed;
 /// a later rejoin must use a higher generation. Files are read and written under `flock`.
@@ -42,7 +42,7 @@ public struct TombstoneCoordination: Sendable {
 
     /// Bare fail-closed check (unreadable counts as removed). Internal: only for callers whose action is
     /// itself ordered by the index tombstone (see WorkspaceIndex) and for tests.
-    func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
+    package func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
         for dir in directories {
             guard let records = try? Self.read(dir: dir) else { return true }
             if Self.covers(records, realm, ws, generation) { return true }
@@ -51,7 +51,7 @@ public struct TombstoneCoordination: Sendable {
     }
 
     /// Fail-open variant, for diagnostics and tests only: unreadable files count as "not removed".
-    func isRemoved(realm: String, ws: String, generation: Int64) -> Bool {
+    package func isRemoved(realm: String, ws: String, generation: Int64) -> Bool {
         for dir in directories {
             guard let records = try? Self.read(dir: dir) else { continue }
             if Self.covers(records, realm, ws, generation) { return true }
@@ -63,7 +63,7 @@ public struct TombstoneCoordination: Sendable {
     /// between the check and `body`. Returns nil, without running `body`, when the workspace is removed or
     /// the state is unreadable (fail-closed). `body` must be synchronous and short.
     public func ifNotRemoved<T>(realm: String, ws: String, generation: Int64, _ body: () throws -> T) throws -> T? {
-        try Self.withLocks(directories.sorted { $0.path < $1.path }[...], exclusive: false, create: false) { () throws -> T? in
+        try Self.withLocks(directories.sorted { $0.path < $1.path }[...], exclusive: false, create: true) { () throws -> T? in
             for dir in directories {
                 guard let records = try? Self.readUnlocked(dir: dir) else { return nil }
                 if Self.covers(records, realm, ws, generation) { return nil }

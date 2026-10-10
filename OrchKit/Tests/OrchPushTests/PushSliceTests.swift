@@ -82,8 +82,8 @@ struct ReplayPerWorkspaceTests {
                                      shareGroupRoot: base.appendingPathComponent("share"), realm: "live")
         let store = ReplayStore(pushDir: layout.pushDir, realm: "live")
         #expect(store.stateDir(workspace: a.id).standardizedFileURL == (try layout.pushStateDir(a.id.hex)).standardizedFileURL)
-        try store.transact(workspace: a.id, generation: 1) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 5)) }
-        try store.transact(workspace: b.id, generation: 1) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 5)) }
+        try store.transact(workspace: a.id, generation: 1, nowMs: nowMs) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 5)) }
+        try store.transact(workspace: b.id, generation: 1, nowMs: nowMs) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 5)) }
         let ws = a.id.hex
         let done = Task { () -> Void in
             let idx = try await WorkspaceIndex(layout: layout)
@@ -100,12 +100,12 @@ struct ReplayPerWorkspaceTests {
 
 extension ReplayStore {
     func peek(_ ws: ID16, _ generation: Int64) throws -> PushProcessor.WorkspaceReplay {
-        try transact(workspace: ws, generation: generation) { ($0, nil as PushProcessor.WorkspaceReplay?) }
+        try transact(workspace: ws, generation: generation, nowMs: nowMs) { ($0, nil as PushProcessor.WorkspaceReplay?) }
     }
 }
 
 extension PushProcessor.WorkspaceReplay {
-    func recordingForTest(_ id: String, _ ts: Int64) -> Self { .init(lastShown: [Data(id.utf8): ts], maxShownTs: ts) }
+    func recordingForTest(_ id: String, _ ts: Int64) -> Self { .init(lastShown: [PushProcessor.WorkspaceReplay.key(id): ts], maxShownTs: ts) }
 }
 
 struct ReplayStoreTests {
@@ -114,9 +114,9 @@ struct ReplayStoreTests {
     @Test func roundTripPerRealmWorkspaceGeneration() throws {
         let dir = tmp()
         let s = ReplayStore(pushDir: dir, realm: "live")
-        let st = PushProcessor.WorkspaceReplay(lastShown: [Data("q1".utf8): 10, Data([0xff, 0x00]): 7], maxShownTs: 10)
+        let st = PushProcessor.WorkspaceReplay(lastShown: [PushProcessor.WorkspaceReplay.key("q1"): 10, PushProcessor.WorkspaceReplay.key("\u{e9}"): 7], maxShownTs: 10, notBeforeTs: 3)
         #expect(try s.peek(a.id, 3).isEmpty)
-        try s.transact(workspace: a.id, generation: 3) { _ in ((), st) }
+        try s.transact(workspace: a.id, generation: 3, nowMs: nowMs) { _ in ((), st) }
         #expect(try s.load(workspace: a.id, generation: 3) == st)
         #expect(try s.load(workspace: a.id, generation: 4) == nil)
         #expect(try ReplayStore(pushDir: dir, realm: "demo").load(workspace: a.id, generation: 3) == nil, "realm separated")
@@ -127,35 +127,41 @@ struct ReplayStoreTests {
 
     @Test func newerGenerationReplacesOlderAndStaleMaterialIsRefused() throws {
         let s = ReplayStore(pushDir: tmp(), realm: "live")
-        let st = PushProcessor.WorkspaceReplay(lastShown: [Data("q".utf8): 1], maxShownTs: 1)
-        try s.transact(workspace: a.id, generation: 1) { _ in ((), st) }
-        #expect(try s.peek(a.id, 2).isEmpty, "a rejoin starts with no history")
-        try s.transact(workspace: a.id, generation: 2) { _ in ((), st) }
+        let st = PushProcessor.WorkspaceReplay(lastShown: [PushProcessor.WorkspaceReplay.key("q"): 1], maxShownTs: 1)
+        try s.transact(workspace: a.id, generation: 1, nowMs: nowMs) { _ in ((), st) }
+        #expect(try s.peek(a.id, 2).notBeforeTs == 1, "a rejoin starts above the old generation's high-water mark")
+        try s.transact(workspace: a.id, generation: 2, nowMs: nowMs) { _ in ((), st) }
         #expect(try s.load(workspace: a.id, generation: 1) == nil)
-        #expect(throws: ReplayStoreError.newerGeneration) { try s.transact(workspace: a.id, generation: 1) { ($0, nil as PushProcessor.WorkspaceReplay?) } }
+        #expect(throws: ReplayStoreError.newerGeneration) { try s.transact(workspace: a.id, generation: 1, nowMs: nowMs) { ($0, nil as PushProcessor.WorkspaceReplay?) } }
     }
 
-    @Test func corruptStateFailsClosedOnceThenHeals() throws {
+    @Test func corruptStateIsRecoveredInsideTheTransactionAboveTheRecoveryTime() throws {
         let s = ReplayStore(pushDir: tmp(), realm: "live")
-        try s.transact(workspace: a.id, generation: 1) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 1)) }
-        try Data("not json".utf8).write(to: s.fileURL(workspace: a.id, generation: 1))
-        #expect(throws: ReplayStoreError.corrupt) { try s.transact(workspace: a.id, generation: 1) { ($0, nil as PushProcessor.WorkspaceReplay?) } }
-        #expect(try s.peek(a.id, 1).isEmpty)
-        // a file copied from another workspace does not parse as this one's (the file names its own realm/ws/generation)
+        try s.transact(workspace: a.id, generation: 1, nowMs: nowMs) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 1)) }
+        let f = s.fileURL(workspace: a.id, generation: 1)
+        try Data("not json".utf8).write(to: f)
+        // a snapshot never mutates: it reports corruption and leaves the file alone
+        #expect(throws: ReplayStoreError.corrupt) { _ = try s.load(workspace: a.id, generation: 1) }
+        #expect(try Data(contentsOf: f) == Data("not json".utf8))
+        // recovery happens only in the transaction: moved aside, fresh state above `now`, written at once
+        let seen = try s.transact(workspace: a.id, generation: 1, nowMs: nowMs) { ($0, nil as PushProcessor.WorkspaceReplay?) }
+        #expect(seen.notBeforeTs == nowMs && seen.lastShown.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: f.appendingPathExtension("corrupt").path))
+        #expect(try s.load(workspace: a.id, generation: 1)?.notBeforeTs == nowMs)
+        // a file copied from another workspace does not parse as this one's
         let bid = PushFixtures.workspaceB.id
-        try s.transact(workspace: a.id, generation: 1) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 1)) }
         try FileManager.default.createDirectory(at: s.stateDir(workspace: bid), withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: s.fileURL(workspace: a.id, generation: 1), to: s.fileURL(workspace: bid, generation: 1))
-        #expect(throws: ReplayStoreError.corrupt) { _ = try s.peek(bid, 1) }
+        try FileManager.default.copyItem(at: f, to: s.fileURL(workspace: bid, generation: 1))
+        #expect(throws: ReplayStoreError.corrupt) { _ = try s.load(workspace: bid, generation: 1) }
     }
 
     @Test func crashBeforeRenameLeavesOldStateIntact() throws {
         let s = ReplayStore(pushDir: tmp(), realm: "live")
         let old = PushProcessor.WorkspaceReplay().recordingForTest("old", 1)
-        try s.transact(workspace: a.id, generation: 1) { _ in ((), old) }
+        try s.transact(workspace: a.id, generation: 1, nowMs: nowMs) { _ in ((), old) }
         // A body that throws after computing a next state persists nothing.
         struct Boom: Error {}
-        #expect(throws: Boom.self) { try s.transact(workspace: a.id, generation: 1) { (_: PushProcessor.WorkspaceReplay) -> (Void, PushProcessor.WorkspaceReplay?) in throw Boom() } }
+        #expect(throws: Boom.self) { try s.transact(workspace: a.id, generation: 1, nowMs: nowMs) { (_: PushProcessor.WorkspaceReplay) -> (Void, PushProcessor.WorkspaceReplay?) in throw Boom() } }
         // A stray half-written temp file from a crashed writer is ignored by readers.
         try Data("{".utf8).write(to: s.stateDir(workspace: a.id).appendingPathComponent(".tmp-crashed"))
         #expect(try s.load(workspace: a.id, generation: 1) == old)

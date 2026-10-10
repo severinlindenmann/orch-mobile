@@ -13,6 +13,10 @@ public enum PushProcessor {
     public static let maxAgeMs: Int64 = 24 * 3600 * 1000
     public static let skewMs: Int64 = 300_000
     public static let maxLabelCodePoints = 80
+    /// Local limits (gaps.md, M7): protocol section 9 caps neither the id nor the table. A hostile host could otherwise grow
+    /// the persisted replay state without bound; the table stores SHA-256(id), never the id.
+    public static let maxIDBytes = 128
+    public static let maxEntriesPerWorkspace = 512
     public static let kinds: [String] = ["question", "question.closed", "ticket.update", "drop.new", "peer.ticket", "join"] // compared by UTF-8 bytes
 
     /// What a push receiver holds for one workspace: the pinned `WSK` and `K_push(ws, e)` per epoch it holds.
@@ -41,6 +45,8 @@ public enum PushProcessor {
     /// Why a payload was dropped. Raw values are the vectors' `why`.
     public enum DropReason: String, Sendable, Equatable {
         case size, shape, noKey = "no_key", tag, signature, payload, stale, replay
+        /// Local limit, not a protocol reason: the workspace's replay table is full (`maxEntriesPerWorkspace`). Refuse rather than evict.
+        case capacity
     }
 
     public enum Outcome: Equatable, Sendable {
@@ -53,28 +59,34 @@ public enum PushProcessor {
     /// Host-api v0 slice 4: the high-water mark is per workspace, so a high timestamp in workspace A can neither
     /// suppress nor prune anything of workspace B. (The realm is applied at the storage boundary, `ReplayStore`.)
     public struct WorkspaceReplay: Equatable, Sendable {
-        /// Keyed by the id's UTF-8 bytes, never by `String` (Swift equality is canonical equivalence, the protocol
-        /// compares code points).
+        /// Keyed by SHA-256 of the id's UTF-8 bytes: bounded size, and bytes never `String` (Swift equality is canonical
+        /// equivalence, the protocol compares code points).
         public private(set) var lastShown: [Data: Int64]
         /// The highest `ts_ms` actually shown: host time under the WSK signature, not the local clock. The 24 h lower
         /// bound is `max(nowMs, maxShownTs) - 24 h` and entries older than `maxShownTs - 24 h` are pruned, so winding
         /// the clock back cannot make a pruned push replayable. A wrong local clock cannot move this mark, only a
         /// genuine signed push can (and only within `now + 300 s`). `Int64.min` means no history.
         public private(set) var maxShownTs: Int64
-        public init(lastShown: [Data: Int64] = [:], maxShownTs: Int64 = Int64.min) {
-            self.lastShown = lastShown; self.maxShownTs = maxShownTs
+        /// Nothing at or below this is accepted. Seeded when history was lost on purpose or by accident (corrupt state:
+        /// the time of recovery; a rejoin: the old generation's high-water mark), so a relay replaying a push that was
+        /// already shown cannot show it again.
+        public private(set) var notBeforeTs: Int64
+        public init(lastShown: [Data: Int64] = [:], maxShownTs: Int64 = Int64.min, notBeforeTs: Int64 = Int64.min) {
+            self.lastShown = lastShown; self.maxShownTs = maxShownTs; self.notBeforeTs = notBeforeTs
         }
-        public func last(id: String) -> Int64? { lastShown[Data(id.utf8)] }
-        public var isEmpty: Bool { lastShown.isEmpty && maxShownTs == Int64.min }
+        public static func key(_ id: String) -> Data { Data(SHA256.hash(data: Data(id.utf8))) }
+        public func last(id: String) -> Int64? { lastShown[Self.key(id)] }
+        public var isEmpty: Bool { lastShown.isEmpty && maxShownTs == Int64.min && notBeforeTs == Int64.min }
+        public func with(notBeforeTs floor: Int64) -> WorkspaceReplay { WorkspaceReplay(lastShown: lastShown, maxShownTs: maxShownTs, notBeforeTs: max(notBeforeTs, floor)) }
 
         func pruned() -> WorkspaceReplay {
             let floor = saturatingAdd(maxShownTs, -PushProcessor.maxAgeMs)
-            return WorkspaceReplay(lastShown: lastShown.filter { $0.value >= floor }, maxShownTs: maxShownTs)
+            return WorkspaceReplay(lastShown: lastShown.filter { $0.value >= floor }, maxShownTs: maxShownTs, notBeforeTs: notBeforeTs)
         }
 
         func recording(_ id: String, _ ts: Int64) -> WorkspaceReplay {
-            var next = lastShown; next[Data(id.utf8)] = ts
-            return WorkspaceReplay(lastShown: next, maxShownTs: max(maxShownTs, ts)).pruned()
+            var next = lastShown; next[Self.key(id)] = ts
+            return WorkspaceReplay(lastShown: next, maxShownTs: max(maxShownTs, ts), notBeforeTs: notBeforeTs).pruned()
         }
     }
 
@@ -128,8 +140,12 @@ public enum PushProcessor {
         case .drop(let why): return (.drop(why), replay)
         case .show(let p):
             let state = replay.replay(for: p.workspace).pruned()
+            if p.tsMs <= state.notBeforeTs { return (.drop(.replay), replay.updating(p.workspace, state)) }
             if let why = checkTimestamp(tsMs: p.tsMs, nowMs: nowMs, floorNowMs: state.maxShownTs, lastShown: state.last(id: p.id)) {
                 return (.drop(why), replay.updating(p.workspace, state))
+            }
+            if state.last(id: p.id) == nil, state.lastShown.count >= maxEntriesPerWorkspace {
+                return (.drop(.capacity), replay.updating(p.workspace, state))
             }
             return (.show(p), replay.updating(p.workspace, state.recording(p.id, p.tsMs)))
         }
@@ -175,7 +191,7 @@ public enum PushProcessor {
         guard let o = p.object, Set(o.keys) == ["kind", "id", "label", "ts_ms"], let kind = o["kind"]?.string,
               kinds.contains(where: { $0.bytesEqual(kind) }),
               let label = o["label"]?.string, label.unicodeScalars.count <= maxLabelCodePoints,
-              let id = o["id"]?.string, let ts = o["ts_ms"]?.int else { return .drop(.payload) }
+              let id = o["id"]?.string, id.utf8.count <= maxIDBytes, let ts = o["ts_ms"]?.int else { return .drop(.payload) }
         return .show(Payload(workspace: ws, epoch: epoch, kind: kind, id: id, label: label, tsMs: ts))
     }
 }

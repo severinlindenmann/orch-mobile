@@ -1,6 +1,6 @@
 import Foundation
+import OrchCoordination
 import OrchProtocol
-import OrchStore
 
 /// The notification extension's whole decision, minus UserNotifications: material in, presentation out. Pure of
 /// UI; its I/O is the keychain material source, the replay state file and the marker, all injected, so the real
@@ -11,9 +11,22 @@ import OrchStore
 /// and persist the shown timestamp durably BEFORE anything is shown. A removed workspace writes nothing and shows
 /// generic text. Rejected input is never routed.
 public struct PushHandler: Sendable {
+    /// What must still hold at the moment of delivery: the workspace is not removed and nothing newer for the same id has
+    /// been accepted. Carried from processing to `finalize` (A11: "check the generation ... before handing off content").
+    public struct Handoff: Equatable, Sendable {
+        public let workspace: ID16
+        public let generation: Int64
+        public let id: String
+        public let tsMs: Int64
+    }
+
     public struct Result: Equatable, Sendable {
         public let presentation: PushPresentation
         public let outcome: NSEMarker.Outcome
+        public let handoff: Handoff?
+        init(presentation: PushPresentation, outcome: NSEMarker.Outcome, handoff: Handoff? = nil) {
+            self.presentation = presentation; self.outcome = outcome; self.handoff = handoff
+        }
     }
 
     let material: any PushMaterialSource
@@ -39,8 +52,23 @@ public struct PushHandler: Sendable {
         return r
     }
 
-    /// Timeout path: the marker records `expired`; the caller delivers `PushPresentation.generic`.
-    public func recordExpired() { NSEMarker.record(.expired, pushDir: pushDir, nowMs: nowMs) }
+    /// Timeout path: the marker records `expired`, best effort (never waits for a lock, no fsync); the caller delivers
+    /// `PushPresentation.generic` first.
+    public func recordExpired() { NSEMarker.record(.expired, pushDir: pushDir, nowMs: nowMs, bestEffort: true) }
+
+    /// Runs immediately before the content handler is called. Re-checks, under the same shared removal lock and the
+    /// workspace's replay lock, that the workspace is still present at the material's generation and that no NEWER push
+    /// for the same id has been accepted meanwhile (a question must not appear after its closure committed). Anything
+    /// else, including unreadable state, delivers generic text.
+    public func finalize(_ r: Result) -> PushPresentation {
+        guard let h = r.handoff else { return r.presentation }
+        do {
+            let stillCurrent = try coordination.ifNotRemoved(realm: realm, ws: h.workspace.hex, generation: h.generation) { () throws -> Bool in
+                try store.transact(workspace: h.workspace, generation: h.generation, nowMs: nowMs) { cur in (cur.last(id: h.id) == h.tsMs, nil) }
+            }
+            return stillCurrent == true ? r.presentation : .generic
+        } catch { return .generic }
+    }
 
     var nowMs: Int64 { Int64((now().timeIntervalSince1970 * 1000).rounded()) }
 
@@ -56,13 +84,13 @@ public struct PushHandler: Sendable {
         let now = nowMs
         do {
             let ran = try coordination.ifNotRemoved(realm: realm, ws: ws.hex, generation: mat.generation) { () throws -> Result in
-                try store.transact(workspace: ws, generation: mat.generation) { current in
+                try store.transact(workspace: ws, generation: mat.generation, nowMs: now) { current in
                     let out = PushProcessor.process(outer: raw, keys: keys, replay: .init(workspaces: [ws: current]), nowMs: now)
                     switch out.result {
                     case .show(let p):
                         let pres = PushPresentation.make(p, workspaceName: mat.name)
                         let outcome = NSEMarker.Outcome(shown: p)
-                        return (Result(presentation: pres, outcome: outcome), out.replay.replay(for: ws))
+                        return (Result(presentation: pres, outcome: outcome, handoff: pres.style == .generic ? nil : Handoff(workspace: ws, generation: mat.generation, id: p.id, tsMs: p.tsMs)), out.replay.replay(for: ws))
                     case .drop(let why):
                         let outcome = NSEMarker.Outcome(drop: why)
                         // A drop never changes persisted state (pruning is recomputed from the shown mark on each call).

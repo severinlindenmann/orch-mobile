@@ -1,4 +1,5 @@
 import Foundation
+import OrchCoordination
 
 /// The notification extension's invocation marker (decision A12, challenge C2): written by the extension itself on every
 /// invocation, so a test can tell "the extension ran" from "a notification appeared". It holds a counter, an outcome
@@ -12,6 +13,7 @@ public struct NSEMarker: Equatable, Codable, Sendable {
             switch why {
             case .replay, .stale: self = .droppedReplay
             case .noKey: self = .droppedNoMaterial
+            case .capacity: self = .droppedState
             default: self = .droppedVerification
             }
         }
@@ -25,18 +27,16 @@ public struct NSEMarker: Equatable, Codable, Sendable {
     public static let lockName = "nse-marker.lock"
 
     /// Increments the counter under flock and replaces the file atomically. Best effort: a failure never blocks delivery.
+    /// `bestEffort: true` (the expiry path) takes the lock with LOCK_NB and skips the fsyncs: it never waits.
     @discardableResult
-    public static func record(_ outcome: Outcome, pushDir: URL, nowMs: Int64) -> NSEMarker? {
+    public static func record(_ outcome: Outcome, pushDir: URL, nowMs: Int64, bestEffort: Bool = false) -> NSEMarker? {
         do {
-            try ReplayStore.makeDir(pushDir)
-            let fd = open(pushDir.appendingPathComponent(lockName).path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-            guard fd >= 0 else { return nil }
-            defer { close(fd) }
-            guard flock(fd, LOCK_EX) == 0 else { return nil }
-            defer { flock(fd, LOCK_UN) }
-            let next = NSEMarker(count: (read(pushDir: pushDir)?.count ?? 0) + 1, outcome: outcome, atMs: nowMs)
-            try ReplayStore.atomicWrite(try JSONEncoder().encode(next), to: pushDir.appendingPathComponent(fileName), dir: pushDir)
-            return next
+            try CoordinationFiles.makeDir(pushDir)
+            return try CoordinationFiles.withFlock(pushDir.appendingPathComponent(lockName).path, blocking: !bestEffort) { () throws -> NSEMarker in
+                let next = NSEMarker(count: (read(pushDir: pushDir)?.count ?? 0) + 1, outcome: outcome, atMs: nowMs)
+                try CoordinationFiles.atomicWrite(try JSONEncoder().encode(next), to: pushDir.appendingPathComponent(fileName), dir: pushDir, durable: !bestEffort)
+                return next
+            }
         } catch { return nil }
     }
 

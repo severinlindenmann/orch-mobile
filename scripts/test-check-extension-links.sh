@@ -36,6 +36,10 @@ printf 'import OrchCustody\n' >> "$tmp/repo/OrchKit/Sources/OrchPush/PushHandler
 expect_failure "OrchPush importing OrchCustody (signing code in the extension closure)"
 
 fresh_copy
+printf 'import OrchStore\n' >> "$tmp/repo/OrchKit/Sources/OrchPush/PushHandler.swift"
+expect_failure "OrchStore (SQLite) in the extension closure"
+
+fresh_copy
 printf 'import OrchFakeHost\n' >> "$tmp/repo/NotificationService/NotificationService.swift"
 expect_failure "FakeHost in the extension"
 echo 'Negative tests OK'
