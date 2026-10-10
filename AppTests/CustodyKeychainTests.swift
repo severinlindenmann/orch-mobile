@@ -1,6 +1,6 @@
 import CryptoKit
-import OrchCustody
-import OrchProtocol
+@testable import OrchCustody
+@testable import OrchProtocol
 import XCTest
 
 /// Hosted tests against the real keychain (simulator). They need the app's keychain entitlements, so the test

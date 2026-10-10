@@ -29,8 +29,8 @@ public struct DevicePublicKeys: Equatable, Sendable {
 
 /// `dk_sig` (signing) and `dk_kx` (key agreement): two P-256 keys, one device identity (decision A6).
 public struct DeviceIdentity: Sendable {
-    public let sig: any Signer
-    public let kx: any KeyAgreer
+    package let sig: any Signer
+    package let kx: any KeyAgreer
     public var publicKeys: DevicePublicKeys { DevicePublicKeys(sig: sig.publicKey, kx: kx.publicKey) }
 }
 
