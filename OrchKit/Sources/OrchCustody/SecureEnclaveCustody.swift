@@ -29,18 +29,18 @@ public struct SecureEnclaveCustody: DeviceKeyCustody {
             kx = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: ac)
         } catch { throw CustodyError.unavailable }
         try blobs.createPair(realm, sig: sig.dataRepresentation, kx: kx.dataRepresentation)
-        return try Self.identity(sigBlob: sig.dataRepresentation, kxBlob: kx.dataRepresentation)
+        return try Self.identity(sigBlob: sig.dataRepresentation, kxBlob: kx.dataRepresentation, realm: realm)
     }
 
     public func load(realm: Realm) throws -> DeviceIdentity {
         let (s, k) = try blobs.readBoth(realm)
-        return try Self.identity(sigBlob: s, kxBlob: k)
+        return try Self.identity(sigBlob: s, kxBlob: k, realm: realm)
     }
 
-    static func identity(sigBlob: Data, kxBlob: Data) throws -> DeviceIdentity {
+    static func identity(sigBlob: Data, kxBlob: Data, realm: Realm) throws -> DeviceIdentity {
         do {
             return DeviceIdentity(
-                sig: try SecureEnclaveSigner(blob: sigBlob), kx: try SecureEnclaveKeyAgreer(blob: kxBlob))
+                sig: try SecureEnclaveSigner(blob: sigBlob), kx: try SecureEnclaveKeyAgreer(blob: kxBlob), realm: realm)
         } catch {
             // A blob that the Secure Enclave will not restore could be a lock, a transient failure or a dead
             // key (passcode removed): it cannot be told apart here, so refuse to use it without declaring it lost.
@@ -51,7 +51,7 @@ public struct SecureEnclaveCustody: DeviceKeyCustody {
     public func delete(realm: Realm) throws { try blobs.deleteBoth(realm) }
 
     public func status(realm: Realm) -> CustodyStatus {
-        blobs.status(realm) { s, k in _ = try Self.identity(sigBlob: s, kxBlob: k) }
+        blobs.status(realm) { s, k in _ = try Self.identity(sigBlob: s, kxBlob: k, realm: realm) }
     }
 }
 

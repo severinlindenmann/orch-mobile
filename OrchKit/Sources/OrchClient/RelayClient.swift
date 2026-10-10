@@ -8,17 +8,31 @@ public struct RelayClient: Sendable {
     public let transport: any RelayTransport
     public init(transport: any RelayTransport) { self.transport = transport }
 
-    public struct Opened: Equatable, Sendable { public let session: RelaySession; public let expiresMs: Int64 }
-
-    /// challenge, sign with the device's `dk_sig`, login. The signed origin is the one the relay reports being; the
-    /// client signs the origin of its own reviewed context, never one the relay names.
-    public func openDeviceSession(identity: DeviceIdentity, deviceID: ID16, origin: String) async throws -> Opened {
-        try await openSession(kind: .device, id: deviceID, signer: identity.sig, origin: origin)
+    /// A session and its expiry. The bearer is redacted from every textual rendering.
+    public struct Opened: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+        public let session: RelaySession
+        public let expiresMs: Int64
+        public var description: String { "Opened(session: <redacted>, expiresMs: \(expiresMs))" }
+        public var debugDescription: String { description }
+        public var customMirror: Mirror { Mirror(self, children: ["expiresMs": expiresMs], displayStyle: .struct) }
     }
 
-    package func openSession(kind: RelayAuth.Kind, id: ID16, signer: some Signer, origin: String) async throws -> Opened {
+    /// challenge, sign with the device's `dk_sig`, login. The login is bound to this transport: the signed origin is
+    /// `transport.context.origin` (never a caller-supplied or relay-named one), and the identity must carry the transport's
+    /// realm. Both are checked before the first request, so a Demo key cannot sign a live origin and a live key cannot sign
+    /// for Demo through any transport, including one that merely forwards to another.
+    public func openDeviceSession(identity: DeviceIdentity, deviceID: ID16) async throws -> Opened {
+        try transport.context.admit(identity: identity)
+        guard Identifiers.deviceID(identity.sig.publicKey) == deviceID else { throw TransportError.invalidArgument }
+        return try await openSession(kind: .device, id: deviceID, signer: identity.sig)
+    }
+
+    package func openSession(kind: RelayAuth.Kind, id: ID16, signer: some Signer) async throws -> Opened {
+        let context = transport.context
+        do { try context.generation?.check(); try context.admit(origin: context.origin) }
+        catch let v as RealmViolation { throw TransportError.realm(v) }
         let ch = try HostAPI.challenge(try HostAPI.expect(try await transport.challenge()))
-        let sig = try RelayAuth.sign(signer, origin: origin, challenge: ch.challenge, kind: kind, id: id)
+        let sig = try RelayAuth.sign(signer, origin: context.origin, challenge: ch.challenge, kind: kind, id: id)
         let reply = try await transport.login(HostAPI.loginBody(challenge: ch.challenge, kind: kind, id: id, signature: sig))
         let l = try HostAPI.login(try HostAPI.expect(reply))
         return Opened(session: l.session, expiresMs: l.expiresMs)
@@ -40,7 +54,8 @@ public struct RelayClient: Sendable {
         try HostAPI.cardKey(try HostAPI.expect(try await transport.cardKey(workspaceID: workspace, cardSequence: cardSequence, session: session)))
     }
 
-    public func revocation(device: ID16, session: RelaySession) async throws -> JSONValue {
-        try HostAPI.revocation(try HostAPI.expect(try await transport.revocation(deviceID: device, session: session)))
+    /// The device's PK-signed revocation record, fetched without a session (a revoked device has none; the record is public).
+    public func revocation(device: ID16) async throws -> JSONValue {
+        try HostAPI.revocation(try HostAPI.expect(try await transport.revocation(deviceID: device)))
     }
 }

@@ -23,13 +23,14 @@ public actor FakePrimary {
     private let sig = SoftwareSigner()
     private let kx = SoftwareKeyAgreer()
     private let wall: any WallClock
+    private let capability: DemoCapability
     public nonisolated let publicKey: SigningPublicKey
     public nonisolated let personID: ID16
     public nonisolated let deviceID: ID16
     public nonisolated let deviceKeys: DemoKeys
 
     public init(capability: DemoCapability, wall: any WallClock, entropy: any Entropy) {
-        self.wall = wall
+        self.wall = wall; self.capability = capability
         pvk = SymmetricKey(data: entropy.bytes(32))
         publicKey = pk.publicKey
         personID = Identifiers.personID(pk.publicKey)
@@ -41,6 +42,7 @@ public actor FakePrimary {
     /// A PK-signed certificate for exactly these keys (shell for the section 8.4 flow).
     public func certify(_ keys: DemoKeys, label: String, scopesMax: [String] = ["look", "decide", "operate", "type"],
                         lifetimeMs: Int64? = nil) throws -> JSONValue {
+        try capability.generation.check()
         guard Scopes.isValid(scopesMax), !scopesMax[0].utf8.starts(with: "drop:".utf8) else { throw Refusal.scopeExceeded }
         let device = Identifiers.deviceID(keys.sig)
         let now = wall.nowMs
@@ -57,17 +59,20 @@ public actor FakePrimary {
     public func certifyOwnDevice(label: String = "Demo Mac") throws -> JSONValue { try certify(deviceKeys, label: label) }
 
     func delegation(workspace: ID16, wsk: SigningPublicKey, clientHosted: Bool) throws -> SignedObject {
-        try WorkspaceDelegation.sign(workspace: workspace, wsk: wsk, clientHosted: clientHosted, issuedMs: wall.nowMs, owner: pk)
+        try capability.generation.check()
+        return try WorkspaceDelegation.sign(workspace: workspace, wsk: wsk, clientHosted: clientHosted, issuedMs: wall.nowMs, owner: pk)
     }
 
     /// A PK-signed revocation (section 6.2) of a device of this person.
     public func revoke(device: ID16, reason: String = "lost") throws -> JSONValue {
-        try SignedObject.sign(["v": 2, "suite": 2, "kind": "revocation", "person_id": .string(personID.hex), "device_id": .string(device.hex),
+        try capability.generation.check()
+        return try SignedObject.sign(["v": 2, "suite": 2, "kind": "revocation", "person_id": .string(personID.hex), "device_id": .string(device.hex),
                                "revoked_ms": .int(wall.nowMs), "reason": .string(reason)], kind: .revocation, signer: pk).json
     }
 
     func sign(login challenge: Data, origin: String) throws -> Data {
-        try RelayAuth.sign(sig, origin: origin, challenge: challenge, kind: .device, id: deviceID)
+        try capability.generation.check()
+        return try RelayAuth.sign(sig, origin: origin, challenge: challenge, kind: .device, id: deviceID)
     }
 }
 
@@ -79,6 +84,7 @@ public actor FakeHost {
     private let wsk = SoftwareSigner()
     private let wxk = SoftwareKeyAgreer()
     private let primary: FakePrimary
+    private let capability: DemoCapability
     private let wall: any WallClock
     private let entropy: any Entropy
     private let origin: String
@@ -93,8 +99,9 @@ public actor FakeHost {
 
     public init(capability: DemoCapability, context: RealmContext, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
                 hostedBy: String? = nil, workspace: ID16? = nil, wall: any WallClock, entropy: any Entropy) throws {
-        guard context.realm == .demo else { throw RealmViolation.wrongStore }
+        guard context.realm == .demo, context.generation === capability.generation else { throw RealmViolation.wrongStore }
         self.workspace = workspace ?? entropy.id16()
+        self.capability = capability
         self.primary = primary; self.wall = wall; self.entropy = entropy; self.origin = context.origin
         self.name = name; self.clientHosted = clientHosted; self.hostedBy = hostedBy
         wskPublic = wsk.publicKey
@@ -107,6 +114,7 @@ public actor FakeHost {
 
     /// Epoch 1, card_seq 1, with a fresh CK.
     public func card() async throws -> JSONValue {
+        try capability.generation.check()
         cardSeq = max(cardSeq, 1)
         let ck = cks[cardSeq] ?? SymmetricKey(data: entropy.bytes(32)); cks[cardSeq] = ck
         let part = CardSealedPart(name: name, description: "Demo workspace", capabilities: ["tickets", "questions", "drop"], hostedBy: hostedBy)
@@ -118,16 +126,19 @@ public actor FakeHost {
 
     /// `WK_e` sealed to a device and signed by `WSK` (section 7.3).
     public func grant(for keys: DemoKeys, epoch e: UInt32) throws -> JSONValue {
-        try WKGrant.make(wsk: wsk, workspace: workspace, device: Identifiers.deviceID(keys.sig), deviceKey: keys.kx, epoch: e, wk: wk(e)).json
+        try capability.generation.check()
+        return try WKGrant.make(wsk: wsk, workspace: workspace, device: Identifiers.deviceID(keys.sig), deviceKey: keys.kx, epoch: e, wk: wk(e)).json
     }
 
     /// `CK` of a card sequence sealed to a device (purpose `card`, section 5.3).
     public func cardKeyWrap(for keys: DemoKeys, cardSeq seq: UInt32 = 1) throws -> Data {
+        try capability.generation.check()
         guard let ck = cks[seq] else { throw Refusal.malformed }
         return try CardKeyWrap.seal(ck: ck, to: keys.kx, deviceID: Identifiers.deviceID(keys.sig), workspace: workspace, cardSeq: seq)
     }
 
     public func memberList(_ members: [(device: ID16, scopes: [String])], epoch e: UInt32, listSeq seq: Int64) throws -> JSONValue {
+        try capability.generation.check()
         let sorted = members.sorted { $0.device.hex < $1.device.hex }
         return try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(workspace.hex), "epoch": .int(Int64(e)), "list_seq": .int(seq),
@@ -135,9 +146,14 @@ public actor FakeHost {
                                      kind: .memberList, signer: wsk).json
     }
 
-    /// Workspace session with the relay (section 12.2, signed with `WSK`).
+    /// Workspace session with the relay (section 12.2, signed with `WSK`). The login is bound to the transport's own context:
+    /// it must be this Demo lifetime's context at this host's origin, or nothing is sent (a forwarding wrapper that reports another
+    /// context cannot make `WSK` sign a foreign origin; `RelayClient` signs `transport.context.origin`).
     public func openSession(transport: any RelayTransport) async throws -> RelaySession {
-        try await RelayClient(transport: transport).openSession(kind: .workspace, id: workspace, signer: wsk, origin: origin).session
+        try capability.generation.check()
+        let c = transport.context
+        guard c.realm == .demo, c.origin == origin, c.generation === capability.generation else { throw RealmViolation.wrongTransport }
+        return try await RelayClient(transport: transport).openSession(kind: .workspace, id: workspace, signer: wsk).session
     }
 
     /// Publishes the directory entries, the card, the CK wrap and `WK_1` grant for the given devices and then the first list.

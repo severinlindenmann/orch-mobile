@@ -39,7 +39,7 @@ import OrchTestVectors
             let clock = TestClock(wallStartMs: 1_790_000_000_000)
             let entropy = QueuedEntropy([challenge])
             let ctx = try RealmContext.live(origin: origin)
-            let relay = FakeRelay(context: ctx, clock: clock, wall: clock, entropy: entropy)
+            let relay = FakeRelay(testingContext: ctx, clock: clock, wall: clock, entropy: entropy)
             let p = person()
             await relay.registerOwner(p.pk.publicKey)
             try await relay.publishCertificate(try cert(p.pk, for: pub, nowMs: clock.nowMs))
@@ -81,7 +81,7 @@ import OrchTestVectors
         let again = try await w.transport.login(HostAPI.loginBody(challenge: ch.challenge, kind: .device, id: w.phoneID, signature: sig))
         #expect(errorCode(again) == "unknown_challenge")
         // 15 min session: usable until expiry, then 401 unauthenticated (adapter error, with host_api).
-        let opened = try await c.openDeviceSession(identity: w.env.device, deviceID: w.phoneID, origin: w.env.context.origin)
+        let opened = try await c.openDeviceSession(identity: w.env.device, deviceID: w.phoneID)
         #expect(opened.expiresMs == w.clock.nowMs + 15 * 60_000)
         _ = try await c.card(workspace: w.ws, session: opened.session)
         w.clock.advance(milliseconds: 15 * 60_000 - 1)
@@ -120,22 +120,56 @@ import OrchTestVectors
         #expect(!w.hostSession.token.isEmpty)
     }
 
-    @Test func revokedDeviceKeepsASessionButNoMembership() async throws {
+    @Test func aRevokedDeviceGetsNoSessionAndReadsItsRecordWithoutOne() async throws {
         let w = try await World.make()
+        let c = RelayClient(transport: w.transport)
+        // The record route is session-less; before any revocation there is nothing to find.
+        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await c.revocation(device: w.phoneID) }
+        #expect(await w.relay.sessionCount() == 2)                // the phone's and the host's
         let rec = try await w.primary.revoke(device: w.phoneID)
         try await w.relay.publishRevocation(rec)
-        let c = RelayClient(transport: w.transport)
-        // Login still works (the device may fetch its own record); every membership route says revoked, which is unsigned.
-        let s = try await c.openDeviceSession(identity: w.env.device, deviceID: w.phoneID, origin: w.env.context.origin).session
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { _ = try await c.card(workspace: w.ws, session: s) }
-        let fetched = try await c.revocation(device: w.phoneID, session: s)
+        // Publishing the revocation ends the device's sessions at once.
+        #expect(await w.relay.sessionCount() == 1)
+        await #expect(throws: ClientError.adapter(.unauthenticated)) { _ = try await c.card(workspace: w.ws, session: w.phoneSession) }
+        // A fresh login for the revoked device is refused after the signature verifies: 403 revoked, no token.
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) {
+            _ = try await c.openDeviceSession(identity: w.env.device, deviceID: w.phoneID)
+        }
+        #expect(await w.relay.sessionCount() == 1)
+        // A wrong signature still looks like any other wrong signature (the revocation is not an oracle for strangers).
+        let ch = try HostAPI.challenge(try HostAPI.expect(try await w.transport.challenge()))
+        let wrong = try RelayAuth.sign(SoftwareSigner(), origin: w.env.context.origin, challenge: ch.challenge, kind: .device, id: w.phoneID)
+        let r = try await w.transport.login(HostAPI.loginBody(challenge: ch.challenge, kind: .device, id: w.phoneID, signature: wrong))
+        #expect(r.status == 401 && errorCode(r) == "bad_signature")
+        // The record is fetched with no session at all, verifies with the pinned PK, and is the device's own.
+        let fetched = try await c.revocation(device: w.phoneID)
         let p = try Revocation.verify(fetched, personKey: w.primary.publicKey, cert: DeviceCertificate.verify(w.phoneCert, personKey: w.primary.publicKey, nowMs: w.clock.nowMs).identity)
         #expect(p.deviceID == w.phoneID)
-        // Only its own record, and never with another device's session.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notForThisDevice))) { _ = try await c.revocation(device: w.primaryID, session: s) }
-        // No record, no 404 oracle beyond the device's own id.
-        let w2 = try await World.make()
-        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await RelayClient(transport: w2.transport).revocation(device: w2.phoneID, session: w2.phoneSession) }
+        // Raw: no Authorization header is needed, and a junk one is ignored rather than trusted or refused.
+        for auth in [nil, "Bearer junk"] as [String?] {
+            var h = ["Orch-Host-API": "0"]; if let auth { h["Authorization"] = auth }
+            let raw = try await w.relay.send(WireRequest(method: "GET", target: "/mobile/host-api/0/devices/\(w.phoneID.hex)/revocation", headers: h, clientAddress: "a"))
+            let keys = Set(try json(raw).keys)
+            #expect(raw.status == 200 && keys == ["host_api", "record"])
+        }
+        // A device that was not revoked has no record: 404, for the same route.
+        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await c.revocation(device: w.primaryID) }
+        // Revocation drops what the device held: its grants, its card-key wrap, its queued requests.
+        #expect(await w.relay.grantCount(workspace: w.ws, device: w.phoneID) == 0)
+        #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: w.phoneID, cardSeq: 1) == false)
+    }
+
+    @Test func revocationDropsQueuedRequestsOfTheRevokedDevice() async throws {
+        let w = try await World.make()
+        let rid = ID16.fresh(0x91)
+        _ = try await w.transport.bridgePost(try w.envelope(rid: rid), route: BridgeRoute(workspaceID: w.ws, requestID: rid), session: w.phoneSession)
+        #expect(await w.relay.liveMailboxCount(workspace: w.ws, device: w.phoneID) == 1)
+        #expect(try await w.relay.pendingRequests(workspace: w.ws, token: w.hostSession.token).count == 1)
+        try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID))
+        #expect(await w.relay.liveMailboxCount(workspace: w.ws, device: w.phoneID) == 0)
+        #expect(try await w.relay.pendingRequests(workspace: w.ws, token: w.hostSession.token).isEmpty)
+        let bodies = await w.relay.storedBodyCount(), boxes = await w.relay.mailboxCount()
+        #expect(bodies == 0 && boxes == 0)
     }
 }
 

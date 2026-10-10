@@ -16,8 +16,10 @@ public enum RealmViolation: Error, Equatable, Sendable {
     case crossRealmCertificate
     /// A Demo context paired with something other than the in-process relay.
     case wrongTransport
-    /// A store or custody realm other than the one this context belongs to.
+    /// A store, custody realm or device identity of a realm other than the one this context belongs to.
     case wrongStore
+    /// The Demo environment this handle belonged to was reset: every retained handle (signing, transport, authority) is dead.
+    case staleGeneration
 }
 
 /// The Demo realm's fixed relay identity. It never resolves (`.invalid`) and is reachable only in-process.
@@ -31,7 +33,20 @@ public enum DemoRelay {
 /// realm or external transport to manufacture one.
 public struct DemoCapability: Sendable {
     public let id: ID16
-    package init(id: ID16) { self.id = id }
+    /// The lifetime this capability (and everything built from it) belongs to. `DemoSetup.reset` invalidates it.
+    public let generation: DemoGeneration
+    package init(id: ID16, generation: DemoGeneration = DemoGeneration()) { self.id = id; self.generation = generation }
+}
+
+/// One Demo lifetime. Everything built from a `DemoCapability` (context, transport, relay, authority actors, the device's
+/// signing handles) checks it and throws `RealmViolation.staleGeneration` once it has been invalidated by a reset.
+public final class DemoGeneration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+    package init() {}
+    public var isCurrent: Bool { lock.withLock { valid } }
+    package func invalidate() { lock.withLock { valid = false } }
+    package func check() throws { if !isCurrent { throw RealmViolation.staleGeneration } }
 }
 
 /// The person ids of every Demo authority created in this process. A live context refuses a certificate or card owned by
@@ -51,9 +66,11 @@ public struct RealmContext: Sendable {
     public let origin: String
     /// The owner key a live realm has pinned (nil before the first pairing).
     public let pinnedOwner: SigningPublicKey?
+    /// Demo only: the lifetime this context belongs to (nil for a live context).
+    package let generation: DemoGeneration?
 
-    private init(realm: Realm, origin: String, pinnedOwner: SigningPublicKey?) {
-        self.realm = realm; self.origin = origin; self.pinnedOwner = pinnedOwner
+    private init(realm: Realm, origin: String, pinnedOwner: SigningPublicKey?, generation: DemoGeneration? = nil) {
+        self.realm = realm; self.origin = origin; self.pinnedOwner = pinnedOwner; self.generation = generation
     }
 
     /// A live context for one reviewed relay origin. The Demo origin and any `.invalid` host are refused.
@@ -64,7 +81,7 @@ public struct RealmContext: Sendable {
     }
 
     public static func demo(_ capability: DemoCapability) -> RealmContext {
-        RealmContext(realm: .demo, origin: DemoRelay.origin, pinnedOwner: nil)
+        RealmContext(realm: .demo, origin: DemoRelay.origin, pinnedOwner: nil, generation: capability.generation)
     }
 
     static func isDemoLooking(_ origin: String) -> Bool {
@@ -103,8 +120,18 @@ public struct RealmContext: Sendable {
     }
 
     /// This realm's device keys: created on first use under realm-tagged secret ids, never shared with the other realm.
+    /// The identity must carry this context's realm tag, which only an in-package custody sets: a wrapper custody that
+    /// answers a Demo request with live keys (or the reverse) is refused with `RealmViolation.wrongStore`.
     public func deviceIdentity(custody: any DeviceKeyCustody, createIfMissing: Bool) throws -> DeviceIdentity {
-        do { return try custody.load(realm: realm) }
-        catch CustodyError.missing where createIfMissing { return try custody.create(realm: realm) }
+        let identity: DeviceIdentity
+        do { identity = try custody.load(realm: realm) }
+        catch CustodyError.missing where createIfMissing { identity = try custody.create(realm: realm) }
+        try admit(identity: identity)
+        return identity
+    }
+
+    /// An identity of the other realm never signs, logs in or is bound in this one.
+    public func admit(identity: DeviceIdentity) throws {
+        guard identity.realm == realm else { throw RealmViolation.wrongStore }
     }
 }

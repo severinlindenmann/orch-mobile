@@ -197,9 +197,10 @@ import OrchProtocol
         let w = try await World.make(faults: faults)
         let rid = ID16.fresh(0xA5)
         let route = BridgeRoute(workspaceID: w.ws, requestID: rid)
+        let rig = HostRig()
         var sent: [Data] = []
         for seq in 0..<3 {
-            let e = try w.envelope(direction: .toDevice, rid: rid, seq: UInt64(seq), flags: seq == 2 ? [.last] : [], signer: SoftwareSigner())
+            let e = try w.sealedResponse(rig: rig, rid: rid, seq: UInt64(seq), flags: seq == 2 ? [.last] : [])
             #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)
             sent.append(e)
         }
@@ -208,11 +209,19 @@ import OrchProtocol
         #expect(try await poll().map(\.idx) == [0, 0, 1, 1, 2, 2])
         faults.enqueue(.reorder, at: .pollDelivery)
         #expect(try await poll().map(\.idx) == [2, 1, 0])
+        // An uncorrupted poll verifies first: every chunk is accepted by the device's section 8.8 check, in order.
+        let clean = try await poll()
+        for (i, c) in clean.enumerated() {
+            guard case .accept = w.check(c.envelope, rig: rig, rid: rid, index: UInt64(i), last: c.last) else { Issue.record("chunk \(i) must verify"); return }
+        }
         faults.enqueue(.corrupt, at: .pollDelivery)
         let c = try await poll()
         #expect(c[0].envelope != sent[0] && c[1].envelope == sent[1] && c[0].envelope.count == sent[0].count)
-        // A corrupted chunk is still well-formed ORB2 to the relay, but its content hash no longer matches: verifiers must drop it.
-        #expect(try Bridge.Parts(envelope: c[0].envelope).digest != Bridge.Parts(envelope: sent[0]).digest || c[0].envelope.last != sent[0].last)
+        // The relay cannot tell (it is still well-formed ORB2), but the host's signature no longer verifies: the device drops it.
+        guard case .drop(.hostSignature) = w.check(c[0].envelope, rig: rig, rid: rid, index: 0, last: false) else {
+            Issue.record("a corrupted chunk must fail the host signature check"); return
+        }
+        guard case .accept = w.check(c[1].envelope, rig: rig, rid: rid, index: 1, last: false) else { Issue.record("untouched chunk must verify"); return }
         faults.enqueue(.drop, at: .pollDelivery)
         await #expect(throws: TransportError.disconnected) { _ = try await poll() }
         #expect(try await poll().map(\.idx) == [0, 1, 2])           // nothing was consumed by any of this
@@ -242,7 +251,7 @@ import OrchProtocol
         let live = try w.custody.create(realm: .live)
         try w.vault.put(Data([1]), for: SecretID(realm: .live, ws: ID16.fresh(1).hex, purpose: "wk"))
         try w.vault.put(Data([2]), for: SecretID(realm: .demo, ws: ID16.fresh(2).hex, purpose: "wk"))
-        try DemoSetup.reset(custody: w.custody, vaults: [w.vault])
+        try await DemoSetup.reset(w.env, custody: w.custody, vaults: [w.vault])
         #expect(w.custody.status(realm: .demo) == .missing)
         #expect(w.custody.status(realm: .live) == .present)
         #expect(try w.custody.load(realm: .live).publicKeys.sig == live.publicKeys.sig)

@@ -38,6 +38,7 @@ public actor FakeRelay: RequestSender {
     private struct BoxKey: Hashable { let ws: ID16; let device: ID16?; let offer: ID16?; let rid: ID16 }
     private struct Window {
         var stamps: [Int64] = []
+        func isActive(_ now: Int64) -> Bool { stamps.contains { $0 > now - 60_000 } }
         mutating func hit(now: Int64, limit: Int) -> Bool {
             stamps.removeAll { $0 <= now - 60_000 }
             guard stamps.count < limit else { return false }
@@ -70,11 +71,32 @@ public actor FakeRelay: RequestSender {
     public private(set) var requestsReceived = 0
     public private(set) var rateLimited = 0
 
-    public init(context: RealmContext, clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(),
-                faults: any FaultPolicy = NoFaults(), limits: RelayLimits = RelayLimits()) {
+    /// A Demo relay needs the proof that a Demo setup ran (challenge C1) and a Demo context built from that very capability.
+    public init(capability: DemoCapability, context: RealmContext, clock: any Clock<Duration>, wall: any WallClock,
+                entropy: any Entropy = SystemEntropy(), faults: any FaultPolicy = NoFaults(), limits: RelayLimits = RelayLimits()) throws {
+        guard context.realm == .demo, context.generation === capability.generation else { throw RealmViolation.wrongStore }
         self.context = context; self.origin = context.origin
         self.clock = clock; self.wall = wall; self.entropy = entropy; self.faults = faults; self.limits = limits
     }
+
+    /// Tests only (package scope, unreachable from the app): a relay for any context, e.g. a live origin for the relay-auth
+    /// vectors or a live-context refusal test. Not part of the public API, so no caller outside the package can build one.
+    package init(testingContext context: RealmContext, clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(),
+                 faults: any FaultPolicy = NoFaults(), limits: RelayLimits = RelayLimits()) {
+        self.context = context; self.origin = context.origin
+        self.clock = clock; self.wall = wall; self.entropy = entropy; self.faults = faults; self.limits = limits
+    }
+
+    /// Reset: every table, session and mailbox is dropped. Work suspended in a fault delay refuses on resumption (the
+    /// generation is invalid), so nothing it was about to write ever lands. The caller has already invalidated the generation.
+    public func retire() {
+        challenges = [:]; sessions = [:]; owners = [:]; certs = [:]; certInfo = [:]; revoked = []; revocations = [:]
+        workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
+    }
+
+    static let expiredChallengeGraceMs: Int64 = 5 * 60_000
+
+    private func checkLive() throws { try context.generation?.check() }
 
     // MARK: directory (stand-in for orch-publish)
 
@@ -82,6 +104,7 @@ public actor FakeRelay: RequestSender {
     public func registerOwner(_ pk: SigningPublicKey) { owners[Identifiers.personID(pk)] = pk }
 
     public func publishCertificate(_ cert: JSONValue) throws {
+        try checkLive()
         guard let person = cert.object?["o"]?.object?["person_id"]?.string.flatMap({ ID16(hex: $0) }), let owner = owners[person] else {
             throw ClientError.relay(RelayRefusal(status: 403, code: .otherPerson))
         }
@@ -92,6 +115,7 @@ public actor FakeRelay: RequestSender {
     }
 
     public func publishCard(_ card: JSONValue) throws {
+        try checkLive()
         guard let person = card.object?["o"]?.object?["owner_person_id"]?.string.flatMap({ ID16(hex: $0) }), let owner = owners[person] else {
             throw ClientError.relay(RelayRefusal(status: 403, code: .otherPerson))
         }
@@ -106,6 +130,7 @@ public actor FakeRelay: RequestSender {
     }
 
     public func publishRevocation(_ record: JSONValue) throws {
+        try checkLive()
         guard let o = record.object?["o"]?.object, let person = o["person_id"]?.string.flatMap({ ID16(hex: $0) }),
               let device = o["device_id"]?.string.flatMap({ ID16(hex: $0) }), let owner = owners[person], let cert = certInfo[device] else {
             throw ClientError.relay(RelayRefusal(status: 403, code: .otherPerson))
@@ -113,14 +138,34 @@ public actor FakeRelay: RequestSender {
         do { _ = try Revocation.verify(record, personKey: owner, cert: cert.identity) }
         catch let r as Refusal { throw Self.relayError(r) }
         revoked.insert(device); revocations[device] = record
+        // A revoked device keeps nothing at the relay: no session, no grant or card-key wrap, no queued request (host-api section 3).
+        sessions = sessions.filter { !($0.value.kind == .device && $0.value.id == device) }
+        for ws in Array(workspaces.keys) { removeDevice(device, from: ws) }
     }
 
-    /// A WK grant uploaded by the workspace's host (section 7.3). The sealed key is opaque here.
+    /// The checks every host upload of key material to a device shares, run immediately before the write with no suspension in
+    /// between: a certificate that exists, belongs to the card's owner, has not been revoked and is unexpired now, checked against
+    /// the owner key (a certificate stored earlier may have expired since it was published).
+    private func checkUploadTarget(_ device: ID16, card: VerifiedCard) throws {
+        guard let info = certInfo[device], let cert = certs[device] else { throw ClientError.relay(RelayRefusal(status: 403, code: .notEligible)) }
+        guard !revoked.contains(device) else { throw ClientError.relay(RelayRefusal(status: 403, code: .revoked)) }
+        guard info.personID == card.ownerPersonID, let owner = owners[card.ownerPersonID] else {
+            throw ClientError.relay(RelayRefusal(status: 403, code: .otherPerson))
+        }
+        do { _ = try DeviceCertificate.verify(cert, personKey: owner, nowMs: wall.nowMs, revoked: []) }
+        catch let r as Refusal { throw Self.relayError(r) }
+    }
+
+    /// A WK grant uploaded by the workspace's host (section 7.3). The sealed key is opaque here. Membership is not required at
+    /// upload time: section 7.2 puts grants before the list that names the device, so the list check (`missing_grant`) is where
+    /// grants and members meet.
     public func putGrant(_ grant: JSONValue, token: String) async throws {
+        // The fault point (and any delay) comes first, before a single authoritative check: after it there is no suspension,
+        // so the session, card, certificate, revocation and epoch it checks are the ones the write happens under.
+        _ = try await fault(.beforeGrantPublication, "putGrant")
+        try checkLive()
         let ws = try workspaceSession(token)
         guard let w = workspaces[ws], let card = w.card else { throw ClientError.relay(RelayRefusal(status: 401, code: .unknownWorkspace)) }
-        // The fault point sits before anything is stored: a dropped upload leaves no grant behind.
-        _ = try await fault(.beforeGrantPublication, "putGrant")
         let o: [String: JSONValue]
         do { o = try SignedObject.parse(grant).verify(kind: .wkGrant, key: card.wsk) } catch let r as Refusal { throw Self.relayError(r) }
         guard Set(o.keys) == ["v", "suite", "kind", "workspace_id", "device_id", "epoch", "sealed"],
@@ -130,29 +175,29 @@ public actor FakeRelay: RequestSender {
             throw ClientError.relay(RelayRefusal(status: 400, code: .malformed))
         }
         guard gws == ws else { throw ClientError.relay(RelayRefusal(status: 409, code: .otherWorkspace)) }
-        // No grant for a device without a valid certificate, or a revoked one.
-        guard certInfo[dev] != nil else { throw ClientError.relay(RelayRefusal(status: 403, code: .notEligible)) }
-        guard !revoked.contains(dev) else { throw ClientError.relay(RelayRefusal(status: 403, code: .revoked)) }
+        try checkUploadTarget(dev, card: card)
         // Epochs never skip: a grant is for the current epoch or the next one (section 7.2 check 6).
         let current = w.list?.epoch ?? 0
         guard UInt32(epoch) <= current &+ 1 else { throw ClientError.relay(RelayRefusal(status: 409, code: .badEpoch)) }
         workspaces[ws]?.grants[.init(device: dev, epoch: UInt32(epoch))] = grant
     }
 
-    /// `CK` for one card sequence, sealed to one device (host-api section 3). Only for certified, unrevoked devices.
+    /// `CK` for one card sequence, sealed to one device (host-api section 3). Only for certified, unrevoked, unexpired devices of
+    /// the card's owner. No suspension: the checks and the write are one step.
     public func putCardKeyWrap(device: ID16, cardSeq: UInt32, sealed: Data, token: String) throws {
+        try checkLive()
         let ws = try workspaceSession(token)
         guard let card = workspaces[ws]?.card else { throw ClientError.relay(RelayRefusal(status: 401, code: .unknownWorkspace)) }
         guard cardSeq >= 1, cardSeq <= card.cardSeq, sealed.count <= 1024, !sealed.isEmpty else {
             throw ClientError.relay(RelayRefusal(status: 400, code: .malformed))
         }
-        guard certInfo[device] != nil else { throw ClientError.relay(RelayRefusal(status: 403, code: .notEligible)) }
-        guard !revoked.contains(device) else { throw ClientError.relay(RelayRefusal(status: 403, code: .revoked)) }
+        try checkUploadTarget(device, card: card)
         workspaces[ws]?.cardKeys[device, default: [:]][cardSeq] = sealed
     }
 
     /// Section 7.2 as the relay applies it: signature, shape, then checks 3 to 9 with the directory it holds.
     public func publishMemberList(_ list: JSONValue, token: String) throws {
+        try checkLive()
         let ws = try workspaceSession(token)
         guard let w = workspaces[ws], let card = w.card, let owner = owners[card.ownerPersonID] else {
             throw ClientError.relay(RelayRefusal(status: 401, code: .unknownWorkspace))
@@ -214,9 +259,15 @@ public actor FakeRelay: RequestSender {
         return boxes.filter { $0.key.ws == workspace && $0.key.device == device && !live($0.value, now).requests.isEmpty }.count
     }
     public func sessionCount() -> Int { sessions.count }
+    /// Stored sealed bodies of every mailbox, expired or not (pruning is by time on each request, so this shows what is retained).
+    public func storedBodyCount() -> Int { boxes.values.reduce(0) { $0 + $1.requests.count + $1.responses.count } }
+    public func mailboxCount() -> Int { boxes.count }
+    public func rateWindowCount() -> Int { pairPostsByWS.count + pairPostsByAddress.count + pairPollsByAddress.count }
+    public func challengeCount() -> Int { challenges.count }
 
     /// The host's view of its inbox: requests waiting for it, non-consuming, until their body lifetime ends.
     public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data)] {
+        try checkLive()
         guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
         let now = wall.nowMs
         return boxes.filter { $0.key.ws == workspace && $0.key.device != nil && $0.key.offer == nil }
@@ -241,7 +292,7 @@ public actor FakeRelay: RequestSender {
     private func fault(_ b: FaultBoundary, _ route: String) async throws -> FaultAction {
         let a = faults.action(at: b, route: route)
         switch a {
-        case .delay(let d): try await clock.sleep(for: d); return .none
+        case .delay(let d): try await clock.sleep(for: d); try checkLive(); return .none
         case .drop, .disconnect: throw TransportError.disconnected
         default: return a
         }
@@ -251,9 +302,29 @@ public actor FakeRelay: RequestSender {
 
     public func send(_ r: WireRequest) async throws -> WireReply {
         requestsReceived += 1
-        let reply = try await dispatch(r)
-        if try await fault(.afterCommitBeforeResponse, r.method + " " + routePath(r.target)) == .none { return reply }
-        return reply
+        do {
+            try checkLive()
+            prune()
+            let reply = try await dispatch(r)
+            _ = try await fault(.afterCommitBeforeResponse, r.method + " " + routePath(r.target))
+            return reply
+        } catch let v as RealmViolation { throw TransportError.realm(v) }
+    }
+
+    /// Time-based retention, applied on every request: expired bodies, boxes left empty, spent challenges, expired sessions and
+    /// rate windows with nothing in them. Nothing the relay holds outlives its lifetime by more than the next request.
+    private func prune() {
+        let now = wall.nowMs
+        // A spent-by-time challenge is kept briefly so a late login still answers `expired` rather than `unknown_challenge`.
+        challenges = challenges.filter { $0.value + Self.expiredChallengeGraceMs > now }
+        sessions = sessions.filter { $0.value.expiresMs > now }
+        for (k, b) in boxes {
+            let l = live(b, now)
+            boxes[k] = (l.requests.isEmpty && l.responses.isEmpty) ? nil : l
+        }
+        pairPostsByWS = pairPostsByWS.filter { $0.value.isActive(now) }
+        pairPostsByAddress = pairPostsByAddress.filter { $0.value.isActive(now) }
+        pairPollsByAddress = pairPollsByAddress.filter { $0.value.isActive(now) }
     }
 
     private func routePath(_ target: String) -> String { String(target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? "") }
@@ -373,7 +444,9 @@ public actor FakeRelay: RequestSender {
             return refuse(result.status, RelayRefusal.Code(rawValue: e) ?? .malformed)
         }
         if k == .device {
-            // A revoked device still gets a session (it may fetch its own revocation record); an expired or invalid certificate does not.
+            // A revoked device gets no session (it reads its revocation record on the session-less route); neither does an expired
+            // or invalid certificate. Revocation is only revealed to the holder of the key: the signature has already verified.
+            if revoked.contains(id) { return refuse(403, .revoked) }
             do { _ = try DeviceCertificate.verify(certs[id]!, personKey: owners[certInfo[id]!.personID]!, nowMs: now, revoked: []) }
             catch let e as Refusal { let st = Self.relayError(e); if case .relay(let rr) = st { return refuse(rr.status, rr.code) } }
         }
@@ -440,11 +513,9 @@ public actor FakeRelay: RequestSender {
                           "sealed": .string(B64U.encode(sealed))])
     }
 
+    /// A revocation record is a public, PK-signed object, so the route takes no session: a revoked device has none.
     private func revocationReply(_ r: WireRequest, device: String, _ query: String?) throws -> WireReply {
-        guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
         guard let d = ID16(hex: device), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
-        // Own record only, even after revocation, and never any workspace membership.
-        guard s.kind == .device, s.id == d else { return refuse(403, .notForThisDevice) }
         guard let rec = revocations[d] else { return adapterError(404, "not_found") }
         return json(200, ["record": rec])
     }
@@ -510,6 +581,9 @@ public actor FakeRelay: RequestSender {
     }
 
     private func bridge(_ r: WireRequest, ws: String, rid: String, _ query: String?) async throws -> WireReply {
+        // A fault delay on a POST happens before any authoritative check; from here to the store there is no suspension, so
+        // membership, revocation, epoch and quota are decided under the state the write happens in.
+        let a: FaultAction = r.method == "POST" ? try await fault(.beforeQueue, "POST bridge") : .none
         guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
         guard let wsID = ID16(hex: ws), let ridID = ID16(hex: rid) else { return refuse(400, .malformed) }
         switch r.method {
@@ -518,7 +592,7 @@ public actor FakeRelay: RequestSender {
             // Responses come only from the workspace's host session; requests only from a device session.
             let response = s.kind == .workspace
             let (parsed, err) = parseEnvelope(r.body, direction: response ? .toDevice : .toHost,
-                                              maxSize: (response ? Bridge.maxChunk : Bridge.maxRequest) + Bridge.overhead)
+                                              maxSize: response ? Bridge.maxChunk : Bridge.maxRequest)
             if let err { return err }
             let h = parsed!.header
             guard h.workspace == wsID, h.rid == ridID else { return refuse(400, .malformed) }
@@ -537,7 +611,6 @@ public actor FakeRelay: RequestSender {
                 let liveBoxes = boxes.filter { $0.key.ws == wsID && $0.key.device == s.id && $0.key.rid != ridID && !live($0.value, now).requests.isEmpty }
                 if liveBoxes.count >= limits.maxLiveMailboxesPerDevice { rateLimited += 1; return adapterError(429, "quota_exceeded", headers: ["retry-after": String(limits.retryAfterSeconds)]) }
             }
-            let a = try await fault(.beforeQueue, "POST bridge")
             store(key, parsed: parsed!, envelope: r.body, response: response)
             if a == .duplicate { store(key, parsed: parsed!, envelope: r.body, response: response) }
             accepted += 1
@@ -554,6 +627,8 @@ public actor FakeRelay: RequestSender {
 
     private func pairing(_ r: WireRequest, ws: String, offer: String, rid: String, _ query: String?) async throws -> WireReply {
         guard let wsID = ID16(hex: ws), let offerID = ID16(hex: offer), let ridID = ID16(hex: rid) else { return refuse(400, .malformed) }
+        // As on the bridge route: a POST's fault delay precedes every check, rate budget and write.
+        let a: FaultAction = r.method == "POST" ? try await fault(.beforeQueue, "POST pair") : .none
         let now = wall.nowMs
         let key = BoxKey(ws: wsID, device: nil, offer: offerID, rid: ridID)
         switch r.method {
@@ -573,7 +648,6 @@ public actor FakeRelay: RequestSender {
             let h = parsed!.header
             guard h.workspace == wsID, h.rid == ridID, h.stream == offerID, h.epoch == 0 else { return refuse(400, .malformed) }
             guard workspaces[wsID]?.card != nil else { return refuse(401, .unknownWorkspace) }
-            let a = try await fault(.beforeQueue, "POST pair")
             store(key, parsed: parsed!, envelope: r.body, response: response)
             if a == .duplicate {
                 store(key, parsed: parsed!, envelope: r.body, response: response)

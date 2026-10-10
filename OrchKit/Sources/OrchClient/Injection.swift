@@ -118,31 +118,47 @@ public final class TestClock: Clock, WallClock, @unchecked Sendable {
         return startWallMs + c.seconds * 1000 + c.attoseconds / 1_000_000_000_000_000
     }
 
-    private func allocate() -> UInt64 { lock.withLock { let id = nextID; nextID += 1; return id } }
+    /// Sleep ids are allocated before the continuation exists, so a cancellation can arrive first. One state machine under
+    /// one lock keeps every interleaving: `cancelled` remembers a cancel that beat the registration.
+    private var cancelled: Set<UInt64> = []
 
-    /// true: register; false: already due.
+    package func beginSleep() -> UInt64 { lock.withLock { let id = nextID; nextID += 1; return id } }
+
+    /// Resumes the continuation exactly once: cancelled (even before it was registered), already due, or parked.
     private func register(_ id: UInt64, _ deadline: Instant, _ c: CheckedContinuation<Void, Error>) {
-        let action: Int = lock.withLock {
-            if deadline <= current { return 1 }
+        enum Outcome { case cancelled, due, parked }
+        let outcome: Outcome = lock.withLock {
+            if cancelled.remove(id) != nil { return .cancelled }
+            if deadline <= current { return .due }
             waiters[id] = Waiter(deadline: deadline, continuation: c)
-            return 0
+            return .parked
         }
-        if action == 1 { c.resume() }
+        switch outcome {
+        case .cancelled: c.resume(throwing: CancellationError())
+        case .due: c.resume()
+        case .parked: break
+        }
     }
 
-    private func cancel(_ id: UInt64) {
-        let w = lock.withLock { waiters.removeValue(forKey: id) }
+    package func cancelSleep(_ id: UInt64) {
+        let w: Waiter? = lock.withLock {
+            if let w = waiters.removeValue(forKey: id) { return w }
+            cancelled.insert(id)            // not parked yet: the registration will see this
+            return nil
+        }
         w?.continuation.resume(throwing: CancellationError())
     }
 
+    package func awaitSleep(_ id: UInt64, until deadline: Instant) async throws {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in register(id, deadline, c) }
+    }
+
     public func sleep(until deadline: Instant, tolerance: Swift.Duration? = nil) async throws {
-        let id = allocate()
+        let id = beginSleep()
+        defer { _ = lock.withLock { cancelled.remove(id) } }       // a cancel that lost the race to completion leaves nothing behind
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                if Task.isCancelled { c.resume(throwing: CancellationError()); return }
-                register(id, deadline, c)
-            }
-        } onCancel: { cancel(id) }
+            try await awaitSleep(id, until: deadline)
+        } onCancel: { cancelSleep(id) }
     }
 
     /// Moves time forward and wakes every sleeper whose deadline is now reached, earliest first.

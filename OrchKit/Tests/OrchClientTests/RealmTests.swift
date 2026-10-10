@@ -53,6 +53,28 @@ import OrchProtocol
         #expect(try vault.ids().map(\.realm).sorted { $0.rawValue < $1.rawValue } == [.demo, .demo, .live, .live])
     }
 
+    @Test func anIdentityCarriesItsCustodyRealmAndTheOtherRealmRefusesIt() throws {
+        let custody = DefaultCustody.make(vault: SecretVault(group: .keys, backend: InMemoryVaultBackend()))
+        let live = try custody.create(realm: .live), demo = try custody.create(realm: .demo)
+        #expect(live.realm == .live && demo.realm == .demo)
+        #expect(try custody.load(realm: .live).realm == .live && custody.load(realm: .demo).realm == .demo)
+        let liveCtx = try RealmContext.live(origin: "https://relay.example.org")
+        try liveCtx.admit(identity: live)
+        try demoContext().admit(identity: demo)
+        #expect(throws: RealmViolation.wrongStore) { try demoContext().admit(identity: live) }
+        #expect(throws: RealmViolation.wrongStore) { try liveCtx.admit(identity: demo) }
+        // A custody that answers a Demo request with the live identity (or creates one) is refused by the context.
+        struct Liar: DeviceKeyCustody {
+            let inner: any DeviceKeyCustody
+            func create(realm: Realm) throws -> DeviceIdentity { try inner.load(realm: .live) }
+            func load(realm: Realm) throws -> DeviceIdentity { try inner.load(realm: .live) }
+            func delete(realm: Realm) throws {}
+            func status(realm: Realm) -> CustodyStatus { inner.status(realm: .live) }
+        }
+        #expect(throws: RealmViolation.wrongStore) { try demoContext().deviceIdentity(custody: Liar(inner: custody), createIfMissing: true) }
+        #expect(try liveCtx.deviceIdentity(custody: Liar(inner: custody), createIfMissing: false).realm == .live)
+    }
+
     @Test func testClockAdvancesSleepersAndWallTime() async throws {
         let clock = TestClock(wallStartMs: 1_000)
         #expect(clock.nowMs == 1_000)
@@ -73,6 +95,33 @@ import OrchProtocol
         #expect(clock.sleeperCount == 0)
         // A deadline already passed returns at once.
         try await clock.sleep(for: .zero)
+    }
+
+    @Test func aCancellationThatBeatsTheRegistrationIsKept() async throws {
+        let clock = TestClock()
+        // Cancel arrives before the sleeper registers: it must not be lost (the sleeper would wait forever).
+        let id = clock.beginSleep()
+        clock.cancelSleep(id)
+        await #expect(throws: CancellationError.self) { try await clock.awaitSleep(id, until: clock.now.advanced(by: .seconds(100))) }
+        #expect(clock.sleeperCount == 0)
+        // The other order: registered, then cancelled; and cancelled twice.
+        let id2 = clock.beginSleep()
+        let parked = Task { try await clock.awaitSleep(id2, until: clock.now.advanced(by: .seconds(100))) }
+        while clock.sleeperCount == 0 { await Task.yield() }
+        clock.cancelSleep(id2); clock.cancelSleep(id2)
+        await #expect(throws: CancellationError.self) { try await parked.value }
+        #expect(clock.sleeperCount == 0)
+        // A cancelled-first sleeper does not poison a later one, and a due deadline still wins nothing over a cancel.
+        let id3 = clock.beginSleep()
+        try await clock.awaitSleep(id3, until: clock.now)
+        // The public path with a task cancelled before it starts sleeping.
+        let early = Task { () throws -> Void in
+            while !Task.isCancelled { await Task.yield() }
+            try await clock.sleep(for: .seconds(100))
+        }
+        early.cancel()
+        await #expect(throws: CancellationError.self) { try await early.value }
+        #expect(clock.sleeperCount == 0)
     }
 
     @Test func scriptedFaultsAreConsumedOnceInOrder() {

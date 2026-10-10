@@ -7,6 +7,10 @@ import OrchProtocol
 final class RecordingSender: RequestSender, @unchecked Sendable {
     private let lock = NSLock()
     private var seen: [WireRequest] = []
+    private var current: String
+    init(origin: String = "https://relay.example.org") { current = origin }
+    /// Settable so a test can make the sender drift to another origin after the transport was built.
+    var origin: String { get { lock.withLock { current } } set { lock.withLock { current = newValue } } }
     var requests: [WireRequest] { lock.withLock { seen } }
     func send(_ request: WireRequest) async throws -> WireReply {
         lock.withLock { seen.append(request) }
@@ -16,8 +20,9 @@ final class RecordingSender: RequestSender, @unchecked Sendable {
 
 func demoContext() -> RealmContext { RealmContext.demo(DemoCapability(id: ID16.random())) }
 
-func routed(_ ctx: RealmContext? = nil, sender: RecordingSender = RecordingSender()) throws -> (RoutedRelayTransport<RecordingSender>, RecordingSender) {
+func routed(_ ctx: RealmContext? = nil, sender: RecordingSender? = nil) throws -> (RoutedRelayTransport<RecordingSender>, RecordingSender) {
     let c = try ctx ?? RealmContext.live(origin: "https://relay.example.org")
+    let sender = sender ?? RecordingSender(origin: c.origin)
     return (try RoutedRelayTransport(context: c, origin: c.origin, sender: sender, clientAddress: "198.51.100.1"), sender)
 }
 
@@ -123,9 +128,89 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         let host: ClientError = .host(.revoked)
         #expect(relay != host)
         for code in RelayRefusal.Code.allCases {
-            let r = try! WireReply(status: 409, body: Data("{\"error\":\"\(code.rawValue)\"}".utf8))
-            #expect(HostAPI.failure(of: r) == .relay(RelayRefusal(status: 409, code: code)))
+            let st = RelayRefusal.expectedStatus(of: code)
+            let r = try! WireReply(status: st, body: Data("{\"error\":\"\(code.rawValue)\"}".utf8))
+            #expect(HostAPI.failure(of: r) == .relay(RelayRefusal(status: st, code: code)))
+            // The same code under any other status is not a section 14 refusal.
+            for other in [200, 400, 401, 403, 409, 428, 500, 502] where other != st {
+                let w = try! WireReply(status: other, body: Data("{\"error\":\"\(code.rawValue)\"}".utf8))
+                #expect(HostAPI.failure(of: w) == .adapter(.badReply), "\(code) at \(other)")
+            }
         }
+    }
+
+    @Test func adapterErrorsMapOnlyTheirOwnStatusCodePairs() throws {
+        func f(_ status: Int, _ code: String, retry: String? = nil) throws -> ClientError {
+            HostAPI.failure(of: try WireReply(status: status, headers: retry.map { ["Retry-After": $0] } ?? [:],
+                                              body: HostAPI.json(["error": .string(code)])))
+        }
+        #expect(try f(400, "unsupported_host_api") == .adapter(.unsupportedHostAPI))
+        #expect(try f(401, "unauthenticated") == .adapter(.unauthenticated))
+        #expect(try f(404, "not_found") == .adapter(.notFound))
+        #expect(try f(429, "rate_limited", retry: "5") == .adapter(.rateLimited(retryAfter: 5)))
+        #expect(try f(429, "quota_exceeded") == .adapter(.quotaExceeded))
+        #expect(try f(501, "not_implemented") == .adapter(.notImplemented))
+        // The reviewer's cases: a family mismatch is a bad reply, not a trusted adapter error.
+        #expect(try f(403, "unauthenticated") == .adapter(.badReply))
+        #expect(try f(500, "not_found") == .adapter(.badReply))
+        #expect(try f(200, "rate_limited") == .adapter(.badReply))
+        #expect(try f(500, "revoked") == .adapter(.badReply))
+        let relay500 = try WireReply(status: 500, body: try canonicalJSON(["error": .string("revoked")]))
+        #expect(HostAPI.failure(of: relay500) == .adapter(.badReply))
+    }
+
+    @Test func retryAfterIsAStrictDecimalClampedToOneThroughAnHour() throws {
+        func retry(_ h: String?) throws -> ClientError {
+            HostAPI.failure(of: try WireReply(status: 429, headers: h.map { ["Retry-After": $0] } ?? [:], body: HostAPI.json(["error": .string("rate_limited")])))
+        }
+        #expect(try retry("5") == .adapter(.rateLimited(retryAfter: 5)))
+        #expect(try retry("1") == .adapter(.rateLimited(retryAfter: 1)))
+        #expect(try retry("3600") == .adapter(.rateLimited(retryAfter: 3600)))
+        #expect(try retry("0") == .adapter(.rateLimited(retryAfter: 1)))
+        #expect(try retry("3601") == .adapter(.rateLimited(retryAfter: 3600)))
+        #expect(try retry("18446744073709551615") == .adapter(.rateLimited(retryAfter: 3600)))
+        // Not delta-seconds: no hint at all, never a negative, signed, fractional, padded, hex or date value.
+        for bad in ["-99999999", "+5", "5.0", "05", "0x10", "1e3", "5 6", "99999999999999999999999", "Wed, 21 Oct 2026 07:28:00 GMT", ""] {
+            #expect(try retry(bad) == .adapter(.rateLimited(retryAfter: nil)), "\(bad)")
+        }
+        #expect(try retry(nil) == .adapter(.rateLimited(retryAfter: nil)))
+    }
+
+    @Test func theBearerNeverAppearsInTextualRenderings() {
+        let s = RelaySession(token: "SECRET-BEARER")
+        let o = RelayClient.Opened(session: s, expiresMs: 5)
+        var dumped = ""
+        dump(s, to: &dumped); dump(o, to: &dumped)
+        let texts = ["\(s)", String(describing: s), String(reflecting: s), "\(o)", String(describing: o), String(reflecting: o), dumped,
+                     "\(Mirror(reflecting: s).children.count)", "\(Mirror(reflecting: o).children)",
+                     "\((try? WireRequest(method: "GET", target: "/x", headers: ["authorization": "Bearer SECRET-BEARER"], clientAddress: "a")) as Any)"]
+        for t in texts { #expect(!t.contains("SECRET-BEARER"), "\(t)") }
+        #expect(s.token == "SECRET-BEARER" && o.session == s)
+    }
+
+    @Test func theSenderOriginIsAdmittedOnEverySend() async throws {
+        let (t, sender) = try routed()
+        _ = try await t.challenge()
+        sender.origin = "https://elsewhere.example.org"          // a sender that drifts (a redirect, a swapped host) is not sent through
+        await #expect(throws: TransportError.realm(.externalOrigin)) { _ = try await t.challenge() }
+        sender.origin = DemoRelay.origin
+        await #expect(throws: TransportError.realm(.crossRealmOrigin)) { _ = try await t.challenge() }
+        #expect(sender.requests.count == 1)
+        // A sender on another origin than the one admitted cannot even be paired with the transport.
+        let live = try RealmContext.live(origin: "https://relay.example.org")
+        #expect(throws: TransportError.realm(.externalOrigin)) {
+            try RoutedRelayTransport(context: live, origin: live.origin, sender: RecordingSender(origin: "https://other.example.org"), clientAddress: "a")
+        }
+    }
+
+    @Test func aDemoContextBuiltFromAnInvalidatedGenerationNeverSends() async throws {
+        let cap = DemoCapability(id: ID16.random())
+        let (t, sender) = try routed(RealmContext.demo(cap))
+        _ = try await t.challenge()
+        cap.generation.invalidate()
+        await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await t.challenge() }
+        await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await t.revocation(deviceID: rid) }
+        #expect(sender.requests.count == 1)
     }
 
     @Test func requestsCarryBearerAndRefuseUnsafeTokens() async throws {
@@ -146,7 +231,7 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         _ = try await t.bridgePost(Data([1]), route: BridgeRoute(workspaceID: ws, requestID: rid), session: session)
         _ = try await t.cardKey(workspaceID: ws, cardSequence: 7, session: session)
         _ = try await t.registerPush(Data(), session: session); _ = try await t.unregisterPush(Data(), session: session)
-        _ = try await t.revocation(deviceID: rid, session: session)
+        _ = try await t.revocation(deviceID: rid)
         _ = try await t.dropList(Data(), session: session)
         _ = try await t.dropGet(objectID: rid, version: 3, part: .wraps, session: session)
         #expect(s.requests.map { "\($0.method) \($0.target)" } == [

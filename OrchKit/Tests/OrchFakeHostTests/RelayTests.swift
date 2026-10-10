@@ -64,8 +64,9 @@ import OrchProtocol
         let ns = try await t.bridgePost(try w.envelope(device: sid, rid: ID16.fresh(0x30), signer: stranger), route: BridgeRoute(workspaceID: w.ws, requestID: ID16.fresh(0x30)), session: login.session)
         #expect(ns.status == 403 && errorCode(ns) == "not_eligible")
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID))
+        // Revocation ends the device's session: the old bearer is unauthenticated, and a new login is refused (403 revoked).
         let rv = try await t.bridgePost(try w.envelope(rid: ID16.fresh(0x31)), route: BridgeRoute(workspaceID: w.ws, requestID: ID16.fresh(0x31)), session: w.phoneSession)
-        #expect(rv.status == 403 && errorCode(rv) == "revoked")
+        #expect(rv.status == 401 && errorCode(rv) == "unauthenticated")
     }
 
     @Test func responsesComeOnlyFromTheHostAndPollIsNonConsumingWithCursor() async throws {
@@ -103,8 +104,18 @@ import OrchProtocol
                                       headers: ["Orch-Host-API": "0", "Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
             #expect(try await w.relay.send(raw).status == 400, "\(q)")
         }
-        // The mailbox belongs to the device it is addressed to: another device polls an empty one.
-        #expect(w.hostSession.token != w.phoneSession.token)
+        // The mailbox belongs to the device it is addressed to: a second authenticated member polling the same rid sees nothing,
+        // while the addressee sees all four; and that member's own post into the same rid is a separate mailbox.
+        let second = try await w.addMember()
+        let theirs = try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: second.session))
+        #expect(theirs.isEmpty)
+        #expect(try await after(nil).count == 4)
+        let own = try w.envelope(device: second.id, rid: rid, seq: 1, signer: nil)
+        #expect(try await w.transport.bridgePost(own, route: route, session: second.session).status == 202)
+        #expect(try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: second.session)).isEmpty)
+        #expect(try await after(nil).count == 4)
+        // Neither may read the host's session routes.
+        await #expect(throws: ClientError.adapter(.unauthenticated)) { _ = try await w.relay.pendingRequests(workspace: w.ws, token: second.session.token) }
         // Body lifetime: 60 s after receipt the sealed bodies are gone, and the empty list means nothing, not approval.
         w.clock.advance(milliseconds: 59_999)
         #expect(try await after(nil).count == 4)
@@ -267,7 +278,7 @@ import OrchProtocol
         // An external relay or a live context can never be paired with the in-process transport.
         let clock = TestClock()
         let liveCtx = try RealmContext.live(origin: "https://relay.example.org")
-        let liveRelay = FakeRelay(context: liveCtx, clock: clock, wall: clock)
+        let liveRelay = FakeRelay(testingContext: liveCtx, clock: clock, wall: clock)
         #expect(throws: TransportError.realm(.wrongTransport)) { try InProcessRelayTransport(context: liveCtx, relay: liveRelay) }
         #expect(throws: TransportError.realm(.wrongTransport)) { try InProcessRelayTransport(context: w.env.context, relay: liveRelay) }
         #expect(throws: TransportError.realm(.wrongTransport)) { try InProcessRelayTransport(context: liveCtx, relay: w.relay) }
@@ -303,7 +314,7 @@ import OrchProtocol
             _ = try pinned.admitCertificate(w.phoneCert, ownerKey: w.primary.publicKey, nowMs: clock.nowMs)
         }
         // A live-context relay refuses to publish it, and with it any grant, card key or list entry.
-        let liveRelay = FakeRelay(context: live, clock: clock, wall: clock)
+        let liveRelay = FakeRelay(testingContext: live, clock: clock, wall: clock)
         await liveRelay.registerOwner(w.primary.publicKey)
         await #expect(throws: RealmViolation.crossRealmCertificate) { try await liveRelay.publishCertificate(w.phoneCert) }
         #expect(await liveRelay.hasCertificate(w.phoneID) == false)

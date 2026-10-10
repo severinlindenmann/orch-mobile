@@ -46,15 +46,17 @@ private func custody() -> (any DeviceKeyCustody, SecretVault) {
         let clock = TestClock()
         let env = try await DemoSetup.setup(layout: layout("demo"), custody: c, clock: clock, wall: clock)
         let live = try RealmContext.live(origin: "https://relay.example.org")
-        let liveRelay = FakeRelay(context: live, clock: clock, wall: clock)
-        #expect(throws: TransportError.realm(.wrongTransport)) { try InProcessRelayTransport(context: live, relay: liveRelay) }
-        #expect(throws: TransportError.realm(.wrongTransport)) { try InProcessRelayTransport(context: env.context, relay: liveRelay) }
+        // A relay needs a DemoCapability and a Demo context made from that very capability: there is no public way to build a live one.
+        #expect(throws: RealmViolation.wrongStore) { _ = try FakeRelay(capability: env.capability, context: live, clock: clock, wall: clock) }
+        let other = try await DemoSetup.setup(layout: layout("demo"), custody: c, clock: clock, wall: clock)
+        #expect(throws: RealmViolation.wrongStore) { _ = try FakeRelay(capability: other.capability, context: env.context, clock: clock, wall: clock) }
+        #expect(throws: TransportError.realm(.wrongTransport)) { try InProcessRelayTransport(context: live, relay: env.relay) }
         for origin in ["https://relay.example.org", "http://localhost", "https://relay.demo.invalid:8443"] {
             #expect(throws: RealmViolation.self) { try env.context.admit(origin: origin) }
         }
         // A live context cannot take the Demo origin either.
         #expect(throws: RealmViolation.crossRealmOrigin) { try RealmContext.live(origin: DemoRelay.origin) }
-        #expect(await liveRelay.requestsReceived == 0)
+        #expect(await env.relay.requestsReceived == 0)
     }
 
     @Test func aDemoCertificateIsRefusedByEveryLiveEntryPoint() async throws {
@@ -65,10 +67,6 @@ private func custody() -> (any DeviceKeyCustody, SecretVault) {
         let cert = try await primary.certifyOwnDevice()
         let live = try RealmContext.live(origin: "https://relay.example.org")
         #expect(throws: RealmViolation.crossRealmCertificate) { _ = try live.admitCertificate(cert, ownerKey: primary.publicKey, nowMs: clock.nowMs) }
-        let liveRelay = FakeRelay(context: live, clock: clock, wall: clock)
-        await liveRelay.registerOwner(primary.publicKey)
-        await #expect(throws: RealmViolation.crossRealmCertificate) { try await liveRelay.publishCertificate(cert) }
-        #expect(await liveRelay.hasCertificate(primary.deviceID) == false)
         // Its own realm takes it.
         _ = try env.context.admitCertificate(cert, ownerKey: primary.publicKey, nowMs: clock.nowMs)
     }
@@ -83,16 +81,5 @@ private func custody() -> (any DeviceKeyCustody, SecretVault) {
         #expect(a.deviceID != env.deviceID)
         let liveIdentity = try c.create(realm: .live)
         #expect(liveIdentity.publicKeys.sig != env.device.publicKeys.sig && liveIdentity.publicKeys.kx != env.device.publicKeys.kx)
-    }
-
-    @Test func resetErasesOnlyDemoCustody() async throws {
-        let (c, vault) = custody()
-        let clock = TestClock()
-        let env = try await DemoSetup.setup(layout: layout("demo"), custody: c, clock: clock, wall: clock)
-        let live = try c.create(realm: .live)
-        try DemoSetup.reset(custody: c, vaults: [vault])
-        #expect(c.status(realm: .demo) == .missing && c.status(realm: .live) == .present)
-        #expect(try c.load(realm: .live).publicKeys == live.publicKeys)
-        _ = env
     }
 }

@@ -57,7 +57,7 @@ public struct WireReply: Sendable, Equatable {
 }
 
 /// One request as HTTP carries it. The in-process relay parses the target itself, exactly as a server would.
-public struct WireRequest: Sendable, Equatable {
+public struct WireRequest: Sendable, Equatable, CustomStringConvertible {
     public let method: String
     /// Path and optional query, e.g. `/mobile/host-api/0/workspaces/<ws>/grants?epoch=2`.
     public let target: String
@@ -74,9 +74,19 @@ public struct WireRequest: Sendable, Equatable {
     public func header(_ name: String) -> String? {
         headers[String(decoding: name.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 32 : $0 }, as: UTF8.self)]
     }
+
+    /// Method and target only: headers (the bearer) and the body are not printed.
+    public var description: String { "WireRequest(\(method) \(target))" }
 }
 
-public struct RelaySession: Sendable, Equatable { public let token: String; public init(token: String) { self.token = token } }
+/// A bearer token. It never appears in `description`, `debugDescription`, `dump` or a `Mirror`, so logging a session cannot leak it.
+public struct RelaySession: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public let token: String
+    public init(token: String) { self.token = token }
+    public var description: String { "RelaySession(<redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
 
 public struct PairRoute: Sendable, Equatable {
     public let workspaceID: ID16, offerID: ID16, requestID: ID16
@@ -91,8 +101,11 @@ public struct BridgeRoute: Sendable, Equatable {
 public enum DropPart: String, Sendable { case descriptor, wraps, blob }
 
 /// The seam between the client and any relay (host-api section 1). Bytes in, bytes out: no crypto here. Constructed with
-/// a fixed `RealmContext` and allowed origin; callers cannot override either.
+/// a fixed `RealmContext` and allowed origin; callers cannot override either. `context` is the transport's own realm and
+/// origin: the client binds a login to it (it signs `context.origin`, and only with an identity of `context.realm`), so a
+/// wrapper that forwards to another transport must forward the context of the transport that really carries the bytes.
 public protocol RelayTransport: Sendable {
+    var context: RealmContext { get }
     func challenge() async throws -> WireReply
     func login(_ body: Data) async throws -> WireReply
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
@@ -105,14 +118,20 @@ public protocol RelayTransport: Sendable {
     func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply
     func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply
     func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply
-    func revocation(deviceID: ID16, session: RelaySession) async throws -> WireReply
+    /// A revocation record is a public, PK-signed object: this route takes no session (a revoked device has none).
+    func revocation(deviceID: ID16) async throws -> WireReply
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply
 }
 
 /// Something that carries one request to a relay and brings back its reply (the HTTPS client later, the fake now).
+///
+/// `origin` is the one origin this sender talks to; the transport admits it against its realm context on every send.
+/// A future HTTPS sender MUST refuse every redirect (a redirect is a different origin), and MUST cap the response body
+/// size while reading, before any parsing, so a hostile relay cannot make the client buffer or parse unbounded data.
 public protocol RequestSender: Sendable {
+    var origin: String { get }
     func send(_ request: WireRequest) async throws -> WireReply
 }
 

@@ -124,11 +124,18 @@ public enum HostAPI {
         }
         if o["host_api"] != nil {
             guard o["host_api"] == .int(version) else { return .adapter(.unsupportedHostAPI) }
-            guard let a = AdapterError(code: code, retryAfter: reply.header("retry-after").flatMap { Int($0) }) else { return .adapter(.badReply) }
+            guard let a = AdapterError(status: reply.status, code: code, retryAfter: retryAfter(reply)) else { return .adapter(.badReply) }
             return .adapter(a)
         }
         guard let r = RelayRefusal(status: reply.status, code: code, fields: o) else { return .adapter(.badReply) }
         return .relay(r)
+    }
+
+    /// `Retry-After` as a strict decimal of delta-seconds (no sign, no leading zero, no whitespace beyond what the header
+    /// parser already trimmed, no HTTP-date), clamped to 1...3600. Anything else is "no hint", never a negative or huge wait.
+    static func retryAfter(_ reply: WireReply) -> Int? {
+        guard let h = reply.header("retry-after"), let v = parseDecimal(h) else { return nil }
+        return Int(min(max(v, 1), 3600))
     }
 
     /// 2xx body, or the mapped failure.
@@ -154,14 +161,15 @@ public enum AdapterError: Error, Equatable, Sendable {
     /// The reply was not what the adapter promises (not JSON, wrong field set, wrong types).
     case badReply
 
-    init?(code: String, retryAfter: Int?) {
-        switch code {
-        case "unsupported_host_api": self = .unsupportedHostAPI
-        case "unauthenticated": self = .unauthenticated
-        case "not_found": self = .notFound
-        case "rate_limited": self = .rateLimited(retryAfter: retryAfter)
-        case "quota_exceeded": self = .quotaExceeded
-        case "not_implemented": self = .notImplemented
+    /// Only the status/code pairs host-api v0 defines; any other combination is not an adapter error at all.
+    init?(status: Int, code: String, retryAfter: Int?) {
+        switch (status, code) {
+        case (400, "unsupported_host_api"): self = .unsupportedHostAPI
+        case (401, "unauthenticated"): self = .unauthenticated
+        case (404, "not_found"): self = .notFound
+        case (429, "rate_limited"): self = .rateLimited(retryAfter: retryAfter)
+        case (429, "quota_exceeded"): self = .quotaExceeded
+        case (501, "not_implemented"): self = .notImplemented
         default: return nil
         }
     }
@@ -188,8 +196,20 @@ public struct RelayRefusal: Error, Equatable, Sendable {
 
     public init(status: Int, code: Code) { self.status = status; self.code = code }
 
+    /// The protocol section 14 table: each code has exactly one HTTP status.
+    public static func expectedStatus(of code: Code) -> Int {
+        switch code {
+        case .malformed, .wrongSuite, .certInvalid, .certExpired, .delegationMismatch: 400
+        case .badSignature, .staleTimestamp, .unknownWorkspace, .replay, .unknownChallenge, .expired: 401
+        case .revoked, .otherPerson, .scopeExceeded, .notEligible, .notForThisDevice: 403
+        case .otherWorkspace, .wskChanged, .delegationChanged, .staleCard, .wxkChangedWithoutVersion, .badWxkVersion, .staleList,
+             .badEpoch, .rotationRequired, .missingGrant, .alreadyClaimed, .versionConflict: 409
+        case .preconditionRequired: 428
+        }
+    }
+
     init?(status: Int, code: String, fields: [String: JSONValue]) {
-        guard let c = Code(rawValue: code) else { return nil }
+        guard let c = Code(rawValue: code), Self.expectedStatus(of: c) == status else { return nil }
         self.status = status; self.code = c
     }
 }

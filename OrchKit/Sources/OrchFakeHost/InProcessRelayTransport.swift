@@ -36,7 +36,7 @@ public struct InProcessRelayTransport: RelayTransport {
     }
     public func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await inner.registerPush(body, session: session) }
     public func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await inner.unregisterPush(body, session: session) }
-    public func revocation(deviceID: ID16, session: RelaySession) async throws -> WireReply { try await inner.revocation(deviceID: deviceID, session: session) }
+    public func revocation(deviceID: ID16) async throws -> WireReply { try await inner.revocation(deviceID: deviceID) }
     public func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
         try await inner.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session)
     }

@@ -6,6 +6,8 @@ import OrchProtocol
 /// context and origin are fixed at construction; every call re-checks them before the sender is touched.
 public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     public let context: RealmContext
+    /// The origin `context` admitted at construction. Every send re-admits it and requires the sender to still be on it.
+    let origin: String
     let sender: Sender
     let clientAddress: String
 
@@ -13,7 +15,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     /// transport for an external origin cannot exist in a Demo context.
     package init(context: RealmContext, origin: String, sender: Sender, clientAddress: String) throws {
         try context.admit(origin: origin)
-        self.context = context; self.sender = sender; self.clientAddress = clientAddress
+        guard sender.origin == origin else { throw TransportError.realm(.externalOrigin) }
+        self.context = context; self.origin = origin; self.sender = sender; self.clientAddress = clientAddress
     }
 
     private var R: String { HostAPI.base }
@@ -34,7 +37,11 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     }
 
     private func send(_ r: WireRequest) async throws -> WireReply {
-        try context.admit(origin: context.origin)
+        do {
+            try context.generation?.check()
+            try context.admit(origin: origin)
+            try context.admit(origin: sender.origin)
+        } catch let v as RealmViolation { throw TransportError.realm(v) }
         try Task.checkCancellation()
         return try await sender.send(r)
     }
@@ -94,8 +101,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     public func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/register", body, session: session) }
     public func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/unregister", body, session: session) }
 
-    public func revocation(deviceID: ID16, session: RelaySession) async throws -> WireReply {
-        try await get("\(R)/devices/\(deviceID.hex)/revocation", session: session)
+    public func revocation(deviceID: ID16) async throws -> WireReply {
+        try await get("\(R)/devices/\(deviceID.hex)/revocation")
     }
 
     public func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {

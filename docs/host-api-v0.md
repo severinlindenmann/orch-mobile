@@ -35,7 +35,12 @@ JSON examples use `$name` for typed placeholders, not literal values; listed fie
 These are the exact proposed signatures, not claims that implementations already exist.
 All supporting values are immutable Sendable structs/enums; keys are custody handles, never raw scalars.
 Data below is an untrusted byte buffer, not a decoded protocol object. Transport does no crypto.
-A transport is constructed with a fixed RealmContext and allowed origin; callers cannot override either.
+A transport is constructed with a fixed RealmContext and allowed origin; callers cannot override either. The transport
+exposes that context (`var context: RealmContext { get }`) and a login is bound to it: the client signs `context.origin`
+(there is no origin parameter on `openDeviceSession`) and only with a device identity whose realm tag equals
+`context.realm`, both checked before the first request. A wrapper transport must report the context of the transport that
+really carries its bytes. Device identities carry the realm of the custody that produced them (set only in-package), so a
+wrapper custody cannot present live keys as Demo's, or the reverse (`RealmViolation.wrongStore`).
 
 ```swift
 import Foundation
@@ -57,6 +62,7 @@ public struct BridgeRoute: Sendable {
     public let requestID: ID16
 }
 public protocol RelayTransport: Sendable {
+    var context: RealmContext { get }
     func challenge() async throws -> WireReply
     func login(_ body: Data) async throws -> WireReply
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
@@ -69,7 +75,7 @@ public protocol RelayTransport: Sendable {
     func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply
     func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply
     func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply
-    func revocation(deviceID: ID16, session: RelaySession) async throws -> WireReply
+    func revocation(deviceID: ID16) async throws -> WireReply     // session-less: a public, PK-signed record
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data,
                  session: RelaySession) async throws -> WireReply
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
@@ -315,9 +321,11 @@ list epoch >= approved.epoch (all >= 1), and the installed grant epoch equal to 
 A mismatch fails join; no partial workspace install or silent origin change is permitted.
 
 `GET R/devices/{device}/revocation` returns `{"host_api":0,"record":$signedRevocation}`;
-absence is 404 `not_found`. This proposed gap-24 route uses the relay session's device identity,
-allows fetching its own record even after revocation, and never requires current workspace membership.
-Confirm post-revocation session access with P3. Verify the exact §6.2 record with `Revocation.verify`,
+absence is 404 `not_found`. This proposed gap-24 route takes no session: the record is a public PK-signed object and a
+revoked device has no session. Decided (owner, 10 October 2026): a revoked device gets no relay session. Login for a revoked
+device answers 403 `revoked` (after its signature verified, so strangers learn nothing), publishing a revocation ends the
+device's sessions, and the relay drops its grants, card-key wraps and queued requests. The client fetches its own record
+on that 403 (or any `revoked`) without a session; confirm with P3 ([gap 24](gaps.md)). Verify the exact §6.2 record with `Revocation.verify`,
 the pinned PK and this device_id before identity-wide wipe. An unsigned relay 403 (including `revoked`)
 or a WSK-signed bridge `revoked` only triggers this fetch; neither authorizes wiping. If unavailable,
 stop affected sends and show unverified status, retaining local state. Verified host `not_member`

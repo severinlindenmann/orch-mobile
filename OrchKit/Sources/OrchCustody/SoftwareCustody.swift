@@ -19,18 +19,18 @@ public struct SoftwareCustody: DeviceKeyCustody {
         try checkLock()
         let sig = P256.Signing.PrivateKey(), kx = P256.KeyAgreement.PrivateKey()
         try blobs.createPair(realm, sig: sig.rawRepresentation, kx: kx.rawRepresentation)
-        return try Self.identity(sigBlob: sig.rawRepresentation, kxBlob: kx.rawRepresentation, lock: lock)
+        return try Self.identity(sigBlob: sig.rawRepresentation, kxBlob: kx.rawRepresentation, realm: realm, lock: lock)
     }
 
     public func load(realm: Realm) throws -> DeviceIdentity {
         try checkLock()
         let (s, k) = try blobs.readBoth(realm)
-        return try Self.identity(sigBlob: s, kxBlob: k, lock: lock)
+        return try Self.identity(sigBlob: s, kxBlob: k, realm: realm, lock: lock)
     }
 
-    static func identity(sigBlob: Data, kxBlob: Data, lock: SimulatedLock) throws -> DeviceIdentity {
+    static func identity(sigBlob: Data, kxBlob: Data, realm: Realm, lock: SimulatedLock) throws -> DeviceIdentity {
         do {
-            return DeviceIdentity(sig: try LockedSigner(raw: sigBlob, lock: lock), kx: try LockedKeyAgreer(raw: kxBlob, lock: lock))
+            return DeviceIdentity(sig: try LockedSigner(raw: sigBlob, lock: lock), kx: try LockedKeyAgreer(raw: kxBlob, lock: lock), realm: realm)
         } catch { throw CustodyError.orphaned }
     }
 
@@ -38,7 +38,7 @@ public struct SoftwareCustody: DeviceKeyCustody {
 
     public func status(realm: Realm) -> CustodyStatus {
         if lock.isLocked { return .locked }
-        return blobs.status(realm) { s, k in _ = try Self.identity(sigBlob: s, kxBlob: k, lock: lock) }
+        return blobs.status(realm) { s, k in _ = try Self.identity(sigBlob: s, kxBlob: k, realm: realm, lock: lock) }
     }
 }
 
