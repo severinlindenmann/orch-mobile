@@ -15,6 +15,8 @@ public struct TombstoneEntry: Sendable, Equatable {
 public enum StoreError: Error, Equatable, Sendable {
     case realmMismatch(expected: String, found: String)
     case workspaceRemoved(ws: String, generation: Int64)
+    /// Removal could not be determined. Preserve local data and retry later.
+    case removalStateUnknown(ws: String, generation: Int64)
     case suspended
     /// A join tried to commit but its pairing row is gone (cancelled, erased or recovered away).
     case pairingNotOwned(ws: String, generation: Int64)
@@ -88,9 +90,7 @@ public final class WorkspaceIndex: Sendable {
     /// concurrent wipe cannot interleave. Rejects a generation a tombstone already covers (stale rejoin).
     public func addWorkspace(ws: String, generation: Int64) async throws {
         try StoreLayout.validate(ws: ws)
-        if layout.tombstones.isRemovedFailClosed(realm: layout.realm, ws: ws, generation: generation) {
-            throw StoreError.workspaceRemoved(ws: ws, generation: generation)
-        }
+        try await requireNotRemoved(ws: ws, generation: generation)
         try await db.transaction { tx in
             let t = try tx.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])
             if !t.isEmpty { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
@@ -144,9 +144,19 @@ public final class WorkspaceIndex: Sendable {
         try layout.tombstones.republish(complete: try await tombstones().map(\.record))
     }
 
-    /// Index first (authoritative), then the coordination files fail-closed.
+    /// Fail-closed admission check: unknown counts as removed. Never use this Boolean to authorize
+    /// deletion; destructive callers must distinguish all three values of removalStatus.
     public func isRemoved(ws: String, generation: Int64) async throws -> Bool {
         await removalStatus(ws: ws, generation: generation) != .notRemoved
+    }
+
+    /// A write must wait for a readable removal state; uncertainty never authorizes cleanup.
+    package func requireNotRemoved(ws: String, generation: Int64) async throws {
+        switch await removalStatus(ws: ws, generation: generation) {
+        case .notRemoved: return
+        case .removed: throw StoreError.workspaceRemoved(ws: ws, generation: generation)
+        case .unknown: throw StoreError.removalStateUnknown(ws: ws, generation: generation)
+        }
     }
 
     /// Read failures preserve pending work; only confirmed tombstones authorize cleanup.
@@ -277,9 +287,7 @@ extension WorkspaceIndex {
     /// pairing or a complete workspace, never a half-installed one.
     public func commitJoin(generation: Int64, profile p: WorkspaceProfile) async throws {
         try StoreLayout.validate(ws: p.ws)
-        if layout.tombstones.isRemovedFailClosed(realm: layout.realm, ws: p.ws, generation: generation) {
-            throw StoreError.workspaceRemoved(ws: p.ws, generation: generation)
-        }
+        try await requireNotRemoved(ws: p.ws, generation: generation)
         try await db.transaction { tx in
             let t = try tx.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(p.ws), .int(generation)])
             if !t.isEmpty { throw StoreError.workspaceRemoved(ws: p.ws, generation: generation) }

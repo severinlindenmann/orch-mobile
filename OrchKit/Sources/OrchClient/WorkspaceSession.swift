@@ -119,9 +119,10 @@ public actor WorkspaceSession {
     private func ensureCurrent() async throws {
         do {
             try cfg.context.generation?.check()          // a Demo reset ends every session built from the old capability
-            if try await cfg.container.index.isRemoved(ws: cfg.workspace.hex, generation: cfg.generation) { throw SessionError.staleGeneration }
+            try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
             _ = try await cfg.container.database()
         } catch {
+            if case StoreError.removalStateUnknown = error { throw error }
             cancelAll()
             throw error is StoreError ? SessionError.staleGeneration : error
         }

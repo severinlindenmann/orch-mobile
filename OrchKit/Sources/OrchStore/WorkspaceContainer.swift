@@ -46,16 +46,19 @@ public actor WorkspaceContainer {
     public var isSuspended: Bool { suspended }
 
     private func performOpen(_ start: Int) async throws {
-        if try await index.isRemoved(ws: ws, generation: generation) {
-            throw StoreError.workspaceRemoved(ws: ws, generation: generation)
-        }
+        try await index.requireNotRemoved(ws: ws, generation: generation)
         let layout = index.layout
         try layout.prepareWorkspace(ws)
         let d = try SQLiteDatabase(url: layout.wsDatabaseURL(ws))
         do { try await d.migrate(Self.migrations) } catch { await d.close(); throw error }
         // A wipe may have recorded its tombstone after the first check and before our files were created:
         // re-check now that they exist and clean up ourselves (the wipe's purge may already have run).
-        if try await index.isRemoved(ws: ws, generation: generation) {
+        switch await index.removalStatus(ws: ws, generation: generation) {
+        case .notRemoved: break
+        case .unknown:
+            await d.close()
+            throw StoreError.removalStateUnknown(ws: ws, generation: generation)
+        case .removed:
             await d.close()
             for f in StoreLayout.sqliteFiles(try layout.wsDatabaseURL(ws)) { try? FileManager.default.removeItem(at: f) }
             try? FileManager.default.removeItem(at: try layout.wsDir(ws))

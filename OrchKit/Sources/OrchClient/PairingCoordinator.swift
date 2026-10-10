@@ -1124,6 +1124,7 @@ extension PairingCoordinator {
         case JoinDeadlineError.timedOut: publish(.failed(.joiningTimedOut))
         case let f as JoinFailure: _ = await finish(.failed(.verification(reason: f.reason)), mine)
         case is JoinPending: joinRetry(now)
+        case StoreError.removalStateUnknown: joinRetry(now)
         case let t as TransportError:
             if case .realm(let v) = t { _ = await finish(.failed(.realm(v)), mine) } else { joinRetry(now) }
         case let v as RealmViolation: _ = await finish(.failed(.realm(v)), mine)
@@ -1230,7 +1231,13 @@ extension PairingCoordinator {
                 try? vault.delete(ws: wsHex, purpose: "pairing")
                 throw error
             }
-            await rollback()
+            if case StoreError.removalStateUnknown = error {
+                // Uncertainty is not permission to erase files, grants or the approved pairing.
+                await container?.close()
+                restoreCert()
+            } else {
+                await rollback()
+            }
             throw error
         }
     }

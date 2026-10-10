@@ -7,6 +7,41 @@ import OrchStore
 @testable import OrchFakeHost
 
 @Suite struct PairingFinalRoundTests {
+    @Test(arguments: ["install.begin", "install.container", "install.precommit"])
+    func busyLockDuringInstallPreservesPairing(point: String) async throws {
+        let h = try await PairHarness.make(.firstTime)
+        try await h.driveToJoining()
+        let before = try #require(h.pairingRecord)
+        let dir = h.env.index.layout.tombstones.directories[0]
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fd = open(dir.appendingPathComponent("tombstones.lock").path, O_RDWR | O_CREAT, 0o600)
+        #expect(fd >= 0)
+        defer { flock(fd, LOCK_UN); close(fd) }
+        try h.env.index.layout.prepareWorkspace(h.wsHex)
+        let sentinel = try h.env.index.layout.wsDir(h.wsHex).appendingPathComponent("keep")
+        try Data("keep".utf8).write(to: sentinel)
+        await h.coordinator.setHook { name in
+            if name == point { #expect(flock(fd, LOCK_EX | LOCK_NB) == 0) }
+        }
+        await h.coordinator.poll()
+        #expect(await h.coordinator.state == .joining)
+        #expect(h.pairingRecord == before)
+        #expect(try await h.env.index.pairing(ws: h.wsHex)?.terminal == nil)
+        #expect(try await h.env.index.pairing(ws: h.wsHex) != nil)
+        #expect(try await h.env.index.workspaces().isEmpty)
+        #expect(FileManager.default.fileExists(atPath: sentinel.path))
+        flock(fd, LOCK_UN)
+        await h.coordinator.setHook { _ in }
+        h.clock.advance(milliseconds: 2_001)
+        await h.coordinator.poll()
+        guard case .ready = await h.coordinator.state else {
+            Issue.record("join did not succeed after lock release"); return
+        }
+        #expect(try Data(contentsOf: sentinel) == Data("keep".utf8))
+        #expect(try await h.env.index.workspaces().count == 1)
+        #expect(h.pairingRecord == nil)
+    }
+
     @Test func unreadableTombstonesPreservePairing() async throws { try await checkTombstones(locked: false) }
     @Test func lockedTombstonesPreservePairing() async throws { try await checkTombstones(locked: true) }
 
