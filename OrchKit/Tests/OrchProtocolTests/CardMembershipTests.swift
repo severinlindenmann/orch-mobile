@@ -138,7 +138,7 @@ import Testing
         #expect(throws: Refusal.wxkChangedWithoutVersion) { try Card.checkRelayUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk2, version: 1, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
         #expect(throws: Refusal.badWxkVersion) { try Card.checkRelayUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk1, version: 2, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
         // sealed part with an extra field or the wrong types is malformed
-        let bad = try ZeroNonceGCM.seal(key: KDF.kCard(ck: ck1, workspace: ws, cardSeq: 1), plaintext: canonicalJSON(["name": "n", "description": "d", "capabilities": ["a"], "hosted_by": nil, "x": 1]),
+        let bad = try ZeroNonceGCM.seal(key: KDF.kCard(ck: ck1, workspace: ws, cardSeq: 1), plaintext: canonicalJSON(["name": "n", "description": "d", "capabilities": ["a"], "hosted_by": .null, "x": 1]),
                                         aad: Card.sealedAAD(workspace: ws, cardSeq: 1))
         let c3 = try Card.verify(Card.make(delegation: deleg, workspace: ws, wxk: wxk1.publicKey, wxkVersion: 1, owner: ownerID, relayURL: "https://r.example", cardSeq: 1, issuedMs: 1, sealed: bad, ck: ck1, wsk: wsk), ownerKey: owner.publicKey)
         #expect(throws: Refusal.malformed) { try Card.openSealedPart(of: c3, ck: ck1) }

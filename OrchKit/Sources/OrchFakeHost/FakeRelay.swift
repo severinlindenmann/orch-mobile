@@ -67,6 +67,11 @@ public actor FakeRelay: RequestSender {
     private var pairPostsByWS: [ID16: Window] = [:]
     private var pairPostsByAddress: [String: Window] = [:]
     private var pairPollsByAddress: [String: Window] = [:]
+    // The primary's queues (protocol section 8.4): fake relay internals, not phone APIs. Unchanged cert_request / cert_challenge objects.
+    private struct QueuedCertRequest { let request: JSONValue; let requestID: ID16; let workspace: ID16; let expiresMs: Int64 }
+    private var certRequests: [ID16: [QueuedCertRequest]] = [:]            // by primary device id
+    private var certChallenges: [ID16: (workspace: ID16, challenge: JSONValue, expiresMs: Int64)] = [:]   // by request id
+    private var rejectedCertRequests: [ID16: ID16] = [:]                   // request id -> workspace (v0 rejection propagation, gap 22)
     public private(set) var accepted = 0
     private var arrivals: UInt64 = 0
     /// Requests that reached `send`, for tests that prove something was refused before any request.
@@ -94,9 +99,12 @@ public actor FakeRelay: RequestSender {
     public func retire() {
         challenges = [:]; sessions = [:]; owners = [:]; certs = [:]; certInfo = [:]; revoked = []; revocations = [:]
         workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
+        certRequests = [:]; certChallenges = [:]; rejectedCertRequests = [:]
     }
 
     static let expiredChallengeGraceMs: Int64 = 5 * 60_000
+    /// How long the primary's queues (cert request, challenge, rejection) keep an entry past the request's own expiry (host-api section 6: 60 s).
+    static let queueGraceMs: Int64 = 60_000
 
     private func checkLive() throws { try context.generation?.check() }
 
@@ -264,6 +272,65 @@ public actor FakeRelay: RequestSender {
         return s.id
     }
 
+    // MARK: the primary's queues (protocol section 8.4)
+
+    /// The host's `cert_request` for a primary device (a workspace session; the request is signed by `WSK`).
+    public func postCertRequest(_ signed: JSONValue, token: String) throws {
+        try checkLive()
+        let ws = try workspaceSession(token)
+        guard let card = workspaces[ws]?.card else { throw ClientError.relay(RelayRefusal(status: 401, code: .unknownWorkspace)) }
+        let o: [String: JSONValue]
+        do { o = try SignedObject.parse(signed).verify(kind: .certRequest, key: card.wsk) } catch let r as Refusal { throw Self.relayError(r) }
+        guard let rid = o["request_id"]?.string.flatMap({ ID16(hex: $0) }), let primary = o["primary_device_id"]?.string.flatMap({ ID16(hex: $0) }),
+              let w = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }), let exp = o["expires_ms"]?.int else {
+            throw ClientError.relay(RelayRefusal(status: 400, code: .malformed))
+        }
+        guard w == ws else { throw ClientError.relay(RelayRefusal(status: 409, code: .otherWorkspace)) }
+        certRequests[primary, default: []].append(QueuedCertRequest(request: signed, requestID: rid, workspace: ws, expiresMs: exp))
+    }
+
+    /// Requests waiting for a primary device (non-consuming; expired ones are gone).
+    public func pendingCertRequests(primary: ID16) -> [JSONValue] {
+        let now = wall.nowMs
+        return (certRequests[primary] ?? []).filter { now < $0.expiresMs }.map(\.request)
+    }
+
+    /// The primary's `cert_challenge`, signed by `PK` (the relay knows the owner key from the cards and certificates it verified).
+    public func postCertChallenge(_ signed: JSONValue) throws {
+        try checkLive()
+        guard let o = signed.object?["o"]?.object, let person = o["person_id"]?.string.flatMap({ ID16(hex: $0) }), let owner = owners[person],
+              let rid = o["request_id"]?.string.flatMap({ ID16(hex: $0) }), let ws = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }),
+              let exp = o["expires_ms"]?.int else { throw ClientError.relay(RelayRefusal(status: 403, code: .otherPerson)) }
+        do { _ = try SignedObject.parse(signed).verify(kind: .certChallenge, key: owner) } catch let r as Refusal { throw Self.relayError(r) }
+        guard certChallenges[rid] == nil else { throw ClientError.relay(RelayRefusal(status: 401, code: .replay)) }
+        certChallenges[rid] = (ws, signed, exp)
+    }
+
+    /// What the host reads for its request: the primary's challenge, if it was posted.
+    public func certChallenge(workspace: ID16, requestID: ID16, token: String) throws -> JSONValue? {
+        guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
+        guard let c = certChallenges[requestID], c.workspace == workspace else { return nil }
+        return c.challenge
+    }
+
+    /// A human on the primary rejected the request (provisional propagation to the host, gap 22).
+    public func postCertRequestRejected(requestID: ID16) {
+        for (_, list) in certRequests { if let q = list.first(where: { $0.requestID == requestID }) { rejectedCertRequests[requestID] = q.workspace } }
+    }
+
+    public func certRequestRejected(workspace: ID16, requestID: ID16, token: String) throws -> Bool {
+        guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
+        return rejectedCertRequests[requestID] == workspace
+    }
+
+    /// The directory's certificate of a device (what the host polls for after asking the primary).
+    public func certificate(device: ID16) -> JSONValue? { certs[device] }
+
+    /// The relay's verified card of a workspace (the primary checks a request against it).
+    public func verifiedCard(workspace: ID16) -> VerifiedCard? { workspaces[workspace]?.card }
+
+    public func certRequestQueueSize() -> Int { certRequests.values.reduce(0) { $0 + $1.count } + certChallenges.count }
+
     // MARK: inspection (tests; the relay's own storage, not a client API)
 
     public func hasGrant(workspace: ID16, device: ID16, epoch: UInt32) -> Bool {
@@ -299,11 +366,11 @@ public actor FakeRelay: RequestSender {
     }
 
     /// Epoch-0 requests of a pairing offer, for the host.
-    public func pendingPairRequests(workspace: ID16, offer: ID16, token: String) throws -> [(rid: ID16, envelope: Data)] {
+    public func pendingPairRequests(workspace: ID16, offer: ID16, token: String) throws -> [(rid: ID16, envelope: Data, arrival: UInt64)] {
         guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
         let now = wall.nowMs
         return boxes.filter { $0.key.ws == workspace && $0.key.offer == offer }
-            .flatMap { k, v in live(v, now).requests.map { (rid: k.rid, envelope: $0.envelope) } }
+            .flatMap { k, v in live(v, now).requests.map { (rid: k.rid, envelope: $0.envelope, arrival: $0.arrival) } }
     }
 
     private func live(_ b: Box, _ now: Int64) -> Box {
@@ -349,6 +416,11 @@ public actor FakeRelay: RequestSender {
         pairPostsByWS = pairPostsByWS.filter { $0.value.isActive(now) }
         pairPostsByAddress = pairPostsByAddress.filter { $0.value.isActive(now) }
         pairPollsByAddress = pairPollsByAddress.filter { $0.value.isActive(now) }
+        // queues of the primary: a request, its challenge and a rejection live as long as the request does (plus the grace of a late read)
+        for (k, v) in certRequests { let keep = v.filter { $0.expiresMs + Self.queueGraceMs > now }; certRequests[k] = keep.isEmpty ? nil : keep }
+        certChallenges = certChallenges.filter { $0.value.expiresMs + Self.queueGraceMs > now }
+        let live = Set(certRequests.values.flatMap { $0.map(\.requestID) })
+        rejectedCertRequests = rejectedCertRequests.filter { live.contains($0.key) }
     }
 
     private func routePath(_ target: String) -> String { String(target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? "") }

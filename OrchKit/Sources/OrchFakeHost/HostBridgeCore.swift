@@ -66,10 +66,12 @@ package enum HostCheck: Equatable, Sendable {
     case refuse(HostRefusal, Bridge.Header)
     case replay([Data], Bridge.Header)
     case accept(HostAccepted)
+    /// An epoch-0 answer (section 8.3): sealed under the offer's `K_pair`, signed by `WSK`, carrying `wsk_pub`.
+    case pair(HostPairReply, Bridge.Header)
 }
 
-/// Section 8.6, in the normative order, for epoch >= 1 requests. Epoch 0 (pairing, section 8.3) is slice 2b: such an envelope
-/// is dropped here as having no key. Pure state machine: no clock, no I/O.
+/// Section 8.6, in the normative order. Epoch >= 1 requests run the device pipeline; epoch 0 (pairing, section 8.3, `K_pair`,
+/// offers) goes to `checkPairing`. Pure state machine: no clock, no I/O.
 package struct HostBridgeCore: Sendable {
     package var workspace: ID16
     package var epoch: UInt32
@@ -82,6 +84,12 @@ package struct HostBridgeCore: Sendable {
     package var streams: [ID16: ID16] = [:]
     package var unverified: [Int64] = []
     package var limits = HostLimits()
+    // Pairing (section 8.3): offers by id, the pending pairing of each device, and the two keys an answer needs.
+    package var offers: [ID16: HostOffer] = [:]
+    package var pendingPairs: [ID16: HostPendingPair] = [:]
+    package var wskPub: SigningPublicKey?
+    package var ownerPK: SigningPublicKey?
+    package var approvedEpochOverride: UInt32?
 
     package init(workspace: ID16, epoch: UInt32) { self.workspace = workspace; self.epoch = epoch }
 
@@ -126,6 +134,7 @@ package struct HostBridgeCore: Sendable {
         if let m = mailbox, m != h.rid { return .drop("mailbox_mismatch") }
         // 2. key
         if h.epoch > epoch { return .drop("future_epoch") }
+        if h.epoch == 0 { return checkPairing(parts, now) }
         guard h.epoch >= 1, let wk = keys[h.epoch], let ck = Bridge.channelKey(header: h, wk: wk) else { return .drop("no_key") }
         // 3. tag
         guard let plain = try? Bridge.openBody(parts, channelKey: ck) else { return .drop("tag") }

@@ -339,7 +339,7 @@ import Testing
             "v": 2, "suite": 2, "kind": "device_cert", "device_id": .string(Identifiers.deviceID(dk.publicKey).hex),
             "person_id": .string(Identifiers.personID(pk.publicKey).hex), "dk_sig_pub": .string(B64U.encode(dk.publicKey.x963)),
             "dk_kx_pub": .string(B64U.encode(kx.publicKey.x963)), "label_sealed": .string(B64U.encode(Data(count: 40))),
-            "created_ms": 1000, "expires_ms": nil, "scopes_max": ["look", "decide"]]
+            "created_ms": 1000, "expires_ms": .null, "scopes_max": ["look", "decide"]]
         let signed = try SignedObject.sign(o, kind: .deviceCert, signer: pk)
         let cert = try DeviceCertificate.verify(signed.json, personKey: pk.publicKey, nowMs: 2000)
         #expect(cert.scopesMax == ["look", "decide"] && cert.signingKey == dk.publicKey && cert.agreementKey == kx.publicKey)

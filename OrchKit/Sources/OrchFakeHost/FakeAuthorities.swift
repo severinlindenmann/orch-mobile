@@ -13,16 +13,28 @@ public struct DemoKeys: Sendable, Equatable {
     public var deviceID: ID16 { Identifiers.deviceID(sig) }
 }
 
-/// FakePrimary shell (host-api section 5): the synthetic Demo `PK`, `PVK` and primary-device keys, all generated fresh when
-/// the actor is built and never persisted or derived from a vector scalar. It can be built only with a `DemoCapability`.
-/// Slice 1 needs no more than certifying keys, delegating a workspace and revoking; the section 8.4 request queue, challenge
-/// and code confirmation arrive with pairing (slice 2b) and replace `certify`.
+/// FakePrimary (host-api section 5): the synthetic Demo `PK`, `PVK` and primary-device keys, all generated fresh when the actor is
+/// built and never persisted or derived from a vector scalar. It can be built only with a `DemoCapability`. It enforces protocol
+/// section 8.4 with `PrimaryLedger`: it opens a host request only after the checks (in order), draws its nonce after the keys
+/// reached it, signs a challenge with `PK`, and certifies exactly the keys of that challenge, once, only after an explicit second
+/// approval that names the compared code. A joining phone is certified through this flow and nothing else; `certify` below is the
+/// owner's enrolment of devices outside it (the Demo Mac's own key, test seeding of members).
 public actor FakePrimary {
     private let pk = SoftwareSigner()
     private let pvk: SymmetricKey
     private let sig = SoftwareSigner()
     private let kx = SoftwareKeyAgreer()
+    nonisolated var pkSigner: SoftwareSigner { pk }
+    var pvkKey: SymmetricKey { pvk }
+    var kxAgreer: SoftwareKeyAgreer { kx }
     let wall: any WallClock
+    let entropy: any Entropy
+    var ledger = PrimaryLedger()
+    package func ledgerSnapshot() -> PrimaryLedger { ledger }
+    var prompts: [ID16: PrimaryPrompt] = [:]
+    var refusals: [ID16: Refusal] = [:]
+    /// The label the host shows next to "Open orch on ...".
+    public nonisolated let label = "Demo Mac"
     let capability: DemoCapability
     public nonisolated let publicKey: SigningPublicKey
     public nonisolated let personID: ID16
@@ -30,7 +42,7 @@ public actor FakePrimary {
     public nonisolated let deviceKeys: DemoKeys
 
     public init(capability: DemoCapability, wall: any WallClock, entropy: any Entropy) {
-        self.wall = wall; self.capability = capability
+        self.wall = wall; self.capability = capability; self.entropy = entropy
         pvk = SymmetricKey(data: entropy.bytes(32))
         publicKey = pk.publicKey
         personID = Identifiers.personID(pk.publicKey)
@@ -39,10 +51,15 @@ public actor FakePrimary {
         DemoAuthorities.shared.register(personID)
     }
 
-    /// A PK-signed certificate for exactly these keys (shell for the section 8.4 flow).
+    /// A PK-signed certificate for exactly these keys, without the section 8.4 flow: the owner enrolling a device in person (the Demo
+    /// Mac's own key, members seeded by tests). A phone that joins through pairing never gets its certificate here.
     public func certify(_ keys: DemoKeys, label: String, scopesMax: [String] = ["look", "decide", "operate", "type"],
                         lifetimeMs: Int64? = nil) throws -> JSONValue {
         try capability.generation.check()
+        return try signDeviceCert(keys, label: label, scopesMax: scopesMax, lifetimeMs: lifetimeMs)
+    }
+
+    func signDeviceCert(_ keys: DemoKeys, label: String, scopesMax: [String], lifetimeMs: Int64?) throws -> JSONValue {
         guard Scopes.isValid(scopesMax), !scopesMax[0].utf8.starts(with: "drop:".utf8) else { throw Refusal.scopeExceeded }
         let device = Identifiers.deviceID(keys.sig)
         let now = wall.nowMs
@@ -81,7 +98,7 @@ public actor FakePrimary {
 public actor FakeHost {
     public nonisolated let workspace: ID16
     public nonisolated let wskPublic: SigningPublicKey
-    let wsk = SoftwareSigner()
+    nonisolated let wsk = SoftwareSigner()
     let wxk = SoftwareKeyAgreer()
     let primary: FakePrimary
     let capability: DemoCapability
@@ -93,7 +110,7 @@ public actor FakeHost {
     private let hostedBy: String?
     var wks: [UInt32: SymmetricKey] = [:]
     var cks: [UInt32: SymmetricKey] = [:]
-    private var cardSeq: UInt32 = 0
+    var cardSeq: UInt32 = 0
     var listSeq: Int64 = 0
     public internal(set) var epoch: UInt32 = 0
     var core: HostBridgeCore
@@ -126,15 +143,51 @@ public actor FakeHost {
     /// Chunks the host must post that no request is waiting on (rotation ending open streams).
     var outbox: [(rid: ID16, chunk: Data)] = []
 
+    // Pairing (section 8.3). The scenario knobs below are the fakes' own behaviours; the human decisions are explicit calls.
+    var relaySession: (session: RelaySession, expiresMs: Int64)?
+    var lastPairArrival: UInt64 = 0
+    var lastPairingError: String?
+    /// The host is the owner's primary device (it certifies locally after its own approval). Refused for a client-hosted workspace.
+    public internal(set) var hostIsPrimary = false
+    /// Adversarial: the cert request names the host's own keys instead of the phone's (R1).
+    public internal(set) var r1Attack = false
+    /// Adversarial: `pending` echoes a foreign key.
+    public internal(set) var echoWrongKey: EchoedKey?
+    public enum EchoedKey: Sendable { case signing, exchange }
+    public nonisolated let isClientHosted: Bool
+    /// Adversarial knobs for T0 (package scope: unreachable from the app): what a hostile or buggy host would do at the end of a join.
+    package struct Hostile: Sendable {
+        /// The card-key wrap is sealed to the device with this key instead of the card's `CK`.
+        package var wrapKey: SymmetricKey?
+        /// The member list names the device with these scopes instead of the approved ones.
+        package var listScopes: [String]?
+        /// The approved answer claims this epoch.
+        package var approvedEpoch: UInt32?
+        /// The member list leaves the device out.
+        package var omitFromList = false
+        package init() {}
+    }
+    package var hostile = Hostile()
+    /// Tests: runs at the named points of the host's approval (an `await` there lets a test act concurrently, e.g. reject).
+    package var approvalHook: (@Sendable (String) async -> Void)?
+    package func setApprovalHook(_ h: (@Sendable (String) async -> Void)?) { approvalHook = h }
+    /// Scenario knob: a join's member list is published only once the wall clock reaches this time (at the next pump). Everything else
+    /// of the join (certificate, grant, card-key wrap) is already out, so the phone sits in `joining` until exactly this boundary.
+    package var listHoldUntilMs: Int64?
+    package func holdMemberList(until ms: Int64?) { listHoldUntilMs = ms }
+    var heldList: (members: [(DemoKeys, [String])], listSeq: Int64)?
+    package func setHostile(_ f: (inout Hostile) -> Void) { f(&hostile) }
+
     public init(capability: DemoCapability, context: RealmContext, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
                 hostedBy: String? = nil, workspace: ID16? = nil, wall: any WallClock, entropy: any Entropy) throws {
         guard context.realm == .demo, context.generation === capability.generation else { throw RealmViolation.wrongStore }
         self.workspace = workspace ?? entropy.id16()
         self.capability = capability
         self.primary = primary; self.wall = wall; self.entropy = entropy; self.origin = context.origin
-        self.name = name; self.clientHosted = clientHosted; self.hostedBy = hostedBy
+        self.name = name; self.clientHosted = clientHosted; self.hostedBy = hostedBy; isClientHosted = clientHosted
         wskPublic = wsk.publicKey
         core = HostBridgeCore(workspace: self.workspace, epoch: 0)
+        core.wskPub = wsk.publicKey; core.ownerPK = primary.publicKey
     }
 
     func wk(_ e: UInt32) -> SymmetricKey {
@@ -143,14 +196,17 @@ public actor FakeHost {
     }
 
     /// Epoch 1, card_seq 1, with a fresh CK.
-    public func card() async throws -> JSONValue {
+    public func card() async throws -> JSONValue { try await card(relayURL: nil) }
+
+    /// `relayURL` overrides the card's `relay_url` (adversarial tests only: a relay publishes just its own origin).
+    package func card(relayURL: String?) async throws -> JSONValue {
         try capability.generation.check()
         cardSeq = max(cardSeq, 1)
         let ck = cks[cardSeq] ?? SymmetricKey(data: entropy.bytes(32)); cks[cardSeq] = ck
         let part = CardSealedPart(name: name, description: "Demo workspace", capabilities: ["tickets", "questions", "drop"], hostedBy: hostedBy)
         let sealed = try Card.sealPart(part, ck: ck, workspace: workspace, cardSeq: cardSeq)
         return try Card.make(delegation: try await primary.delegation(workspace: workspace, wsk: wsk.publicKey, clientHosted: clientHosted),
-                             workspace: workspace, wxk: wxk.publicKey, wxkVersion: 1, owner: primary.personID, relayURL: origin,
+                             workspace: workspace, wxk: wxk.publicKey, wxkVersion: 1, owner: primary.personID, relayURL: relayURL ?? origin,
                              cardSeq: cardSeq, issuedMs: wall.nowMs, sealed: sealed, ck: ck, wsk: wsk)
     }
 
@@ -163,7 +219,8 @@ public actor FakeHost {
     /// `CK` of a card sequence sealed to a device (purpose `card`, section 5.3).
     public func cardKeyWrap(for keys: DemoKeys, cardSeq seq: UInt32 = 1) throws -> Data {
         try capability.generation.check()
-        guard let ck = cks[seq] else { throw Refusal.malformed }
+        guard let real = cks[seq] else { throw Refusal.malformed }
+        let ck = hostile.wrapKey ?? real
         return try CardKeyWrap.seal(ck: ck, to: keys.kx, deviceID: Identifiers.deviceID(keys.sig), workspace: workspace, cardSeq: seq)
     }
 
@@ -183,7 +240,15 @@ public actor FakeHost {
         try capability.generation.check()
         let c = transport.context
         guard c.realm == .demo, c.origin == origin, c.generation === capability.generation else { throw RealmViolation.wrongTransport }
-        return try await RelayClient(transport: transport).openSession(kind: .workspace, id: workspace, signer: wsk).session
+        let opened = try await RelayClient(transport: transport).openSession(kind: .workspace, id: workspace, signer: wsk)
+        relaySession = (opened.session, opened.expiresMs)
+        return opened.session
+    }
+
+    /// The host's workspace session, renewed when it is about to end (a 10-minute pairing outlives nothing, but 15-minute sessions do).
+    func currentSession(transport: any RelayTransport) async throws -> RelaySession {
+        if let s = relaySession, wall.nowMs < s.expiresMs - 30_000 { return s.session }
+        return try await openSession(transport: transport)
     }
 
     /// Publishes the directory entries, the card, the CK wrap and `WK_1` grant for the given devices and then the first list.

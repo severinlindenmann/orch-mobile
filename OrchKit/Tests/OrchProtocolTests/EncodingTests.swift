@@ -63,8 +63,21 @@ import Testing
         #expect(throws: JSONError.self) { try StrictJSON.parse(Data([0xEF, 0xBB, 0xBF, 0x7B, 0x7D])) }  // BOM before the value
     }
 
+    /// JSONValue must not be ExpressibleByNilLiteral: an optional `JSONValue?` assigned `nil` must stay `nil`, never become JSON null.
+    @Test func nilIsNeverJSONNull() {
+        let absent: JSONValue? = nil
+        #expect(absent == nil)
+        var o: JSONValue? = .string("x")
+        o = nil
+        #expect(o == nil)
+        let dict: [String: JSONValue?] = ["a": nil]
+        #expect(dict["a"] != nil && dict["a"]! == nil)
+        func take(_ v: JSONValue?) -> Bool { v == nil }
+        #expect(take(nil))
+    }
+
     @Test func strictParseAccepts() throws {
-        #expect(try StrictJSON.parse(" { \"a\" : [ 1 , -0 , true , null ] } ") == ["a": [1, 0, true, nil]])
+        #expect(try StrictJSON.parse(" { \"a\" : [ 1 , -0 , true , null ] } ") == ["a": [1, 0, true, .null]])
         #expect(try StrictJSON.parse("{\"a\":-9007199254740991}") == ["a": .int(-maxSafeInt)])
         #expect(try StrictJSON.parse("\"\\ud83d\\ude00\"") == "\u{1F600}")
     }

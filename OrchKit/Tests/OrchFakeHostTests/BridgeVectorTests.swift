@@ -11,9 +11,9 @@ import OrchTestVectors
 // Gate for protocol section 8.6 / 8.8 vectors (suites."2".bridge). Each case is run for its resulting action AND resulting
 // state, against FakeHost's own pipeline (host_cases) and against WorkspaceSession (device_cases), independently.
 //
-// host_cases: 47 in the file. 25 are epoch >= 1 requests and are run here. The other 22 (names starting "pair") are epoch-0
-// pairing cases (section 8.3, K_pair, offers, cert_pending): slice 2b. They are counted and named below so that none is
-// silently skipped, and so slice 2b can turn the expectation into a run.
+// host_cases: 47 in the file. 25 are epoch >= 1 requests (testBridgeHostCases); the other 22 (names starting "pair") are epoch-0
+// pairing cases (section 8.3, K_pair, offers, cert_pending), run by testPairHostCases in PairingVectorTests. The names are
+// listed here so that none can be silently skipped.
 
 let pairingCaseNames = [
     "pair_first_time", "pair_resend_then_other_key", "pair_unknown_offer_dropped", "pair_sealed_under_another_secret_dropped",
@@ -45,6 +45,25 @@ func hostCore(from st: J) -> HostBridgeCore {
     }
     for (k, v) in st["streams"].v.object ?? [:] { core.streams[ID16(hex: k)!] = ID16(hex: v.string!)! }
     core.unverified = (st["unverified"].v.array ?? []).map { $0.int! }
+    if let wsk = st["wsk_pub"].string { core.wskPub = try! SigningPublicKey(x963: B64U.decode(wsk)!) }
+    if let owner = st["owner_pk_pub"].string { core.ownerPK = try! SigningPublicKey(x963: B64U.decode(owner)!) }
+    for (k, v) in st["offers"].v.object ?? [:] {
+        let o = v.object!
+        core.offers[ID16(hex: k)!] = HostOffer(secret: Hex.decode(o["secret"]!.string!)!, expiresMs: o["expires_ms"]!.int!, sasNonce: B64U.decode(o["sas_nonce"]!.string!)!,
+                                               used: o["used"]!.bool!, unverified: (o["unverified"]?.array ?? []).map { $0.int! })
+    }
+    for (k, v) in st["pending_pairs"].v.object ?? [:] {
+        let o = v.object!
+        let cert: JSONValue? = o["cert"].flatMap { $0.isNull ? nil : $0 }
+        var p = HostPendingPair(offer: ID16(hex: o["offer_id"]!.string!)!, dkSig: try! SigningPublicKey(x963: B64U.decode(o["dk_sig_pub"]!.string!)!),
+                                dkKx: try! AgreementPublicKey(x963: B64U.decode(o["dk_kx_pub"]!.string!)!), label: o["label"]!.string!,
+                                sasNonce: B64U.decode(o["sas_nonce"]!.string!)!, cert: cert, certState: o["cert_state"]!.string!, state: o["state"]!.string!)
+        p.certPendingSince = o["cert_pending_since"]?.int
+        p.primaryLabel = o["primary_label"]?.string
+        p.challenge = o["challenge"].flatMap { $0.isNull ? nil : $0 }
+        p.scopes = o["scopes"]?.array?.compactMap(\.string)
+        core.pendingPairs[ID16(hex: k)!] = p
+    }
     if let per = st["limits"]["per_device"].int { core.limits.perDevice = Int(per) }
     return core
 }
