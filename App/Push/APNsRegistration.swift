@@ -52,7 +52,11 @@ enum PushPermission {
     enum State: Equatable, Sendable { case notDetermined, denied, authorized, provisional }
 
     static func current() async -> State {
-        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        // Completion-handler API: the raw status is Sendable (older SDKs flag the async variant).
+        let raw: Int = await withCheckedContinuation { c in
+            UNUserNotificationCenter.current().getNotificationSettings { c.resume(returning: $0.authorizationStatus.rawValue) }
+        }
+        switch UNAuthorizationStatus(rawValue: raw) ?? .notDetermined {
         case .notDetermined: .notDetermined
         case .denied: .denied
         case .provisional, .ephemeral: .provisional
