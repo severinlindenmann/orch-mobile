@@ -53,9 +53,9 @@ extension FakeHost {
     /// Rotation invariants (protocol §8.5):
     /// I1: No data is sealed while the gate is up, except the revocation reply (empty refusals are allowed).
     /// I2: Clear the gate only after grants, list and installEpoch succeed for one consistent roster.
-    /// I3: Abandon every failed attempt, delete its uploaded grants and key; retries use fresh keys and strictly increasing epochs.
+    /// I3: Retire failed uncommitted attempts, deleting grants after authenticated acknowledgement; retries use fresh keys and increasing epochs.
     /// I4: The final roster excludes every queued removal and every relay/host revocation.
-    /// I5: One task serializes requests; same-roster requests in the same relay/session join.
+    /// I5: One task serializes requests; same-roster requests on the same relay join using current credentials.
     /// I6: Failures retain the gate and pending work; pump retries it.
     /// I7: Recovery leaves no final-epoch grant for a removed/revoked device.
     ///
@@ -67,6 +67,7 @@ extension FakeHost {
     /// Keep the gate raised for the whole queue, including retries. A later request cannot restore a device
     /// removed since the gate was raised. Compare full rosters (including keys/scopes), independent of order.
     private func beginRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) -> Task<Void, Error> {
+        refreshRotationSession(relay: relay, session: session)
         rotationRequired = true
         let sameRoster = lastRotationRoster.map { previous in
             rostersEqual(previous, remaining)
@@ -88,13 +89,21 @@ extension FakeHost {
         let task = Task {
             defer { rotation = nil }
             while !pendingRotations.isEmpty {
+                // Real monotonic backoff also bounds retries when the demo wall clock is stationary.
+                if rotationFailures > 0 {
+                    try await Task.sleep(for: .milliseconds(100 * (1 << min(rotationFailures - 1, 4))))
+                }
                 await refreshPendingRotations()
                 let pending = pendingRotations[0]
                 do {
                     try await publishRotation(remaining: pending.remaining, relay: pending.relay, session: pending.session)
                 } catch RotationChanged.roster {
                     continue
+                } catch {
+                    rotationFailures = min(rotationFailures + 1, 5)
+                    throw error
                 }
+                rotationFailures = 0
                 pendingRotations.removeFirst()
             }
             lastRotationRoster = nil
@@ -146,7 +155,32 @@ extension FakeHost {
         }
     }
 
+    private func refreshRotationSession(relay: FakeRelay, session: RelaySession) {
+        rotationSessions[ObjectIdentifier(relay)] = session
+        if bridgeRelay?.relay === relay { bridgeRelay = (relay, session) }
+        for i in pendingRotations.indices where pendingRotations[i].relay === relay {
+            pendingRotations[i].session = session
+        }
+    }
+
+    private func currentRotationSession(_ relay: FakeRelay, fallback: RelaySession) -> RelaySession {
+        rotationSessions[ObjectIdentifier(relay)] ?? fallback
+    }
+
+    private func retirePending(fallback: RelaySession) async throws {
+        guard let pending = pendingRetirement else { return }
+        let body = try RotationAbandon.signed(workspace: workspace, epoch: pending.epoch, signer: wsk)
+        let session = currentRotationSession(pending.relay, fallback: fallback)
+        let request = try WireRequest(method: "POST",
+            target: "/mobile/host-api/0/workspaces/\(workspace.hex)/rotation-abandon",
+            headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"],
+            body: canonicalJSON(body), clientAddress: "198.51.100.7")
+        _ = try HostAPI.expect(await pending.relay.send(request), status: 200)
+        pendingRetirement = nil
+    }
+
     private func publishRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
+        try await retirePending(fallback: session)
         guard max(epoch, rotationEpoch) < UInt32.max else { throw Refusal.badEpoch }
         rotationEpoch = max(epoch, rotationEpoch) + 1
         let next = rotationEpoch
@@ -158,20 +192,23 @@ extension FakeHost {
             endOpenStreams(newEpoch: next)
             listSeq += 1
             for (k, _) in remaining {
-                try await relay.putGrant(try grant(for: k, epoch: next), token: session.token)
+                try await relay.putGrant(try grant(for: k, epoch: next), token: currentRotationSession(relay, fallback: session).token)
                 try await checkRotationRoster(remaining, relay: relay)
             }
-            try await relay.publishMemberList(try memberList(remaining.map { ($0.0.deviceID, $0.1) }, epoch: next, listSeq: max(listSeq, 2)), token: session.token)
-            // A removal can arrive during the list actor hop, too. Retire that epoch before retrying.
             try await checkRotationRoster(remaining, relay: relay)
+            try await relay.publishMemberList(try memberList(remaining.map { ($0.0.deviceID, $0.1) }, epoch: next, listSeq: max(listSeq, 2)), token: currentRotationSession(relay, fallback: session).token)
             installEpoch(next)
             setRoster(remaining)
         } catch {
             wks[next] = nil
             core.keys[next] = nil
-            await relay.abandonRotation(workspace: workspace, epoch: next)
+            pendingRetirement = (relay, next)
+            try? await retirePending(fallback: session)
             throw error
         }
+        // A removal during the list actor hop needs a follow-up rotation. Keep this committed
+        // epoch's grants available; the gate stays raised until the filtered roster is published.
+        try await checkRotationRoster(remaining, relay: relay)
     }
 
     /// Section 8.5: rotation ends every open stream with `LAST | REFUSAL` `stale_epoch`, sealed under the stream's own (old) epoch.
@@ -340,6 +377,7 @@ extension FakeHost {
     @discardableResult
     public func pump(relay: FakeRelay, transport: any RelayTransport, session: RelaySession) async throws -> Int {
         bridgeRelay = (relay, session)
+        refreshRotationSession(relay: relay, session: session)
         if rotationRequired { await runRotation() }
         try await flushOutbox(transport: transport, session: session)
         let inbox = try await relay.pendingRequests(workspace: workspace, token: session.token).filter { $0.arrival > lastArrival }

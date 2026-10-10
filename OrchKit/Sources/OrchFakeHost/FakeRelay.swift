@@ -187,16 +187,22 @@ public actor FakeRelay: RequestSender {
         workspaces[ws]?.grants[.init(device: dev, epoch: UInt32(epoch))] = grant
     }
 
-    /// In-process rotation cleanup, independent of an expired publication session. This is not a wire API.
-    /// Retiring an attempt deletes all its grants and permits exactly the next epoch, never arbitrary skips.
-    func abandonRotation(workspace: ID16, epoch: UInt32) {
-        guard var w = workspaces[workspace],
-              epoch == max(w.list?.epoch ?? 0, w.abandonedEpoch) ||
-                (max(w.list?.epoch ?? 0, w.abandonedEpoch) < UInt32.max && epoch == max(w.list?.epoch ?? 0, w.abandonedEpoch) + 1)
-        else { return }
+    /// Provisional host-api v0 retirement: authenticated, bounded, and idempotent.
+    private func abandonRotation(_ r: WireRequest, workspace: String, query: String?) -> WireReply {
+        guard let session = authenticate(r), session.kind == .workspace else { return adapterError(401, "unauthenticated") }
+        guard let ws = ID16(hex: workspace), ws == session.id else { return refuse(403, .otherWorkspace) }
+        guard query == nil, var w = workspaces[ws], let card = w.card else { return refuse(400, .malformed) }
+        let epoch: UInt32
+        do {
+            epoch = try RotationAbandon.verify(StrictJSON.parse(r.body, maxBytes: HostAPI.maxJSONBytes), workspace: ws, key: card.wsk)
+        } catch Refusal.badSignature { return refuse(403, .badSignature) }
+        catch { return refuse(400, .malformed) }
+        let current = max(w.list?.epoch ?? 0, w.abandonedEpoch)
+        guard epoch == current || (current < UInt32.max && epoch == current + 1) else { return refuse(409, .badEpoch) }
         w.abandonedEpoch = max(w.abandonedEpoch, epoch)
         w.grants = w.grants.filter { $0.key.epoch != epoch }
-        workspaces[workspace] = w
+        workspaces[ws] = w
+        return json(200, [:])
     }
 
     /// `CK` for one card sequence, sealed to one device (host-api section 3). Only for certified, unrevoked, unexpired devices of
@@ -222,6 +228,7 @@ public actor FakeRelay: RequestSender {
         do {
             let parsed = try MemberList.verify(list, wsk: card.wsk)
             let dir = MemberList.Directory(ownerKey: owner, certs: certs, revoked: revoked, grants: Set(w.grants.keys))
+            // Provisional skip-epoch amendment; real relay use requires §7.2/reference/vector updates.
             try parsed.checkRelayUpdate(cardWorkspace: ws, previous: w.list, directory: dir, nowMs: wall.nowMs, abandonedThrough: w.abandonedEpoch)
             let left = Set((w.list?.members ?? []).map(\.deviceID)).subtracting(parsed.members.map(\.deviceID))
             workspaces[ws]?.list = parsed; workspaces[ws]?.listJSON = list
@@ -404,6 +411,7 @@ public actor FakeRelay: RequestSender {
         case ("POST", 2) where s[0] == "drop" && s[1] == "list": return adapterError(501, "not_implemented")
         case (_, 5) where s[0] == "workspaces" && s[2] == "pair": return try await pairing(r, ws: s[1], offer: s[3], rid: s[4], query)
         case (_, 4) where s[0] == "workspaces" && s[2] == "bridge": return try await bridge(r, ws: s[1], rid: s[3], query)
+        case ("POST", 3) where s[0] == "workspaces" && s[2] == "rotation-abandon": return abandonRotation(r, workspace: s[1], query: query)
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "grants": return try grants(r, ws: s[1], query)
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "members": return try memberListReply(r, ws: s[1], query)
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "card": return try cardReply(r, ws: s[1], query)

@@ -85,14 +85,29 @@ import OrchProtocol
         gate.open()
         if fail { await #expect(throws: TestCrash.self) { try await rotation.value } }
         else { try await rotation.value }
-        _ = await revocation.value
+        let chunks = await revocation.value
+        let reply = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
+        if fail {
+            #expect(reply.meta.object?["status"] == .int(200))
+            #expect(try StrictJSON.parse(reply.data).object?["revoked"] == .bool(true))
+        } else {
+            #expect(reply.meta == HostRefusal.staleEpoch(epoch: 2).meta)
+            let (retry, header) = try await w.sealedRequest(rid: .fresh(0x83), seq: 2, epoch: 2,
+                meta: ["op": "revocation", "record": record])
+            let retried = await w.host.process(envelope: retry, mailbox: header.rid)
+            let completed = try openChunk(#require(retried.first), wk: await w.host.wkFor(2))
+            #expect(completed.meta.object?["status"] == .int(200))
+            #expect(try StrictJSON.parse(completed.data).object?["revoked"] == .bool(true))
+        }
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         #expect(await w.host.rotationRequired == false)
-        if fail {
-            #expect(await w.host.epoch == 3)
-            #expect(await w.host.coreState().members[w.primaryID] == nil)
-            #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
-        }
+        #expect(await w.host.epoch == 3)
+        #expect(await w.host.coreState().members[w.primaryID] == nil)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 3))
+        let list = try MemberList.verify(try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession), wsk: w.host.wskPublic)
+        #expect(list.epoch == 3)
+        #expect(list.members.map(\.deviceID) == [w.phoneID])
     }
 
     @Test(arguments: ["host", "relay"])

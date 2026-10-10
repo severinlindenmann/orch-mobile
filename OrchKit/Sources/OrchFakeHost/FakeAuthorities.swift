@@ -111,6 +111,9 @@ public actor FakeHost {
     var lastRotationRoster: [(DemoKeys, [String])]?
     var rotationRemoved: Set<ID16> = []
     var rotationEpoch: UInt32 = 0
+    var rotationSessions: [ObjectIdentifier: RelaySession] = [:]
+    var pendingRetirement: (relay: FakeRelay, epoch: UInt32)?
+    var rotationFailures = 0
     /// Set BEFORE any rotation suspends (or a revocation removes a member), cleared only after grants, list and epoch install. While set,
     /// no data is sealed; the next pump retries the publication.
     var rotationRequired = false
