@@ -56,7 +56,7 @@ enum PushPermission {
         let raw: Int = await withCheckedContinuation { c in
             UNUserNotificationCenter.current().getNotificationSettings { c.resume(returning: $0.authorizationStatus.rawValue) }
         }
-        switch UNAuthorizationStatus(rawValue: raw) ?? .notDetermined {
+        return switch UNAuthorizationStatus(rawValue: raw) ?? .notDetermined {
         case .notDetermined: .notDetermined
         case .denied: .denied
         case .provisional, .ephemeral: .provisional
