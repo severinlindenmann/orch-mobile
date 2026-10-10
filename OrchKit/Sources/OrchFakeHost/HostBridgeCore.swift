@@ -87,6 +87,10 @@ package struct HostBridgeCore: Sendable {
 
     private func live(_ now: Int64) -> [RidRecord] { rids.values.filter { now < $0.until } }
 
+    /// Drops rid records whose retention ended: they no longer count against the quotas and cannot grow without bound.
+    /// A real host persists this store and the sequence windows atomically together (gaps.md).
+    private mutating func prune(_ now: Int64) { rids = rids.filter { now < $0.value.until } }
+
     private enum RecordFailure: Error { case storeFull, deviceFull }
 
     private mutating func record(_ h: Bridge.Header, _ digest: Data, _ now: Int64, _ outcome: RidRecord.Outcome?) throws {
@@ -111,6 +115,7 @@ package struct HostBridgeCore: Sendable {
     }
 
     package mutating func check(_ env: Data, mailbox: ID16?, nowMs now: Int64) -> HostCheck {
+        prune(now)
         // 1. shape
         guard env.count >= Bridge.overhead, env.count <= Bridge.maxRequest, let parts = try? Bridge.Parts(envelope: env) else { return .drop("size") }
         let h = parts.header
@@ -193,6 +198,7 @@ package struct HostBridgeCore: Sendable {
         revoked.insert(device)
         let was = members.removeValue(forKey: device) != nil
         devicePubs[device] = nil
+        streams = streams.filter { $0.value != device }          // a revoked device's streams end with it
         return .ok(device: device, rotate: was)
     }
 }

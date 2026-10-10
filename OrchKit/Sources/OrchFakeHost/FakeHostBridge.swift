@@ -53,6 +53,7 @@ extension FakeHost {
     /// Rotation (section 7.2 host rules): `WK_{e+1}`, a grant for every remaining device, then the list.
     public func rotate(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
         let next = epoch + 1
+        endOpenStreams(newEpoch: next)
         listSeq += 1
         _ = wk(next)
         for (k, _) in remaining { try await relay.putGrant(try grant(for: k, epoch: next), token: session.token) }
@@ -60,6 +61,26 @@ extension FakeHost {
         installEpoch(next)
         setRoster(remaining)
     }
+
+    /// Section 8.5: rotation ends every open stream with `LAST | REFUSAL` `stale_epoch`, sealed under the stream's own (old) epoch.
+    /// The chunks wait in the outbox for `pump`; a late answer from the stream's handler is discarded.
+    private func endOpenStreams(newEpoch: UInt32) {
+        for (rid, st) in streamOpen {
+            let h = Bridge.Header(direction: .toDevice, flags: [.last, .refusal, .stream], workspace: workspace, device: st.device, rid: rid, stream: rid,
+                                  seq: st.next, tsMs: UInt64(max(wall.nowMs, 0)), epoch: st.epoch, salt: entropy.bytes(16))
+            if let wk = core.keys[st.epoch], let key = Bridge.channelKey(header: h, wk: wk),
+               let chunk = try? Bridge.seal(header: h, channelKey: key, signer: responseSigner ?? wsk,
+                                            plaintext: Bridge.frame(meta: HostRefusal.staleEpoch(epoch: newEpoch).meta, data: Data())) {
+                outbox.append((rid, chunk))
+            }
+            streamEnded.insert(rid)
+        }
+        streamOpen = [:]
+        core.streams = [:]
+    }
+
+    /// Chunks queued by rotation, for tests that do not pump.
+    package func takeOutbox() -> [(rid: ID16, chunk: Data)] { let o = outbox; outbox = []; return o }
 
     /// Simulates a host that ran a request and lost the record of its answer: a re-send gets `already_done(unknown)`.
     package func forgetOutcome(rid: ID16) { core.rids[rid]?.outcome = nil }
@@ -72,23 +93,33 @@ extension FakeHost {
     package func coreState() -> HostBridgeCore { core }
 
     /// Section 8.6 for one request envelope. Returns the sealed response chunks to post, in order (empty for silence).
+    /// A rotation in progress is awaited first, and membership, revocation and epoch are checked AGAIN after the handler
+    /// ran: if any changed, the answer is `already_done(unknown)` and no data leaves under the old epoch (section 8.5).
     public func process(envelope: Data, mailbox: ID16?) async -> [Data] {
+        while let t = rotation { _ = await t.value; if rotation == t { rotation = nil } }
         let now = wall.nowMs
         switch core.check(envelope, mailbox: mailbox, nowMs: now) {
         case .drop: return []
         case .refuse(let r, let h): return (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
         case .replay(let chunks, _): return chunks
         case .accept(let a):
+            let h = a.header
+            if h.flagSet.contains(.stream) { streamOpen[h.rid] = (h.device, h.epoch, 0) }
             let reply = await run(a)
+            if streamEnded.remove(h.rid) != nil { return [] }          // a rotation already ended this stream
+            streamOpen[h.rid] = nil
+            let isRevocation = a.meta.object?["op"]?.string == "revocation"
+            let changed = core.revoked.contains(h.device) || core.members[h.device] == nil || (!isRevocation && core.epoch != h.epoch)
+            if changed { return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? [] }
             switch reply {
             case .refuse(let r):
-                let chunks = (try? respond(to: a.header, meta: r.meta, data: Data(), refusal: true)) ?? []
-                core.complete(rid: a.header.rid, with: .refusal(r))
+                let chunks = (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
+                core.complete(rid: h.rid, with: .refusal(r))
                 return chunks
             case .response(let status, let headers, let data):
                 let meta: JSONValue = ["status": .int(Int64(status)), "headers": .object(headers.mapValues { .string($0) })]
-                guard let chunks = try? respond(to: a.header, meta: meta, data: data, refusal: false) else { return [] }
-                core.complete(rid: a.header.rid, with: .stored(chunks))
+                guard let chunks = try? respond(to: h, meta: meta, data: data, refusal: false) else { return [] }
+                core.complete(rid: h.rid, with: .stored(chunks))
                 return chunks
             }
         }
@@ -107,13 +138,34 @@ extension FakeHost {
     private func run(_ a: HostAccepted) async -> HostReply {
         guard let op = a.meta.object?["op"]?.string, let need = requiredScope(op, meta: a.meta) else { return .refuse(.malformed) }
         if let need, !a.scopes.contains(need) { return .refuse(.forbiddenScope) }
-        if op == "revocation" {
-            switch core.applyRevocation(a.meta, ownerKey: primary.publicKey) {
-            case .ok: return .response(status: 200, headers: [:], data: (try? canonicalJSON(["host_api": 0, "revoked": true])) ?? Data())
-            case .refuse(let c): return .refuse(c == "other_person" ? .otherPerson : (c == "bad_signature" ? .badSignature : .malformed))
-            }
-        }
+        if op == "revocation" { return await applyRevocation(a) }
         return await handler(HostRequest(device: a.header.device, scopes: a.scopes, meta: a.meta, data: a.data, epoch: a.header.epoch))
+    }
+
+    /// Protocol 6.2/8.7: the revocation takes effect at once; a removed member means a rotation (grants, then the list, then the
+    /// new epoch) BEFORE anything new is sealed and before this reply. Without a relay to publish to (`process` outside `pump`)
+    /// nothing is applied and the answer is `already_done(unknown)`.
+    private func applyRevocation(_ a: HostAccepted) async -> HostReply {
+        var probe = core
+        switch probe.applyRevocation(a.meta, ownerKey: primary.publicKey) {
+        case .refuse(let c): return .refuse(c == "other_person" ? .otherPerson : (c == "bad_signature" ? .badSignature : .malformed))
+        case .ok(let device, let rotate):
+            if rotate {
+                guard let ctx = bridgeRelay else { return .refuse(.alreadyDone(status: "unknown")) }
+                core = probe
+                for (rid, st) in streamOpen where st.device == device { streamEnded.insert(rid); streamOpen[rid] = nil }
+                let remaining = roster.filter { $0.key != device }.map { (key: $0.value.keys, scopes: $0.value.scopes) }
+                let t = Task<Bool, Never> {
+                    do { try await self.rotate(remaining: remaining.map { ($0.key, $0.scopes) }, relay: ctx.relay, session: ctx.session); return true }
+                    catch { return false }
+                }
+                rotation = t
+                let ok = await t.value
+                if rotation == t { rotation = nil }
+                guard ok else { return .refuse(.alreadyDone(status: "unknown")) }
+            } else { core = probe }
+            return .response(status: 200, headers: [:], data: (try? canonicalJSON(["host_api": 0, "revoked": true])) ?? Data())
+        }
     }
 
     /// Seals response chunks under the request's own epoch key (so a `stale_epoch` refusal at an old epoch is readable by
@@ -151,6 +203,8 @@ extension FakeHost {
     /// host's workspace session. A byte-identical re-send is a new arrival and gets the recorded answer (section 8.6 step 5).
     @discardableResult
     public func pump(relay: FakeRelay, transport: any RelayTransport, session: RelaySession) async throws -> Int {
+        bridgeRelay = (relay, session)
+        try await flushOutbox(transport: transport, session: session)
         let inbox = try await relay.pendingRequests(workspace: workspace, token: session.token).filter { $0.arrival > lastArrival }
             .sorted { $0.arrival < $1.arrival }
         var handled = 0
@@ -161,8 +215,17 @@ extension FakeHost {
                 let r = try await transport.bridgePost(c, route: BridgeRoute(workspaceID: workspace, requestID: item.rid), session: session)
                 _ = try HostAPI.expect(r, status: 202)
             }
+            try await flushOutbox(transport: transport, session: session)
             handled += 1
         }
         return handled
+    }
+
+    private func flushOutbox(transport: any RelayTransport, session: RelaySession) async throws {
+        while !outbox.isEmpty {
+            let item = outbox.removeFirst()
+            let r = try await transport.bridgePost(item.chunk, route: BridgeRoute(workspaceID: workspace, requestID: item.rid), session: session)
+            _ = try HostAPI.expect(r, status: 202)
+        }
     }
 }

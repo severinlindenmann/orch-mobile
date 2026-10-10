@@ -102,6 +102,16 @@ public actor FakeHost {
     /// Adversarial tests: sign responses with another key (a member device, not the host).
     package var responseSigner: SoftwareSigner?
     var roster: [ID16: (keys: DemoKeys, scopes: [String])] = [:]
+    /// Set by `pump`: the relay and host session a revocation-driven rotation publishes to.
+    var bridgeRelay: (relay: FakeRelay, session: RelaySession)?
+    /// A rotation in progress. Requests wait for it, so nothing new is sealed under an epoch being retired.
+    var rotation: Task<Bool, Never>?
+    /// Streams (by request id) that are accepted but not finished: request epoch and next chunk index.
+    var streamOpen: [ID16: (device: ID16, epoch: UInt32, next: UInt64)] = [:]
+    /// Streams a rotation already ended; their handlers' late answers are discarded.
+    var streamEnded: Set<ID16> = []
+    /// Chunks the host must post that no request is waiting on (rotation ending open streams).
+    var outbox: [(rid: ID16, chunk: Data)] = []
 
     public init(capability: DemoCapability, context: RealmContext, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
                 hostedBy: String? = nil, workspace: ID16? = nil, wall: any WallClock, entropy: any Entropy) throws {

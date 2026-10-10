@@ -19,14 +19,17 @@ public actor WorkspaceContainer {
         ]),
         // Slice 2a: durable bridge requests. A request row (with its exact envelope bytes) is written in the same
         // transaction that allocates its seq, before anything is sent; `meta` also holds next_seq, clock_offset_ms and
-        // pin_failures. `logical` links the attempts of one logical request (resend after stale_epoch/stale_timestamp).
+        // pin_failures (consecutive: reset by a verified response). `logical` links the attempts of one logical request.
+        // `state` is `pending` (can be sent again, byte for byte) or `uncertain` (the outcome is unknowable from the bridge;
+        // the row keeps the logical id and the exact signed plaintext until reconciliation resolves it, protocol 8.6/U8).
         Migration(version: 2, statements: [
             """
             CREATE TABLE bridge_requests (
               rid TEXT PRIMARY KEY, logical TEXT NOT NULL, seq INTEGER NOT NULL, epoch INTEGER NOT NULL,
               envelope BLOB NOT NULL, plaintext BLOB NOT NULL, next_idx INTEGER NOT NULL DEFAULT 0,
               stream INTEGER NOT NULL DEFAULT 0, offset_adopted INTEGER NOT NULL DEFAULT 0,
-              sent_ms INTEGER NOT NULL, created_ms INTEGER NOT NULL)
+              sent_ms INTEGER NOT NULL, created_ms INTEGER NOT NULL,
+              state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','uncertain')))
             """,
             "CREATE INDEX bridge_requests_logical ON bridge_requests(logical)",
         ]),
