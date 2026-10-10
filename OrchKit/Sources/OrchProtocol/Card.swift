@@ -28,12 +28,14 @@ public enum RelayURL {
             guard let (host, port) = splitPort(u[https.count...]), !host.isEmpty, host.first != UInt8(ascii: "[") else { return false }
             guard isHostChar(host.first!), isHostChar(host.last!),
                   host.allSatisfy({ isHostChar($0) || $0 == UInt8(ascii: ".") || $0 == UInt8(ascii: "-") }) else { return false }
-            // no empty labels; no all-digit or hex-numeric label (2130706433, 0x7f000001, 1.2.3.4): those are IP spellings.
-            // Punycode labels (xn--) are accepted; a UI shows the ASCII host and never decodes IDN.
-            for label in host.split(separator: UInt8(ascii: "."), omittingEmptySubsequences: false) {
-                if label.isEmpty || label.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) { return false }
-                if label.starts(with: Array("0x".utf8)), label.dropFirst(2).allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) { return false }
-            }
+            // no empty labels; and, by the WHATWG "ends in a number" rule, the LAST label must not be all digits or a 0x hex
+            // number (2130706433, 0x7f000001, 1.2.3.4, 127.1, 0177.0.0.1 are IPv4 spellings). Other labels may look numeric
+            // (123.example.com is a DNS name). Punycode (xn--) labels are accepted; a UI shows the ASCII host, never IDN-decoded.
+            let labels = host.split(separator: UInt8(ascii: "."), omittingEmptySubsequences: false)
+            if labels.contains(where: { $0.isEmpty }) { return false }
+            let last = labels[labels.count - 1]
+            if last.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) { return false }
+            if last.starts(with: Array("0x".utf8)), last.dropFirst(2).allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) { return false }
             return port.map(validPort) ?? true
         }
         if u.starts(with: http) {

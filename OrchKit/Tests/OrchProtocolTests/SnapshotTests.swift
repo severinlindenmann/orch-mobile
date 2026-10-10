@@ -84,3 +84,26 @@ import Testing
         #expect(throws: Refusal.otherWorkspace) { try l.checkSnapshot(cardWorkspace: ID16.random(), known: nil) }
     }
 }
+
+@Suite struct CertScopeNarrowingTests {
+    @Test func primaryMayNarrowButNeverWiden() throws {
+        let pk = SoftwareSigner(), wsk = SoftwareSigner(), primaryKx = SoftwareKeyAgreer(), primaryID = ID16.random()
+        let ws = ID16.random(), person = Identifiers.personID(pk.publicKey), ck = SymmetricKey(size: .bits256)
+        let del = try WorkspaceDelegation.sign(workspace: ws, wsk: wsk.publicKey, clientHosted: false, issuedMs: 1, owner: pk)
+        let sealed = try Card.sealPart(.init(name: "n", description: "d", capabilities: [], hostedBy: nil), ck: ck, workspace: ws, cardSeq: 1)
+        let card = try Card.verify(try Card.make(delegation: del, workspace: ws, wxk: SoftwareKeyAgreer().publicKey, wxkVersion: 1, owner: person,
+                                                 relayURL: "https://r.example", cardSeq: 1, issuedMs: 1, sealed: sealed, ck: ck, wsk: wsk), ownerKey: pk.publicKey)
+        let d = SoftwareSigner()
+        let inner = CertRequestInner(deviceID: Identifiers.deviceID(d.publicKey), dkSig: d.publicKey, dkKx: SoftwareKeyAgreer().publicKey,
+                                     label: "x", scopesMax: ["look", "decide"], offerID: .random())
+        let req = try CertRequest.make(wsk: wsk, requestID: .random(), workspace: ws, person: person, primary: primaryID, primaryKey: primaryKx.publicKey, inner: inner, createdMs: 1000)
+        var ledger = PrimaryLedger()
+        let a = try CertRequest.openAsPrimary(req.json, card: card, myPerson: person, me: primaryID, myKey: primaryKx, ledger: &ledger, nowMs: 1000)
+        _ = try ledger.issueChallenge(requestID: a.requestID, primaryNonce: Data(count: 32), primary: pk, nowMs: 1000)
+        for wider in [["look", "decide", "operate"], ["look", "decide", "operate", "type"]] {
+            #expect(throws: Refusal.scopeExceeded) { var l = ledger; _ = try l.signCertificate(requestID: a.requestID, labelSealed: Data(count: 40), createdMs: 2000, expiresMs: nil, scopesMax: wider, primary: pk) }
+        }
+        let cert = try ledger.signCertificate(requestID: a.requestID, labelSealed: Data(count: 40), createdMs: 2000, expiresMs: nil, scopesMax: ["look"], primary: pk)
+        #expect(try DeviceCertificate.verify(cert.json, personKey: pk.publicKey, nowMs: 2000).scopesMax == ["look"])
+    }
+}

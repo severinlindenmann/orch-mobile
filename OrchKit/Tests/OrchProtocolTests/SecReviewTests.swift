@@ -174,6 +174,7 @@ import Testing
         #expect(throws: Refusal.scopeExceeded) {
             var l = L; _ = try l.signCertificate(requestID: r1, labelSealed: Data(count: 40), createdMs: 2000, expiresMs: nil, scopesMax: ["look", "decide"], primary: pk)
         }
+        _ = L
         _ = try L.signCertificate(requestID: r1, labelSealed: Data(count: 40), createdMs: 2000, expiresMs: nil, scopesMax: ["look"], primary: pk)
         #expect(throws: Refusal.alreadySigned) {
             try L.signCertificate(requestID: r1, labelSealed: Data(count: 40), createdMs: 2000, expiresMs: nil, scopesMax: ["look"], primary: pk)
@@ -195,9 +196,9 @@ import Testing
         let good = ["https://a", "https://r.example.com:8443", "http://localhost", "http://[::1]:80", "http://127.0.0.1:1"]
         for u in good { #expect(RelayURL.isValid(u), "\(u)") }
         for u in ["https://a.com:99999", "https://a.com:65536", "https://0x7f000001", "https://2130706433", "https://1.2.3.4", "https://a..b", "https://a.0xFF",
-                  "https://a.123"] { #expect(!RelayURL.isValid(u), "\(u)") }
+                  "https://a.123", "https://example.123", "https://127.1", "https://0177.0.0.1", "https://0x7f.1", "https://0x"] { #expect(!RelayURL.isValid(u), "\(u)") }
         // punycode stays valid: a UI shows the ASCII host and never decodes it
-        for u in ["https://xn--pple-43d.com", "https://localhost", "https://a.com:65535", "https://a1.b2", "https://0xg.com", "https://x0x7f.com"] { #expect(RelayURL.isValid(u), "\(u)") }
+        for u in ["https://xn--pple-43d.com", "https://localhost", "https://a.com:65535", "https://a1.b2", "https://0xg.com", "https://x0x7f.com", "https://123.example.com", "https://0xdead.example.com", "https://1password.com", "https://0x.example.com"] { #expect(RelayURL.isValid(u), "\(u)") }
     }
 
     // MARK: drop
