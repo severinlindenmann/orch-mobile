@@ -106,6 +106,13 @@ public final class WorkspaceIndex: Sendable {
         try await db.execute("UPDATE tombstones SET phase=MAX(phase, ?) WHERE ws=? AND generation=?", [.int(Int64(phase)), .text(ws), .int(generation)])
     }
 
+    /// Launch-time repair: overwrite the coordination files in both App Group roots with the complete set
+    /// from the index (fixes a corrupt or missing file with no wipe pending). Launch sequence:
+    /// `republishTombstones()` then `LocalWipe.resumePendingWipes()`.
+    public func republishTombstones() async throws {
+        try layout.tombstones.republish(complete: try await tombstones().map(\.record))
+    }
+
     /// Index first (authoritative), then the coordination files fail-closed.
     public func isRemoved(ws: String, generation: Int64) async throws -> Bool {
         let rows = try await db.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])

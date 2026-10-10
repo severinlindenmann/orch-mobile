@@ -47,37 +47,81 @@ import Testing
         try StoreLayout.validate(ws: String(repeating: "0f", count: 16))
     }
 
-    @Test func corruptCoordinationIsFailClosedAndNeverOverwritten() async throws {
+    @Test func corruptCoordinationIsFailClosedAndPartialWriteLeavesItUntouched() async throws {
         let l = try makeLayout(tempDir())
         try l.prepareRealm()
         let t = l.tombstones
         try t.write(TombstoneRecord(realm: "live", ws: A, generation: 5))
-        try Data("{garbage".utf8).write(to: l.pushDir.appendingPathComponent("tombstones.json"))
+        let bad = l.pushDir.appendingPathComponent("tombstones.json")
+        try Data("{garbage".utf8).write(to: bad)
         try FileManager.default.removeItem(at: l.shareDir.appendingPathComponent("tombstones.json"))
         #expect(t.isRemovedFailClosed(realm: "live", ws: A, generation: 5))
         #expect(l.pushCoordination.isRemovedFailClosed(realm: "live", ws: B, generation: 1))  // unreadable => removed
-        // A write refuses to overwrite: it moves the bad file aside and throws.
-        do { try t.write(TombstoneRecord(realm: "live", ws: B, generation: 1)); Issue.record("expected throw") }
-        catch TombstoneError.corrupt(let moved) { #expect(FileManager.default.fileExists(atPath: moved)) }
-        #expect(!FileManager.default.fileExists(atPath: l.pushDir.appendingPathComponent("tombstones.json").path))
+        #expect(throws: TombstoneError.corrupt(file: bad.path)) { try t.write(TombstoneRecord(realm: "live", ws: B, generation: 1)) }
+        #expect(try Data(contentsOf: bad) == Data("{garbage".utf8))  // untouched, still failing closed
+        #expect(l.pushCoordination.isRemovedFailClosed(realm: "live", ws: B, generation: 1))
     }
 
-    @Test func corruptFileFailsWipePhaseThenResumeRepairsAll() async throws {
+    @Test func corruptFileNeverLeavesAWindowDuringWipe() async throws {
+        let l = try makeLayout(tempDir())
+        let idx = try await WorkspaceIndex(layout: l)
+        try await idx.addWorkspace(ws: A, generation: 5)
+        try await idx.addWorkspace(ws: B, generation: 1)
+        try await LocalWipe(index: idx).wipe(ws: A, generation: 5)
+        let share = l.shareDir.appendingPathComponent("tombstones.json")
+        try Data("{bad".utf8).write(to: share)
+        #expect(l.shareCoordination.isRemovedFailClosed(realm: "live", ws: A, generation: 5))
+        try await LocalWipe(index: idx).wipe(ws: B, generation: 1)
+        // Repaired in one atomic replace: earlier and new tombstones both present, bad copy kept for diagnosis.
+        for dir in l.tombstoneDirectories {
+            let ext = TombstoneCoordination(directories: [dir])
+            #expect(ext.isRemovedFailClosed(realm: "live", ws: A, generation: 5))
+            #expect(ext.isRemovedFailClosed(realm: "live", ws: B, generation: 1))
+            #expect(ext.records().count == 2)
+        }
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: l.shareDir.path)
+        #expect(siblings.contains { $0.hasPrefix("tombstones.json.corrupt-") })
+        #expect(try l.shareCoordination.ifNotRemoved(realm: "live", ws: A, generation: 5) { true } == nil)
+    }
+
+    @Test func republishAtLaunchRepairsCorruptFileWithNoPendingWipe() async throws {
         let l = try makeLayout(tempDir())
         let idx = try await WorkspaceIndex(layout: l)
         try await idx.addWorkspace(ws: A, generation: 1)
         try await idx.addWorkspace(ws: B, generation: 1)
-        let w = LocalWipe(index: idx)
-        try await w.wipe(ws: A, generation: 1)
-        try Data("{garbage".utf8).write(to: l.shareDir.appendingPathComponent("tombstones.json"))
-        await #expect(throws: TombstoneError.self) { try await w.wipe(ws: B, generation: 1) }
-        #expect(try await idx.tombstones().first { $0.record.ws == B }?.phase == 0)
-        try await w.resumePendingWipes()
-        for dir in l.tombstoneDirectories {
-            let ext = TombstoneCoordination(directories: [dir])
-            #expect(ext.isRemovedFailClosed(realm: "live", ws: A, generation: 1))  // earlier tombstone restored
-            #expect(ext.isRemovedFailClosed(realm: "live", ws: B, generation: 1))
+        try await LocalWipe(index: idx).wipe(ws: B, generation: 1)
+        try Data("{bad".utf8).write(to: l.shareDir.appendingPathComponent("tombstones.json"))
+        await #expect(throws: StoreError.self) { _ = try await WorkspaceContainer(index: idx, ws: A, generation: 1) }  // blocked, fail-closed
+        try await idx.republishTombstones()
+        let c = try await WorkspaceContainer(index: idx, ws: A, generation: 1)
+        _ = try await c.recordRequestId("ok")
+        await #expect(throws: StoreError.self) { _ = try await WorkspaceContainer(index: idx, ws: B, generation: 1) }
+        #expect(l.shareCoordination.isRemovedFailClosed(realm: "live", ws: B, generation: 1))
+    }
+
+    @Test func layoutKeepsAppGroupsDisjointFromSQLiteRoot() throws {
+        let base = tempDir()
+        let app = base.appendingPathComponent("app")
+        #expect(throws: LayoutError.overlappingRoots) {
+            _ = try StoreLayout(appRoot: app, pushGroupRoot: app.appendingPathComponent("grp"), shareGroupRoot: base.appendingPathComponent("s"), realm: "live")
         }
+        #expect(throws: LayoutError.overlappingRoots) {
+            _ = try StoreLayout(appRoot: app, pushGroupRoot: base.appendingPathComponent("p"), shareGroupRoot: base.appendingPathComponent("p"), realm: "live")
+        }
+        let l = try makeLayout(base)
+        for db in [l.indexURL, try l.wsDatabaseURL(A)] {
+            #expect(!db.path.hasPrefix(l.pushGroupRoot.path) && !db.path.hasPrefix(l.shareGroupRoot.path))
+        }
+    }
+
+    @Test func missingParentAndSymlinkedDbRefused() throws {
+        let base = tempDir()
+        let real = base.appendingPathComponent("real"); try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: base.appendingPathComponent("x.sqlite"), withDestinationURL: real.appendingPathComponent("t.sqlite"))
+        #expect(throws: SQLiteError.self) { _ = try SQLiteDatabase(url: base.appendingPathComponent("x.sqlite")) }
+        #expect(!FileManager.default.fileExists(atPath: real.appendingPathComponent("t.sqlite").path))
+        #expect(throws: SQLiteError.self) { _ = try SQLiteDatabase(url: base.appendingPathComponent("nope/y.sqlite")) }
+        _ = try SQLiteDatabase(url: base.appendingPathComponent("ok.sqlite"))
     }
 
     @Test func containerHonoursIndexOnlyTombstone() async throws {
@@ -236,6 +280,68 @@ import Testing
         for _ in 0..<100 where events.value.count < 2 { usleep(50_000) }
         #expect(events.value == ["body-done", "write-done"])
         #expect(try ext.ifNotRemoved(realm: "live", ws: A, generation: 1) { 1 } == nil)
+    }
+
+    @Test func republishBlocksUnderSharedLockAndLockInodeIsStable() throws {
+        let l = try makeLayout(tempDir())
+        try l.prepareRealm()
+        let ext = l.shareCoordination
+        let lockPath = l.shareDir.appendingPathComponent("tombstones.lock").path
+        _ = try ext.ifNotRemoved(realm: "live", ws: B, generation: 1) { 0 }
+        let inode1 = (try FileManager.default.attributesOfItem(atPath: lockPath)[.systemFileNumber] as! NSNumber).intValue
+        let started = DispatchSemaphore(value: 0)
+        let events = Locked<[String]>([])
+        let app = l.tombstones
+        let t = Thread {
+            started.wait()
+            try? app.republish(complete: [TombstoneRecord(realm: "live", ws: A, generation: 1)])
+            events.mutate { $0.append("republish-done") }
+        }
+        t.start()
+        _ = try ext.ifNotRemoved(realm: "live", ws: A, generation: 1) { () -> Int in
+            started.signal(); usleep(300_000); events.mutate { $0.append("body-done") }; return 1
+        }
+        for _ in 0..<100 where events.value.count < 2 { usleep(50_000) }
+        #expect(events.value == ["body-done", "republish-done"])
+        let inode2 = (try FileManager.default.attributesOfItem(atPath: lockPath)[.systemFileNumber] as! NSNumber).intValue
+        #expect(inode1 == inode2)  // the lock file is never replaced; only the data file is renamed over
+    }
+
+    @Test func readersNeverSeeATornOrMissingFileDuringRepublish() async throws {
+        let l = try makeLayout(tempDir())
+        try l.prepareRealm()
+        let app = l.tombstones
+        let ext = l.shareCoordination
+        let stop = Locked(false)
+        let misses = Locked(0)
+        let writer = Thread {
+            var i: Int64 = 0
+            while !stop.value {
+                i += 1
+                try? app.republish(complete: [TombstoneRecord(realm: "live", ws: A, generation: i)])
+            }
+        }
+        writer.start()
+        for _ in 0..<300 {
+            // B is never removed: a nil here would mean the reader saw a missing/unreadable file.
+            if (try? ext.ifNotRemoved(realm: "live", ws: B, generation: 1) { true }) != true { misses.mutate { $0 += 1 } }
+        }
+        stop.mutate { $0 = true }
+        #expect(misses.value == 0)
+    }
+
+    @Test func concurrentOpenAndWipeLeavesNoFiles() async throws {
+        for _ in 0..<15 {
+            let l = try makeLayout(tempDir())
+            let idx = try await WorkspaceIndex(layout: l)
+            try await idx.addWorkspace(ws: A, generation: 1)
+            await withTaskGroup(of: Void.self) { g in
+                g.addTask { _ = try? await WorkspaceContainer(index: idx, ws: A, generation: 1) }
+                g.addTask { try? await LocalWipe(index: idx).wipe(ws: A, generation: 1) }
+            }
+            #expect(!FileManager.default.fileExists(atPath: try l.wsDir(A).path))
+            #expect(try await idx.isRemoved(ws: A, generation: 1))
+        }
     }
 }
 

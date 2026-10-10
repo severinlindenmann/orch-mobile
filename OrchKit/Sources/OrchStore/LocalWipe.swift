@@ -45,6 +45,7 @@ public final class LocalWipe: Sendable {
     /// Finishes every tombstone whose phase is below done. Returns the workspaces resumed.
     @discardableResult
     public func resumePendingWipes() async throws -> [String] {
+        try await index.republishTombstones()
         var resumed: [String] = []
         var errors: [String] = []
         for t in try await index.tombstones() where t.phase < Self.donePhase {
@@ -71,11 +72,11 @@ public final class LocalWipe: Sendable {
         let realm = layout.realm
         if from < 1 {
             // Publish every index tombstone, not just this one: repairs a coordination file that was moved
-            // aside as corrupt, or missed in an earlier crash between the two App Group writes (the index is
+            // replaced as corrupt (copied aside, never left missing), or missed in an earlier crash between the two App Group writes (the index is
             // authoritative; until phase 1 completes an extension on the stale side may still publish).
             var records = try await index.tombstones().map(\.record)
             records.append(TombstoneRecord(realm: realm, ws: ws, generation: generation))
-            try layout.tombstones.write(records)
+            try layout.tombstones.republish(complete: records)
             try await finish(1, ws, generation)
         }
         if from < 2 {

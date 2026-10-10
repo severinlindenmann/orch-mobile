@@ -1,6 +1,6 @@
 import Foundation
 
-public enum LayoutError: Error, Equatable, Sendable { case invalidRealm(String), invalidWorkspace(String) }
+public enum LayoutError: Error, Equatable, Sendable { case invalidRealm(String), invalidWorkspace(String), overlappingRoots }
 
 /// A8 layout. Roots are injected: tests pass temp dirs, the app passes the real containers.
 ///   <appRoot>/orch/<realm>/index.sqlite
@@ -16,6 +16,12 @@ public struct StoreLayout: Sendable {
     public init(appRoot: URL, pushGroupRoot: URL, shareGroupRoot: URL, realm: String) throws {
         guard !realm.isEmpty, realm.utf8.allSatisfy({ ($0 >= 0x61 && $0 <= 0x7a) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2d || $0 == 0x5f }) else {
             throw LayoutError.invalidRealm(realm)
+        }
+        // SQLite files live only under the app-private root; App Group roots must be disjoint from it.
+        func canonical(_ u: URL) -> String { (realpath(u.path, nil).map { p -> String in defer { free(p) }; return String(cString: p) } ?? u.standardizedFileURL.path) + "/" }
+        let roots = [canonical(appRoot), canonical(pushGroupRoot), canonical(shareGroupRoot)]
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] where roots[i].hasPrefix(roots[j]) || roots[j].hasPrefix(roots[i]) {
+            throw LayoutError.overlappingRoots
         }
         self.appRoot = appRoot; self.pushGroupRoot = pushGroupRoot; self.shareGroupRoot = shareGroupRoot; self.realm = realm
     }

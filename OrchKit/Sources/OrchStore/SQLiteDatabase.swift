@@ -200,6 +200,9 @@ public actor SQLiteDatabase {
 
     /// - Parameter fileProtection: request `SQLITE_OPEN_FILEPROTECTION_COMPLETE` (honoured on iOS only).
     public init(url: URL, fileProtection: Bool = true) throws {
+        // SECURITY: realpath resolves symlinks in the PARENT path and NOFOLLOW guards only the last
+        // component, so this must be used for app-private container paths only, never under an App Group
+        // root another process can write (StoreLayout enforces disjoint roots).
         // SQLite's NOFOLLOW rejects a symlink anywhere in the path (/var -> /private/var on Apple platforms),
         // so resolve the parent directory ourselves; the database file itself must not be a symlink.
         // (URL.resolvingSymlinksInPath would strip /private again, so use realpath.)

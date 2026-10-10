@@ -16,9 +16,9 @@ public struct TombstoneRecord: Codable, Hashable, Sendable {
 
 public enum TombstoneError: Error, Equatable, Sendable {
     case lockFailed(Int32)
-    /// The coordination file could not be parsed. It was moved aside (`.corrupt-<ts>`); the caller must
-    /// re-publish all tombstones from the index (LocalWipe does this on retry).
-    case corrupt(movedTo: String)
+    /// The coordination file could not be parsed. A partial `write` leaves it untouched (readers keep
+    /// failing closed); call `republish(complete:)` with the full set from the index to repair it.
+    case corrupt(file: String)
     case io(String)
 }
 
@@ -31,8 +31,15 @@ public struct TombstoneCoordination: Sendable {
     static let fileName = "tombstones.json"
     static let lockName = "tombstones.lock"
 
-    /// Fail-closed removal check for extension code paths: anything unreadable counts as removed.
-    public func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
+    // Locking contract: every read or write takes flock on the stable `tombstones.lock` (never on the data
+    // file, which is replaced by rename and so changes inode). Writers hold the exclusive lock across their
+    // read-modify-write; checks that precede an action must use `ifNotRemoved` (check + action under the
+    // shared lock). The bare checks below are internal: a check whose result is used after the lock is
+    // released is a TOCTOU race.
+
+    /// Bare fail-closed check (unreadable counts as removed). Internal: only for callers whose action is
+    /// itself ordered by the index tombstone (see WorkspaceIndex) and for tests.
+    func isRemovedFailClosed(realm: String, ws: String, generation: Int64) -> Bool {
         for dir in directories {
             guard let records = try? Self.read(dir: dir) else { return true }
             if Self.covers(records, realm, ws, generation) { return true }
@@ -49,7 +56,7 @@ public struct TombstoneCoordination: Sendable {
         return false
     }
 
-    /// Check-then-act under the shared lock of every directory: a wipe (exclusive writer) cannot slip in
+    /// The extension API: check-then-act under the shared lock of every directory: a wipe (exclusive writer) cannot slip in
     /// between the check and `body`. Returns nil, without running `body`, when the workspace is removed or
     /// the state is unreadable (fail-closed). `body` must be synchronous and short.
     public func ifNotRemoved<T>(realm: String, ws: String, generation: Int64, _ body: () throws -> T) throws -> T? {
@@ -66,9 +73,9 @@ public struct TombstoneCoordination: Sendable {
         Set(directories.flatMap { (try? Self.read(dir: $0)) ?? [] }).sorted { ($0.realm, $0.ws, $0.generation) < ($1.realm, $1.ws, $1.generation) }
     }
 
-    /// Idempotent; atomically replaces the file in every directory (sequentially: a crash between
-    /// directories leaves one file behind, which the wipe's phase 1 repairs on resume from the index).
-    /// Only a missing file counts as empty; an unreadable one is moved aside and reported, never overwritten.
+    /// Partial add (idempotent), sequentially per directory (a crash between directories leaves one file
+    /// behind; the wipe's phase 1 repairs that via `republish`). Only a missing file counts as empty. An
+    /// unparseable file is NOT touched: this throws `.corrupt` and readers keep failing closed.
     public func write(_ record: TombstoneRecord) throws { try write([record]) }
 
     public func write(_ new: [TombstoneRecord]) throws {
@@ -76,17 +83,35 @@ public struct TombstoneCoordination: Sendable {
             try Self.withLocks([dir][...], exclusive: true, create: true) {
                 var records: [TombstoneRecord]
                 do { records = try Self.readUnlocked(dir: dir) }
-                catch is DecodingError {
-                    let aside = dir.appendingPathComponent("\(Self.fileName).corrupt-\(Int(Date().timeIntervalSince1970))")
-                    try? FileManager.default.removeItem(at: aside)
-                    try FileManager.default.moveItem(at: dir.appendingPathComponent(Self.fileName), to: aside)
-                    throw TombstoneError.corrupt(movedTo: aside.path)
-                }
+                catch is DecodingError { throw TombstoneError.corrupt(file: dir.appendingPathComponent(Self.fileName).path) }
                 let before = records.count
                 for r in new where !records.contains(r) { records.append(r) }
                 if records.count == before { return }
-                let data = try JSONEncoder().encode(records)
-                try data.write(to: dir.appendingPathComponent(Self.fileName), options: .atomic)
+                try JSONEncoder().encode(records).write(to: dir.appendingPathComponent(Self.fileName), options: .atomic)
+            }
+        }
+    }
+
+    /// Repair/launch path: under the same exclusive lock, atomically replace each file with the complete
+    /// authoritative set (union with any readable existing records). A corrupt file is first COPIED aside
+    /// (`tombstones.json.corrupt-<ts>`, diagnosis only); the replacement is an atomic rename, so readers see
+    /// either the old (failing-closed) file or the complete new one, never a missing file.
+    public func republish(complete: [TombstoneRecord]) throws {
+        for dir in directories {
+            try Self.withLocks([dir][...], exclusive: true, create: true) {
+                let file = dir.appendingPathComponent(Self.fileName)
+                var records: [TombstoneRecord]
+                do { records = try Self.readUnlocked(dir: dir) }
+                catch is DecodingError {
+                    let aside = dir.appendingPathComponent("\(Self.fileName).corrupt-\(Int(Date().timeIntervalSince1970))")
+                    try? FileManager.default.removeItem(at: aside)
+                    try FileManager.default.copyItem(at: file, to: aside)
+                    records = []
+                }
+                let before = records
+                for r in complete where !records.contains(r) { records.append(r) }
+                if records == before && FileManager.default.fileExists(atPath: file.path) { return }
+                try JSONEncoder().encode(records).write(to: file, options: .atomic)
             }
         }
     }

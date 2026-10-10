@@ -37,7 +37,16 @@ public actor WorkspaceContainer {
         try layout.prepareWorkspace(ws)
         let d = try SQLiteDatabase(url: layout.wsDatabaseURL(ws))
         do { try await d.migrate(Self.migrations) } catch { await d.close(); throw error }
-        // suspend()/close() may have run while we awaited: do not resurrect a handle.
+        // A wipe may have recorded its tombstone after the first check and before our files were created:
+        // re-check now that they exist and clean up ourselves (the wipe's purge may already have run).
+        if try await index.isRemoved(ws: ws, generation: generation) {
+            await d.close()
+            for f in StoreLayout.sqliteFiles(try layout.wsDatabaseURL(ws)) { try? FileManager.default.removeItem(at: f) }
+            try? FileManager.default.removeItem(at: try layout.wsDir(ws))
+            throw StoreError.workspaceRemoved(ws: ws, generation: generation)
+        }
+        // suspend()/close() may have run while we awaited: do not resurrect a handle. No await between this
+        // check and the assignment, so a later wipe's suspendAll() always sees and closes the handle.
         guard start == lifecycle else { await d.close(); throw StoreError.suspended }
         db = d
         suspended = false
