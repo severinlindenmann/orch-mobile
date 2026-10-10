@@ -24,10 +24,13 @@ public final class StagingSession: @unchecked Sendable {
         guard JobID.isValid(jobID) else { throw ShareError.io("invalid job id") }
         self.area = area; self.target = target; self.jobID = jobID; self.now = now
         jobDir = try area.stagingDir(realm: target.realm, ws: target.ws).appendingPathComponent(jobID, isDirectory: true)
-        let always = ([area.shareGroupRoot] + extraForbiddenRoots).map(ShareFS.canonical)
+        try area.ensureDirectory(area.shareDir)
+        let always = try ([area.shareGroupRoot] + extraForbiddenRoots).map(ShareFS.canonical)
         providerForbidden = always
-        strictForbidden = always + [ShareFS.canonical(URL(fileURLWithPath: NSHomeDirectory()))]
+        strictForbidden = always + [try ShareFS.canonical(URL(fileURLWithPath: NSHomeDirectory()))]
     }
+
+    public var remainingBytes: Int { lock.lock(); defer { lock.unlock() }; return ShareLimits.maxTotalBytes - total }
 
     public var id: String { jobID }
     public var itemCount: Int { lock.lock(); defer { lock.unlock() }; return items.count }
@@ -154,7 +157,7 @@ public final class StagingSession: @unchecked Sendable {
         }
         defer { close(inFD) }
         var st = stat()
-        guard fstat(inFD, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { throw ShareError.unsupported("not a regular file") }
+        guard fstat(inFD, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_nlink == 1 else { throw ShareError.unsupported("not a regular file") }
         guard let real = ShareFS.realPath(of: inFD) else { throw ShareError.unsupported("unresolvable source") }
         for root in forbidden where ShareFS.isInside(real, root: root) { throw ShareError.unsupported("source not allowed") }
         let outFD = open(dest.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)

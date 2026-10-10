@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import OrchStore
+import OrchCoordination
 @testable import OrchShareStaging
 
 struct AdversarialTests {
@@ -109,8 +110,14 @@ struct FixRoundTests {
         try await ProviderStager.stage(provider, into: s)
         try s.commit(note: nil)
         let job = ShareInbox(area: area).peekReady()[0]
+        print("URL-as-text manifest:", job.manifest)
+        let bytes = try Data(contentsOf: job.dir.appendingPathComponent("item-1"))
+        print("URL-as-text item-1 bytes:", Array(bytes))
+        let text = try #require(String(data: bytes, encoding: .utf8))
         #expect(job.manifest.items.map(\.kind) == [.text])
-        #expect(try String(contentsOf: job.dir.appendingPathComponent("item-1"), encoding: .utf8) == secret.absoluteString)
+        #expect(text == secret.absoluteString)
+        #expect(bytes != (try Data(contentsOf: secret)))
+        #expect(!text.contains("AAAA"))
     }
 
     @Test func urlProviderWithFileURLIsText() async throws {
@@ -428,6 +435,83 @@ struct LinkAndNameTests {
         var m = try JSONDecoder().decode(JobManifest.self, from: Data(contentsOf: dir.appendingPathComponent("manifest.json")))
         m.realm = "live\u{0301}"
         try JSONEncoder().encode(m).write(to: dir.appendingPathComponent("manifest.json"))
+        #expect(inbox.peekReady().isEmpty)
+    }
+}
+
+struct FinalShareFixTests {
+    @Test func failedTombstoneSurvivesRestartAndPurgesBothLocations() throws {
+        let area = ShareArea(shareGroupRoot: tmp())
+        let inbox = ShareInbox(area: area)
+        let q = try StagingSession(area: area, target: target())
+        try q.add(.text("quarantined plaintext")); try q.commit(note: nil)
+        _ = inbox.claim(live: [])
+        let s = try StagingSession(area: area, target: target())
+        try s.add(.text("staged plaintext")); try s.commit(note: nil)
+        let record = TombstoneRecord(realm: "live", ws: WS, generation: 1)
+        try inbox.recordRemoval(record)
+        let tombstones = area.shareDir.appendingPathComponent("tombstones.json")
+        try Data("{broken".utf8).write(to: tombstones)
+        #expect(throws: (any Error).self) { try inbox.replayRemovals() }
+        #expect(try inbox.pendingRemovals() == [record])
+        try FileManager.default.removeItem(at: tombstones)
+        let restarted = ShareInbox(area: area)
+        try restarted.replayRemovals()
+        #expect(try restarted.pendingRemovals().isEmpty)
+        #expect(try area.coordination.records().contains(record))
+        #expect(!ShareArea.exists(try area.stagingDir(realm: "live", ws: WS)))
+        #expect(!ShareArea.exists(try area.quarantineDir(realm: "live", ws: WS)))
+    }
+
+    @Test func crashAfterJournalBeforeTombstoneIsReplayed() throws {
+        let area = ShareArea(shareGroupRoot: tmp())
+        let s = try StagingSession(area: area, target: target())
+        try s.add(.text("partial plaintext"))
+        let record = TombstoneRecord(realm: "live", ws: WS, generation: 1)
+        try ShareInbox(area: area).recordRemoval(record)
+        #expect(try area.coordination.records().isEmpty)
+        try ShareInbox(area: area).replayRemovals()
+        #expect(try area.coordination.records() == [record])
+        #expect(try ShareInbox(area: area).pendingRemovals().isEmpty)
+        #expect(!ShareArea.exists(try area.stagingDir(realm: "live", ws: WS)))
+    }
+
+    @Test @MainActor func oversizedTextProviderIsRefusedBeforeDecoding() async throws {
+        let area = ShareArea(shareGroupRoot: tmp())
+        let session = try StagingSession(area: area, target: target())
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.plainText.identifier, visibility: .all) { completion in
+            completion(Data(repeating: 65, count: ShareLimits.maxTotalBytes + 1), nil)
+            return nil
+        }
+        do {
+            try await ProviderStager.stage(provider, into: session)
+            Issue.record("oversized text was accepted")
+        } catch { #expect(error as? ShareError == .tooLarge) }
+        #expect(session.itemCount == 0)
+        #expect(ShareInbox(area: area).peekReady().isEmpty)
+    }
+
+    @Test func canonicalFailsForMissingPathAndSymlinkLoop() throws {
+        let root = tmp()
+        #expect(throws: (any Error).self) { try ShareFS.canonical(root.appendingPathComponent("missing")) }
+        let loop = root.appendingPathComponent("loop")
+        try FileManager.default.createSymbolicLink(at: loop, withDestinationURL: loop)
+        #expect(throws: (any Error).self) { try ShareFS.canonical(loop) }
+    }
+
+    @Test func hardLinkedSourceAndRedirectAreRefused() throws {
+        let area = ShareArea(shareGroupRoot: tmp())
+        let source = sourceFile(32, in: tmp())
+        try FileManager.default.linkItem(at: source, to: source.deletingLastPathComponent().appendingPathComponent("alias"))
+        let s = try StagingSession(area: area, target: target())
+        #expect(throws: (any Error).self) { try s.add(.providerCopy(source, name: "alias", type: nil)) }
+        try s.add(.text("secret")); try s.commit(note: nil)
+        let inbox = ShareInbox(area: area)
+        let q = try #require(inbox.claim(live: []).quarantined.first)
+        try FileManager.default.linkItem(at: q.dir.appendingPathComponent("item-1"), to: tmp().appendingPathComponent("alias"))
+        #expect(throws: (any Error).self) { try inbox.redirect(q, to: LiveDestination(realm: "live", ws: WS2, generation: 1)) }
+        #expect(inbox.quarantined().count == 1)
         #expect(inbox.peekReady().isEmpty)
     }
 }

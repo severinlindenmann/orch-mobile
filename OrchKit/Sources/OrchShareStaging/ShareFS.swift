@@ -34,9 +34,10 @@ enum ShareFS {
         return String(cString: buf)
     }
 
-    static func canonical(_ url: URL) -> String {
-        let p = realpath(url.path, nil).map { p -> String in defer { free(p) }; return String(cString: p) } ?? url.standardizedFileURL.path
-        return p
+    static func canonical(_ url: URL) throws -> String {
+        guard let p = realpath(url.path, nil) else { throw ShareError.io("realpath: \(errno)") }
+        defer { free(p) }
+        return String(cString: p)
     }
 
     static func isInside(_ path: String, root: String) -> Bool {

@@ -19,6 +19,7 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
     /// Seconds between background reconcile attempts.
     @ObservationIgnored var reconcileInterval = 5.0
     /// Set by `ShareBridge`: moves a quarantined share job to the chosen workspace.
+    @ObservationIgnored var beforeWorkspaceRemoval: ((String) -> Bool)?
     @ObservationIgnored var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)?
     let custody = "Software key (Simulator)"
     var lastChecked: Date
@@ -272,6 +273,9 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
 
     func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport {
         let ws = workspaces.first { $0.id == workspaceID }
+        guard beforeWorkspaceRemoval?(workspaceID) != false else {
+            return LeaveReport(workspaceName: ws?.name ?? "Workspace", server: .pendingOffline)
+        }
         // Local wipe first and network-independent.
         workspaces.removeAll { $0.id == workspaceID }
         questions.removeAll { $0.workspaceID == workspaceID }

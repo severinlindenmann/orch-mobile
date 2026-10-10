@@ -13,8 +13,7 @@ final class ShareBridge {
     private let world: PreviewWorld
     /// Demo workspaces are never offered to the extension unless a DEBUG UI test asks for it.
     private let publishDemo: Bool
-    /// Published destinations by preview workspace id (also the live set used to claim). Includes destinations whose
-    /// removal is not yet durable (their tombstone could not be written): they stay until the tombstone succeeds.
+    /// Published destinations by preview workspace id (also the live set used to claim).
     private var published: [String: ShareTarget] = [:]
     private var listed: Set<String> = []
     private var recovered = false
@@ -25,6 +24,7 @@ final class ShareBridge {
         inbox = ShareInbox(area: area)
         self.world = world
         self.publishDemo = publishDemo
+        world.beforeWorkspaceRemoval = { [weak self] id in self?.prepareRemoval(id) ?? false }
         world.onRedirectQuarantined = { [weak self] job, ws in self?.redirect(job: job, to: ws) }
     }
 
@@ -37,7 +37,7 @@ final class ShareBridge {
     var realm: String { world.isDemo ? "demo" : "live" }
 
     /// Removals whose tombstone is not yet durable (retried on every publish).
-    var unfinishedRemovals: Int { published.count - listed.count }
+    var unfinishedRemovals: Int { (try? inbox.pendingRemovals().count) ?? 0 }
 
     /// The preview workspace ids ("laptop") are not 32-hex; the fake maps them to stable valid ids.
     static func wsHex(_ id: String) -> String {
@@ -51,14 +51,25 @@ final class ShareBridge {
 
     private func previewID(forHex ws: String) -> String? { published.first { $0.value.ws == ws && listed.contains($0.key) }?.key }
 
-    /// Rewrites the destinations index. A workspace that disappeared is tombstoned FIRST; only when that is durable
-    /// does it leave `published`. The staged and quarantined jobs the tombstone covers are then deleted by the
-    /// resumable `purgeTombstoned` (the tombstone is the persisted cleanup record: a failed delete is retried on the
-    /// next publish or refresh).
+    /// Journal before changing local workspace state; a failed tombstone keeps the workspace in place.
+    private func prepareRemoval(_ id: String) -> Bool {
+        do {
+            let hex = Self.wsHex(id)
+            let generation = try published[id]?.generation ?? ((inbox.area.coordination.records()
+                .filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0) + 1)
+            let record = TombstoneRecord(realm: published[id]?.realm ?? realm, ws: hex, generation: generation)
+            try inbox.recordRemoval(record)
+            try inbox.area.coordination.write(record)
+            return true
+        } catch { return false }
+    }
+
+    /// Replay the durable journal before offering destinations or claiming plaintext.
     func publishTargets() {
         let area = inbox.area
         let coordination = area.coordination
-        let tombstones = (try? coordination.records()) ?? []
+        do { try inbox.replayRemovals() } catch { return }
+        guard let tombstones = try? coordination.records() else { return }
         var next: [String: ShareTarget] = [:]
         if !world.isDemo || publishDemo {
             for ws in world.workspaces {
@@ -67,12 +78,15 @@ final class ShareBridge {
                 next[ws.id] = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: top + 1)
             }
         }
-        var retained: [String: ShareTarget] = [:]
-        for (id, old) in published where next[id]?.realm != old.realm || next[id]?.ws != old.ws {
-            do { try coordination.write(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation)) }
-            catch { retained[id + "\u{0}" + old.ws] = old }   // not durable: keep it, retry next time
-        }
-        published = next.merging(retained) { a, _ in a }
+        // Include the persisted index so a process restart cannot lose an unpublished removal.
+        let previous = Array(published.values) + ((try? ShareTargetIndex.load(from: area)) ?? [])
+        do {
+            for old in Set(previous) where !next.values.contains(where: { $0.realm == old.realm && $0.ws == old.ws }) {
+                try inbox.recordRemoval(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation))
+            }
+            try inbox.replayRemovals()
+        } catch { return }
+        published = next
         listed = Set(next.keys)
         try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] }, to: area)
         lastPurge = inbox.purgeTombstoned()
@@ -84,6 +98,8 @@ final class ShareBridge {
         refreshing = true
         defer { refreshing = false }
         publishTargets()
+        guard let pending = try? inbox.pendingRemovals(), pending.isEmpty,
+              (try? inbox.area.coordination.records()) != nil else { return }
         inbox.sweep()
         let live = Set(published.filter { listed.contains($0.key) }.values.map { LiveDestination(realm: $0.realm, ws: $0.ws, generation: $0.generation) })
         // Only the first pass after launch may re-issue a `.claimed` job (a crashed import); later passes never do.

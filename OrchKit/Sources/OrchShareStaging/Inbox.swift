@@ -109,8 +109,8 @@ public struct ShareInbox: Sendable {
     /// - Parameter beforeRemovingOriginal: test seam for the interruption between publish and delete.
     public func redirect(_ job: StagedJob, to target: LiveDestination, beforeRemovingOriginal: (() throws -> Void)? = nil) throws -> StagedJob {
         let fm = FileManager.default
-        let quarantinePath = ShareFS.canonical(area.quarantineRoot)
-        guard ShareFS.isInside(ShareFS.canonical(job.dir), root: quarantinePath), job.dir.lastPathComponent == job.manifest.jobID,
+        let quarantinePath = try ShareFS.canonical(area.quarantineRoot)
+        guard ShareFS.isInside(try ShareFS.canonical(job.dir), root: quarantinePath), job.dir.lastPathComponent == job.manifest.jobID,
               area.isRealDirectoryChain(job.dir), job.manifest.isValid() else { throw ShareError.io("not a quarantined job") }
         var m = job.manifest
         m.realm = target.realm; m.ws = target.ws; m.generation = target.generation
@@ -124,9 +124,9 @@ public struct ShareInbox: Sendable {
             do {
                 for item in m.items {
                     let src = job.dir.appendingPathComponent(item.file)
-                    var st = stat()
-                    guard lstat(src.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { throw ShareError.unsupported("item") }
-                    try fm.copyItem(at: src, to: building.appendingPathComponent(item.file))
+                    let bytes = try StagingSession.streamCopy(from: src, to: building.appendingPathComponent(item.file),
+                                                              limit: item.bytes, forbidden: [])
+                    guard bytes == item.bytes else { throw ShareError.unreadable }
                 }
                 try JSONEncoder().encode(m).write(to: building.appendingPathComponent(JobFiles.manifest), options: .atomic)
                 try Data("1".utf8).write(to: building.appendingPathComponent(JobFiles.ready), options: .atomic)
@@ -210,7 +210,7 @@ public struct ShareInbox: Sendable {
     /// look-alikes), and the job directory's real path equals the path built from those names.
     private func jobDirectories(in root: URL) -> [URL] {
         guard area.isRealDirectoryChain(root) else { return [] }
-        let canonicalRoot = ShareFS.canonical(root)
+        guard let canonicalRoot = try? ShareFS.canonical(root) else { return [] }
         func children(_ url: URL, valid: (String) -> Bool) -> [URL] {
             ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).compactMap { name in
                 guard valid(name) else { return nil }
@@ -225,7 +225,7 @@ public struct ShareInbox: Sendable {
             for ws in children(realm, valid: wsOK) {
                 for job in children(ws, valid: { $0.utf8.allSatisfy { $0 < 0x80 } && !$0.isEmpty && !$0.contains("/") }) {
                     let expected = canonicalRoot + "/" + realm.lastPathComponent + "/" + ws.lastPathComponent + "/" + job.lastPathComponent
-                    if ShareFS.canonical(job) == expected { out.append(job) }
+                    if (try? ShareFS.canonical(job)) == expected { out.append(job) }
                 }
             }
         }

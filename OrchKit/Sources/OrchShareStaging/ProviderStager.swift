@@ -15,14 +15,14 @@ public enum ProviderStager {
                 try await copyFileURLValue(p, session: session)
             }
         } else if p.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            switch try await loadValue(p, UTType.url.identifier) {
+            switch try await loadValue(p, UTType.url.identifier, cap: session.remainingBytes) {
             case .url(let url): try session.add(.url(url.absoluteString))
             case .string(let text): try session.add(.url(text))
             default: throw ShareError.unsupported("url")
             }
         } else if p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) || p.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
             let id = p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) ? UTType.plainText.identifier : UTType.text.identifier
-            switch try await loadValue(p, id) {
+            switch try await loadValue(p, id, cap: session.remainingBytes) {
             case .string(let text): try session.add(.text(text))
             case .data(let data): try session.add(.text(String(decoding: data, as: UTF8.self)))
             case .url(let url): try session.add(.text(url.absoluteString))   // never read as a file
@@ -38,19 +38,54 @@ public enum ProviderStager {
     /// A provider's value reduced to Sendable data inside the completion handler (`NSSecureCoding` is not Sendable).
     enum LoadedValue: Sendable { case url(URL), data(Data), string(String), other }
 
-    /// Completion-handler variant on purpose: the async `loadItem` returns a non-Sendable value, which older compilers reject.
-    @MainActor static func loadValue(_ p: NSItemProvider, _ type: String) async throws -> LoadedValue {
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<LoadedValue, Error>) in
+    /// Cap the data representation before decoding or making any further text/data copies.
+    @MainActor static func loadValue(_ p: NSItemProvider, _ type: String, cap: Int) async throws -> LoadedValue {
+        // URL representations are values; never ask the
+        // framework to turn a file URL into the contents of the referenced file.
+        if type == UTType.fileURL.identifier || type == UTType.url.identifier {
+            return try await withCheckedThrowingContinuation { (c: CheckedContinuation<LoadedValue, Error>) in
+                p.loadItem(forTypeIdentifier: type, options: nil) { value, error in
+                    if let error { c.resume(throwing: error); return }
+                    if let url = value as? URL {
+                        guard url.absoluteString.utf8.count <= cap else { c.resume(throwing: ShareError.tooLarge); return }
+                        c.resume(returning: .url(url))
+                    } else if let data = value as? Data {
+                        guard data.count <= cap else { c.resume(throwing: ShareError.tooLarge); return }
+                        c.resume(returning: URL(dataRepresentation: data, relativeTo: nil).map(LoadedValue.url) ?? .other)
+                    } else if let text = value as? String {
+                        guard text.utf8.count <= cap else { c.resume(throwing: ShareError.tooLarge); return }
+                        c.resume(returning: .string(text))
+                    } else { c.resume(returning: .other) }
+                }
+            }
+        }
+        // Inspect the value first: requesting data for an NSURL advertised as text can
+        // make Foundation read the referenced file instead of returning the URL string.
+        let url: URL? = try await withCheckedThrowingContinuation { c in
             p.loadItem(forTypeIdentifier: type, options: nil) { item, error in
                 if let error { c.resume(throwing: error); return }
-                // Providers hand a URL back as a URL or as its data representation.
-                if let url = item as? URL { c.resume(returning: .url(url)) }
-                else if let text = item as? String { c.resume(returning: .string(text)) }
-                else if let data = item as? Data {
-                    if type == UTType.url.identifier || type == UTType.fileURL.identifier,
-                       let url = URL(dataRepresentation: data, relativeTo: nil) { c.resume(returning: .url(url)) }
-                    else { c.resume(returning: .data(data)) }
-                } else { c.resume(returning: .other) }
+                if let url = item as? URL {
+                    guard url.absoluteString.utf8.count <= cap else { c.resume(throwing: ShareError.tooLarge); return }
+                    c.resume(returning: url)
+                    return
+                }
+                // Refuse oversized values before requesting another representation or decoding.
+                if let data = item as? Data, data.count > cap {
+                    c.resume(throwing: ShareError.tooLarge); return
+                }
+                if let text = item as? String, text.utf8.count > cap {
+                    c.resume(throwing: ShareError.tooLarge); return
+                }
+                c.resume(returning: nil)
+            }
+        }
+        if let url { return .url(url) }
+        return try await withCheckedThrowingContinuation { (c: CheckedContinuation<LoadedValue, Error>) in
+            p.loadDataRepresentation(forTypeIdentifier: type) { data, error in
+                if let error { c.resume(throwing: error); return }
+                guard let data else { c.resume(returning: .other); return }
+                guard data.count <= cap else { c.resume(throwing: ShareError.tooLarge); return }
+                c.resume(returning: .data(data))
             }
         }
     }
@@ -77,7 +112,7 @@ public enum ProviderStager {
 
     /// Provider with only `public.file-url`: the extension itself reads the file while access is valid.
     @MainActor private static func copyFileURLValue(_ p: NSItemProvider, session: StagingSession) async throws {
-        let value = try await loadValue(p, UTType.fileURL.identifier)
+        let value = try await loadValue(p, UTType.fileURL.identifier, cap: session.remainingBytes)
         guard case .url(let url) = value, url.isFileURL else { throw ShareError.unsupported("file url") }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }

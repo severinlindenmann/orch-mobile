@@ -92,13 +92,28 @@ final class ShareBridgeTests: XCTestCase {
         _ = await world.leave(workspaceID: "client-vm", simulateOffline: false)
         bridge.publishTargets()
         XCTAssertEqual(bridge.unfinishedRemovals, 1)
-        // Not offered any more, but still tracked until the tombstone is durable.
+        XCTAssertTrue(world.workspaces.contains { $0.id == "client-vm" })
+        // The failed removal is durable; unreadable coordination fails closed.
         XCTAssertFalse(((try? ShareTargetIndex.load(from: area)) ?? []).contains { $0.name == "Client VM" })
         try? FileManager.default.removeItem(at: file)
-        bridge.publishTargets()
-        XCTAssertEqual(bridge.unfinishedRemovals, 0)
+        let restarted = ShareBridge(area: area, world: world, publishDemo: true)
+        restarted.publishTargets()
+        XCTAssertEqual(restarted.unfinishedRemovals, 0)
         let records = try area.coordination.records()
         XCTAssertTrue(records.contains { $0.ws == ShareBridge.wsHex("client-vm") })
+    }
+
+    func testJournalFailureKeepsWorkspaceAndPersistedDestination() async throws {
+        let (world, bridge, area) = try make()
+        bridge.publishTargets()
+        let indexBefore = try Data(contentsOf: area.targetsURL)
+        try FileManager.default.createDirectory(at: area.shareDir.appendingPathComponent("pending-removals.json"),
+                                                withIntermediateDirectories: false)
+        _ = await world.leave(workspaceID: "client-vm", simulateOffline: false)
+        bridge.publishTargets()
+        XCTAssertTrue(world.workspaces.contains { $0.id == "client-vm" })
+        XCTAssertEqual(try Data(contentsOf: area.targetsURL), indexBefore)
+        XCTAssertTrue(try area.coordination.records().isEmpty)
     }
 
     /// C2: a failed purge is retried (the tombstone is the persisted cleanup record).
@@ -110,14 +125,14 @@ final class ShareBridgeTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: wsDir.path)
         _ = await world.leave(workspaceID: "client-vm", simulateOffline: false)
         bridge.publishTargets()
-        XCTAssertEqual(bridge.lastPurge.failed, 1)
+        XCTAssertEqual(bridge.unfinishedRemovals, 1)
         // The undeletable job directory is still there (its contents are already gone, so it is not importable).
         XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: wsDir.path))?.count, 1)
         XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wsDir.path)
         bridge.publishTargets()
         XCTAssertEqual(bridge.lastPurge.failed, 0)
-        XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: wsDir.path))?.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: wsDir.path))
     }
 
     func testRecoveryReissuesAClaimedJobOnlyOnTheFirstPass() throws {

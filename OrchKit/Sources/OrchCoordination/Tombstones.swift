@@ -108,7 +108,7 @@ public struct TombstoneCoordination: Sendable {
                 let before = records.count
                 for r in new where !records.contains(r) { records.append(r) }
                 if records.count == before { return }
-                try JSONEncoder().encode(records).write(to: dir.appendingPathComponent(Self.fileName), options: .atomic)
+                try CoordinationFiles.atomicWrite(JSONEncoder().encode(records), to: dir.appendingPathComponent(Self.fileName), dir: dir)
             }
         }
     }

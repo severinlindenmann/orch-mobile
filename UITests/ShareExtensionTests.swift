@@ -7,23 +7,24 @@ final class ShareExtensionTests: XCTestCase {
 
     /// Presents the system share sheet for `fixtureButton` and picks orch's extension.
     @MainActor
-    private func openExtension(_ app: XCUIApplication, fixtureButton: String) {
+    private func openExtension(_ app: XCUIApplication, fixtureButton: String, useMore: Bool = false) {
         XCTAssertTrue(app.buttons[fixtureButton].waitForExistence(timeout: 10))
         app.buttons[fixtureButton].tap()
-        var orch = app.cells["orch"]
-        if !orch.waitForExistence(timeout: 10) {
+        let orch = app.cells["orch"]
+        if useMore || !orch.waitForExistence(timeout: 10) {
             // The extension may be hidden behind "More" on a fresh runtime: open it, find orch in the list, enable it.
             let more = app.cells["More"]
             XCTAssertTrue(more.exists, "neither orch nor More is offered in the share sheet")
             more.tap()
-            let row = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'orch'")).firstMatch
-            XCTAssertTrue(row.waitForExistence(timeout: 10), "orch is not in the More list")
-            let toggle = app.switches.matching(NSPredicate(format: "label == 'orch'")).firstMatch
-            if toggle.exists, (toggle.value as? String) == "0" { toggle.tap() }
-            let done = app.buttons["Done"]
-            if done.exists { done.tap() }
-            orch = app.cells["orch"]
-            XCTAssertTrue(orch.waitForExistence(timeout: 10), "orch still not offered after enabling it in More")
+            // "Apps" list: the row is a table cell. (A bare label query also matches the app's own "orch" back button.)
+            let row = app.tables.cells.containing(.staticText, identifier: "orch").firstMatch
+            guard row.waitForExistence(timeout: 10) else {
+                let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.lifetime = .keepAlways; add(shot)
+                add(XCTAttachment(string: app.debugDescription))
+                XCTFail("orch is not listed in the More (Apps) list"); return
+            }
+            row.tap()
+            return
         }
         orch.tap()
     }
@@ -64,6 +65,13 @@ final class ShareExtensionTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["share.fixture.inspect"].tap()
         XCTAssertEqual(app.staticTexts["share.fixture.status"].label, "ready jobs: 0 items: ", file: file, line: line)
+    }
+
+    @MainActor func testExtensionCanBeSelectedFromMore() {
+        let app = launch("share-fixture", extra: ["--hold-share-import", "--share-demo-targets"])
+        openExtension(app, fixtureButton: "share.fixture.text", useMore: true)
+        XCTAssertTrue(app.buttons["share.cancel"].waitForExistence(timeout: 15))
+        app.buttons["share.cancel"].tap()
     }
 
     @MainActor func testFileItemIsStagedByTheExtensionAndImported() {
