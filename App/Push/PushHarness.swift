@@ -60,9 +60,17 @@ struct PushHarnessView: View {
            let r = try? ReplayStore(pushDir: dir, realm: "live").load(workspace: ws, generation: 1) {
             replay = "replay: max=\(r.maxShownTs) ids=\(r.lastShown.count)"
         } else { replay = "replay: none" }
-        auth = "auth: \(await UNUserNotificationCenter.current().notificationSettings().authorizationStatus.rawValue) (2=authorized)"
-        let d = await UNUserNotificationCenter.current().deliveredNotifications()
-        delivered = "delivered: " + d.map { "[\($0.request.content.title)|\($0.request.content.body)|thread=\($0.request.content.threadIdentifier)]" }.sorted().joined(separator: ",")
+        // Completion-handler APIs map to Sendable values inside the callback (older SDKs flag the async variants).
+        let status: Int = await withCheckedContinuation { c in
+            UNUserNotificationCenter.current().getNotificationSettings { c.resume(returning: $0.authorizationStatus.rawValue) }
+        }
+        auth = "auth: \(status) (2=authorized)"
+        let d: [String] = await withCheckedContinuation { c in
+            UNUserNotificationCenter.current().getDeliveredNotifications { ns in
+                c.resume(returning: ns.map { "[\($0.request.content.title)|\($0.request.content.body)|thread=\($0.request.content.threadIdentifier)]" })
+            }
+        }
+        delivered = "delivered: " + d.sorted().joined(separator: ",")
     }
 }
 #endif
