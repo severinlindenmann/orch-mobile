@@ -10,6 +10,8 @@ permissions:
   contents: read
 
 env:
+  # Passed into the simulator test host as CI, so hosted keychain tests fail instead of skip.
+  TEST_RUNNER_CI: '1'
   XCODE_VERSION: '16.4'
   XCODEGEN_VERSION: '2.46.0'
   XCODEGEN_SHA256: '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806'
