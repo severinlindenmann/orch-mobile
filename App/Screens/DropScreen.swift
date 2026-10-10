@@ -40,6 +40,7 @@ struct DropScreen: View {
             Section {
                 Text("Files and notes expire after 7 days. Links are shown as text and never opened for you.")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
+                SimulationNotice()
             }
         }
         .navigationTitle("Drop")
@@ -49,7 +50,7 @@ struct DropScreen: View {
                     .accessibilityIdentifier("drop.compose")
             }
         }
-        .sheet(isPresented: $composing) { DropComposeSheet(model: model) { direction = .sending } }
+        .sheet(isPresented: $composing) { DropComposeSheet(model: model, preset: nil) { direction = .sending } }
     }
 }
 
@@ -64,12 +65,14 @@ struct DropRow: View {
             VStack(alignment: .leading, spacing: OS.s1) {
                 HStack {
                     if item.unread { Circle().fill(OC.youMark).frame(width: 8, height: 8).accessibilityLabel("Unread") }
-                    Text(item.name).lineLimit(1)
+                    Text(verbatim: item.displayName).lineLimit(1)
                 }
-                Text(verbatim: "\(ws?.name ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))")
+                Text(verbatim: "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                 if item.direction == .sending {
-                    Label("Sending", systemImage: "arrow.up.circle").font(OF.meta).foregroundStyle(OC.info)
+                    Label(item.simulatedDone ? "Sent (simulated)" : "Sending (simulated)",
+                          systemImage: item.simulatedDone ? "checkmark.circle" : "arrow.up.circle")
+                        .font(OF.meta).foregroundStyle(item.simulatedDone ? OC.ok : OC.info)
                 }
             }
         }
@@ -89,8 +92,8 @@ struct DropItemScreen: View {
                 Section {
                     VStack(alignment: .leading, spacing: OS.s2) {
                         if let ws { WorkspaceHeader(name: ws.name, color: ws.color, hostedBy: ws.hostedBy, clientHosted: ws.clientHosted) }
-                        Text(item.name).font(.title2.weight(.semibold))
-                        Text(verbatim: "\(item.kind.rawValue.capitalized) · \(Fmt.bytes(item.bytes)) · from \(item.from)")
+                        Text(verbatim: item.displayName).font(.title2.weight(.semibold))
+                        Text(verbatim: "\(item.kind.rawValue.capitalized) · \(Fmt.bytes(item.bytes)) · from \(item.displayFrom)")
                             .font(OF.meta).foregroundStyle(OC.textMuted)
                     }
                 }
@@ -101,7 +104,7 @@ struct DropItemScreen: View {
                 }
                 if let text = item.text {
                     Section(item.kind == .url ? "Link (shown as text, never opened)" : "Note") {
-                        SafeTextView(text).accessibilityIdentifier("drop.item.text")
+                        SafeTextView(text, style: .prose).accessibilityIdentifier("drop.item.text")
                     }
                 } else {
                     Section {
@@ -123,6 +126,7 @@ struct DropItemScreen: View {
 
 struct DropComposeSheet: View {
     let model: any DropModel
+    let preset: String?
     let onSent: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var destination: String?
@@ -132,19 +136,30 @@ struct DropComposeSheet: View {
     @State private var importing = false
     @State private var error: String?
 
+    init(model: any DropModel, preset: String?, onSent: @escaping () -> Void) {
+        self.model = model; self.preset = preset; self.onSent = onSent
+        _destination = State(initialValue: preset)
+    }
+
     private var total: Int { attachments.reduce(0) { $0 + $1.bytes } }
     private var canSend: Bool { destination != nil && (!attachments.isEmpty || !note.isEmpty) }
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Label("Demo: nothing leaves this iPhone. Sending is simulated.", systemImage: "theatermasks")
+                        .foregroundStyle(OC.demo)
+                        .accessibilityIdentifier("drop.demoLabel")
+                }
                 Section("1. Send to") {
                     ForEach(model.workspaces) { ws in
                         Button { destination = ws.id } label: {
                             HStack {
                                 WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
-                                Text(ws.name).foregroundStyle(OC.text)
-                                if ws.isHosted { Image(systemName: "building.2").foregroundStyle(OC.hosted) }
+                                Text(verbatim: ws.displayName).foregroundStyle(OC.text)
+                                if ws.isHosted { Image(systemName: "building.2").foregroundStyle(OC.hosted)
+                                    .accessibilityLabel("Client hosted") }
                                 Spacer()
                                 if destination == ws.id { Image(systemName: "checkmark").foregroundStyle(OC.brand) }
                             }
@@ -153,9 +168,13 @@ struct DropComposeSheet: View {
                         .accessibilityAddTraits(destination == ws.id ? .isSelected : [])
                     }
                 }
-                Section("2. Attachments (up to \(DropLimits.maxAttachments), 25 MB total)") {
+                Section("2. Attachments (up to 5, 25 MB total)") {
                     ForEach(attachments) { a in
-                        HStack { Text(a.name).lineLimit(1); Spacer(); Text(Fmt.bytes(a.bytes)).font(OF.meta) }
+                        HStack {
+                            Text(verbatim: SafeText.inline(a.name, limit: 40)).lineLimit(1)
+                            Spacer()
+                            Text(verbatim: Fmt.bytes(a.bytes)).font(OF.meta)
+                        }
                     }
                     .onDelete { attachments.remove(atOffsets: $0) }
                     PhotosPicker(selection: $photos, maxSelectionCount: DropLimits.maxAttachments, matching: .any(of: [.images, .videos])) {
@@ -164,7 +183,11 @@ struct DropComposeSheet: View {
                     .accessibilityIdentifier("drop.photos")
                     Button { importing = true } label: { Label("Choose files", systemImage: "folder") }
                         .accessibilityIdentifier("drop.files")
-                    if let error { Text(error).font(OF.meta).foregroundStyle(OC.danger) }
+                    Button { add(DropAttachment(id: UUID(), name: "Sample file (not a real pick)", bytes: 12_000, isSample: true)) } label: {
+                        Label("Add a sample attachment", systemImage: "doc.badge.plus")
+                    }
+                    .accessibilityIdentifier("drop.sample")
+                    if let error { Text(verbatim: error).font(OF.meta).foregroundStyle(OC.danger) }
                 }
                 Section("3. Note") {
                     TextField("Short note (optional)", text: $note, axis: .vertical).lineLimit(1...4)
@@ -191,17 +214,25 @@ struct DropComposeSheet: View {
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 guard case .success(let urls) = result else { return }
                 for url in urls {
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                     let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                     add(DropAttachment(id: UUID(), name: url.lastPathComponent, bytes: size))
                 }
             }
             .onChange(of: photos) { _, items in
-                for (i, _) in items.enumerated() where attachments.count < DropLimits.maxAttachments {
-                    add(DropAttachment(id: UUID(), name: "Photo \(attachments.count + i + 1)", bytes: 1_800_000))
-                }
+                let picked = items
                 photos = []
+                Task {
+                    for (i, item) in picked.enumerated() {
+                        // Real size from the picked data; nothing is invented.
+                        let data = try? await item.loadTransferable(type: Data.self)
+                        add(DropAttachment(id: UUID(), name: "Photo \(attachments.count + i + 1)", bytes: data?.count ?? 0))
+                    }
+                }
             }
         }
+        .tint(OC.brand)
     }
 
     private func add(_ a: DropAttachment) {

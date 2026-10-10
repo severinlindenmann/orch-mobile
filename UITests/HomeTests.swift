@@ -8,7 +8,8 @@ final class HomeTests: XCTestCase {
         XCTAssertTrue(app.el("home.workspace.laptop").exists)
         XCTAssertTrue(app.el("home.workspace.client-vm").exists)
         XCTAssertTrue(app.el("home.drop").exists)
-        XCTAssertTrue(app.staticTexts["Demo"].exists || app.el("Demo mode").exists)
+        XCTAssertTrue(app.el("Demo mode, simulated").exists)
+        XCTAssertTrue(app.el("simulation.notice").exists)
     }
 
     @MainActor
@@ -19,6 +20,17 @@ final class HomeTests: XCTestCase {
         XCTAssertTrue(app.el("question.q3").exists)
         XCTAssertTrue(app.staticTexts["Laptop"].exists)
         XCTAssertTrue(app.staticTexts["Client VM"].exists)
+    }
+
+    @MainActor
+    func testEmptyDemoKeepsSettingsReachable() {
+        let app = launch("empty")
+        XCTAssertTrue(app.el("home.empty").waitForExistence(timeout: 10))
+        app.buttons["empty.settings"].tap()
+        let reset = app.el("settings.reset")
+        var tries = 0
+        while !reset.exists && tries < 6 { app.swipeUp(); tries += 1 }
+        XCTAssertTrue(reset.exists)
     }
 
     @MainActor

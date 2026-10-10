@@ -22,4 +22,16 @@ final class DropTests: XCTestCase {
         send.tap()
         XCTAssertTrue(app.segmentedControls["drop.direction"].waitForExistence(timeout: 5))
     }
+
+    @MainActor
+    func testSimulatedTransferTerminates() {
+        let app = launch("drop/compose")
+        XCTAssertTrue(app.el("drop.demoLabel").waitForExistence(timeout: 10))
+        app.el("drop.destination.laptop").tap()
+        app.buttons["drop.sample"].tap()
+        app.buttons["drop.send"].tap()
+        let done = app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Sent (simulated)'")).firstMatch
+        let combined = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Sent (simulated)'")).firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 10) || combined.waitForExistence(timeout: 2))
+    }
 }

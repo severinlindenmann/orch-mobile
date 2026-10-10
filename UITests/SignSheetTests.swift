@@ -69,3 +69,73 @@ final class SignSheetTests: XCTestCase {
         XCTAssertTrue(app.buttons["sign.confirm"].waitForExistence(timeout: 5))
     }
 }
+
+final class SignSheetStateTests: XCTestCase {
+    @MainActor
+    func testBackgroundInvalidatesUnsentReviewAndNeedsFreshArming() {
+        let app = launch("sign/q1")
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForEnabled())
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
+        app.activate()
+        XCTAssertTrue(app.el("question.option.approve").waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["sign.confirm"].exists, "sheet dropped")
+        app.buttons["question.option.approve"].tap()
+        let fresh = app.buttons["sign.confirm"]
+        XCTAssertTrue(fresh.waitForExistence(timeout: 5))
+        // A fresh review arms again; it is never enabled instantly.
+        XCTAssertTrue(fresh.waitForEnabled())
+    }
+
+    @MainActor
+    func testBackgroundWhileCheckingKeepsCheckingState() {
+        let app = launch("sign/q1/uncertain")
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForEnabled())
+        confirm.tap()
+        XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 5))
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
+        app.activate()
+        XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Review dropped'")).firstMatch.exists)
+        // Close without cancelling; Home shows the way back.
+        app.buttons["sign.closeChecking"].tap()
+        XCTAssertTrue(app.el("question.pending").waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testReviewLoadFailureCanRetry() {
+        let app = launch("sign/q1/loadFails")
+        XCTAssertTrue(app.el("sign.loadFailed").waitForExistence(timeout: 10))
+        app.buttons["sign.retryLoad"].tap()
+        XCTAssertTrue(app.buttons["sign.confirm"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testQuestionChangedForcesFreshArming() {
+        let app = launch("sign/q1/questionChanged")
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirm.waitForEnabled())
+        confirm.tap()
+        XCTAssertTrue(app.el("sign.questionChanged").waitForExistence(timeout: 5))
+        app.buttons["sign.reread"].tap()
+        let again = app.buttons["sign.confirm"]
+        XCTAssertTrue(again.waitForExistence(timeout: 5))
+        XCTAssertTrue(again.waitForEnabled())
+    }
+
+    @MainActor
+    func testSignSheetReachableAtAccessibilitySize() {
+        let app = launch("sign/q1", extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXL"])
+        let confirm = app.buttons["sign.confirm"]
+        var tries = 0
+        while !(confirm.exists && confirm.isHittable) && tries < 20 { app.swipeUp(); tries += 1 }
+        for _ in 0..<3 { app.swipeUp() }
+        XCTAssertTrue(confirm.waitForEnabled())
+    }
+}

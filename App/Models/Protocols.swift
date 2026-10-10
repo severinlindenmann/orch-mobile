@@ -14,6 +14,8 @@ protocol HomeModel: AnyObject, Observable {
     var oldestWaiting: (question: Question, workspace: WorkspaceInfo)? { get }
     func waitingCount(in workspaceID: String) -> Int
     var lastChecked: Date { get }
+    /// U8: submissions persisted before send and not yet resolved.
+    var pendingDecisions: [DecisionStatus] { get }
     var dropSummary: DropSummary { get }
     func enterDemo()
 }
@@ -32,15 +34,19 @@ protocol WorkspaceModel: AnyObject, Observable {
 
 @MainActor
 protocol QuestionReviewModel: AnyObject, Observable {
-    var review: ReviewValue { get }
+    var load: ReviewLoad { get }
+    /// Display projection; nil until `loadReview()` has succeeded. The issued review stays behind it.
+    var review: ReviewValue? { get }
     var phase: SignPhase { get }
+    /// Authoritative re-read of the question (never cached push text).
+    func loadReview() async
     /// Signs and sends. Only reachable from the sign sheet after arming.
     func sign() async
-    /// After `question_changed`: authoritative re-read and a fresh immutable review.
+    /// After `question_changed`: re-read and issue a fresh immutable review.
     func reread() async
     /// After a lost response: reconcile first, never re-sign a changed answer.
     func checkWhetherReceived() async
-    /// Lock/background drops the staged review.
+    /// Terminal: lock/background/content change. A fresh model (fresh review) is required afterwards.
     func invalidate()
     func retryAfterUnlock()
 }
@@ -62,7 +68,9 @@ protocol PairingFlowModel: AnyObject, Observable {
     func primaryOpenRequest()
     func primaryApprove()
     func primaryReject()
+    /// Both clocks are model transitions: expiry clears codes and disables approval everywhere.
     func primaryTimeElapses()
+    func codeTimeElapses()
 }
 
 @MainActor
@@ -71,6 +79,7 @@ protocol DropModel: AnyObject, Observable {
     func items(_ direction: DropDirection) -> [DropItem]
     func item(id: String) -> DropItem?
     func send(_ draft: DropDraft)
+    func items(workspace: String) -> [DropItem]
     func markRead(id: String)
 }
 

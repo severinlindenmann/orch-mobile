@@ -22,13 +22,14 @@ struct SettingsScreen: View {
                     NavigationLink(value: Route.workspaceSettings(ws.id, confirmLeave: false)) {
                         HStack {
                             WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
-                            Text(ws.name)
+                            Text(verbatim: ws.displayName)
                         }
                     }
                     .accessibilityIdentifier("settings.workspace.\(ws.id)")
                 }
             }
             if model.isDemo { demoSection }
+            Section { SimulationNotice() }
             Section("If you lose a device") {
                 VStack(alignment: .leading, spacing: OS.s2) {
                     Label("Revocation is different from leaving", systemImage: "exclamationmark.shield").font(OF.section)
@@ -66,10 +67,10 @@ struct SettingsScreen: View {
     private var demoSection: some View {
         Section {
             Picker("Next pairing", selection: Binding(get: { model.pairingScenario }, set: { model.pairingScenario = $0 })) {
-                ForEach(PairingScenario.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(PairingScenario.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             Picker("Next answer ends as", selection: Binding(get: { model.signOutcome }, set: { model.signOutcome = $0 })) {
-                ForEach(SignOutcome.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(SignOutcome.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             Button("Reset Demo data") { model.resetDemoData() }.accessibilityIdentifier("demo.reset")
             Button("Leave Demo", role: .destructive) { model.exitDemo(); path = [] }
@@ -104,7 +105,7 @@ struct WorkspaceSettingsScreen: View {
             if let ws {
                 Section {
                     WorkspaceHeader(name: ws.name, color: ws.color, hostedBy: ws.hostedBy, clientHosted: ws.clientHosted)
-                    LabeledContent("Host", value: ws.host)
+                    LabeledContent("Host", value: ws.displayHost)
                     LabeledContent("Allowed here", value: ws.scopes.map(\.rawValue).sorted().joined(separator: ", "))
                 }
                 Section {
@@ -128,7 +129,7 @@ struct WorkspaceSettingsScreen: View {
                 Section {
                     Label("Removed from this iPhone", systemImage: "checkmark.circle.fill").foregroundStyle(OC.ok)
                         .accessibilityIdentifier("settings.leave.done")
-                    Text(serverText(report)).font(OF.body)
+                    Text(verbatim: serverText(report)).font(OF.body)
                         .accessibilityIdentifier("settings.leave.server")
                     Button("Done") { path = [] }.accessibilityIdentifier("settings.leave.close")
                 }
@@ -136,9 +137,9 @@ struct WorkspaceSettingsScreen: View {
                 Text("This workspace is no longer on this iPhone.")
             }
         }
-        .navigationTitle(ws?.name ?? "Workspace")
+        .navigationTitle(Text(verbatim: ws?.displayName ?? "Workspace"))
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Remove \(ws?.name ?? "workspace") from this iPhone?", isPresented: $confirm) {
+        .alert(Text(verbatim: "Remove \(ws?.displayName ?? "workspace") from this iPhone?"), isPresented: $confirm) {
             Button("Remove from this iPhone", role: .destructive) {
                 Task { report = await model.leave(workspaceID: workspaceID, simulateOffline: simulateOffline) }
             }
@@ -151,9 +152,9 @@ struct WorkspaceSettingsScreen: View {
 
     private func serverText(_ r: LeaveReport) -> String {
         switch r.server {
-        case .done: "Notifications for \(r.workspaceName) were stopped on the server."
+        case .done: "Notifications for \(SafeText.inline(r.workspaceName, limit: 40)) were stopped on the server."
         case .pendingOffline: "You are offline, so stopping notifications on the server is still pending. It will be tried again."
-        case .finishOnMac: "This iPhone can't remove itself from the server for \(r.workspaceName). Finish on your Mac."
+        case .finishOnMac: "This iPhone can't remove itself from the server for \(SafeText.inline(r.workspaceName, limit: 40)). Finish on your Mac."
         }
     }
 }

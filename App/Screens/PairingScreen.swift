@@ -9,6 +9,7 @@ struct PairingScreen: View {
     @State private var showScan = false
     @State private var showHostPanel = false
     @State private var showPrimaryPanel = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         NavigationStack {
@@ -38,6 +39,8 @@ struct PairingScreen: View {
         .interactiveDismissDisabled()
     }
 
+    private var hostName: String { SafeText.label(model.hostLabel, limit: 24, allowDigits: false).nonEmpty ?? "your Mac" }
+
     private var isAlarm: Bool { if case .alarm = model.state { true } else { false } }
 
     @ViewBuilder
@@ -49,12 +52,13 @@ struct PairingScreen: View {
                  text: "Talking to the workspace host. Nothing to do yet.", id: "pair.connecting", spinner: true)
         case .comparingHost(let sas):
             VStack(spacing: OS.s4) {
-                CodeDisplay(code: spaced(sas), title: "Compare with the code on \(model.hostLabel)", frame: .host, identifier: "pair.sas")
-                Text(verbatim: "Approve only if both codes match. Reject on \(model.hostLabel) if they don't.")
+                CodeDisplay(code: spaced(sas), title: "Compare with the code on \(hostName)", frame: .host, identifier: "pair.sas")
+                Text(verbatim: "Approve only if both codes match. Reject on \(hostName) if they don't.")
                     .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 Label("Waiting for approval", systemImage: "hourglass").font(OF.meta).foregroundStyle(OC.textMuted)
             }
-        case .waitingPrimary(let label, let deadline):
+        case .waitingPrimary(let rawLabel, let deadline):
+            let label = SafeText.label(rawLabel, limit: 24, allowDigits: false)
             VStack(spacing: OS.s4) {
                 Image(systemName: "iphone.and.arrow.forward").font(.system(size: 56)).foregroundStyle(OC.brand)
                     .accessibilityHidden(true)
@@ -64,11 +68,12 @@ struct PairingScreen: View {
                     .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
                     let left = max(0, Int(deadline.timeIntervalSince(ctx.date)))
-                    Label("Time left \(left / 60):\(String(format: "%02d", left % 60))", systemImage: "timer")
+                    Label { Text(verbatim: "Time left \(left / 60):\(String(format: "%02d", left % 60))") } icon: { Image(systemName: "timer") }
                         .font(OF.meta).accessibilityIdentifier("pair.countdown")
                 }
             }
-        case .comparingPrimary(let label, let code, let expires):
+        case .comparingPrimary(let rawLabel, let code, let expires):
+            let label = SafeText.label(rawLabel, limit: 24, allowDigits: false)
             TimelineView(.periodic(from: .now, by: 1)) { ctx in
                 if ctx.date < expires {
                     VStack(spacing: OS.s4) {
@@ -76,7 +81,7 @@ struct PairingScreen: View {
                         Text(verbatim: "Approve on \(label) only if the codes match.")
                             .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                         let left = max(0, Int(expires.timeIntervalSince(ctx.date)))
-                        Label("Code hidden in \(left / 60):\(String(format: "%02d", left % 60))", systemImage: "timer")
+                        Label { Text(verbatim: "Code hidden in \(left / 60):\(String(format: "%02d", left % 60))") } icon: { Image(systemName: "timer") }
                             .font(OF.meta)
                     }
                 } else {
@@ -94,8 +99,8 @@ struct PairingScreen: View {
                 Text(verbatim: "Added \(name)").font(OF.display).multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.ready")
                 Text("You can turn on notifications next.").font(OF.body).foregroundStyle(OC.textMuted)
-                Button { onClose() } label: { Text("Done").frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent).controlSize(.large).accessibilityIdentifier("pair.done")
+                Button { onClose() } label: { Text("Done") }
+                    .buttonStyle(.orchProminent).accessibilityIdentifier("pair.done")
             }
         case .expired:
             VStack(spacing: OS.s4) {
@@ -124,9 +129,9 @@ struct PairingScreen: View {
             Text("Add a workspace").font(OF.display)
             Text("On your Mac open orch, choose Remote, then Pair phone.").font(OF.body).foregroundStyle(OC.textMuted)
             Button { showScan = true } label: {
-                Label("Scan QR code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
+                Label("Scan QR code", systemImage: "qrcode.viewfinder")
             }
-            .buttonStyle(.borderedProminent).controlSize(.large).accessibilityIdentifier("pair.scan")
+            .buttonStyle(.orchProminent).accessibilityIdentifier("pair.scan")
             VStack(alignment: .leading, spacing: OS.s2) {
                 Text("Or paste the pairing link").font(OF.section)
                 TextField("Pairing link", text: $link, axis: .vertical)
@@ -157,25 +162,26 @@ struct PairingScreen: View {
     // MARK: Alarm (terminal; shows no codes)
 
     private func alarmView(_ alarm: PairingAlarm) -> some View {
+        // No host-supplied digits or markup on alarm screens (S6).
         let (title, steps): (String, String) = switch alarm {
         case .echoWrongKey:
             ("Stop: this link is not for this iPhone", "Reject on your Mac (host). Do not approve any code. Make a new link.")
         case .r1Attack(let primary):
-            ("Stop: someone else is trying to pair", "Reject on \(primary). Do not confirm any code there. This host may be compromised.")
+            ("Stop: someone else is trying to pair",
+             "Reject on \(SafeText.label(primary, limit: 24, allowDigits: false).nonEmpty ?? "your primary device"). Do not confirm any code there. This host may be compromised.")
         case .substitution:
             ("Stop: the answer changed while pairing", "Abandon this pairing and reject any prompt still open on your Mac and your primary device.")
         }
         return VStack(spacing: OS.s4) {
             Image(systemName: "exclamationmark.octagon.fill").font(.system(size: 64)).foregroundStyle(OC.danger)
                 .accessibilityHidden(true)
-            Text(title).font(OF.display).foregroundStyle(OC.danger).multilineTextAlignment(.center)
-            Text(steps).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
-            Text("No code is shown. Nothing was approved.").font(OF.body).foregroundStyle(OC.textMuted)
-            Button(role: .destructive) { model.cancel(); onClose() } label: {
-                Text("Close").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent).tint(OC.danger).controlSize(.large)
-            .accessibilityIdentifier("pair.alarm.close")
+            Text(verbatim: title).font(OF.display).foregroundStyle(OC.danger).multilineTextAlignment(.center)
+            Text(verbatim: steps).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+            Text("No code is shown. Nothing was approved. Nothing was certified.").font(OF.body).foregroundStyle(OC.textMuted)
+                .multilineTextAlignment(.center)
+            Button(role: .destructive) { model.cancel(); onClose() } label: { Text("Close") }
+                .buttonStyle(.orchDanger)
+                .accessibilityIdentifier("pair.alarm.close")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pair.alarm")
@@ -186,8 +192,8 @@ struct PairingScreen: View {
     private func step(icon: String, title: String, text: String, id: String, spinner: Bool = false) -> some View {
         VStack(spacing: OS.s4) {
             Image(systemName: icon).font(.system(size: 48)).foregroundStyle(OC.brand).accessibilityHidden(true)
-            Text(title).font(OF.wsName).multilineTextAlignment(.center)
-            Text(text).font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
+            Text(verbatim: title).font(OF.wsName).multilineTextAlignment(.center)
+            Text(verbatim: text).font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
             if spinner { ProgressView() }
         }
         .accessibilityElement(children: .combine)
@@ -228,15 +234,22 @@ struct PairingScreen: View {
     @ViewBuilder
     private var demoBar: some View {
         if model.isDemo {
-            VStack(spacing: OS.s2) {
+            VStack(alignment: .leading, spacing: OS.s2) {
                 Divider()
-                HStack {
-                    DemoChip()
-                    Spacer(minLength: 0)
-                    Button { showHostPanel = true } label: { Label("Demo host", systemImage: "laptopcomputer") }
-                        .accessibilityIdentifier("demo.hostPanel.show")
-                    Button { showPrimaryPanel = true } label: { Label("Demo primary", systemImage: "key.horizontal") }
-                        .accessibilityIdentifier("demo.primaryPanel.show")
+                Text("Demo: simulated Mac and primary. Nothing leaves this iPhone.")
+                    .font(OF.meta).foregroundStyle(OC.demo)
+                    .padding(.horizontal, OS.s4)
+                    .accessibilityIdentifier("demo.bar.label")
+                let host = Button { showHostPanel = true } label: { Label("Demo host", systemImage: "laptopcomputer") }
+                    .accessibilityIdentifier("demo.hostPanel.show")
+                let primary = Button { showPrimaryPanel = true } label: { Label("Demo primary", systemImage: "key.horizontal") }
+                    .accessibilityIdentifier("demo.primaryPanel.show")
+                Group {
+                    if typeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: OS.s2) { host; primary }
+                    } else {
+                        HStack { host; primary; Spacer(minLength: 0) }
+                    }
                 }
                 .buttonStyle(.bordered).tint(OC.demo).font(OF.meta)
                 .padding(.horizontal, OS.s4).padding(.bottom, OS.s2)
@@ -253,11 +266,11 @@ struct ScanPlaceholder: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: OS.s4) {
-                Image(systemName: "video.slash").font(.system(size: 56)).foregroundStyle(OC.textMuted)
-                Text("Camera unavailable").font(OF.wsName).accessibilityIdentifier("pair.scan.unavailable")
-                Text("This device has no camera for scanning, as in the Simulator. Paste the pairing link instead.")
+                Image(systemName: "qrcode").font(.system(size: 56)).foregroundStyle(OC.textMuted)
+                Text("Scanning isn't available in this build").font(OF.wsName).multilineTextAlignment(.center).accessibilityIdentifier("pair.scan.unavailable")
+                Text("Paste the pairing link instead. Scanning comes in a later build.")
                     .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
-                Button("Paste link instead") { dismiss() }.buttonStyle(.borderedProminent)
+                Button { dismiss() } label: { Text("Paste link instead") }.buttonStyle(.orchProminent)
             }
             .padding(OS.s5)
             .navigationTitle("Scan")
@@ -283,17 +296,17 @@ struct DemoHostPanel: View {
                 }
                 if case .comparingHost = model.state {
                     Section("Host screen shows") {
-                        Text(model.demoHostCode.prefix(3) + " " + model.demoHostCode.suffix(3))
+                        Text(verbatim: model.demoHostCode.prefix(3) + " " + model.demoHostCode.suffix(3))
                             .font(OF.code).kerning(6)
                             .accessibilityIdentifier("demo.hostPanel.code")
                     }
                     Section {
                         Toggle("I compared the codes", isOn: $compared).accessibilityIdentifier("demo.hostPanel.compared")
-                        Button(role: .destructive) { model.hostReject(); dismiss() } label: { Text("Reject").frame(maxWidth: .infinity) }
-                            .buttonStyle(.borderedProminent).tint(OC.danger)
+                        Button(role: .destructive) { model.hostReject(); dismiss() } label: { Text("Reject") }
+                            .buttonStyle(.orchDanger)
                             .accessibilityIdentifier("demo.hostPanel.reject")
-                        Button { model.hostApprove(); dismiss() } label: { Text("Approve").frame(maxWidth: .infinity) }
-                            .buttonStyle(.bordered).disabled(!compared)
+                        Button { model.hostApprove(); dismiss() } label: { Text("Approve") }
+                            .buttonStyle(.orchProminent).disabled(!compared)
                             .accessibilityIdentifier("demo.hostPanel.approve")
                     }
                 } else {
@@ -305,7 +318,7 @@ struct DemoHostPanel: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { dismiss() }.accessibilityIdentifier("demo.hostPanel.close") } }
         }
         .tint(OC.demo)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
 }
 
@@ -325,27 +338,32 @@ struct DemoPrimaryPanel: View {
                 case .waitingPrimary:
                     Section("A request is waiting") {
                         Button { model.primaryOpenRequest(); if case .alarm = model.state { dismiss() } } label: {
-                            Text("Open the request").frame(maxWidth: .infinity)
+                            Text("Open the request")
                         }
-                        .buttonStyle(.borderedProminent).accessibilityIdentifier("demo.primaryPanel.open")
+                        .buttonStyle(.orchProminent).accessibilityIdentifier("demo.primaryPanel.open")
                         Button("Let 10 minutes pass (primary offline)") { model.primaryTimeElapses(); dismiss() }
                             .accessibilityIdentifier("demo.primaryPanel.elapse")
                     }
                 case .comparingPrimary(_, let code, _):
                     Section("Primary shows") {
-                        Text(code).font(OF.code).kerning(6).accessibilityIdentifier("demo.primaryPanel.code")
+                        Text(verbatim: code).font(OF.code).kerning(6).accessibilityIdentifier("demo.primaryPanel.code")
                     }
                     Section {
                         Toggle("I compared the codes", isOn: $compared).accessibilityIdentifier("demo.primaryPanel.compared")
-                        Button(role: .destructive) { model.primaryReject(); dismiss() } label: { Text("Reject").frame(maxWidth: .infinity) }
-                            .buttonStyle(.borderedProminent).tint(OC.danger)
+                        Button(role: .destructive) { model.primaryReject(); dismiss() } label: { Text("Reject") }
+                            .buttonStyle(.orchDanger)
                             .accessibilityIdentifier("demo.primaryPanel.reject")
-                        Button { model.primaryApprove(); dismiss() } label: { Text("Approve").frame(maxWidth: .infinity) }
-                            .buttonStyle(.bordered).disabled(!compared)
+                        Button { model.primaryApprove(); dismiss() } label: { Text("Approve") }
+                            .buttonStyle(.orchProminent).disabled(!compared)
                             .accessibilityIdentifier("demo.primaryPanel.approve")
+                        Button("Let the code expire") { model.codeTimeElapses() }
+                            .accessibilityIdentifier("demo.primaryPanel.expire")
                     }
                 default:
-                    Section { Text("No request is waiting on the primary.").foregroundStyle(OC.textMuted) }
+                    Section {
+                        Text(isExpired ? "The request expired. Nothing can be approved." : "No request is waiting on the primary.")
+                            .foregroundStyle(OC.textMuted).accessibilityIdentifier("demo.primaryPanel.none")
+                    }
                 }
             }
             .navigationTitle("Demo primary")
@@ -353,6 +371,12 @@ struct DemoPrimaryPanel: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { dismiss() }.accessibilityIdentifier("demo.primaryPanel.close") } }
         }
         .tint(OC.demo)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
+
+    private var isExpired: Bool { if case .expired = model.state { true } else { false } }
+}
+
+extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

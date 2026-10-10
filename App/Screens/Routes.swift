@@ -42,6 +42,7 @@ enum InitialRouteParser {
         let arg = parts.count > 1 ? parts[1] : nil
         switch head {
         case "welcome": result.forceWelcome = true
+        case "empty": (services as? PreviewWorld)?.removeAllWorkspaces()
         case "needs-you": result.path = [.needsYou]
         case "workspace":
             if let id = arg {

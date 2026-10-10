@@ -31,7 +31,9 @@ final class ScreenshotTests: XCTestCase {
         ("26-drop-compose", "drop/compose", true),
         ("27-drop-item", "drop/item/d-note", true),
         ("28-settings", "settings", true),
-        ("29-workspace-settings", "settings/workspace/laptop", true)
+        ("29-workspace-settings", "settings/workspace/laptop", true),
+        ("33-question-unsafe-options", "question/q6", true),
+        ("34-empty-home", "empty", true)
     ]
 
     @MainActor
@@ -40,10 +42,35 @@ final class ScreenshotTests: XCTestCase {
             for shot in shots {
                 let app = launch(shot.route, demo: shot.demo, dark: dark)
                 Thread.sleep(forTimeInterval: 1.5)
+                assertScheme(app, dark: dark)
                 let attachment = XCTAttachment(screenshot: app.screenshot())
                 attachment.name = "\(shot.name)-\(dark ? "dark" : "light")"
                 attachment.lifetime = .keepAlways
                 add(attachment)
+                app.terminate()
+            }
+        }
+    }
+
+    @MainActor
+    func assertScheme(_ app: XCUIApplication, dark: Bool) {
+        let marker = app.el("debug.scheme")
+        XCTAssertTrue(marker.waitForExistence(timeout: 5), "scheme marker")
+        XCTAssertEqual(marker.value as? String, dark ? "dark" : "light")
+    }
+
+    @MainActor
+    func testCaptureAccessibilitySizes() {
+        let ax = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXL"]
+        let list: [(String, String?)] = [("40-ax-home", nil), ("41-ax-sign-sheet", "sign/q1"), ("42-ax-pair-compare", "pair/sas"),
+                                         ("43-ax-workspace", "workspace/laptop")]
+        for dark in [false, true] {
+            for (name, route) in list {
+                let app = launch(route, dark: dark, extra: ax)
+                Thread.sleep(forTimeInterval: 1.5)
+                assertScheme(app, dark: dark)
+                let a = XCTAttachment(screenshot: app.screenshot())
+                a.name = "\(name)-\(dark ? "dark" : "light")"; a.lifetime = .keepAlways; add(a)
                 app.terminate()
             }
         }

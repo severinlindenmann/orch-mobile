@@ -7,7 +7,7 @@ extension XCTestCase {
         var args = ["--ui-testing"]
         if demo { args.append("--demo") }
         if let route { args += ["--initial-route", route] }
-        if dark { args += ["-AppleInterfaceStyle", "Dark"] } else { args += ["-AppleInterfaceStyle", "Light"] }
+        args += ["--appearance", dark ? "dark" : "light"]
         app.launchArguments = args + extra
         app.launch()
         return app

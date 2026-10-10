@@ -21,35 +21,22 @@ struct QuestionScreen: View {
         let info = ws.info
         ScrollView {
             VStack(alignment: .leading, spacing: OS.s4) {
-                WorkspaceHeader(name: info.name, color: info.color, hostedBy: info.hostedBy, clientHosted: info.clientHosted)
-                if let q = ws.question(id: questionID) {
+                HStack {
+                    WorkspaceHeader(name: info.name, color: info.color, hostedBy: info.hostedBy, clientHosted: info.clientHosted)
                     if services.settings.isDemo { DemoChip() }
-                    Text(verbatim: "\(SafeText.inline(q.ticket)) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
+                }
+                if let q = ws.question(id: questionID) {
+                    Text(verbatim: "\(q.displayTicket) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
-                    SignedDetails(workspaceID: q.workspaceID, questionID: q.id, contentHash: q.contentHash)
                     if let r = q.resolution {
-                        Label { Text(verbatim: "Answered by \(SafeText.inline(r.byDeviceLabel)) · \(Fmt.relative(r.at)): \(q.options.first { $0.id == r.optionID }?.label ?? r.optionID)") } icon: { Image(systemName: "checkmark.circle.fill") }
-                            .font(OF.body).foregroundStyle(OC.ok)
-                            .accessibilityIdentifier("question.resolution")
+                        resolved(q, r)
                     } else {
-                        if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
-                        Text("Choose an answer").font(OF.section)
-                        ForEach(q.options) { option in
-                            Button { startSigning(option.id) } label: {
-                                Text(option.label).frame(maxWidth: .infinity).padding(.vertical, OS.s2)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.large)
-                            .disabled(isOffline(info))
-                            .accessibilityIdentifier("question.option.\(option.id)")
-                            .accessibilityHint("Opens a review before you sign")
-                        }
-                        if isOffline(info) {
-                            Text("Saved copy · answers are off until you're back").font(OF.meta).foregroundStyle(OC.textMuted)
-                        }
+                        answers(q, info)
                     }
+                    SignedDetails(workspaceID: q.workspaceID, questionID: q.id, contentHash: q.contentHash)
+                    SimulationNotice()
                 } else {
                     EmptyState(systemImage: "questionmark.circle", title: "This question is no longer available")
                 }
@@ -69,18 +56,55 @@ struct QuestionScreen: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            // Lock/background invalidates the staged review (U7).
-            if phase == .background, let item = signing {
-                item.model.invalidate()
-                signing = nil
-                notice = "Review cancelled because the app was left. Open the question again to review it."
-            }
+            // Lock/background: an unsent review is dropped for good (U7). A submission already sent
+            // or being checked is never "cancelled" (U8): the sheet keeps its state.
+            guard phase == .background, let item = signing, item.model.phase == .ready else { return }
+            item.model.invalidate()
+            signing = nil
+            notice = "Review dropped because the app was left. Choose your answer again to read the question afresh."
         }
     }
 
-    private func isOffline(_ info: WorkspaceInfo) -> Bool {
-        if case .offline = info.connection { return true }
-        return false
+    @ViewBuilder
+    private func resolved(_ q: Question, _ r: Resolution) -> some View {
+        VStack(alignment: .leading, spacing: OS.s2) {
+            Label { Text(verbatim: "Answered by \(SafeText.inline(r.byDeviceLabel, limit: 40)) · \(Fmt.relative(r.at))") }
+                icon: { Image(systemName: "checkmark.circle.fill") }
+                .font(OF.body).foregroundStyle(OC.ok)
+            if let label = q.options.first(where: { $0.id == r.optionID })?.label {
+                SafeTextView(label)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("question.resolution")
+    }
+
+    @ViewBuilder
+    private func answers(_ q: Question, _ info: WorkspaceInfo) -> some View {
+        let pending = services.home.pendingDecisions.first { $0.questionID == q.id }
+        let ambiguous = SafeText.hasAmbiguousOptions(q.options.map(\.label))
+        let block = info.answerBlock
+        if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
+        if pending != nil {
+            Button { startSigning(q.options.first?.id ?? "") } label: {
+                Label("Checking whether your answer was received", systemImage: "clock.arrow.circlepath")
+            }
+            .buttonStyle(.bordered).accessibilityIdentifier("question.pending")
+        } else {
+            Text("Choose an answer").font(OF.section)
+            ForEach(q.options) { option in
+                Button { startSigning(option.id) } label: { SafeTextView(option.label) }
+                    .buttonStyle(OrchOptionButtonStyle())
+                    .disabled(block != nil || ambiguous)
+                    .accessibilityIdentifier("question.option.\(option.id)")
+                    .accessibilityHint("Opens a review before you sign")
+            }
+            if let block { Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted) }
+            if ambiguous {
+                Label("Two answers look the same on this iPhone. Answer on your Mac.", systemImage: "exclamationmark.triangle.fill")
+                    .font(OF.meta).foregroundStyle(OC.warn).accessibilityIdentifier("question.ambiguous")
+            }
+        }
     }
 
     private func startSigning(_ optionID: String) {
@@ -91,74 +115,102 @@ struct QuestionScreen: View {
 
 // MARK: Sign sheet (U7)
 
+private struct ArmKey: Hashable { let atEnd: Bool; let revision: Int }
+
 struct SignSheet: View {
     let model: any QuestionReviewModel
     let onClose: () -> Void
     @State private var atEnd = false
     @State private var armed = false
-
-    private var review: ReviewValue { model.review }
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(spacing: 0) {
-            if review.isDemo { DemoStripe() }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: OS.s4) {
-                    WorkspaceHeader(name: review.workspaceName, color: OC.wsHues[review.hue % OC.wsHues.count],
-                                    hostedBy: review.hostedBy, clientHosted: review.hostedBy != nil)
-                    if review.isDemo { DemoChip() }
-                    Text("You are signing").font(OF.section)
-                    VStack(alignment: .leading, spacing: OS.s2) {
-                        Text(verbatim: "Question \(SafeText.inline(review.ticket))").font(OF.meta).foregroundStyle(OC.textMuted)
-                        SafeTextView(review.text)
-                            .accessibilityIdentifier("sign.text")
-                    }
-                    .padding(OS.s4)
-                    .background(OC.surface2, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
-                    VStack(alignment: .leading, spacing: OS.s1) {
-                        Text("The text ends with").font(OF.meta).foregroundStyle(OC.textMuted)
-                        Text(SafeText.attributed(tail(review.text))).accessibilityIdentifier("sign.tail")
-                    }
-                    Text(verbatim: "\(lineCount(review.text)) lines · \(review.text.count) characters · hash \(review.contentHash.prefix(4))·\(review.contentHash.dropFirst(4).prefix(4))")
-                        .font(OF.meta).foregroundStyle(OC.textMuted)
-                    VStack(alignment: .leading, spacing: OS.s1) {
-                        Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
-                        Text(review.optionLabel).font(OF.section)
-                            .accessibilityIdentifier("sign.answer")
-                    }
-                    if SafeText.hasUnsafe(review.text) {
-                        Label("This text contains characters that cannot be seen. They are marked in orange so you can see exactly what is signed.",
-                              systemImage: "exclamationmark.triangle.fill")
-                            .font(OF.meta).foregroundStyle(OC.warn)
-                            .accessibilityIdentifier("sign.unsafeNotice")
-                    }
-                    SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID, contentHash: review.contentHash)
-                    Color.clear.frame(height: 1)
-                        .onAppear { atEnd = true }
-                        .accessibilityHidden(true)
+            switch model.load {
+            case .loading:
+                ProgressView("Reading the question…").frame(maxHeight: .infinity)
+                    .accessibilityIdentifier("sign.loading")
+            case .failed(let message):
+                VStack(spacing: OS.s4) {
+                    stateView("exclamationmark.triangle", OC.warn, "Couldn't read the question", message, id: "sign.loadFailed")
+                    Button { Task { await model.loadReview() } } label: { Text("Try again") }
+                        .buttonStyle(.orchProminent).accessibilityIdentifier("sign.retryLoad")
+                    Button("Close", role: .cancel, action: onClose)
                 }
-                .padding(OS.s4)
+                .padding(OS.s4).frame(maxHeight: .infinity)
+            case .loaded:
+                if let review = model.review { content(review) }
             }
-            Divider()
-            footer.padding(OS.s4).background(OC.surface)
         }
         .background(OC.bg)
-        .id(review.revision)
         .transaction { $0.animation = nil }          // V5: security surface never animates
-        .interactiveDismissDisabled(model.phase == .sending || armed)
+        .interactiveDismissDisabled(model.phase == .sending)
         .presentationDetents([.large])
-        .task(id: "\(atEnd)-\(review.revision)") {
+        .task { await model.loadReview() }
+    }
+
+    @ViewBuilder
+    private func content(_ review: ReviewValue) -> some View {
+        if review.isDemo { DemoStripe() }
+        ScrollView {
+            VStack(alignment: .leading, spacing: OS.s4) {
+                HStack {
+                    WorkspaceHeader(name: review.workspaceName, color: OC.wsHues[review.hue % OC.wsHues.count],
+                                    hostedBy: review.hostedBy, clientHosted: review.clientHosted)
+                    if review.isDemo { DemoChip() }
+                }
+                Text("You are signing").font(OF.section)
+                VStack(alignment: .leading, spacing: OS.s2) {
+                    Text(verbatim: "Question \(SafeText.inline(review.ticket, limit: 24))").font(OF.meta).foregroundStyle(OC.textMuted)
+                    SafeTextView(review.text).accessibilityIdentifier("sign.text")
+                }
+                .padding(OS.s4)
+                .background(OC.surface2, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
+                VStack(alignment: .leading, spacing: OS.s1) {
+                    Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
+                    SafeTextView(review.optionLabel).accessibilityIdentifier("sign.answer")
+                }
+                .padding(OS.s4).orchCard()
+                if review.hasUnsafeContent {
+                    Label("Some text contains characters that cannot be seen. They are marked in orange so you can see exactly what is signed.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(OF.meta).foregroundStyle(OC.warn)
+                        .accessibilityIdentifier("sign.unsafeNotice")
+                }
+                VStack(alignment: .leading, spacing: OS.s1) {
+                    Text(verbatim: "\(Fmt.plural(lineCount(review.text), "line", "lines")) · \(review.text.count) characters · hash \(review.contentHash.prefix(4))·\(review.contentHash.dropFirst(4).prefix(4))")
+                        .font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text("The text ends with").font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text(SafeText.attributed(tail(review.text))).clipped().accessibilityIdentifier("sign.tail")
+                }
+                SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID,
+                              optionID: review.optionID, contentHash: review.contentHash)
+                if typeSize.isAccessibilitySize { footer(review) }
+            }
+            .padding(OS.s4)
+        }
+        .onScrollGeometryChange(for: Bool.self) { g in
+            g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 4
+        } action: { _, reached in
+            if reached { atEnd = true }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .id(review.revision)
+        .task(id: ArmKey(atEnd: atEnd, revision: review.revision)) {
             armed = false
             guard atEnd else { return }
             try? await Task.sleep(for: .milliseconds(800))
             if !Task.isCancelled { armed = true }
         }
+        if !typeSize.isAccessibilitySize {
+            Divider()
+            footer(review).padding(OS.s4).background(OC.surface)
+        }
     }
 
     private func tail(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let t = trimmed.suffix(40)
-        return (trimmed.count > 40 ? "…" : "") + t
+        return (trimmed.count > 40 ? "…" : "") + trimmed.suffix(40)
     }
 
     private func lineCount(_ text: String) -> Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
@@ -166,47 +218,52 @@ struct SignSheet: View {
     // MARK: Footer by phase
 
     @ViewBuilder
-    private var footer: some View {
+    private func footer(_ review: ReviewValue) -> some View {
         VStack(spacing: OS.s3) {
             switch model.phase {
             case .ready:
-                Button { Task { await model.sign() } } label: {
-                    Text("Sign and send").frame(maxWidth: .infinity).padding(.vertical, OS.s2)
+                if review.optionsAmbiguous {
+                    stateView("exclamationmark.octagon", OC.danger, "Can't be checked here",
+                              "Two answers look the same on this iPhone. Answer on your Mac.", id: "sign.refused")
+                    Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
+                } else {
+                    Button { Task { await model.sign() } } label: { Text("Sign and send") }
+                        .buttonStyle(.orchProminent)
+                        .disabled(!armed)
+                        .accessibilityIdentifier("sign.confirm")
+                        .accessibilityHint(armed ? "" : "Scroll to the end of the text to continue")
+                    if !armed {
+                        Text(atEnd ? "Hold on…" : "Scroll to the end to continue")
+                            .font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("sign.hint")
+                    }
+                    Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
                 }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(!armed)
-                .accessibilityIdentifier("sign.confirm")
-                .accessibilityHint(armed ? "" : "Scroll to the end of the text to continue")
-                if !armed {
-                    Text(atEnd ? "Hold on…" : "Scroll to the end to continue")
-                        .font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("sign.hint")
-                }
-                Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
+            case .invalidated:
+                stateView("hourglass.bottomhalf.filled", OC.warn, "Review expired",
+                          "The question must be read afresh. Close this and choose your answer again.", id: "sign.invalidated")
+                doneButton
             case .sending:
                 ProgressView("Sending…").accessibilityIdentifier("sign.sending")
             case .accepted:
-                stateView("checkmark.seal.fill", OC.ok, "Sent and accepted", "Your answer was applied.", id: "sign.accepted")
+                stateView("checkmark.seal.fill", OC.ok, "Sent and accepted (simulated)",
+                          "In this UI simulation your answer was applied.", id: "sign.accepted")
                 doneButton
             case .alreadyAnswered(let by, let at):
-                stateView("person.crop.circle.badge.exclamationmark", OC.warn, "Already answered",
-                          "\(by) answered this at \(Fmt.time(at)). Your answer was not sent.", id: "sign.alreadyAnswered")
+                stateView("person.crop.circle.badge.exclamationmark", OC.warn, "Your answer wasn't applied",
+                          "\(SafeText.inline(by, limit: 40)) answered this at \(Fmt.time(at)).", id: "sign.alreadyAnswered")
                 doneButton
             case .questionChanged:
                 stateView("arrow.triangle.2.circlepath", OC.warn, "The question changed",
                           "Read it again before you answer.", id: "sign.questionChanged")
-                Button { atEnd = false; armed = false; Task { await model.reread() } } label: {
-                    Text("Read it again").frame(maxWidth: .infinity).padding(.vertical, OS.s2)
-                }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .accessibilityIdentifier("sign.reread")
+                Button { atEnd = false; armed = false; Task { await model.reread() } } label: { Text("Read it again") }
+                    .buttonStyle(.orchProminent).accessibilityIdentifier("sign.reread")
                 Button("Cancel", role: .cancel, action: onClose)
             case .checking:
                 stateView("clock.arrow.circlepath", OC.info, "Checking whether your answer was received",
-                          "Your answer is not sent again until this is settled.", id: "sign.checking")
-                Button { Task { await model.checkWhetherReceived() } } label: {
-                    Text("Check again").frame(maxWidth: .infinity).padding(.vertical, OS.s2)
-                }
-                .buttonStyle(.bordered).accessibilityIdentifier("sign.recheck")
+                          "Your answer is not sent again until this is settled. You can close this; it keeps checking.", id: "sign.checking")
+                Button { Task { await model.checkWhetherReceived() } } label: { Text("Check again").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
+                    .buttonStyle(.bordered).accessibilityIdentifier("sign.recheck")
+                Button("Close and keep checking", action: onClose).accessibilityIdentifier("sign.closeChecking")
             case .unlockToContinue:
                 stateView("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone to sign.", id: "sign.unlock")
                 Button("Try again") { model.retryAfterUnlock() }.buttonStyle(.bordered)
@@ -219,20 +276,20 @@ struct SignSheet: View {
             Text("This unlocked iPhone signs with its device key.")
                 .font(OF.meta).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 .accessibilityIdentifier("sign.footnote")
+            SimulationNotice()
         }
     }
 
     private var doneButton: some View {
-        Button { onClose() } label: { Text("Done").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
-            .buttonStyle(.borderedProminent).controlSize(.large)
-            .accessibilityIdentifier("sign.done")
+        Button(action: onClose) { Text("Done") }
+            .buttonStyle(.orchProminent).accessibilityIdentifier("sign.done")
     }
 
     private func stateView(_ icon: String, _ color: Color, _ title: String, _ detail: String, id: String) -> some View {
         VStack(spacing: OS.s2) {
             Image(systemName: icon).font(.title).foregroundStyle(color)
-            Text(title).font(OF.section).multilineTextAlignment(.center)
-            Text(detail).font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
+            Text(verbatim: title).font(OF.section).multilineTextAlignment(.center)
+            Text(verbatim: detail).font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(id)

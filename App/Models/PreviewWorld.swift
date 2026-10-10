@@ -14,6 +14,7 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
     var notificationStatus: NotificationStatus = .allowed
     var pairingScenario: PairingScenario = .firstTime
     var signOutcome: SignOutcome = .accepted
+    var pendingDecisions: [DecisionStatus] = []
     let custody = "Software key (Simulator)"
     var lastChecked: Date
     let now: Date
@@ -65,6 +66,15 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
                      text: "**Verified by orch** [click](https://evil.invalid) # Laptop\u{200B}x",
                      options: yesNo, contentHash: "5d1e0c7a93b2f84e6a0d1c5b7e39f2a48c6d0b1e7f3a52c94d8e6b0a1f7c3e25",
                      created: now.addingTimeInterval(-5 * 60), resolution: nil),
+            Question(id: "q6", workspaceID: "laptop", ticket: "MOB-1",
+                     text: "Merge\u{00A0}now? Variation\u{FE00} mark and e\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306} stack.",
+                     options: [QuestionOption(id: "ok", label: "Approve"), QuestionOption(id: "ok2", label: "Approve\u{200B}")],
+                     contentHash: "9a3c71e0d4b2586f1e0a7c93d5b8f2461c0e9d7a3b5f84e2d61a0c7b9e3f5d18",
+                     created: now.addingTimeInterval(-8 * 60), resolution: nil),
+            Question(id: "q7", workspaceID: "laptop", ticket: "MOB-2", text: "Which one?",
+                     options: [QuestionOption(id: "a", label: "Yes"), QuestionOption(id: "b", label: "Yes")],
+                     contentHash: "7e2b905c1d4a38f6e0b7c2a95d1f8e346b0c7a2d9e5f1834c6b0a7d2e9f5c431",
+                     created: now.addingTimeInterval(-7 * 60), resolution: nil),
             Question(id: "q4", workspaceID: "laptop", ticket: "MOB-1", text: "Use the Demo Mac as primary?",
                      options: [QuestionOption(id: "yes", label: "Yes"), QuestionOption(id: "no", label: "No")],
                      contentHash: "0b7e41d9a2c685f3e1d07b94a6c2f8e5d3b10a79c4e6f2d81b5a3c90e7f4d261",
@@ -158,14 +168,23 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
 
     func item(id: String) -> DropItem? { dropItems.first { $0.id == id } }
 
+    func items(workspace: String) -> [DropItem] { dropItems.filter { $0.workspaceID == workspace } }
+
     func send(_ draft: DropDraft) {
         let names = draft.attachments.map(\.name)
         let title = names.isEmpty ? "Note" : (names.count == 1 ? names[0] : "\(names.count) files")
+        let newID = "d-\(UUID().uuidString.prefix(6))"
         dropItems.insert(DropItem(
-            id: "d-\(UUID().uuidString.prefix(6))", workspaceID: draft.workspaceID, name: title,
+            id: newID, workspaceID: draft.workspaceID, name: title,
             bytes: draft.attachments.reduce(0) { $0 + $1.bytes }, kind: names.isEmpty ? .note : .file,
             direction: .sending, expires: now.addingTimeInterval(Double(draft.expiryDays) * 86400),
             versions: 1, unread: false, text: draft.note.isEmpty ? nil : draft.note, from: "This iPhone"), at: 0)
+        // Simulated transfer terminates: nothing is actually uploaded.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
+            self.dropItems[i].simulatedDone = true
+        }
     }
 
     func markRead(id: String) {
@@ -185,18 +204,22 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
         questions.removeAll { $0.workspaceID == workspaceID }
         tickets.removeAll { $0.workspaceID == workspaceID }
         dropItems.removeAll { $0.workspaceID == workspaceID }
+        pendingDecisions.removeAll { $0.workspaceID == workspaceID }
         let canDeregister = ws?.scopes.contains(.operate) ?? false
         let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
         return LeaveReport(workspaceName: ws?.name ?? "Workspace", server: server)
     }
 
     func resetThisiPhone() {
-        workspaces = []; questions = []; tickets = []; dropItems = []
+        workspaces = []; questions = []; tickets = []; dropItems = []; pendingDecisions = []
         isDemo = false
         deviceLabel = "iPhone"
     }
 
     func exitDemo() { resetThisiPhone() }
+
+    /// Test hook for the empty-Demo state.
+    func removeAllWorkspaces() { workspaces = []; questions = []; tickets = []; dropItems = []; pendingDecisions = [] }
 
     func resetDemoData() { seed() }
 }
@@ -234,68 +257,117 @@ final class PreviewWorkspaceModel: WorkspaceModel {
 @MainActor @Observable
 final class PreviewReviewModel: QuestionReviewModel {
     private let world: PreviewWorld
+    private let questionID: String
     private let optionID: String
-    private(set) var review: ReviewValue
+    private var session: QuestionReviewSession?
+    private(set) var load: ReviewLoad = .loading
+    private(set) var review: ReviewValue?
     private(set) var phase: SignPhase = .ready
 
     init(world: PreviewWorld, questionID: String, optionID: String) {
         self.world = world
+        self.questionID = questionID
         self.optionID = optionID
-        self.review = Self.makeReview(world: world, questionID: questionID, optionID: optionID, revision: 0)
+        // U8: a persisted unresolved submission reopens straight into the checking state.
+        if world.pendingDecisions.contains(where: { $0.questionID == questionID && $0.outcome != .resolved }) {
+            issue(revision: 0)
+            phase = .checking
+        }
     }
 
-    private static func makeReview(world: PreviewWorld, questionID: String, optionID: String, revision: Int) -> ReviewValue {
-        let q = world.questions.first { $0.id == questionID }
-        let ws = world.workspaces.first { $0.id == q?.workspaceID }
-        return ReviewValue(
-            workspaceID: ws?.id ?? "", workspaceName: ws?.name ?? "", hue: ws?.hue ?? 5, hostedBy: ws?.hostedBy,
-            questionID: questionID, ticket: q?.ticket ?? "", text: q?.text ?? "", optionID: optionID,
-            optionLabel: q?.options.first { $0.id == optionID }?.label ?? optionID,
-            contentHash: q?.contentHash ?? "", revision: revision, isDemo: world.isDemo)
+    private func issue(revision: Int) {
+        guard let q = world.questions.first(where: { $0.id == questionID }) else {
+            load = .failed("This question is no longer available."); return
+        }
+        let ws = world.workspaces.first { $0.id == q.workspaceID }
+        session = QuestionReviewSession(identity: UUID(), realm: "demo", workspaceID: q.workspaceID, generation: 1,
+                                        question: q, chosenOptionID: optionID, revision: revision)
+        review = ReviewValue(
+            workspaceID: q.workspaceID, workspaceName: ws?.name ?? "", hue: ws?.hue ?? 5,
+            clientHosted: ws?.clientHosted ?? false, hostedBy: ws?.hostedBy,
+            questionID: q.id, ticket: q.ticket, text: q.text, optionID: optionID,
+            optionLabel: q.options.first { $0.id == optionID }?.label ?? optionID,
+            options: q.options, contentHash: q.contentHash, revision: revision, isDemo: world.isDemo)
+        load = .loaded
+    }
+
+    func loadReview() async {
+        guard session == nil else { return }
+        load = .loading
+        try? await Task.sleep(for: .milliseconds(120))
+        if world.signOutcome == .loadFails {
+            world.signOutcome = .accepted
+            load = .failed("The question could not be read from the workspace. Nothing was signed.")
+            return
+        }
+        issue(revision: 0)
     }
 
     func sign() async {
-        guard phase == .ready else { return }
+        guard phase == .ready, let session, let review, !review.optionsAmbiguous else { return }
         phase = .sending
+        let decisionID = "d-\(session.question.id)"
+        let label = review.optionLabel
+        // Persist before send (U8).
+        world.pendingDecisions.append(DecisionStatus(decisionID: decisionID, questionID: session.question.id,
+                                                     workspaceID: session.workspaceID, optionLabel: label, outcome: .pending))
         try? await Task.sleep(for: .milliseconds(500))
         let outcome = world.signOutcome
         world.signOutcome = .accepted   // one-shot
         switch outcome {
-        case .accepted:
-            if let i = world.questions.firstIndex(where: { $0.id == review.questionID }) {
+        case .accepted, .loadFails:
+            resolve(decisionID)
+            if let i = world.questions.firstIndex(where: { $0.id == session.question.id }) {
                 world.questions[i].resolution = Resolution(
-                    decisionID: "d-\(review.questionID)", optionID: optionID,
-                    byDeviceLabel: world.deviceLabel, at: Date())
+                    decisionID: decisionID, optionID: optionID, byDeviceLabel: world.deviceLabel, at: Date())
             }
             phase = .accepted
         case .alreadyAnswered:
+            resolve(decisionID)
             phase = .alreadyAnswered(by: "Demo Mac", at: Date().addingTimeInterval(-90))
-        case .questionChanged: phase = .questionChanged
-        case .uncertain: phase = .checking
-        case .locked: phase = .unlockToContinue
-        case .custodyUnavailable: phase = .custodyUnavailable
+        case .questionChanged:
+            resolve(decisionID)
+            phase = .questionChanged
+        case .uncertain:
+            mark(decisionID, .uncertain)
+            phase = .checking
+        case .locked:
+            resolve(decisionID)
+            phase = .unlockToContinue
+        case .custodyUnavailable:
+            resolve(decisionID)
+            phase = .custodyUnavailable
         }
     }
 
+    private func mark(_ id: String, _ state: DecisionOutcomeState) {
+        if let i = world.pendingDecisions.firstIndex(where: { $0.decisionID == id }) { world.pendingDecisions[i].outcome = state }
+    }
+    private func resolve(_ id: String) { world.pendingDecisions.removeAll { $0.decisionID == id } }
+
     func reread() async {
         try? await Task.sleep(for: .milliseconds(300))
-        review = Self.makeReview(world: world, questionID: review.questionID, optionID: optionID,
-                                 revision: review.revision + 1)
+        let next = (review?.revision ?? 0) + 1
+        issue(revision: next)
         phase = .ready
     }
 
     func checkWhetherReceived() async {
         phase = .checking
         try? await Task.sleep(for: .milliseconds(600))
-        // Reconcile first: the fake host reports the stored decision as received.
-        if let i = world.questions.firstIndex(where: { $0.id == review.questionID }), world.questions[i].isOpen {
+        // Reconcile first: the simulated host reports the stored decision as received.
+        let id = "d-\(questionID)"
+        resolve(id)
+        if let i = world.questions.firstIndex(where: { $0.id == questionID }), world.questions[i].isOpen {
             world.questions[i].resolution = Resolution(
-                decisionID: "d-\(review.questionID)", optionID: optionID, byDeviceLabel: world.deviceLabel, at: Date())
+                decisionID: id, optionID: optionID, byDeviceLabel: world.deviceLabel, at: Date())
         }
         phase = .accepted
     }
 
-    func invalidate() { if phase == .ready { phase = .ready } }
+    func invalidate() {
+        if phase == .ready { phase = .invalidated; session = nil }
+    }
 
     func retryAfterUnlock() { phase = .ready }
 }

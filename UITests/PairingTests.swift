@@ -21,6 +21,7 @@ final class PairingTests: XCTestCase {
         app.switches["demo.hostPanel.compared"].flip()
         XCTAssertTrue(approve.waitForEnabled())
         approve.tap()
+        
 
         XCTAssertTrue(app.el("pair.openPrimary").waitForExistence(timeout: 10))
         XCTAssertFalse(app.el("pair.sas").exists, "SAS is cleared on cert_pending")
@@ -75,5 +76,36 @@ final class PairingTests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Reject on your Mac (host)'")).firstMatch.exists)
         XCTAssertFalse(app.el("pair.sas").exists)
         XCTAssertFalse(app.el("pair.certCode").exists)
+    }
+
+    @MainActor
+    func testCodeExpiryClearsCodeAndDisablesApprovalEverywhere() {
+        let app = launch("pair/certCode")
+        XCTAssertTrue(app.el("pair.certCode").waitForExistence(timeout: 10))
+        app.buttons["demo.primaryPanel.show"].tap()
+        XCTAssertTrue(app.buttons["demo.primaryPanel.approve"].waitForExistence(timeout: 5))
+        app.buttons["demo.primaryPanel.expire"].tap()
+        XCTAssertTrue(app.el("demo.primaryPanel.none").waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["demo.primaryPanel.approve"].exists)
+        app.buttons["demo.primaryPanel.close"].tap()
+        XCTAssertTrue(app.el("pair.expired").waitForExistence(timeout: 5))
+        XCTAssertFalse(app.el("pair.certCode").exists)
+    }
+
+    @MainActor
+    func testCertPendingExpires() {
+        let app = launch("pair/certPending")
+        XCTAssertTrue(app.el("pair.openPrimary").waitForExistence(timeout: 10))
+        app.buttons["demo.primaryPanel.show"].tap()
+        app.buttons["demo.primaryPanel.elapse"].tap()
+        XCTAssertTrue(app.el("pair.expired").waitForExistence(timeout: 5))
+        XCTAssertFalse(app.el("pair.openPrimary").exists)
+    }
+
+    @MainActor
+    func testScannerSaysNotAvailableInThisBuild() {
+        let app = launch("pair")
+        app.buttons["pair.scan"].tap()
+        XCTAssertTrue(app.staticTexts["Scanning isn't available in this build"].waitForExistence(timeout: 5))
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import OrchUI
 
 // Display value types for the screens. Names follow docs/host-api-v0.md §1–2 so the real
 // OrchClient projections can be mapped onto them later without touching the views.
@@ -25,6 +26,8 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var notificationsOn: Bool
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
+    var displayName: String { SafeText.inline(name, limit: 40) }
+    var displayHost: String { SafeText.inline(host, limit: 40) }
     var allowsTerminal: Bool { scopes.contains(.type) }
 }
 
@@ -96,6 +99,8 @@ struct DropItem: Identifiable, Hashable, Sendable {
     /// Plain-text content for notes and URLs (URLs are text, never fetched).
     var text: String?
     var from: String
+    /// Simulated transfer finished (UI simulation only).
+    var simulatedDone = false
 }
 
 struct DropSummary: Hashable, Sendable {
@@ -107,6 +112,8 @@ struct DropAttachment: Identifiable, Hashable, Sendable {
     let id: UUID
     var name: String
     var bytes: Int
+    /// A labelled sample, not a real pick.
+    var isSample = false
 }
 
 struct DropDraft: Sendable {
@@ -124,25 +131,64 @@ enum DropLimits {
 
 // MARK: Sign sheet
 
-/// One immutable review value (U7): everything the sheet shows is what gets signed.
+/// Display projection of the session-issued review (U7). The issued review (all options, realm,
+/// workspace and generation binding, review identity) stays behind `QuestionReviewSession`.
 struct ReviewValue: Hashable, Sendable {
     let workspaceID: String
     let workspaceName: String
     let hue: Int
+    let clientHosted: Bool
     let hostedBy: String?
     let questionID: String
     let ticket: String
     let text: String
     let optionID: String
     let optionLabel: String
+    let options: [QuestionOption]
     let contentHash: String
     /// Bumped each time the question is re-read after `question_changed`.
     let revision: Int
     var isDemo = false
+
+    var isHosted: Bool { clientHosted || hostedBy != nil }
+    var optionsAmbiguous: Bool { SafeText.hasAmbiguousOptions(options.map(\.label)) }
+    var hasUnsafeContent: Bool {
+        SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label) }
+    }
+}
+
+/// Opaque session-issued review: the only thing `decide` would accept. Views never see it.
+struct QuestionReviewSession: Sendable {
+    let identity: UUID
+    let realm: String
+    let workspaceID: String
+    let generation: Int
+    let question: Question
+    let chosenOptionID: String
+    let revision: Int
+}
+
+enum ReviewLoad: Hashable, Sendable {
+    case loading
+    case loaded
+    case failed(String)
+}
+
+enum DecisionOutcomeState: String, Hashable, Sendable { case pending, uncertain, resolved }
+
+struct DecisionStatus: Identifiable, Hashable, Sendable {
+    var id: String { decisionID }
+    let decisionID: String
+    let questionID: String
+    let workspaceID: String
+    let optionLabel: String
+    var outcome: DecisionOutcomeState
 }
 
 enum SignPhase: Hashable, Sendable {
     case ready
+    /// Lock, background or content change: a fresh review is required.
+    case invalidated
     case sending
     case accepted
     case alreadyAnswered(by: String, at: Date)
@@ -154,7 +200,19 @@ enum SignPhase: Hashable, Sendable {
 
 /// What the fake host does with the next answer (Demo controls and tests).
 enum SignOutcome: String, CaseIterable, Hashable, Sendable {
-    case accepted, alreadyAnswered, questionChanged, uncertain, locked, custodyUnavailable
+    case accepted, alreadyAnswered, questionChanged, uncertain, locked, custodyUnavailable, loadFails
+
+    var title: String {
+        switch self {
+        case .accepted: "Accepted"
+        case .alreadyAnswered: "Already answered"
+        case .questionChanged: "Question changed"
+        case .uncertain: "Response lost (checking)"
+        case .locked: "iPhone locked"
+        case .custodyUnavailable: "Key unavailable"
+        case .loadFails: "Review fails to load"
+        }
+    }
 }
 
 // MARK: Pairing
@@ -185,6 +243,18 @@ enum PairingState: Hashable, Sendable {
 
 enum PairingScenario: String, CaseIterable, Hashable, Sendable {
     case firstTime, primaryOffline, r1Attack, echoWrongKey, rejectOnHost, linkUsed, existingCert
+
+    var title: String {
+        switch self {
+        case .firstTime: "First time"
+        case .primaryOffline: "Primary offline"
+        case .r1Attack: "R1 attack"
+        case .echoWrongKey: "Wrong key echoed"
+        case .rejectOnHost: "Rejected on host"
+        case .linkUsed: "Link already used"
+        case .existingCert: "Existing certificate"
+        }
+    }
 }
 
 // MARK: Settings

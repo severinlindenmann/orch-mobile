@@ -6,6 +6,7 @@ struct WorkspaceScreen: View {
     let workspaceID: String
     @State private var segment: WorkspaceSegment
     @State private var model: any WorkspaceModel
+    @State private var composing = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     init(services: any AppServices, workspaceID: String, segment: WorkspaceSegment) {
@@ -31,31 +32,32 @@ struct WorkspaceScreen: View {
             case .terminal: terminal
             }
         }
-        .navigationTitle(model.info.name)
+        .navigationTitle(model.info.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: Route.workspaceSettings(workspaceID, confirmLeave: false)) {
                     Image(systemName: "ellipsis.circle")
                 }
-                .accessibilityLabel("\(model.info.name) settings")
+                .accessibilityLabel(Text(verbatim: "\(model.info.displayName) settings"))
                 .accessibilityIdentifier("ws.settings")
             }
+        }
+        .sheet(isPresented: $composing) {
+            DropComposeSheet(model: services.drop, preset: workspaceID) {}
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: OS.s3) {
+        VStack(alignment: .leading, spacing: OS.s2) {
             WorkspaceHeader(name: model.info.name, color: model.info.color, hostedBy: model.info.hostedBy,
                             clientHosted: model.info.clientHosted)
-            HStack {
-                Label(model.info.host, systemImage: "laptopcomputer").font(OF.meta).foregroundStyle(OC.textMuted)
-                Spacer(minLength: 0)
+            HStack(spacing: OS.s3) {
+                ConnectionChip(state: model.info.connection)
+                Text(verbatim: model.info.displayHost).font(OF.meta).foregroundStyle(OC.textMuted).lineLimit(1)
             }
-            ConnectionChip(state: model.info.connection)
-            if case .offline = model.info.connection {
-                Text("Saved copy · answers are off until you're back")
-                    .font(OF.meta).foregroundStyle(OC.textMuted)
+            if let block = model.info.answerBlock, model.info.scopes.contains(.decide) {
+                Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted)
             }
             segmentControl
         }
@@ -74,7 +76,7 @@ struct WorkspaceScreen: View {
                     .padding(OS.s3).background(OC.surface2, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
             }
             .accessibilityIdentifier("ws.segment.menu")
-            .accessibilityLabel("Section: \(segment.title)")
+            .accessibilityLabel(Text(verbatim: "Section: \(segment.title)"))
         } else {
             HStack(spacing: 2) {
                 ForEach(segments, id: \.self) { s in
@@ -102,13 +104,14 @@ struct WorkspaceScreen: View {
     private var questions: some View {
         Section("Waiting") {
             if model.waiting.isEmpty {
-                Text("Nothing needs you here.").foregroundStyle(OC.textMuted)
+                Text(model.info.isLive ? "Nothing needs you here." : "Nothing was waiting when last checked.")
+                    .foregroundStyle(OC.textMuted)
             }
             ForEach(model.waiting) { q in
                 NavigationLink(value: Route.question(workspace: workspaceID, id: q.id, autoSign: false)) {
                     HStack {
                         AttentionRail().frame(height: 36)
-                        QuestionRow(question: q, color: model.info.color, workspaceName: model.info.name)
+                        QuestionRow(question: q, color: model.info.color, workspaceName: model.info.displayName)
                     }
                 }
                 .accessibilityIdentifier("question.\(q.id)")
@@ -119,8 +122,10 @@ struct WorkspaceScreen: View {
             ForEach(model.answered) { q in
                 NavigationLink(value: Route.question(workspace: workspaceID, id: q.id, autoSign: false)) {
                     VStack(alignment: .leading, spacing: OS.s1) {
-                        Text(q.firstLine).lineLimit(2)
-                        Label { Text(verbatim: "Answered by \(SafeText.inline(q.resolution?.byDeviceLabel ?? "")) · \(q.resolution.map { Fmt.relative($0.at) } ?? "")") } icon: { Image(systemName: "checkmark.circle") }.font(OF.meta).foregroundStyle(OC.ok)
+                        Text(verbatim: q.firstLine).lineLimit(2)
+                        Label { Text(verbatim: "Answered by \(SafeText.inline(q.resolution?.byDeviceLabel ?? "", limit: 40)) · \(q.resolution.map { Fmt.relative($0.at) } ?? "")") }
+                            icon: { Image(systemName: "checkmark.circle") }
+                            .font(OF.meta).foregroundStyle(OC.ok)
                     }
                     .accessibilityElement(children: .combine)
                 }
@@ -143,20 +148,25 @@ struct WorkspaceScreen: View {
         }
     }
 
-    // MARK: Files / Terminal
+    // MARK: Files (this workspace's Drop items)
 
     @ViewBuilder
     private var files: some View {
-        Section {
-            VStack(alignment: .leading, spacing: OS.s3) {
-                Label("Files travel through Drop", systemImage: "tray.and.arrow.down").font(OF.section)
-                Text(verbatim: "Files and notes for \(model.info.name) are sent and received in Drop, so they stay encrypted for this workspace.")
-                    .font(OF.body).foregroundStyle(OC.textMuted)
-                NavigationLink(value: Route.drop) { Text("Open Drop").frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("ws.files.openDrop")
+        let items = services.drop.items(workspace: workspaceID)
+        Section("Files and notes in Drop") {
+            if items.isEmpty { Text("Nothing in Drop for this workspace.").foregroundStyle(OC.textMuted) }
+            ForEach(items) { item in
+                NavigationLink(value: Route.dropItem(item.id)) { DropRow(item: item, workspaces: services.drop.workspaces) }
+                    .accessibilityIdentifier("ws.file.\(item.id)")
             }
-            .padding(.vertical, OS.s2)
+        }
+        Section {
+            Button { composing = true } label: {
+                Label { Text(verbatim: "Send to \(model.info.displayName)") } icon: { Image(systemName: "square.and.arrow.up") }
+            }
+            .accessibilityIdentifier("ws.files.send")
+            NavigationLink(value: Route.drop) { Text("Open Drop") }
+                .accessibilityIdentifier("ws.files.openDrop")
         }
     }
 
@@ -177,13 +187,13 @@ struct TicketRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: OS.s2) {
             HStack {
-                Text(ticket.key).font(OF.machine).foregroundStyle(OC.textMuted)
+                Text(verbatim: ticket.displayKey).font(OF.machine).foregroundStyle(OC.textMuted)
                 if ticket.kind == .factoryEpic {
                     StatusChip("Factory epic", systemImage: "gearshape.2", color: OC.brand)
                 }
                 Spacer(minLength: 0)
             }
-            Text(ticket.title)
+            Text(verbatim: ticket.displayTitle)
             HStack {
                 TicketStateChip(state: ticket.state)
                 if let progress, progress.total > 0 {
@@ -217,10 +227,10 @@ struct TicketScreen: View {
             if let t = model.ticket(key: key) {
                 Section {
                     VStack(alignment: .leading, spacing: OS.s3) {
-                        Text(t.key).font(OF.machine).foregroundStyle(OC.textMuted)
-                        Text(t.title).font(.title2.weight(.semibold))
+                        Text(verbatim: t.displayKey).font(OF.machine).foregroundStyle(OC.textMuted)
+                        Text(verbatim: t.displayTitle).font(.title2.weight(.semibold))
                         TicketStateChip(state: t.state)
-                        SafeTextView(t.body).font(OF.body)
+                        SafeTextView(t.body, style: .prose)
                         Text(verbatim: "Updated \(Fmt.relative(t.updated))").font(OF.meta).foregroundStyle(OC.textMuted)
                     }
                 }
@@ -229,7 +239,7 @@ struct TicketScreen: View {
                     Section("Epic progress") {
                         ProgressView(value: Double(p.done), total: Double(max(p.total, 1)))
                             .accessibilityLabel("Epic progress")
-                            .accessibilityValue("\(p.done) of \(p.total) tickets done")
+                            .accessibilityValue(Text(verbatim: "\(p.done) of \(p.total) tickets done"))
                             .accessibilityIdentifier("ticket.epicProgress")
                         Text(verbatim: "\(p.done) of \(p.total) tickets done").font(OF.meta)
                         ForEach(model.children(of: t.key)) { child in
@@ -241,7 +251,8 @@ struct TicketScreen: View {
                 } else if let epic = t.epicKey {
                     Section("Part of") {
                         NavigationLink(value: Route.ticket(workspace: workspaceID, key: epic)) {
-                            Label { Text(verbatim: "\(epic) · \(model.ticket(key: epic)?.title ?? "")") } icon: { Image(systemName: "gearshape.2") }
+                            Label { Text(verbatim: "\(SafeText.inline(epic, limit: 24)) · \(model.ticket(key: epic)?.displayTitle ?? "")") }
+                                icon: { Image(systemName: "gearshape.2") }
                         }
                     }
                 }
@@ -249,7 +260,7 @@ struct TicketScreen: View {
                 Text("This ticket is no longer available.")
             }
         }
-        .navigationTitle(key)
+        .navigationTitle(Text(verbatim: SafeText.inline(key, limit: 24)))
         .navigationBarTitleDisplayMode(.inline)
     }
 }
