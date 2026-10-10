@@ -10,6 +10,10 @@ final class ResetState: @unchecked Sendable {
     private var task: Task<Void, any Error>?
     private var done: Set<Phase> = []
     private var finished = false
+    private var vaults: [SecretVault]?
+    /// The vault list of the first reset call is kept for the environment's life: completion is tracked by position in it, so a
+    /// retry with a reordered (or different) list must not change what "done" refers to.
+    func pinVaults(_ v: [SecretVault]) -> [SecretVault] { lock.withLock { if vaults == nil { vaults = v }; return vaults! } }
 
     /// The task to await: the in-flight one, or a new one started by `start` (claimed under the lock).
     func claim(_ start: () -> Task<Void, any Error>) -> (task: Task<Void, any Error>, owner: Bool)? {
@@ -84,6 +88,7 @@ public enum DemoSetup {
     ///    is the index closed and the Demo realm directory removed.
     /// 4. Demo device keys and Demo vault items are deleted. Live items are never addressed.
     ///
+    /// The vault list of the first call is the one that counts; later calls (a retry) may pass any order and are ignored for it.
     /// Concurrent callers share one run (the second awaits the first). A failing phase throws and is not marked done; calling
     /// `reset` again retries only the unfinished phases (LocalWipe resumes from its persisted phase). A completed reset is a no-op.
     ///
@@ -104,6 +109,7 @@ public enum DemoSetup {
 
     private static func run(_ env: DemoEnvironment, custody: any DeviceKeyCustody, vaults: [SecretVault], wipeHooks: any WipeHooks) async throws {
         let state = env.resetState
+        let vaults = state.pinVaults(vaults)
         var firstError: (any Error)?
         func attempt(_ phase: ResetState.Phase, _ body: () async throws -> Void) async {
             guard !state.has(phase) else { return }

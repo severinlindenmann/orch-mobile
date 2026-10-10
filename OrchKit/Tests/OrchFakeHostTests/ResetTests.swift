@@ -160,4 +160,17 @@ func blockingWait(_ s: DispatchSemaphore) async {
         #expect(try bad.ids().map(\.realm) == [.live])              // demo item gone, live item intact
         #expect(c.status(realm: .demo) == .missing)
     }
+
+    @Test func aRetryWithAReorderedVaultListStillCleansTheFailedVault() async throws {
+        let w = try await World.make()
+        let flaky = FlakyBackend(failList: true)
+        let bad = SecretVault(group: .push, backend: flaky)
+        let good = SecretVault(group: .keys, backend: InMemoryVaultBackend())
+        try bad.put(Data([2]), for: try SecretID(realm: .demo, ws: ID16.random().hex, purpose: "wk"))
+        let (env, c) = (w.env, w.custody)
+        await #expect(throws: (any Error).self) { try await DemoSetup.reset(env, custody: c, vaults: [bad, good]) }
+        flaky.heal()
+        try await DemoSetup.reset(env, custody: c, vaults: [good, bad])
+        #expect(try bad.ids().isEmpty && good.ids().isEmpty)
+    }
 }
