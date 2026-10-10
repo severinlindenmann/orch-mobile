@@ -33,7 +33,7 @@ public actor FakeRelay: RequestSender {
     // MARK: state
 
     private struct Session { let kind: RelayAuth.Kind; let id: ID16; let expiresMs: Int64 }
-    private struct Stored { let idx: UInt64; let flags: UInt8; let envelope: Data; let receivedMs: Int64; let digest: Data }
+    private struct Stored { let idx: UInt64; let flags: UInt8; let envelope: Data; let receivedMs: Int64; let digest: Data; var arrival: UInt64 = 0 }
     private struct Box { var requests: [Stored] = []; var responses: [Stored] = [] }
     private struct BoxKey: Hashable { let ws: ID16; let device: ID16?; let offer: ID16?; let rid: ID16 }
     private struct Window {
@@ -48,6 +48,7 @@ public actor FakeRelay: RequestSender {
     private struct Workspace {
         var card: VerifiedCard?
         var cardJSON: JSONValue?
+        var abandonedEpoch: UInt32 = 0
         var list: MemberList?
         var listJSON: JSONValue?
         var grants: [MemberList.Directory.GrantKey: JSONValue] = [:]
@@ -67,6 +68,7 @@ public actor FakeRelay: RequestSender {
     private var pairPostsByAddress: [String: Window] = [:]
     private var pairPollsByAddress: [String: Window] = [:]
     public private(set) var accepted = 0
+    private var arrivals: UInt64 = 0
     /// Requests that reached `send`, for tests that prove something was refused before any request.
     public private(set) var requestsReceived = 0
     public private(set) var rateLimited = 0
@@ -129,6 +131,9 @@ public actor FakeRelay: RequestSender {
         } catch let r as Refusal { throw Self.relayError(r) }
     }
 
+    /// The fake host refreshes queued rotations against relay revocations before retrying.
+    func revokedDevices() -> Set<ID16> { revoked }
+
     public func publishRevocation(_ record: JSONValue) throws {
         try checkLive()
         guard let o = record.object?["o"]?.object, let person = o["person_id"]?.string.flatMap({ ID16(hex: $0) }),
@@ -176,10 +181,28 @@ public actor FakeRelay: RequestSender {
         }
         guard gws == ws else { throw ClientError.relay(RelayRefusal(status: 409, code: .otherWorkspace)) }
         try checkUploadTarget(dev, card: card)
-        // Epochs never skip: a grant is for the current epoch or the next one (section 7.2 check 6).
-        let current = w.list?.epoch ?? 0
-        guard UInt32(epoch) <= current &+ 1 else { throw ClientError.relay(RelayRefusal(status: 409, code: .badEpoch)) }
+        // A grant can advance by one from the current list or the last explicitly retired rotation attempt.
+        let current = max(w.list?.epoch ?? 0, w.abandonedEpoch)
+        guard UInt32(epoch) > w.abandonedEpoch, UInt32(epoch) <= current &+ 1 else { throw ClientError.relay(RelayRefusal(status: 409, code: .badEpoch)) }
         workspaces[ws]?.grants[.init(device: dev, epoch: UInt32(epoch))] = grant
+    }
+
+    /// Provisional host-api v0 retirement: authenticated, bounded, and idempotent.
+    private func abandonRotation(_ r: WireRequest, workspace: String, query: String?) -> WireReply {
+        guard let session = authenticate(r), session.kind == .workspace else { return adapterError(401, "unauthenticated") }
+        guard let ws = ID16(hex: workspace), ws == session.id else { return refuse(403, .otherWorkspace) }
+        guard query == nil, var w = workspaces[ws], let card = w.card else { return refuse(400, .malformed) }
+        let epoch: UInt32
+        do {
+            epoch = try RotationAbandon.verify(StrictJSON.parse(r.body, maxBytes: HostAPI.maxJSONBytes), workspace: ws, key: card.wsk)
+        } catch Refusal.badSignature { return refuse(403, .badSignature) }
+        catch { return refuse(400, .malformed) }
+        let current = max(w.list?.epoch ?? 0, w.abandonedEpoch)
+        guard epoch == current || (current < UInt32.max && epoch == current + 1) else { return refuse(409, .badEpoch) }
+        w.abandonedEpoch = max(w.abandonedEpoch, epoch)
+        w.grants = w.grants.filter { $0.key.epoch != epoch }
+        workspaces[ws] = w
+        return json(200, [:])
     }
 
     /// `CK` for one card sequence, sealed to one device (host-api section 3). Only for certified, unrevoked, unexpired devices of
@@ -205,7 +228,8 @@ public actor FakeRelay: RequestSender {
         do {
             let parsed = try MemberList.verify(list, wsk: card.wsk)
             let dir = MemberList.Directory(ownerKey: owner, certs: certs, revoked: revoked, grants: Set(w.grants.keys))
-            try parsed.checkRelayUpdate(cardWorkspace: ws, previous: w.list, directory: dir, nowMs: wall.nowMs)
+            // Provisional skip-epoch amendment; real relay use requires §7.2/reference/vector updates.
+            try parsed.checkRelayUpdate(cardWorkspace: ws, previous: w.list, directory: dir, nowMs: wall.nowMs, abandonedThrough: w.abandonedEpoch)
             let left = Set((w.list?.members ?? []).map(\.deviceID)).subtracting(parsed.members.map(\.deviceID))
             workspaces[ws]?.list = parsed; workspaces[ws]?.listJSON = list
             for d in left { removeDevice(d, from: ws) }
@@ -266,12 +290,12 @@ public actor FakeRelay: RequestSender {
     public func challengeCount() -> Int { challenges.count }
 
     /// The host's view of its inbox: requests waiting for it, non-consuming, until their body lifetime ends.
-    public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data)] {
+    public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data, arrival: UInt64)] {
         try checkLive()
         guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
         let now = wall.nowMs
         return boxes.filter { $0.key.ws == workspace && $0.key.device != nil && $0.key.offer == nil }
-            .flatMap { k, v in live(v, now).requests.map { (device: k.device!, rid: k.rid, envelope: $0.envelope) } }
+            .flatMap { k, v in live(v, now).requests.map { (device: k.device!, rid: k.rid, envelope: $0.envelope, arrival: $0.arrival) } }
     }
 
     /// Epoch-0 requests of a pairing offer, for the host.
@@ -387,6 +411,7 @@ public actor FakeRelay: RequestSender {
         case ("POST", 2) where s[0] == "drop" && s[1] == "list": return adapterError(501, "not_implemented")
         case (_, 5) where s[0] == "workspaces" && s[2] == "pair": return try await pairing(r, ws: s[1], offer: s[3], rid: s[4], query)
         case (_, 4) where s[0] == "workspaces" && s[2] == "bridge": return try await bridge(r, ws: s[1], rid: s[3], query)
+        case ("POST", 3) where s[0] == "workspaces" && s[2] == "rotation-abandon": return abandonRotation(r, workspace: s[1], query: query)
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "grants": return try grants(r, ws: s[1], query)
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "members": return try memberListReply(r, ws: s[1], query)
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "card": return try cardReply(r, ws: s[1], query)
@@ -573,10 +598,13 @@ public actor FakeRelay: RequestSender {
         let now = wall.nowMs
         var box = live(boxes[key] ?? Box(), now)
         let digest = parsed.parts.digest
-        let item = Stored(idx: parsed.header.seq, flags: parsed.header.flags, envelope: envelope, receivedMs: now, digest: digest)
+        arrivals += 1
+        let item = Stored(idx: parsed.header.seq, flags: parsed.header.flags, envelope: envelope, receivedMs: now, digest: digest, arrival: arrivals)
         if response {
             if !box.responses.contains(where: { $0.digest == digest }) { box.responses.append(item) }
-        } else if !box.requests.contains(where: { $0.digest == digest }) { box.requests.append(item) }
+        } else if let i = box.requests.firstIndex(where: { $0.digest == digest }) {
+            box.requests[i] = item          // an identical re-send is a new arrival: the host answers it from its record
+        } else { box.requests.append(item) }
         boxes[key] = box
     }
 

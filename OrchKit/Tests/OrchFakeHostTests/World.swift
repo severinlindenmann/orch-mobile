@@ -151,3 +151,58 @@ extension World {
         return (keys.deviceID, keys, s)
     }
 }
+
+// MARK: phone-side session
+
+final class Done: @unchecked Sendable {
+    private let lock = NSLock(); private var v = false
+    var value: Bool { lock.withLock { v } }
+    func set() { lock.withLock { v = true } }
+}
+
+struct Phone {
+    let session: WorkspaceSession
+    let container: WorkspaceContainer
+    let clock: TestClock          // the phone's own clock (may differ from the host's)
+}
+
+extension World {
+    /// A phone-side session bound to (demo, ws, generation 1) with real storage. `skewMs` makes the phone's wall clock differ.
+    func makePhone(skewMs: Int64 = 0, faultsFree: Bool = true, timeout: Duration = .seconds(30), install: Bool = true,
+                   transport: (any RelayTransport)? = nil) async throws -> Phone {
+        let index = env.index
+        try await index.addWorkspace(ws: ws.hex, generation: 1)
+        let container = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1)
+        let pclock = TestClock(wallStartMs: clock.nowMs + skewMs)
+        let cfg = WorkspaceSessionConfig(context: env.context, workspace: ws, generation: 1, identity: env.device, wsk: host.wskPublic,
+                                         container: container, vault: vault.scoped(to: .demo), transport: transport ?? env.transport, clock: pclock,
+                                         wall: pclock, entropy: SystemEntropy(), pollInterval: .milliseconds(500), responseTimeout: timeout)
+        let session = try await WorkspaceSession(cfg)
+        if install { try await session.refreshGrants() }
+        return Phone(session: session, container: container, clock: pclock)
+    }
+
+    /// Runs `body` while the host serves and both clocks tick, until it finishes.
+    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        let done = Done()
+        let task = Task { () -> Result<T, Error> in
+            defer { done.set() }
+            do { return .success(try await body()) } catch { return .failure(error) }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        for _ in 0..<steps {
+            if done.value { break }
+            // Scheduler yields are not simulated elapsed time. Wait for the client to finish its storage/crypto
+            // work and park in polling before ticking; otherwise a near-boundary replay can age out in flight.
+            while !done.value && phone.clock.sleeperCount == 0 && ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+            if done.value || ContinuousClock.now >= deadline { break }
+            _ = try await host.pump(relay: relay, transport: transport, session: hostSession)
+            clock.advance(milliseconds: 500); phone.clock.advance(milliseconds: 500)
+            await Task.yield()
+        }
+        if !done.value { task.cancel() }
+        return try await task.value.get()
+    }
+}

@@ -117,9 +117,10 @@ func blockingWait(_ s: DispatchSemaphore) async {
         }
         await blockingWait(parked.entered)                                        // the lookup passed the generation check and is inside custody
         let (env, c, v) = (w.env, w.custody, w.vault)
+        // Reset synchronously waits for the generation lock held by the parked lookup. Release it from
+        // Dispatch, independently of the cooperative pool, even if every pool thread is waiting on locks.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) { parked.release.signal() }
         let reset = Task { try await DemoSetup.reset(env, custody: c, vaults: [v]) }
-        try await Task.sleep(for: .milliseconds(100))                // the reset is now waiting for the lookup, not racing it
-        parked.release.signal()
         await blockingWait(done)
         try await reset.value
         _ = lookupResult
