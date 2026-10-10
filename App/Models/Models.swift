@@ -101,6 +101,8 @@ struct DropItem: Identifiable, Hashable, Sendable {
     var from: String
     /// Simulated transfer finished (UI simulation only).
     var simulatedDone = false
+    /// Set for a share job whose destination was removed: it is held back, never sent and never redirected on its own.
+    var quarantineJob: String? = nil
 }
 
 struct DropSummary: Hashable, Sendable {

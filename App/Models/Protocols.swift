@@ -82,6 +82,8 @@ protocol DropModel: AnyObject, Observable {
     func send(_ draft: DropDraft)
     func items(workspace: String) -> [DropItem]
     func markRead(id: String)
+    /// A quarantined share job goes to a destination the user picked (never automatic).
+    func redirectQuarantined(id: String, to workspaceID: String)
 }
 
 @MainActor

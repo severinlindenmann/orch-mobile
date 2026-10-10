@@ -40,7 +40,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     dependencies:
       - package: OrchKit
-        products: [OrchProtocol, OrchCustody, OrchStore, OrchPush, OrchClient, OrchFakeHost, OrchUI]
+        products: [OrchProtocol, OrchCustody, OrchStore, OrchCoordination, OrchShareStaging, OrchPush, OrchClient, OrchFakeHost, OrchUI]
       - target: OrchNotify
         embed: true
       - target: OrchShare
@@ -94,7 +94,7 @@ targets:
               NSExtensionActivationSupportsFileWithMaxCount: 5
     dependencies:
       - package: OrchKit
-        product: OrchUI
+        products: [OrchUI, OrchCoordination, OrchShareStaging]
   OrchTests:
     type: bundle.unit-test
     platform: iOS
@@ -106,7 +106,7 @@ targets:
     dependencies:
       - target: Orch
       - package: OrchKit
-        products: [OrchProtocol, OrchCustody, OrchPush]
+        products: [OrchProtocol, OrchCustody, OrchPush, OrchCoordination, OrchShareStaging]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.tests

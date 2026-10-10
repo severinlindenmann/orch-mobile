@@ -42,4 +42,46 @@ expect_failure "OrchStore (SQLite) in the extension closure"
 fresh_copy
 printf 'import OrchFakeHost\n' >> "$tmp/repo/NotificationService/NotificationService.swift"
 expect_failure "FakeHost in the extension"
+
+fresh_copy
+printf 'import OrchProtocol\n' >> "$tmp/repo/ShareExtension/ShareViewController.swift"
+expect_failure "share extension importing OrchProtocol (CryptoKit closure)"
+
+fresh_copy
+printf 'import CryptoKit\n' >> "$tmp/repo/OrchKit/Sources/OrchShareStaging/Manifest.swift"
+expect_failure "CryptoKit inside a module the share extension links"
+
+fresh_copy
+sed -i.bak 's/X/' "$tmp/repo/project.yml"
+expect_failure "share extension linking OrchCustody"
+fresh_copy
+printf 'import struct OrchCustody.DeviceKey\n' >> "$tmp/repo/ShareExtension/ShareViewController.swift"
+expect_failure "kind-qualified import of OrchCustody in the share extension"
+
+fresh_copy
+printf 'import struct CryptoKit.SHA256\n' >> "$tmp/repo/ShareExtension/ShareViewController.swift"
+expect_failure "kind-qualified import of CryptoKit in the share extension"
+
+fresh_copy
+printf 'import CommonCrypto\n' >> "$tmp/repo/ShareExtension/ShareViewController.swift"
+expect_failure "CommonCrypto import in the share extension"
+
+fresh_copy
+printf 'let s = URLSession.shared\n' >> "$tmp/repo/ShareExtension/ShareViewController.swift"
+expect_failure "URLSession in the share extension"
+
+fresh_copy
+printf 'func f() { _ = SecItemAdd }\n' >> "$tmp/repo/OrchKit/Sources/OrchShareStaging/Manifest.swift"
+expect_failure "SecItem in a module the share extension links"
+
+fresh_copy
+printf 'import struct CryptoKit.SHA256\n' >> "$tmp/repo/OrchKit/Sources/OrchStore/Module.swift"
+expect_failure "kind-qualified CryptoKit import in OrchStore (linked by the share extension)"
+fresh_copy
+sed -i.bak 's/products: \\[OrchUI, OrchCoordination, OrchShareStaging\\]/products: [OrchUI, OrchCoordination, OrchShareStaging, OrchStore]/' "$tmp/repo/project.yml"
+expect_failure "share extension linking OrchStore (SQLite)"
+
+fresh_copy
+printf 'import OrchStore\n' >> "$tmp/repo/OrchKit/Sources/OrchShareStaging/Manifest.swift"
+expect_failure "OrchShareStaging importing OrchStore"
 echo 'Negative tests OK'

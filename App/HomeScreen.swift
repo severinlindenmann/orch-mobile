@@ -7,6 +7,8 @@ struct HomeScreen: View {
     @State private var path: [Route]
     @State private var pairing: PairingPresentation?
     @State private var forceWelcome: Bool
+    @State private var bridge: ShareBridge?
+    @Environment(\.scenePhase) private var scenePhase
     private let initial: InitialRoute
     private let options: LaunchOptions
     @Environment(\.colorScheme) private var scheme
@@ -16,6 +18,7 @@ struct HomeScreen: View {
         let initial = InitialRouteParser.parse(options.initialRoute, services: world)
         self.options = options
         _world = State(initialValue: world)
+        _bridge = State(initialValue: ShareBridge.make(world: world, publishDemo: options.shareDemoTargets))
         _path = State(initialValue: initial.path)
         _forceWelcome = State(initialValue: initial.forceWelcome)
         _pairing = State(initialValue: initial.presentPairing
@@ -58,6 +61,20 @@ struct HomeScreen: View {
             }
         }
         .tint(OC.brand)
+        // A10: claim what the share extension staged, on launch and on every activation.
+        .task {
+            #if DEBUG
+            if options.seedShareQuarantine { bridge?.seedQuarantinedJobForUITests() }
+            #endif
+            if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() } }
+        }
+        .onChange(of: world.workspaces.map(\.id)) { _, _ in bridge?.publishTargets() }
+        #if DEBUG
+        .onReceive(NotificationCenter.default.publisher(for: .orchDebugShareRefresh)) { _ in bridge?.refresh() }
+        #endif
         .symbolRenderingMode(.hierarchical)
         .safeAreaInset(edge: .top, spacing: 0) { if world.isDemo { DemoStripe() } }
         .overlay(alignment: .topLeading) {
@@ -95,6 +112,12 @@ private struct RouteView: View {
         case .ticket(let ws, let key): TicketScreen(services: services, workspaceID: ws, key: key)
         case .drop: DropScreen(services: services, startComposing: composeDrop)
         case .dropItem(let id): DropItemScreen(services: services, itemID: id)
+        case .shareFixture:
+            #if DEBUG
+            ShareFixtureScreen(openDrop: { path.append(.drop) })
+            #else
+            EmptyView()
+            #endif
         case .settings: SettingsScreen(services: services, path: $path)
         case .workspaceSettings(let id, let leave):
             WorkspaceSettingsScreen(services: services, workspaceID: id, confirmLeave: leave, path: $path)
