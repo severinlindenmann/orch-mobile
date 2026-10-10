@@ -83,6 +83,8 @@ public struct WorkspaceSessionConfig: Sendable {
 public actor WorkspaceSession {
     private var reviews: [UUID: QuestionReview] = [:]
     private var reviewLifecycle: UInt64 = 0
+    private var preparingDecisions: Set<ID16> = []
+    private var viewsStarted = false
     private var decisionDrivers: [ID16: Task<DecisionOutcome, Error>] = [:]
     private var snapshotTask: Task<WorkspaceSnapshot, Error>?
     private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
@@ -90,6 +92,11 @@ public actor WorkspaceSession {
     private var hintRefresh: Task<Void, Never>?
     private var foreground = true
     private var lastRevision: Int64?
+    private var cachedSnapshot: WorkspaceSnapshot?
+    private var connectionState: ConnectionState = .offline
+    private var hintIdentity: UUID?
+    private var recovery: Task<Void, Never>?
+    private var recoveryIdentity: UUID?
     public private(set) var verifiedReceiptMs: Int64?
     let cfg: WorkspaceSessionConfig
     private var keys: [UInt32: SymmetricKey] = [:]
@@ -106,7 +113,7 @@ public actor WorkspaceSession {
     private var ridLogical: [ID16: ID16] = [:]
     /// Monotonic age of requests created or loaded by this process; the persisted wall time is the cross-restart fallback.
     private var monotonicAge: [ID16: () -> Duration] = [:]
-    /// Tests only: called inside the replacement transaction, between the insert of the new attempt and the delete of the old.
+    /// Tests only: injects failures inside atomic decision preparation and attempt replacement.
     package var crashHook: (@Sendable (String) throws -> Void)?
     package func setCrashHook(_ h: (@Sendable (String) throws -> Void)?) { crashHook = h }
     static let maxResponseBytes = 8 << 20
@@ -295,7 +302,8 @@ public actor WorkspaceSession {
     /// sent until this returns, and a crash after it leaves a record that can be re-sent unchanged. With `replacing`, the
     /// refused attempt is deleted in the SAME transaction (and only if it is still there): the logical request is never
     /// without a durable attempt, and two drivers cannot both replace one row.
-    private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false) async throws -> Row {
+    private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false, decision: (QuestionReview, String)? = nil) async throws -> Row {
+        let lifecycle = reviewLifecycle
         try Task.checkCancellation()
         try await ensureCurrent()
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
@@ -307,12 +315,23 @@ public actor WorkspaceSession {
         let (ws, dev, identity, entropy, hook) = (cfg.workspace, cfg.deviceID, cfg.identity, cfg.entropy, crashHook)
         let rid = entropy.id16(), salt = entropy.bytes(16)
         let db = try await cfg.container.database()
+        if decision != nil { guard foreground, lifecycle == reviewLifecycle else { throw ViewError.offline } }
         let row = try await db.transaction { tx in
+            var plaintext = plaintext
+            if let (review, option) = decision {
+                let op = try Decisions.makeOp(workspace: ws, questionID: review.question.questionID,
+                    contentHash: review.question.contentHash, decisionID: logical,
+                    answer: ["option_id": .string(option)], signer: identity.sig)
+                plaintext = try Bridge.frame(meta: op, data: Data())
+                try tx.execute("INSERT INTO decisions(id,question,option_id,review,operation,dispatched) VALUES(?,?,?,?,?,0)",
+                    [.text(logical.hex), .text(review.question.questionID.hex), .text(option),
+                     .blob(try canonicalJSON(review.question.wire)), .blob(try canonicalJSON(op))])
+                try hook?("decision.inserted")
+            }
             if let old, try tx.query("SELECT 1 AS x FROM bridge_requests WHERE rid=? AND (state='pending' OR ?=1)", [.text(old.hex), .int(reconciled ? 1 : 0)]).isEmpty {
                 throw SessionError.unknownRequest
             }
             try tx.execute("DELETE FROM bridge_charges WHERE created_ms <= ?", [.int(now - Self.hostWindowMs)])
-            try tx.execute("INSERT INTO bridge_charges(rid,created_ms) VALUES(?,?)", [.text(rid.hex), .int(now)])
             let stored = try tx.query("SELECT value FROM meta WHERE key='next_seq'").first?.int("value") ?? 1
             let seq = max(UInt64(stored), minSeq, 1)
             guard seq <= UInt64(maxSafeInt) else { throw SessionError.tooLarge }
@@ -331,6 +350,7 @@ public actor WorkspaceSession {
             return Row(rid: rid, logical: logical, seq: seq, epoch: epoch, envelope: env, plaintext: plaintext, stream: false,
                        offsetAdopted: false, sentMs: now, createdMs: now, uncertain: false)
         }
+        if let old { monotonicAge[old] = nil }
         ridLogical[rid] = logical
         monotonicAge[rid] = Self.marker(cfg.clock)
         return row
@@ -463,7 +483,7 @@ public actor WorkspaceSession {
             switch try await collect(row) {
             case .response(let r):
                 try await ensureCurrent()
-                try await deleteRow(row.rid)
+                try await retireCompletedAttempt(row)
                 return r
             case .timeout:
                 throw SessionError.noResponse(rid: row.rid)
@@ -483,7 +503,7 @@ public actor WorkspaceSession {
                 case .staleSequence(let high):
                     row = try await prepare(logical: row.logical, plaintext: row.plaintext, minSeq: high + 1, replacing: row.rid)
                 default:
-                    try await deleteRow(row.rid)
+                    try await retireCompletedAttempt(row)
                     throw ClientError.host(refusal)
                 }
             }
@@ -491,9 +511,35 @@ public actor WorkspaceSession {
         throw SessionError.epochUnavailable(wanted: 0)
     }
 
+    /// Decision attempts stay durable until their validated outcome commits in finishDecision.
+    private func retireCompletedAttempt(_ row: Row) async throws {
+        let deleted = try await cfg.container.database().execute(
+            "DELETE FROM bridge_requests WHERE rid=? AND NOT EXISTS (SELECT 1 FROM decisions WHERE id=?)",
+            [.text(row.rid.hex), .text(row.logical.hex)])
+        if deleted > 0 { monotonicAge[row.rid] = nil }
+    }
+
     private func post(_ row: Row) async throws {
         let route = BridgeRoute(workspaceID: cfg.workspace, requestID: row.rid)
-        let reply = try await withRelay { s in try await cfg.transport.bridgePost(row.envelope, route: route, session: s) }
+        let reply = try await withRelay { s in
+            let db = try await cfg.container.database()
+            let decision = try await db.query("SELECT dispatched FROM decisions WHERE id=?", [.text(row.logical.hex)]).first
+            if decision != nil { guard foreground else { throw ViewError.offline } }
+            // Charge resends too. Mark the dispatch boundary durably before handing bytes to transport.
+            // A crash at this boundary is conservatively an attempted send, never a detached signature.
+            try await db.transaction { tx in
+                try tx.execute("INSERT INTO bridge_charges(rid,created_ms) VALUES(?,?)", [.text(UUID().uuidString), .int(cfg.wall.nowMs)])
+                if decision != nil { try tx.execute("UPDATE decisions SET dispatched=1 WHERE id=?", [.text(row.logical.hex)]) }
+            }
+            try await ensureCurrent()
+            if Task.isCancelled || (decision != nil && !foreground) {
+                if decision?.int("dispatched") == 0 {
+                    try await db.execute("UPDATE decisions SET dispatched=0 WHERE id=?", [.text(row.logical.hex)])
+                }
+                throw CancellationError()
+            }
+            return try await cfg.transport.bridgePost(row.envelope, route: route, session: s)
+        }
         _ = try HostAPI.expect(reply, status: 202)
     }
 
@@ -588,6 +634,8 @@ extension WorkspaceSession {
             let snapshot = try WorkspaceSnapshot(v, workspace: self.workspace)
             try await self.ensureCurrent()
             self.verifiedReceiptMs = self.cfg.wall.nowMs
+            self.cachedSnapshot = snapshot
+            self.connectionState = .online
             return snapshot
         }
         snapshotTask = task
@@ -608,17 +656,34 @@ extension WorkspaceSession {
         try await ensureCurrent()
         guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
         reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
-        guard q.state == "open" else { throw ViewError.closed }
+        if reviews.count >= 128 { reviews.removeAll() }
         let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID())
         reviews[review.token] = review
         return review
     }
+    package func startViews() {
+        guard !viewsStarted else { return }
+        viewsStarted = true
+        recoverDecisions()
+        startPoller()
+    }
+
     /// Call on lock/background, even if there are no stream subscribers.
     public func setForeground(_ value: Bool) {
         foreground = value
-        if !value { reviewLifecycle &+= 1; reviews.removeAll(); poller?.cancel(); poller = nil }
-        else { startPoller() }
-        if !value { hintRefresh?.cancel(); hintRefresh = nil }
+        if value {
+            startPoller()
+            recoverDecisions()
+        } else {
+            reviewLifecycle &+= 1
+            reviews.removeAll()
+            poller?.cancel(); poller = nil
+            snapshotTask?.cancel()
+            cancelAll()
+            hintRefresh?.cancel(); hintRefresh = nil; hintIdentity = nil
+            recovery?.cancel(); recovery = nil; recoveryIdentity = nil
+            for t in decisionDrivers.values { t.cancel() }
+        }
     }
     public func invalidateReviews() { reviewLifecycle &+= 1; reviews.removeAll(); emit(.invalidated) }
 
@@ -629,7 +694,9 @@ extension WorkspaceSession {
         guard review.question.options.contains(where: { $0.id.utf8Equal(optionID) }) else { throw ViewError.invalidOption }
         // Offline work remains unsigned. Reconfirm reachability/open state before entering custody;
         // the host still performs CAS because it can change again after this read.
-        let current = try await readQuestion(review.question.questionID)
+        let current: Question
+        do { current = try await readQuestion(review.question.questionID) }
+        catch { try await ensureCurrent(); throw ViewError.offline }
         try await ensureCurrent()
         guard foreground, reviews[review.token] == review else { throw ViewError.invalidReview }
         if let r = current.resolution {
@@ -642,34 +709,46 @@ extension WorkspaceSession {
         // Consume before any suspension: double-tapping can never mint a second signature.
         reviews[review.token] = nil
         let id = cfg.entropy.id16()
-        let op = try Decisions.makeOp(workspace: workspace, questionID: review.question.questionID,
-                                      contentHash: review.question.contentHash, decisionID: id,
-                                      answer: ["option_id": .string(optionID)], signer: cfg.identity.sig)
-        let operation = try canonicalJSON(op), reviewed = try canonicalJSON(review.question.wire)
-        try await cfg.container.database().execute("INSERT INTO decisions(id,question,option_id,review,operation) VALUES(?,?,?,?,?)",
-            [.text(id.hex), .text(review.question.questionID.hex), .text(optionID), .blob(reviewed), .blob(operation)])
+        preparingDecisions.insert(id)
+        defer { preparingDecisions.remove(id) }
+        let first: Row
+        do { first = try await prepare(logical: id, plaintext: Data(), decision: (review, optionID)) }
+        catch { try await ensureCurrent(); throw ViewError.offline }
+        return try await driveDecision(id, first: first)
+    }
+    public func pendingDecisions() async throws -> [DecisionStatus] {
+        try await ensureCurrent()
+        return try await cfg.container.database().query("SELECT * FROM decisions WHERE state <> 'resolved' ORDER BY rowid").compactMap { r in
+            guard let id = r.text("id").flatMap(ID16.init(hex:)), let q = r.text("question").flatMap(ID16.init(hex:)), let o = r.text("option_id") else { return nil }
+            return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: r.text("state") == "uncertain" ? .uncertain : .pending)
+        }
+    }
+    public func reconcileDecision(_ id: ID16) async throws -> DecisionOutcome {
+        guard foreground, !preparingDecisions.contains(id) || decisionDrivers[id] != nil else { throw ViewError.offline }
         return try await driveDecision(id)
     }
-    public func pendingDecisions() async -> [DecisionStatus] {
-        do {
-            try await ensureCurrent()
-            return try await cfg.container.database().query("SELECT * FROM decisions WHERE state <> 'resolved' ORDER BY rowid").compactMap { r in
-                guard let id = r.text("id").flatMap(ID16.init(hex:)), let q = r.text("question").flatMap(ID16.init(hex:)), let o = r.text("option_id") else { return nil }
-                return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: r.text("state") == "uncertain" ? .uncertain : .pending)
-            }
-        } catch { emit(.connection(.offline)); return [] }
+    private func recoverDecisions() {
+        guard foreground, recovery == nil else { return }
+        let identity = UUID(); recoveryIdentity = identity
+        recovery = Task {
+            defer { if self.recoveryIdentity == identity { self.recovery = nil; self.recoveryIdentity = nil } }
+            do {
+                for row in try await self.pendingDecisions() {
+                    guard self.foreground, !Task.isCancelled else { return }
+                    _ = try? await self.reconcileDecision(row.decisionID)
+                }
+            } catch { self.emit(.connection(.offline)) }
+        }
     }
-    /// Explicit retry/reconciliation of a durable submission; never creates a detached signature.
-    public func reconcileDecision(_ id: ID16) async throws -> DecisionOutcome { try await driveDecision(id) }
 
-    private func driveDecision(_ id: ID16) async throws -> DecisionOutcome {
+    private func driveDecision(_ id: ID16, first: Row? = nil) async throws -> DecisionOutcome {
         if let t = decisionDrivers[id] { return try await t.value }
-        let t = Task { try await self.performDecision(id) }
+        let t = Task { try await self.performDecision(id, first: first) }
         decisionDrivers[id] = t
         defer { decisionDrivers[id] = nil }
         return try await t.value
     }
-    private func performDecision(_ id: ID16) async throws -> DecisionOutcome {
+    private func performDecision(_ id: ID16, first: Row?) async throws -> DecisionOutcome {
         try await ensureCurrent()
         guard let record = try await cfg.container.database().query("SELECT * FROM decisions WHERE id=?", [.text(id.hex)]).first,
               let bytes = record.blob("operation"), let qid = record.text("question").flatMap(ID16.init(hex:)) else { throw SessionError.unknownRequest }
@@ -677,24 +756,51 @@ extension WorkspaceSession {
         if let outcome = record.blob("outcome") { return try decodeOutcome(StrictJSON.parse(outcome)) }
         let attempts = try await cfg.container.database().query("SELECT * FROM bridge_requests WHERE logical=? ORDER BY seq DESC", [.text(id.hex)])
         let old = attempts.first.flatMap(row(from:))
+        guard foreground else { throw ViewError.offline }
+        guard old != nil, first != nil || record.int("dispatched") == 1 else {
+            try await cfg.container.database().transaction { tx in
+                try tx.execute("DELETE FROM decisions WHERE id=?", [.text(id.hex)])
+                try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
+            }
+            throw ViewError.offline
+        }
+        let result: DecisionOutcome
+        do {
+            result = try await decisionNetwork(id, qid: qid, op: op, old: old, first: first)
+        } catch {
+            try await ensureCurrent()
+            let db = try await cfg.container.database()
+            if try await db.query("SELECT dispatched FROM decisions WHERE id=?", [.text(id.hex)]).first?.int("dispatched") == 0 {
+                try await db.transaction { tx in
+                    try tx.execute("DELETE FROM decisions WHERE id=?", [.text(id.hex)])
+                    try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
+                }
+                throw ViewError.offline
+            }
+            try await db.execute("UPDATE decisions SET state='uncertain' WHERE id=?", [.text(id.hex)])
+            return .uncertain
+        }
+        return try await finishDecision(id, result)
+    }
+    private func decisionNetwork(_ id: ID16, qid: ID16, op: JSONValue, old: Row?, first: Row?) async throws -> DecisionOutcome {
         var response: BridgeResponse?
         do {
-            if let old, !old.uncertain {
+            if let first { response = try await runDriver(first, isResend: false) }
+            if response == nil, let old, !old.uncertain {
                 do { response = try await resend(rid: old.rid) }
                 catch SessionError.uncertain { /* authoritative re-read below */ }
             }
             if response == nil {
-                // A missing attempt after restart may have completed before the local outcome was saved.
-                // Even the first send reads current state before making an envelope; the detached bytes never change.
+                // Only previously dispatched decisions can reach authoritative reconciliation.
                 emit(.connection(.reconciling))
                 let q = try await readQuestion(qid)
                 if let r = q.resolution {
                     let result: DecisionOutcome = r.decisionID == id && r.answer == op.object?["answer"]
                         ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
-                    return try await finishDecision(id, result)
+                    return result
                 }
                 guard q.contentHash == op.object?["content_hash"]?.string.flatMap({ B64U.decode($0) }) else {
-                    return try await finishDecision(id, .questionChanged(hash: q.contentHash))
+                    return .questionChanged(hash: q.contentHash)
                 }
                 // Only this authoritative open-state reconciliation can replace an uncertain row.
                 // The old row and its state survive until the replacement commits atomically.
@@ -705,24 +811,26 @@ extension WorkspaceSession {
             guard m["host_api"] == 0, m.idField("decision_id") == id else { throw ViewError.malformed }
             let closed = try Question(m["question"]!)
             guard closed.questionID == qid, let r = closed.resolution, r.decisionID == id, r.answer == op.object?["answer"] else { throw ViewError.malformed }
-            return try await finishDecision(id, .accepted)
-        } catch ClientError.host(.alreadyAnswered(let label, let at)) {
-            return try await finishDecision(id, .alreadyAnswered(label: label, at: at))
+            return .accepted
+        } catch ClientError.host(.alreadyAnswered) {
+            let q = try await readQuestion(qid)
+            guard let r = q.resolution else { throw ViewError.malformed }
+            return r.decisionID == id && r.answer == op.object?["answer"]
+                ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
         } catch ClientError.host(.questionChanged(let hash)) {
-            return try await finishDecision(id, .questionChanged(hash: hash))
-        } catch {
-            try await ensureCurrent()
-            try await cfg.container.database().execute("UPDATE decisions SET state='uncertain' WHERE id=?", [.text(id.hex)])
-            if error is ViewError || error is ClientError || error is CancellationError { throw error }
-            return .uncertain
+            return .questionChanged(hash: hash)
         }
     }
     private func finishDecision(_ id: ID16, _ result: DecisionOutcome) async throws -> DecisionOutcome {
         try await ensureCurrent()
+        let attempts = try await cfg.container.database().query("SELECT rid FROM bridge_requests WHERE logical=?", [.text(id.hex)])
         let encoded = try canonicalJSON(encodeOutcome(result))
         try await cfg.container.database().transaction { tx in
             try tx.execute("UPDATE decisions SET state='resolved',outcome=? WHERE id=?", [.blob(encoded), .text(id.hex)])
             try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
+        }
+        for attempt in attempts {
+            if let rid = attempt.text("rid").flatMap(ID16.init(hex:)) { monotonicAge[rid] = nil }
         }
         if case .questionChanged = result { invalidateReviews() }
         emit(.invalidated)
@@ -730,18 +838,40 @@ extension WorkspaceSession {
     }
     package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
         try draft.validate()
-        let m = try fields(viewJSON(await exchange(meta: draft.meta), status: 201), ["host_api", "creation_id", "ticket"])
+        try await ensureCurrent()
+        guard foreground else { throw ViewError.offline }
+        let plaintext = try Bridge.frame(meta: draft.meta, data: Data())
+        let db = try await cfg.container.database()
+        let old = try await db.query("SELECT * FROM bridge_requests WHERE logical=? ORDER BY seq DESC", [.text(draft.creationID.hex)]).first.flatMap(row(from:))
+        if let old, old.plaintext != plaintext { throw ViewError.invalidDraft }
+        let response: BridgeResponse
+        if let old {
+            do { response = try await resend(rid: old.rid) }
+            catch SessionError.uncertain {
+                // new_ticket is idempotent by (device, creationID); preserve exact draft bytes.
+                let next = try await prepare(logical: draft.creationID, plaintext: plaintext, replacing: old.rid, reconciled: true)
+                response = try await runDriver(next, isResend: false)
+            }
+        } else {
+            let first = try await prepare(logical: draft.creationID, plaintext: plaintext)
+            response = try await runDriver(first, isResend: false)
+        }
+        let m = try fields(viewJSON(response, status: 201), ["host_api", "creation_id", "ticket"])
         guard m["host_api"] == 0, m.idField("creation_id") == draft.creationID else { throw ViewError.malformed }
         let ticket = try Ticket(m["ticket"]!)
+        guard ticket.title.utf8Equal(draft.title), ticket.body.utf8Equal(draft.body),
+              ticket.epicKey.map({ Data($0.utf8) }) == draft.epicKey.map({ Data($0.utf8) }) else { throw ViewError.malformed }
         emit(.invalidated)
         return ticket
     }
     private func emit(_ event: WorkspaceEvent) {
+        if case .connection(let state) = event { connectionState = state }
         for c in subscribers.values { c.yield(event) }
         if case .invalidated = event, foreground, !subscribers.isEmpty, hintRefresh == nil {
+            let identity = UUID(); hintIdentity = identity
             hintRefresh = Task {
                 await self.refreshViews()
-                self.hintRefresh = nil
+                if self.hintIdentity == identity { self.hintRefresh = nil; self.hintIdentity = nil }
             }
         }
     }
@@ -749,6 +879,9 @@ extension WorkspaceSession {
         let id = UUID()
         let (stream, continuation) = AsyncStream<WorkspaceEvent>.makeStream(bufferingPolicy: .bufferingNewest(8))
         subscribers[id] = continuation
+        if let cachedSnapshot { continuation.yield(.snapshot(cachedSnapshot)) }
+        continuation.yield(.connection(connectionState))
+        startViews()
         continuation.onTermination = { @Sendable _ in Task { await self.removeSubscriber(id) } }
         startPoller()
         return stream
@@ -771,6 +904,8 @@ extension WorkspaceSession {
         } catch { if foreground && !Task.isCancelled { emit(.connection(.offline)) } }
     }
     private func readBudgetAvailable() async throws -> Bool {
+        // Advisory read budget: admitted reads, mutation preflight/reconciliation and protocol retries can
+        // overshoot this check. The 64-slot margin reserves room for mutations; it is not a hard rate limiter.
         let charged = try await cfg.container.database().query("SELECT COUNT(*) AS n FROM bridge_charges WHERE created_ms > ?", [.int(cfg.wall.nowMs - Self.hostWindowMs)]).first?.int("n") ?? 0
         return charged < 960
     }
@@ -788,7 +923,7 @@ extension WorkspaceSession {
                     emit(.snapshot(s)); emit(.connection(.online))
                 } catch ClientError.adapter(.rateLimited(let retryAfter)) {
                     delay = max(min(delay * 2, 60), Int64(retryAfter ?? 0)); emit(.connection(.offline))
-                } catch { delay = min(delay * 2, 60); emit(.connection(.offline)) }
+                } catch { if Task.isCancelled { return }; delay = min(delay * 2, 60); emit(.connection(.offline)) }
             } else { delay = 60 }
             do { try await cfg.clock.sleep(for: .seconds(delay)) } catch { return }
         }

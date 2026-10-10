@@ -74,6 +74,9 @@ extension FakeHost {
             guard let i = viewState!.questions.firstIndex(where: { $0.object?["question_id"] == m["question_id"] }),
                   var q = viewState!.questions[i].object else { return missing() }
             if let resolution = q["resolution"]?.object {
+                if resolution["decision_id"] == m["decision_id"], resolution["answer"] == m["answer"] {
+                    return reply(["host_api": 0, "decision_id": m["decision_id"]!, "question": .object(q)])
+                }
                 return .refuse(.alreadyAnswered(byDeviceLabel: resolution["by_device_label"]!.string!, atMs: resolution["at_ms"]!.int!))
             }
             guard q["content_hash"] == m["content_hash"] else { return .refuse(.questionChanged(contentHash: B64U.decode(q["content_hash"]!.string!)!)) }
