@@ -305,7 +305,9 @@ extension FakeHost {
         guard let op = a.meta.object?["op"]?.string, let need = requiredScope(op, meta: a.meta) else { return .refuse(.malformed) }
         if let need, !a.scopes.contains(need) { return .refuse(.forbiddenScope) }
         if op == "revocation" { return await applyRevocation(a) }
-        return await handler(HostRequest(device: a.header.device, scopes: a.scopes, meta: a.meta, data: a.data, epoch: a.header.epoch))
+        let request = HostRequest(device: a.header.device, scopes: a.scopes, meta: a.meta, data: a.data, epoch: a.header.epoch)
+        if let handler { return await handler(request) }
+        return handleView(request)
     }
 
     /// Protocol 6.2/8.7: the revocation takes effect at once; a removed member means a rotation (grants, then the list, then the

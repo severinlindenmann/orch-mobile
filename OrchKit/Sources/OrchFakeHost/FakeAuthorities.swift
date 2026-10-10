@@ -114,7 +114,8 @@ public actor FakeHost {
     var listSeq: Int64 = 0
     public internal(set) var epoch: UInt32 = 0
     var core: HostBridgeCore
-    var handler: HostHandler = defaultHostHandler
+    var handler: HostHandler?
+    var viewState: HostViewState?
     var lastArrival: UInt64 = 0
     /// Adversarial tests: sign responses with another key (a member device, not the host).
     package var responseSigner: SoftwareSigner?

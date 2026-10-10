@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import OrchClient
 import OrchCustody
-import OrchFakeHost
+@testable import OrchFakeHost
 import OrchProtocol
 import OrchStore
 import OrchTestVectors
@@ -183,13 +183,13 @@ extension World {
     }
 
     /// Runs `body` while the host serves and both clocks tick, until it finishes.
-    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, timeout: Duration = .seconds(10), _ body: @escaping @Sendable () async throws -> T) async throws -> T {
         let done = Done()
         let task = Task { () -> Result<T, Error> in
             defer { done.set() }
             do { return .success(try await body()) } catch { return .failure(error) }
         }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        let deadline = ContinuousClock.now.advanced(by: timeout)
         for _ in 0..<steps {
             if done.value { break }
             // Scheduler yields are not simulated elapsed time. Wait for the client to finish its storage/crypto
@@ -198,7 +198,7 @@ extension World {
                 await Task.yield()
             }
             if done.value || ContinuousClock.now >= deadline { break }
-            _ = try await host.pump(relay: relay, transport: transport, session: hostSession)
+            _ = try await host.pump(relay: relay, transport: transport, session: try await host.currentSession(transport: transport))
             clock.advance(milliseconds: 500); phone.clock.advance(milliseconds: 500)
             await Task.yield()
         }

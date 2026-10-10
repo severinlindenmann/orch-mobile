@@ -33,6 +33,10 @@ public actor WorkspaceContainer {
             """,
             "CREATE INDEX bridge_requests_logical ON bridge_requests(logical)",
         ]),
+        Migration(version: 3, statements: [
+            "CREATE TABLE bridge_charges (rid TEXT PRIMARY KEY, created_ms INTEGER NOT NULL)",
+            "CREATE TABLE decisions (id TEXT PRIMARY KEY, question TEXT NOT NULL, option_id TEXT NOT NULL, review BLOB NOT NULL, operation BLOB NOT NULL, state TEXT NOT NULL DEFAULT 'pending', outcome BLOB)",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {

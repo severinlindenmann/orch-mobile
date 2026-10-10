@@ -169,3 +169,35 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
 - Fix round (security review): files enter staging only as the item provider framework's temporary copy, or, for a provider that offers nothing but `public.file-url`, as a strict file URL that is refused under the share group, any App Group container or the extension home. Text and URL values never become files. Job ids are lowercase UUIDs checked on every read and against the directory name; manifests are validated before any path is built. Demo workspaces are not offered to the extension (a DEBUG flag does it for UI tests). A large text value still loads into memory before the 25 MiB check, because `NSItemProvider` has no capped loader; the extension's memory limit bounds it.
 - Wipe in the share group is resumable: the tombstone is the persisted cleanup record and `purgeTombstoned` deletes staged, claimed and quarantined jobs it covers (by generation), retried on every publish and refresh. A workspace stays tracked until its tombstone is durable.
 - Redirect of a quarantined job is copy-then-delete under the destination's tombstone lock. The "More" fallback in the share-sheet UI test is written but was not exercised: on this runtime orch is offered directly.
+
+## Slice 3 additions
+
+- The host-view adapter remains provisional host API 0. Question hashes and detached
+  decisions use the unchanged protocol §13 bytes; identity names/hosted markers are
+  absent from snapshot types. Unknown projection fields fail the entire read.
+- Durable decision rows retain the authoritative question projection and exact signed
+  operation separately from bridge attempts. A crash between those writes is recovered
+  by reading the question before making any new envelope. Resolution requires both
+  decision ID and answer; open-state reconciliation may reseal the existing operation,
+  never make a new detached signature. The existing conservative 300-second byte-replay
+  window remains (900-second retention less the Slice 2 clock-skew safety margin).
+- ReviewArming is a value-only model contract: full scroll completion and 800 ms of
+  monotonic arming after selection gate UI confirmation. Selection changes and lifecycle
+  invalidation reset it. WorkspaceSession validates the opaque session-issued review;
+  the App will supply scroll/lifecycle signals in the next slice (see ui-wiring.md).
+- Polling uses the imported reference limits (1024 records/device, 16384 global),
+  reserves 64 per-device records for mutations, and accounts for all local bridge
+  attempts in a persisted 900-second charge window, including completed mutations.
+  Other devices' global consumption is unknowable locally; sealed busy/relay throttling
+  backs reads off, with relay Retry-After respected. Confirm production limits with P2.
+- FakeHost's revision, compare-and-set ledger and creation receipts are actor-owned
+  fake persistence, with the same lifetime as its existing sequence/rid store. A real
+  P2 host must commit these atomically to durable storage. Creation receipts do not
+  expire in v0; changed canonical fields under one device/creation ID return sealed
+  HTTP-style 409 creation_conflict, never rid_conflict.
+- Demo Drop fixtures are metadata only and remain outside host-view snapshots; full
+  Drop bytes and service wiring belong to Slice 5. No interoperability claim is added.
+- A decision submission rechecks connectivity and current question state before custody
+  signs. A failed preflight leaves no signed decision row. The host still performs CAS
+  after the last read to handle a concurrent answer or content edit. Both preflight
+  and resealing preserve the reviewed bytes; neither updates an answer silently.

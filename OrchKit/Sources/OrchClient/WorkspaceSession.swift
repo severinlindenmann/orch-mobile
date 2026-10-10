@@ -81,6 +81,16 @@ public struct WorkspaceSessionConfig: Sendable {
 /// envelopes, epochs, clock offset and polling. Screens never see it: sending and signing are `package`, and the request
 /// is durable before it is sent (a single synchronous transaction allocates the seq and stores the sealed envelope).
 public actor WorkspaceSession {
+    private var reviews: [UUID: QuestionReview] = [:]
+    private var reviewLifecycle: UInt64 = 0
+    private var decisionDrivers: [ID16: Task<DecisionOutcome, Error>] = [:]
+    private var snapshotTask: Task<WorkspaceSnapshot, Error>?
+    private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
+    private var poller: Task<Void, Never>?
+    private var hintRefresh: Task<Void, Never>?
+    private var foreground = true
+    private var lastRevision: Int64?
+    public private(set) var verifiedReceiptMs: Int64?
     let cfg: WorkspaceSessionConfig
     private var keys: [UInt32: SymmetricKey] = [:]
     private var relay: (session: RelaySession, expiresMs: Int64)?
@@ -116,7 +126,7 @@ public actor WorkspaceSession {
 
     // MARK: generation
 
-    private func ensureCurrent() async throws {
+    func ensureCurrent() async throws {
         do {
             try cfg.context.generation?.check()          // a Demo reset ends every session built from the old capability
             try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
@@ -124,6 +134,10 @@ public actor WorkspaceSession {
         } catch {
             if case StoreError.removalStateUnknown = error { throw error }
             cancelAll()
+            invalidateReviews()
+            poller?.cancel(); poller = nil
+            for c in subscribers.values { c.yield(.removed); c.finish() }
+            subscribers.removeAll()
             throw error is StoreError ? SessionError.staleGeneration : error
         }
     }
@@ -281,7 +295,7 @@ public actor WorkspaceSession {
     /// sent until this returns, and a crash after it leaves a record that can be re-sent unchanged. With `replacing`, the
     /// refused attempt is deleted in the SAME transaction (and only if it is still there): the logical request is never
     /// without a durable attempt, and two drivers cannot both replace one row.
-    private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil) async throws -> Row {
+    private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false) async throws -> Row {
         try Task.checkCancellation()
         try await ensureCurrent()
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
@@ -294,9 +308,11 @@ public actor WorkspaceSession {
         let rid = entropy.id16(), salt = entropy.bytes(16)
         let db = try await cfg.container.database()
         let row = try await db.transaction { tx in
-            if let old, try tx.query("SELECT 1 AS x FROM bridge_requests WHERE rid=? AND state='pending'", [.text(old.hex)]).isEmpty {
+            if let old, try tx.query("SELECT 1 AS x FROM bridge_requests WHERE rid=? AND (state='pending' OR ?=1)", [.text(old.hex), .int(reconciled ? 1 : 0)]).isEmpty {
                 throw SessionError.unknownRequest
             }
+            try tx.execute("DELETE FROM bridge_charges WHERE created_ms <= ?", [.int(now - Self.hostWindowMs)])
+            try tx.execute("INSERT INTO bridge_charges(rid,created_ms) VALUES(?,?)", [.text(rid.hex), .int(now)])
             let stored = try tx.query("SELECT value FROM meta WHERE key='next_seq'").first?.int("value") ?? 1
             let seq = max(UInt64(stored), minSeq, 1)
             guard seq <= UInt64(maxSafeInt) else { throw SessionError.tooLarge }
@@ -544,5 +560,255 @@ private extension HostRefusal {
         case .staleEpoch, .staleTimestamp, .staleSequence: true
         default: false
         }
+    }
+}
+
+// MARK: unsigned workspace boundary and durable §13 ledger
+extension WorkspaceSession {
+    private func viewJSON(_ response: BridgeResponse, status: Int = 200) throws -> JSONValue {
+        let headers = try HeaderMap.normalize(response.headers.map { (name: $0.key, value: $0.value) })
+        guard headers["content-type"] == "application/json" else { throw ViewError.malformed }
+        let v = try StrictJSON.parse(response.data)
+        guard response.status == status else {
+            let m = try fields(v, ["host_api", "error"])
+            guard m["host_api"] == 0, let error = m["error"]?.string else { throw ViewError.malformed }
+            throw ViewError.http(response.status, error)
+        }
+        return v
+    }
+    private func getView(_ path: String) async throws -> JSONValue {
+        try viewJSON(await exchange(meta: ["op": "http", "method": "GET", "path": .string(path), "headers": [:]]))
+    }
+    package func snapshotView() async throws -> WorkspaceSnapshot {
+        try await ensureCurrent()
+        if let snapshotTask { return try await snapshotTask.value }
+        let task = Task { () throws -> WorkspaceSnapshot in
+            guard try await self.readBudgetAvailable() else { throw ViewError.readDeferred }
+            let v = try await self.getView("/v2/snapshot")
+            let snapshot = try WorkspaceSnapshot(v, workspace: self.workspace)
+            try await self.ensureCurrent()
+            self.verifiedReceiptMs = self.cfg.wall.nowMs
+            return snapshot
+        }
+        snapshotTask = task
+        defer { snapshotTask = nil }
+        return try await task.value
+    }
+    private func readQuestion(_ id: ID16) async throws -> Question {
+        let m = try fields(await getView("/v2/questions/" + id.hex), ["host_api", "workspace_id", "question"])
+        guard m["host_api"] == 0, m.idField("workspace_id") == workspace else { throw ViewError.malformed }
+        let q = try Question(m["question"]!)
+        guard q.questionID == id else { throw ViewError.malformed }
+        return q
+    }
+    package func reviewQuestion(_ id: ID16) async throws -> QuestionReview {
+        try await ensureCurrent()
+        let lifecycle = reviewLifecycle
+        let q = try await readQuestion(id)
+        try await ensureCurrent()
+        guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+        reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
+        guard q.state == "open" else { throw ViewError.closed }
+        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID())
+        reviews[review.token] = review
+        return review
+    }
+    /// Call on lock/background, even if there are no stream subscribers.
+    public func setForeground(_ value: Bool) {
+        foreground = value
+        if !value { reviewLifecycle &+= 1; reviews.removeAll(); poller?.cancel(); poller = nil }
+        else { startPoller() }
+        if !value { hintRefresh?.cancel(); hintRefresh = nil }
+    }
+    public func invalidateReviews() { reviewLifecycle &+= 1; reviews.removeAll(); emit(.invalidated) }
+
+    package func submit(_ review: QuestionReview, optionID: String) async throws -> DecisionOutcome {
+        try await ensureCurrent()
+        guard foreground, reviews[review.token] == review, review.workspaceID == workspace,
+              review.generation == generation, review.realm == cfg.context.realm else { throw ViewError.invalidReview }
+        guard review.question.options.contains(where: { $0.id.utf8Equal(optionID) }) else { throw ViewError.invalidOption }
+        // Offline work remains unsigned. Reconfirm reachability/open state before entering custody;
+        // the host still performs CAS because it can change again after this read.
+        let current = try await readQuestion(review.question.questionID)
+        try await ensureCurrent()
+        guard foreground, reviews[review.token] == review else { throw ViewError.invalidReview }
+        if let r = current.resolution {
+            reviews[review.token] = nil
+            return .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
+        }
+        guard current.contentHash == review.question.contentHash else {
+            invalidateReviews(); return .questionChanged(hash: current.contentHash)
+        }
+        // Consume before any suspension: double-tapping can never mint a second signature.
+        reviews[review.token] = nil
+        let id = cfg.entropy.id16()
+        let op = try Decisions.makeOp(workspace: workspace, questionID: review.question.questionID,
+                                      contentHash: review.question.contentHash, decisionID: id,
+                                      answer: ["option_id": .string(optionID)], signer: cfg.identity.sig)
+        let operation = try canonicalJSON(op), reviewed = try canonicalJSON(review.question.wire)
+        try await cfg.container.database().execute("INSERT INTO decisions(id,question,option_id,review,operation) VALUES(?,?,?,?,?)",
+            [.text(id.hex), .text(review.question.questionID.hex), .text(optionID), .blob(reviewed), .blob(operation)])
+        return try await driveDecision(id)
+    }
+    public func pendingDecisions() async -> [DecisionStatus] {
+        do {
+            try await ensureCurrent()
+            return try await cfg.container.database().query("SELECT * FROM decisions WHERE state <> 'resolved' ORDER BY rowid").compactMap { r in
+                guard let id = r.text("id").flatMap(ID16.init(hex:)), let q = r.text("question").flatMap(ID16.init(hex:)), let o = r.text("option_id") else { return nil }
+                return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: r.text("state") == "uncertain" ? .uncertain : .pending)
+            }
+        } catch { emit(.connection(.offline)); return [] }
+    }
+    /// Explicit retry/reconciliation of a durable submission; never creates a detached signature.
+    public func reconcileDecision(_ id: ID16) async throws -> DecisionOutcome { try await driveDecision(id) }
+
+    private func driveDecision(_ id: ID16) async throws -> DecisionOutcome {
+        if let t = decisionDrivers[id] { return try await t.value }
+        let t = Task { try await self.performDecision(id) }
+        decisionDrivers[id] = t
+        defer { decisionDrivers[id] = nil }
+        return try await t.value
+    }
+    private func performDecision(_ id: ID16) async throws -> DecisionOutcome {
+        try await ensureCurrent()
+        guard let record = try await cfg.container.database().query("SELECT * FROM decisions WHERE id=?", [.text(id.hex)]).first,
+              let bytes = record.blob("operation"), let qid = record.text("question").flatMap(ID16.init(hex:)) else { throw SessionError.unknownRequest }
+        let op = try StrictJSON.parse(bytes)
+        if let outcome = record.blob("outcome") { return try decodeOutcome(StrictJSON.parse(outcome)) }
+        let attempts = try await cfg.container.database().query("SELECT * FROM bridge_requests WHERE logical=? ORDER BY seq DESC", [.text(id.hex)])
+        let old = attempts.first.flatMap(row(from:))
+        var response: BridgeResponse?
+        do {
+            if let old, !old.uncertain {
+                do { response = try await resend(rid: old.rid) }
+                catch SessionError.uncertain { /* authoritative re-read below */ }
+            }
+            if response == nil {
+                // A missing attempt after restart may have completed before the local outcome was saved.
+                // Even the first send reads current state before making an envelope; the detached bytes never change.
+                emit(.connection(.reconciling))
+                let q = try await readQuestion(qid)
+                if let r = q.resolution {
+                    let result: DecisionOutcome = r.decisionID == id && r.answer == op.object?["answer"]
+                        ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
+                    return try await finishDecision(id, result)
+                }
+                guard q.contentHash == op.object?["content_hash"]?.string.flatMap({ B64U.decode($0) }) else {
+                    return try await finishDecision(id, .questionChanged(hash: q.contentHash))
+                }
+                // Only this authoritative open-state reconciliation can replace an uncertain row.
+                // The old row and its state survive until the replacement commits atomically.
+                let next = try await prepare(logical: id, plaintext: Bridge.frame(meta: op, data: Data()), replacing: old?.rid, reconciled: true)
+                response = try await runDriver(next, isResend: false)
+            }
+            let m = try fields(viewJSON(response!), ["host_api", "decision_id", "question"])
+            guard m["host_api"] == 0, m.idField("decision_id") == id else { throw ViewError.malformed }
+            let closed = try Question(m["question"]!)
+            guard closed.questionID == qid, let r = closed.resolution, r.decisionID == id, r.answer == op.object?["answer"] else { throw ViewError.malformed }
+            return try await finishDecision(id, .accepted)
+        } catch ClientError.host(.alreadyAnswered(let label, let at)) {
+            return try await finishDecision(id, .alreadyAnswered(label: label, at: at))
+        } catch ClientError.host(.questionChanged(let hash)) {
+            return try await finishDecision(id, .questionChanged(hash: hash))
+        } catch {
+            try await ensureCurrent()
+            try await cfg.container.database().execute("UPDATE decisions SET state='uncertain' WHERE id=?", [.text(id.hex)])
+            if error is ViewError || error is ClientError || error is CancellationError { throw error }
+            return .uncertain
+        }
+    }
+    private func finishDecision(_ id: ID16, _ result: DecisionOutcome) async throws -> DecisionOutcome {
+        try await ensureCurrent()
+        let encoded = try canonicalJSON(encodeOutcome(result))
+        try await cfg.container.database().transaction { tx in
+            try tx.execute("UPDATE decisions SET state='resolved',outcome=? WHERE id=?", [.blob(encoded), .text(id.hex)])
+            try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
+        }
+        if case .questionChanged = result { invalidateReviews() }
+        emit(.invalidated)
+        return result
+    }
+    package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
+        try draft.validate()
+        let m = try fields(viewJSON(await exchange(meta: draft.meta), status: 201), ["host_api", "creation_id", "ticket"])
+        guard m["host_api"] == 0, m.idField("creation_id") == draft.creationID else { throw ViewError.malformed }
+        let ticket = try Ticket(m["ticket"]!)
+        emit(.invalidated)
+        return ticket
+    }
+    private func emit(_ event: WorkspaceEvent) {
+        for c in subscribers.values { c.yield(event) }
+        if case .invalidated = event, foreground, !subscribers.isEmpty, hintRefresh == nil {
+            hintRefresh = Task {
+                await self.refreshViews()
+                self.hintRefresh = nil
+            }
+        }
+    }
+    package func eventStream() -> AsyncStream<WorkspaceEvent> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<WorkspaceEvent>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        subscribers[id] = continuation
+        continuation.onTermination = { @Sendable _ in Task { await self.removeSubscriber(id) } }
+        startPoller()
+        return stream
+    }
+    private func removeSubscriber(_ id: UUID) {
+        subscribers[id] = nil
+        if subscribers.isEmpty { poller?.cancel(); poller = nil }
+    }
+    private func startPoller() {
+        guard foreground, !subscribers.isEmpty, poller == nil else { return }
+        poller = Task { await self.pollViews() }
+    }
+    /// Verified push/reconnect hint. Concurrent reads share snapshotTask.
+    public func refreshViews() async {
+        guard foreground else { return }
+        do {
+            let s = try await snapshotView()
+            guard foreground, !Task.isCancelled else { return }
+            emit(.snapshot(s)); emit(.connection(.online))
+        } catch { if foreground && !Task.isCancelled { emit(.connection(.offline)) } }
+    }
+    private func readBudgetAvailable() async throws -> Bool {
+        let charged = try await cfg.container.database().query("SELECT COUNT(*) AS n FROM bridge_charges WHERE created_ms > ?", [.int(cfg.wall.nowMs - Self.hostWindowMs)]).first?.int("n") ?? 0
+        return charged < 960
+    }
+    private func pollViews() async {
+        var delay: Int64 = 15
+        while !Task.isCancelled && foreground && !subscribers.isEmpty {
+
+            // Imported host v1 defaults: 1024 per device, 16384 global. Reserve 64 slots for mutations.
+            if (try? await readBudgetAvailable()) == true {
+                do {
+                    let s = try await snapshotView()
+                    if Task.isCancelled { return }
+                    delay = lastRevision == s.revision ? min(delay * 2, 60) : 15
+                    lastRevision = s.revision
+                    emit(.snapshot(s)); emit(.connection(.online))
+                } catch ClientError.adapter(.rateLimited(let retryAfter)) {
+                    delay = max(min(delay * 2, 60), Int64(retryAfter ?? 0)); emit(.connection(.offline))
+                } catch { delay = min(delay * 2, 60); emit(.connection(.offline)) }
+            } else { delay = 60 }
+            do { try await cfg.clock.sleep(for: .seconds(delay)) } catch { return }
+        }
+    }
+}
+
+private func encodeOutcome(_ o: DecisionOutcome) -> JSONValue {
+    switch o {
+    case .accepted: ["kind": "accepted"]
+    case .uncertain: ["kind": "uncertain"]
+    case .alreadyAnswered(let label, let at): ["kind": "already_answered", "label": .string(label), "at": .int(at)]
+    case .questionChanged(let hash): ["kind": "question_changed", "hash": .string(B64U.encode(hash))]
+    }
+}
+private func decodeOutcome(_ v: JSONValue) throws -> DecisionOutcome {
+    guard let m = v.object else { throw ViewError.malformed }
+    switch m["kind"]?.string {
+    case "accepted": return .accepted
+    case "already_answered": guard let l = m["label"]?.string, let a = m["at"]?.int else { throw ViewError.malformed }; return .alreadyAnswered(label: l, at: a)
+    case "question_changed": guard let h = m.b64uField("hash", length: 32) else { throw ViewError.malformed }; return .questionChanged(hash: h)
+    default: throw ViewError.malformed
     }
 }
