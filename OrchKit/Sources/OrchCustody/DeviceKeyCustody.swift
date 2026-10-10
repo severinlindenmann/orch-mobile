@@ -30,9 +30,15 @@ public struct DevicePublicKeys: Equatable, Sendable {
 }
 
 /// `dk_sig` (signing) and `dk_kx` (key agreement): two P-256 keys, one device identity (decision A6).
+///
+/// An identity is tagged with the realm of the custody that produced it. Only in-package custodies set the tag (the
+/// initializer is package-scoped), so a wrapper custody outside this package cannot relabel a live identity as Demo's:
+/// `RealmContext.deviceIdentity` and the relay client compare the tag with the realm they serve.
 public struct DeviceIdentity: Sendable {
     package let sig: any Signer
     package let kx: any KeyAgreer
+    package let realm: Realm
+    package init(sig: any Signer, kx: any KeyAgreer, realm: Realm) { self.sig = sig; self.kx = kx; self.realm = realm }
     public var publicKeys: DevicePublicKeys { DevicePublicKeys(sig: sig.publicKey, kx: kx.publicKey) }
 }
 
