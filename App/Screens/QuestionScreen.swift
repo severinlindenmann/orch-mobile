@@ -252,8 +252,9 @@ struct SignSheet: View {
             case .sending:
                 ProgressView("Sending…").accessibilityIdentifier("sign.sending")
             case .accepted:
-                stateView("checkmark.seal.fill", OC.ok, "Sent and accepted (simulated)",
-                          "In this UI simulation your answer was applied.", id: "sign.accepted")
+                stateView("checkmark.seal.fill", OC.ok, review.isDemo ? "Sent and accepted by the Demo host" : "Sent and accepted",
+                          review.isDemo ? "The Demo host verified your signature and applied your answer." : "Your answer was applied.",
+                          id: "sign.accepted")
                 doneButton
             case .alreadyAnswered(let by, let at):
                 stateView("person.crop.circle.badge.exclamationmark", OC.warn, "Your answer wasn't applied",
@@ -275,6 +276,10 @@ struct SignSheet: View {
                 stateView("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone to sign.", id: "sign.unlock")
                 Button("Read it again and continue") { model.retryAfterUnlock() }.buttonStyle(.bordered).accessibilityIdentifier("sign.unlockRetry")
                 Button("Cancel", role: .cancel, action: onClose)
+            case .notSent:
+                stateView("wifi.exclamationmark", OC.warn, "Not sent",
+                          "Nothing was signed and nothing was stored. Check the connection, then choose your answer again.", id: "sign.notSent")
+                doneButton
             case .custodyUnavailable:
                 stateView("key.slash", OC.danger, "Signing key not available",
                           "This iPhone can no longer sign for this workspace. Re-pair it to continue.", id: "sign.custody")

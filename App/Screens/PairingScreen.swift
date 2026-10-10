@@ -214,6 +214,10 @@ struct PairingScreen: View {
         case .invalidLink: "This isn't an orch pairing link"
         case .relayNotConnected: "The relay isn't connected"
         case .timedOut: "No answer in time"
+        case .alreadyMember: "This workspace is already on this iPhone"
+        case .clockWrong: "This iPhone's clock is wrong"
+        case .couldNotVerify: "The workspace could not be verified"
+        case .keysUnavailable: "This iPhone's keys are not available"
         }
     }
 
@@ -226,6 +230,10 @@ struct PairingScreen: View {
         case .invalidLink: "The link is not valid, or it was cut off. Copy it again."
         case .relayNotConnected: "The relay isn't connected in this build. Try the Demo to see how pairing works."
         case .timedOut: "Nobody answered. Start again on your Mac."
+        case .alreadyMember: "Nothing was changed. Remove the workspace from this iPhone first if you want to pair it again."
+        case .clockWrong: "Set the date and time on this iPhone to automatic, then start again."
+        case .couldNotVerify: "Nothing was added. Make a new link on your Mac and try again."
+        case .keysUnavailable: "Nothing was added. Unlock this iPhone and try again."
         }
     }
 
@@ -236,7 +244,7 @@ struct PairingScreen: View {
         if model.isDemo {
             VStack(alignment: .leading, spacing: OS.s2) {
                 Divider()
-                Text("Demo: simulated Mac and primary. Nothing leaves this iPhone.")
+                Text("Demo: the real pairing runs against a simulated Mac and primary on this iPhone.")
                     .font(OF.meta).foregroundStyle(OC.demo)
                     .padding(.horizontal, OS.s4)
                     .accessibilityIdentifier("demo.bar.label")
@@ -311,6 +319,15 @@ struct DemoHostPanel: View {
                     }
                 } else {
                     Section { Text("No pairing request is waiting on the host.").foregroundStyle(OC.textMuted) }
+                }
+                Section("Remote tab on the host") {
+                    Button("New pairing link") { model.demoNewLink() }.accessibilityIdentifier("demo.hostPanel.newLink")
+                    if !model.demoOfferLink.isEmpty {
+                        Text(verbatim: model.demoOfferLink).font(OF.machine).textSelection(.enabled)
+                            .accessibilityIdentifier("demo.hostPanel.link")
+                        Button("Copy link") { UIPasteboard.general.string = model.demoOfferLink }
+                            .accessibilityIdentifier("demo.hostPanel.copy")
+                    }
                 }
             }
             .navigationTitle("Demo host")

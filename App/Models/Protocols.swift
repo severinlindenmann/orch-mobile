@@ -61,8 +61,12 @@ protocol PairingFlowModel: AnyObject, Observable {
     var demoHostCode: String { get }
     var demoPrimaryCertCode: String { get }
     var demoPrimaryHasChallenge: Bool { get }
+    /// The pairing link the Demo host's Remote tab shows (empty until the Demo host makes one).
+    var demoOfferLink: String { get }
     func submitLink(_ text: String)
     func useDemoInvitation()
+    /// Demo host panel: a new single-use pairing link, to paste on the entry screen.
+    func demoNewLink()
     func cancel()
     func hostApprove()
     func hostReject()
@@ -96,6 +100,9 @@ protocol SettingsModel: AnyObject, Observable {
     var pairingScenario: PairingScenario { get set }
     var signOutcome: SignOutcome { get set }
     func setNotifications(_ on: Bool, workspaceID: String)
+    /// Demo: the host seals a push, the PushSimulator turns it into a local notification labelled as simulated. Result text for the UI.
+    var demoPushResult: String? { get }
+    func demoSendPush(workspaceID: String)
     /// Leave = "Remove from this iPhone": local wipe first, server cleanup reported separately (U9).
     func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport
     func resetThisiPhone()
@@ -113,4 +120,14 @@ protocol AppServices: AnyObject {
     func review(workspaceID: String, questionID: String, optionID: String) -> any QuestionReviewModel
     func makePairing(start: PairingState?) -> any PairingFlowModel
     func workspaceID(forQuestion id: String) -> String?
+    /// Debug routes and Demo aliases ("laptop", "q1") to the real ids; unknown input maps to itself.
+    func resolveWorkspace(_ raw: String) -> String?
+    func resolveQuestion(_ raw: String) -> (workspaceID: String, questionID: String)?
+}
+
+extension AppServices {
+    func resolveWorkspace(_ raw: String) -> String? { raw }
+    func resolveQuestion(_ raw: String) -> (workspaceID: String, questionID: String)? {
+        workspaceID(forQuestion: raw).map { ($0, raw) }
+    }
 }

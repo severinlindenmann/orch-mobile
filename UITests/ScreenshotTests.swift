@@ -1,6 +1,7 @@
 import XCTest
 
-/// Captures every main screen in light and dark as kept attachments (exported to docs/screens/).
+/// Captures every main screen in light and dark as kept attachments (exported to docs/screens/). Everything runs on the real Demo
+/// stack; pairing screens are reached by really pairing through the Demo panels.
 final class ScreenshotTests: XCTestCase {
     private let shots: [(name: String, route: String?, demo: Bool)] = [
         ("01-welcome", nil, false),
@@ -16,39 +17,40 @@ final class ScreenshotTests: XCTestCase {
         ("11-sign-sheet", "sign/q1", true),
         ("12-sign-sheet-long", "sign/q2", true),
         ("13-sign-sheet-bidi", "sign/q3", true),
-        ("14-pair-entry", "pair/entry", true),
-        ("15-pair-connecting", "pair/connecting", true),
-        ("16-pair-compare-host", "pair/sas", true),
-        ("17-pair-cert-pending", "pair/certPending", true),
-        ("18-pair-compare-primary", "pair/certCode", true),
-        ("19-pair-joining", "pair/joining", true),
-        ("20-pair-ready", "pair/ready", true),
-        ("21-pair-expired", "pair/expired", true),
-        ("22-pair-alarm-r1", "pair/r1", true),
-        ("23-pair-alarm-wrong-key", "pair/wrongKey", true),
-        ("24-pair-refused", "pair/refused", true),
+        ("14-pair-entry", "pair", true),
         ("25-drop", "drop", true),
         ("26-drop-compose", "drop/compose", true),
         ("27-drop-item", "drop/item/d-note", true),
         ("28-settings", "settings", true),
         ("29-workspace-settings", "settings/workspace/laptop", true),
-        ("33-question-unsafe-options", "question/q6", true),
-        ("34-empty-home", "empty", true)
+        ("33-question-unsafe-options", "question/q6", true)
     ]
+
+    @MainActor
+    private func capture(_ app: XCUIApplication, _ name: String, dark: Bool) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "\(name)-\(dark ? "dark" : "light")"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 
     @MainActor
     func testCaptureAllScreens() {
         for dark in [false, true] {
             for shot in shots {
-                let app = launch(shot.route, demo: shot.demo, dark: dark)
+                let app = launch(shot.route, demo: shot.demo, seed: shot.demo, dark: dark)
+                XCTAssertTrue(app.el("debug.scheme").waitForExistence(timeout: 120), "scheme marker")
                 Thread.sleep(forTimeInterval: 1.5)
                 assertScheme(app, dark: dark)
-                let attachment = XCTAttachment(screenshot: app.screenshot())
-                attachment.name = "\(shot.name)-\(dark ? "dark" : "light")"
-                attachment.lifetime = .keepAlways
-                add(attachment)
+                capture(app, shot.name, dark: dark)
                 app.terminate()
             }
+            // Empty Demo home.
+            let app = launch(seed: false, dark: dark)
+            XCTAssertTrue(app.el("home.empty").waitForExistence(timeout: 60))
+            Thread.sleep(forTimeInterval: 1)
+            capture(app, "34-empty-home", dark: dark)
+            app.terminate()
         }
     }
 
@@ -62,35 +64,65 @@ final class ScreenshotTests: XCTestCase {
     @MainActor
     func testCaptureAccessibilitySizes() {
         let ax = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXL"]
-        let list: [(String, String?)] = [("40-ax-home", nil), ("41-ax-sign-sheet", "sign/q1"), ("42-ax-pair-compare", "pair/sas"),
-                                         ("43-ax-workspace", "workspace/laptop")]
+        let list: [(String, String?)] = [("40-ax-home", nil), ("41-ax-sign-sheet", "sign/q1"), ("43-ax-workspace", "workspace/laptop")]
         for dark in [false, true] {
             for (name, route) in list {
                 let app = launch(route, dark: dark, extra: ax)
+                XCTAssertTrue(app.el("debug.scheme").waitForExistence(timeout: 120))
                 Thread.sleep(forTimeInterval: 1.5)
                 assertScheme(app, dark: dark)
-                let a = XCTAttachment(screenshot: app.screenshot())
-                a.name = "\(name)-\(dark ? "dark" : "light")"; a.lifetime = .keepAlways; add(a)
+                capture(app, name, dark: dark)
                 app.terminate()
             }
         }
     }
 
+    /// The whole pairing, screen by screen, on the real coordinator.
     @MainActor
-    func testCapturePairingPanels() {
+    func testCapturePairingScreens() {
         for dark in [false, true] {
-            let app = launch("pair/sas", dark: dark)
+            let app = launch("pair", seed: false, dark: dark)
+            startDemoInvitation(app)
+            XCTAssertTrue(app.el("pair.sas").waitForExistence(timeout: Self.slow))
+            Thread.sleep(forTimeInterval: 0.5)
+            capture(app, "16-pair-compare-host", dark: dark)
             app.buttons["demo.hostPanel.show"].tap()
-            Thread.sleep(forTimeInterval: 1)
-            var a = XCTAttachment(screenshot: app.screenshot())
-            a.name = "30-demo-host-panel-\(dark ? "dark" : "light")"; a.lifetime = .keepAlways; add(a)
+            XCTAssertTrue(app.el("demo.hostPanel.code").waitForExistence(timeout: Self.slow))
+            Thread.sleep(forTimeInterval: 0.5)
+            capture(app, "30-demo-host-panel", dark: dark)
+            app.switches["demo.hostPanel.compared"].flip()
+            XCTAssertTrue(app.buttons["demo.hostPanel.approve"].waitForEnabled())
+            app.buttons["demo.hostPanel.approve"].tap()
+            XCTAssertTrue(app.el("pair.openPrimary").waitForExistence(timeout: Self.slow))
+            Thread.sleep(forTimeInterval: 0.5)
+            capture(app, "17-pair-cert-pending", dark: dark)
+            app.buttons["demo.primaryPanel.show"].tap()
+            app.buttons["demo.primaryPanel.open"].tap()
+            XCTAssertTrue(app.el("demo.primaryPanel.code").waitForExistence(timeout: Self.slow))
+            Thread.sleep(forTimeInterval: 0.5)
+            capture(app, "31-demo-primary-panel", dark: dark)
+            app.switches["demo.primaryPanel.compared"].flip()
+            app.buttons["demo.primaryPanel.close"].tap()
+            XCTAssertTrue(app.el("pair.certCode").waitForExistence(timeout: 5))
+            capture(app, "18-pair-compare-primary", dark: dark)
+            app.buttons["demo.primaryPanel.show"].tap()
+            app.switches["demo.primaryPanel.compared"].flip()
+            app.buttons["demo.primaryPanel.approve"].tap()
+            XCTAssertTrue(app.el("pair.ready").waitForExistence(timeout: Self.slow))
+            capture(app, "20-pair-ready", dark: dark)
             app.terminate()
-            let app2 = launch("pair/certCode", dark: dark)
-            app2.buttons["demo.primaryPanel.show"].tap()
-            Thread.sleep(forTimeInterval: 1)
-            a = XCTAttachment(screenshot: app2.screenshot())
-            a.name = "31-demo-primary-panel-\(dark ? "dark" : "light")"; a.lifetime = .keepAlways; add(a)
-            app2.terminate()
+
+            let alarm = launch("pair/wrongKey", seed: false, dark: dark)
+            startDemoInvitation(alarm)
+            XCTAssertTrue(alarm.el("pair.alarm").waitForExistence(timeout: Self.slow))
+            capture(alarm, "23-pair-alarm-wrong-key", dark: dark)
+            alarm.terminate()
+
+            let used = launch("pair/linkUsed", seed: false, dark: dark)
+            startDemoInvitation(used)
+            XCTAssertTrue(used.el("pair.refused").waitForExistence(timeout: Self.slow))
+            capture(used, "24-pair-refused", dark: dark)
+            used.terminate()
         }
     }
 }

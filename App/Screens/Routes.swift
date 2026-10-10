@@ -44,17 +44,19 @@ enum InitialRouteParser {
         let arg = parts.count > 1 ? parts[1] : nil
         switch head {
         case "welcome": result.forceWelcome = true
-        case "empty": (services as? PreviewWorld)?.removeAllWorkspaces()
+        case "empty": (services as? PreviewWorld)?.removeAllWorkspaces()   // preview only; a live launch without --demo-seed is already empty
         case "needs-you": result.path = [.needsYou]
         case "workspace":
-            if let id = arg {
+            if let raw = arg, let id = services.resolveWorkspace(raw) {
                 let seg = parts.count > 2 ? WorkspaceSegment(rawValue: parts[2]) ?? .questions : .questions
                 result.path = [.workspace(id, seg)]
             }
         case "ticket":
-            if parts.count > 2 { result.path = [.workspace(parts[1], .tickets), .ticket(workspace: parts[1], key: parts[2])] }
+            if parts.count > 2, let ws = services.resolveWorkspace(parts[1]) {
+                result.path = [.workspace(ws, .tickets), .ticket(workspace: ws, key: parts[2])]
+            }
         case "question", "sign":
-            if let qid = arg, let ws = services.workspaceID(forQuestion: qid) {
+            if let raw = arg, let (ws, qid) = services.resolveQuestion(raw) {
                 let sign = head == "sign"
                 if parts.count > 2, let outcome = SignOutcome(rawValue: parts[2]) {
                     services.settings.signOutcome = outcome
@@ -71,8 +73,8 @@ enum InitialRouteParser {
         case "share-fixture": result.path = [.shareFixture]
         case "settings":
             result.path = [.settings]
-            if arg == "workspace" || arg == "leave", parts.count > 2 {
-                result.path.append(.workspaceSettings(parts[2], confirmLeave: arg == "leave"))
+            if arg == "workspace" || arg == "leave", parts.count > 2, let ws = services.resolveWorkspace(parts[2]) {
+                result.path.append(.workspaceSettings(ws, confirmLeave: arg == "leave"))
             }
         default: break
         }
@@ -80,6 +82,13 @@ enum InitialRouteParser {
     }
 
     static func pairingState(_ name: String, services: any AppServices) -> PairingState? {
+        // On the live Demo stack a route cannot jump to a state: it only picks what the fakes do next (the scenario), and pairing starts at entry.
+        if services is LiveServices {
+            let scenarios: [String: PairingScenario] = ["r1": .r1Attack, "wrongKey": .echoWrongKey, "linkUsed": .linkUsed,
+                                                       "primaryOffline": .primaryOffline, "existingCert": .existingCert, "refused": .rejectOnHost]
+            if let scenario = scenarios[name] { services.settings.pairingScenario = scenario }
+            return nil
+        }
         let primary = "Demo Mac"
         switch name {
         case "entry": return .entry

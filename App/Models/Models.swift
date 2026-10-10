@@ -202,11 +202,16 @@ enum SignPhase: Hashable, Sendable {
     case checking
     case unlockToContinue
     case custodyUnavailable
+    /// The send failed before anything was signed or stored.
+    case notSent
 }
 
 /// What the fake host does with the next answer (Demo controls and tests).
 enum SignOutcome: String, CaseIterable, Hashable, Sendable {
     case accepted, alreadyAnswered, questionChanged, uncertain, locked, custodyUnavailable, loadFails
+
+    /// What the Demo can really do to the next answer (the fake host or the lock); `custodyUnavailable` stays preview-only.
+    static var liveCases: [SignOutcome] { [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .locked, .loadFails] }
 
     var title: String {
         switch self {
@@ -232,6 +237,7 @@ enum PairingAlarm: Hashable, Sendable {
 /// Fixed app text only: the host never supplies refusal wording.
 enum PairingRefusal: String, Hashable, Sendable {
     case rejectedOnHost, rejectedOnPrimary, linkUsed, otherPerson, invalidLink, relayNotConnected, timedOut
+    case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
 }
 
 enum PairingState: Hashable, Sendable {

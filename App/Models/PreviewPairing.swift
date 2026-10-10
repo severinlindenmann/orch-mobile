@@ -47,6 +47,9 @@ final class PreviewPairingModel: PairingFlowModel {
         }
     }
 
+    var demoOfferLink: String { "" }
+    func demoNewLink() {}
+
     func useDemoInvitation() { submitLink("https://relay.demo.invalid/app/pair#demo-invitation") }
 
     func cancel() {

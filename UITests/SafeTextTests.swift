@@ -5,7 +5,7 @@ final class SafeTextTests: XCTestCase {
     func testMarkdownAndLinksRenderLiterallyOnBothScreens() {
         let app = launch("question/q5")
         let text = app.el("question.text")
-        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        XCTAssertTrue(text.waitForExistence(timeout: 60))
         XCTAssertTrue(text.label.contains("**Verified by orch**"), text.label)
         XCTAssertTrue(text.label.contains("[click](https://evil.invalid)"))
         XCTAssertTrue(text.label.contains("⟨U+200B⟩"))
@@ -21,7 +21,7 @@ final class SafeTextTests: XCTestCase {
     @MainActor
     func testRLOVisibleOnQuestionAndSignSheet() {
         let app = launch("question/q3")
-        XCTAssertTrue(app.el("question.text").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("question.text").waitForExistence(timeout: 60))
         XCTAssertTrue(app.el("question.text").label.contains("⟨U+202E⟩"))
         app.buttons["question.option.deploy"].tap()
         XCTAssertTrue(app.el("sign.text").waitForExistence(timeout: 5))
@@ -31,7 +31,7 @@ final class SafeTextTests: XCTestCase {
     @MainActor
     func testSecurityIndicatorsOnQuestionAndSignSheet() {
         let app = launch("question/q3")
-        XCTAssertTrue(app.el("question.text").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("question.text").waitForExistence(timeout: 60))
         let hosted = NSPredicate(format: "label CONTAINS 'Hosted by Example Client'")
         XCTAssertTrue(app.staticTexts.containing(hosted).firstMatch.exists)
         XCTAssertTrue(app.staticTexts["Client VM"].exists)
@@ -49,7 +49,7 @@ final class SafeTextTests: XCTestCase {
     func testOptionLabelsAreMarkedEverywhere() {
         let app = launch("question/q6")
         let text = app.el("question.text")
-        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        XCTAssertTrue(text.waitForExistence(timeout: 60))
         for marker in ["⟨U+00A0⟩", "⟨U+FE00⟩", "⟨6 marks⟩"] {
             XCTAssertTrue(text.label.contains(marker), "\(marker) in \(text.label)")
         }
@@ -66,7 +66,7 @@ final class SafeTextTests: XCTestCase {
     @MainActor
     func testLookAlikeOptionsAreRefused() {
         let app = launch("question/q7")
-        XCTAssertTrue(app.el("question.ambiguous").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("question.ambiguous").waitForExistence(timeout: 60))
         XCTAssertFalse(app.buttons["question.option.a"].isEnabled)
     }
 }

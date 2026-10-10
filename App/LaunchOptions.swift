@@ -17,6 +17,10 @@ struct LaunchOptions: Equatable, Sendable {
     let holdShareImport: Bool
     /// DEBUG-only: offer Demo workspaces to the share extension (they are never offered otherwise).
     let shareDemoTargets: Bool
+    /// DEBUG-only `--ui-preview`: the in-memory PreviewWorld fake instead of the real Demo stack (fallback for layout work).
+    let uiPreview: Bool
+    /// DEBUG-only `--demo-seed`: pairs the two Demo workspaces at launch (playing the Demo humans' explicit approvals), for UI tests.
+    let demoSeed: Bool
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         #if DEBUG
@@ -27,7 +31,10 @@ struct LaunchOptions: Equatable, Sendable {
     }
 
     private init(uiTesting: Bool, demo: Bool, initialRoute: String?, appearance: String?, pushHarness: Bool = false, pushMaterial: String? = nil,
-                 seedShareQuarantine: Bool = false, holdShareImport: Bool = false, shareDemoTargets: Bool = false) {
+                 seedShareQuarantine: Bool = false, holdShareImport: Bool = false, shareDemoTargets: Bool = false,
+                 uiPreview: Bool = false, demoSeed: Bool = false) {
+        self.uiPreview = uiPreview
+        self.demoSeed = demoSeed
         self.pushHarness = pushHarness
         self.pushMaterial = pushMaterial
         self.uiTesting = uiTesting
@@ -55,6 +62,7 @@ struct LaunchOptions: Equatable, Sendable {
                              pushHarness: arguments.contains("--push-harness"), pushMaterial: material,
                              seedShareQuarantine: arguments.contains("--seed-share-quarantine"),
                              holdShareImport: arguments.contains("--hold-share-import"),
-                             shareDemoTargets: arguments.contains("--share-demo-targets"))
+                             shareDemoTargets: arguments.contains("--share-demo-targets"),
+                             uiPreview: arguments.contains("--ui-preview"), demoSeed: arguments.contains("--demo-seed"))
     }
 }

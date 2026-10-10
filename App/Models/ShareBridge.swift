@@ -2,6 +2,19 @@ import Foundation
 import OrchCoordination
 import OrchShareStaging
 
+/// What the share bridge needs from the workspace world: the preview fake and the live Demo services both conform.
+@MainActor
+protocol ShareWorld: AnyObject {
+    var isDemo: Bool { get }
+    var workspaces: [WorkspaceInfo] { get }
+    var beforeWorkspaceRemoval: ((String) -> Bool)? { get set }
+    var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)? { get set }
+    func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date)
+    func setQuarantined(_ entries: [(job: String, workspaceID: String, name: String, bytes: Int, kind: DropKind, expires: Date)])
+    /// The real workspace id (32 hex) and generation in the realm index; nil for the preview fake, whose ids are mapped.
+    func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)?
+}
+
 /// App side of the share outbox (A10). Publishes the destinations index, claims jobs the share extension staged,
 /// imports them into Drop "Sending" and deletes the staged plaintext. Sealing and upload follow with the real Drop
 /// slice; for now the import target is the `PreviewWorld` fake.
@@ -10,7 +23,7 @@ final class ShareBridge {
     static let groupIdentifier = "group.io.severin.orch.share"
 
     let inbox: ShareInbox
-    private let world: PreviewWorld
+    private let world: any ShareWorld
     /// Demo workspaces are never offered to the extension unless a DEBUG UI test asks for it.
     private let publishDemo: Bool
     /// Published destinations by preview workspace id (also the live set used to claim).
@@ -20,7 +33,7 @@ final class ShareBridge {
     private var refreshing = false
     private(set) var lastPurge: (removed: Int, failed: Int) = (0, 0)
 
-    init(area: ShareArea, world: PreviewWorld, publishDemo: Bool = false) {
+    init(area: ShareArea, world: any ShareWorld, publishDemo: Bool = false) {
         inbox = ShareInbox(area: area)
         self.world = world
         self.publishDemo = publishDemo
@@ -29,7 +42,7 @@ final class ShareBridge {
     }
 
     /// nil when the App Group container is unavailable (unit tests, unsigned builds): sharing is simply off.
-    static func make(world: PreviewWorld, override root: URL? = nil, publishDemo: Bool = false) -> ShareBridge? {
+    static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = false) -> ShareBridge? {
         guard let root = root ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return nil }
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }
@@ -54,7 +67,7 @@ final class ShareBridge {
     /// Journal before changing local workspace state; a failed tombstone keeps the workspace in place.
     private func prepareRemoval(_ id: String) -> Bool {
         do {
-            let hex = Self.wsHex(id)
+            let hex = world.shareIdentity(of: id)?.ws ?? Self.wsHex(id)
             let generation = try published[id]?.generation ?? ((inbox.area.coordination.records()
                 .filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0) + 1)
             let record = TombstoneRecord(realm: published[id]?.realm ?? realm, ws: hex, generation: generation)
@@ -73,9 +86,10 @@ final class ShareBridge {
         var next: [String: ShareTarget] = [:]
         if !world.isDemo || publishDemo {
             for ws in world.workspaces {
-                let hex = Self.wsHex(ws.id)
+                let identity = world.shareIdentity(of: ws.id)
+                let hex = identity?.ws ?? Self.wsHex(ws.id)
                 let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
-                next[ws.id] = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: top + 1)
+                next[ws.id] = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
             }
         }
         // Include the persisted index so a process restart cannot lose an unpublished removal.

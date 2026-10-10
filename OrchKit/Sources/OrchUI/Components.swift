@@ -169,7 +169,7 @@ public struct OrchOptionButtonStyle: ButtonStyle {
 public struct SimulationNotice: View {
     public init() {}
     public var body: some View {
-        Label("UI simulation. Nothing here is sent to a real workspace.", systemImage: "info.circle")
+        Label("Demo — simulated workspace. The protocol is real; the Mac is not.", systemImage: "info.circle")
             .font(OF.meta).foregroundStyle(OC.textMuted)
             .accessibilityIdentifier("simulation.notice")
     }
