@@ -1,0 +1,69 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+
+env:
+  XCODE_VERSION: '16.4'
+  XCODEGEN_VERSION: '2.46.0'
+
+jobs:
+  core:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Select pinned Xcode
+        run: |
+          test -d "/Applications/Xcode_${XCODE_VERSION}.app"
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+      - run: swift test --package-path OrchKit
+      - run: scripts/check-extension-links.sh
+  app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Select pinned Xcode
+        run: |
+          test -d "/Applications/Xcode_${XCODE_VERSION}.app"
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          # Keep generation deterministic even if Homebrew has advanced.
+          if [ "$(xcodegen --version)" != "Version: ${XCODEGEN_VERSION}" ]; then
+            git clone --depth 1 --branch "$XCODEGEN_VERSION" https://github.com/yonaskolb/XcodeGen.git "$RUNNER_TEMP/XcodeGen"
+            swift build --package-path "$RUNNER_TEMP/XcodeGen" -c release --product xcodegen
+            echo "$RUNNER_TEMP/XcodeGen/.build/release" >> "$GITHUB_PATH"
+          fi
+      - name: Generate project and audit extensions
+        run: |
+          test "$(xcodegen --version)" = "Version: ${XCODEGEN_VERSION}"
+          xcodegen generate
+          scripts/check-extension-links.sh
+      - name: Select iPhone simulator
+        run: |
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          python3 - <<'PY'
+          import json, os
+          with open(os.environ['RUNNER_TEMP'] + '/devices.json') as source:
+              devices = json.load(source)['devices']
+          candidates = [d for runtime, values in sorted(devices.items())
+                        if 'iOS-18-' in runtime for d in values
+                        if d['isAvailable'] and d['name'].startswith('iPhone')]
+          if not candidates:
+              raise SystemExit('No available iOS 18 iPhone simulator')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('SIMULATOR_ID=' + candidates[0]['udid'] + '\n')
+          PY
+      - name: Build for hosted tests
+        run: >-
+          xcodebuild -project Orch.xcodeproj -scheme Orch
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath .build/dd CODE_SIGNING_ALLOWED=NO
+          -only-testing:OrchTests build-for-testing
+      - name: Run hosted tests
+        run: >-
+          xcodebuild -project Orch.xcodeproj -scheme Orch
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath .build/dd CODE_SIGNING_ALLOWED=NO
+          -only-testing:OrchTests test-without-building
