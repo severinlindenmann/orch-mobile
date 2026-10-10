@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Archive + export (+ upload) orch mobile to TestFlight (internal testing only).
-#   scripts/testflight.sh [--dry-run] [--upload] [--add-internal]
+#   scripts/testflight.sh [--dry-run] [--upload] [--add-internal] [--attach-existing <version>]
 # Default is --dry-run: archive and export a local .ipa, no upload.
 # --add-internal: after upload, wait for processing and add the build to the
 # internal beta group "Owner" (created if missing). Implies --upload.
+# --attach-existing <version>: no build; attach the already-processed ASC build with
+# that version to the internal group "Owner".
 # Env: BUILD_NUMBER overrides the generated build number.
 set -euo pipefail
 
@@ -14,11 +16,12 @@ ISSUER=8f9968b2-a219-4890-8574-0822ad510d85
 KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
 GROUP_NAME=Owner
 
-MODE=dry-run; ADD_INTERNAL=0
-for a in "$@"; do case "$a" in
+MODE=dry-run; ADD_INTERNAL=0; ATTACH_VERSION=
+while [ $# -gt 0 ]; do a=$1; shift; case "$a" in
   --dry-run) MODE=dry-run ;;
   --upload) MODE=upload ;;
   --add-internal) MODE=upload; ADD_INTERNAL=1 ;;
+  --attach-existing) MODE=attach; ATTACH_VERSION=${1:-}; [ -n "$ATTACH_VERSION" ] || { echo "--attach-existing needs a version" >&2; exit 2; }; shift ;;
   -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
   *) echo "unknown flag: $a" >&2; exit 2 ;;
 esac; done
@@ -55,6 +58,27 @@ api() { # method path [json-body]; prints body, then HTTP code on the last line
 }
 body() { sed '$d'; }
 code() { tail -1; }
+attach_build() { # build-id: add to internal group "Owner" (create if missing)
+  local BUILD_ID=$1 R GROUP_ID
+  R=$(api GET "/v1/apps/$APP_ID/betaGroups?filter%5Bname%5D=$GROUP_NAME&limit=50")
+  [ "$(echo "$R" | code)" = 200 ] || die "betaGroups query failed"
+  GROUP_ID=$(echo "$R" | body | jq -r --arg n "$GROUP_NAME" '[.data[]|select(.attributes.name==$n and .attributes.isInternalGroup==true)][0].id // empty')
+  if [ -z "$GROUP_ID" ]; then
+    say "creating internal group $GROUP_NAME"
+    R=$(api POST /v1/betaGroups "$(jq -nc --arg n "$GROUP_NAME" --arg a "$APP_ID" \
+      '{data:{type:"betaGroups",attributes:{name:$n,isInternalGroup:true,hasAccessToAllBuilds:false},relationships:{app:{data:{type:"apps",id:$a}}}}}')")
+    [ "$(echo "$R" | code)" = 201 ] || { echo "$R" | body | jq -r '.errors[]?.detail' | tee -a "$LOG"; die "group create failed"; }
+    GROUP_ID=$(echo "$R" | body | jq -r .data.id)
+  fi
+  R=$(api POST "/v1/betaGroups/$GROUP_ID/relationships/builds" \
+    "$(jq -nc --arg b "$BUILD_ID" '{data:[{type:"builds",id:$b}]}')")
+  case "$(echo "$R" | code)" in
+    204|409) say "build attached to group $GROUP_NAME (HTTP $(echo "$R" | code); 409 = already attached or auto-access)";;
+    *) echo "$R" | body | jq -r '.errors[]?.detail' | tee -a "$LOG"; die "attach failed";;
+  esac
+  R=$(api GET "/v1/builds/$BUILD_ID")
+  say "final: processingState=$(echo "$R" | body | jq -r .data.attributes.processingState) expired=$(echo "$R" | body | jq -r .data.attributes.expired)"
+}
 ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" = "$1" ]; }
 
 # Build number: UTC "yymmdd.HHMMSS" (two integer components, each well below
@@ -62,10 +86,21 @@ ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1
 # components numerically, so it increases per upload.
 BUILD=${BUILD_NUMBER:-$(date -u +%y%m%d).$((10#$(date -u +%H%M%S)))}
 [[ "$BUILD" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || die "invalid BUILD_NUMBER '$BUILD'"
+if [ "$MODE" = attach ]; then
+  R=$(api GET "/v1/builds?filter%5Bapp%5D=$APP_ID&filter%5Bversion%5D=$ATTACH_VERSION&limit=1")
+  [ "$(echo "$R" | code)" = 200 ] || die "builds query failed: HTTP $(echo "$R" | code)"
+  AID=$(echo "$R" | body | jq -r '.data[0].id // empty'); AST=$(echo "$R" | body | jq -r '.data[0].attributes.processingState // empty')
+  [ -n "$AID" ] || die "no build with version $ATTACH_VERSION"
+  [ "$AST" = VALID ] || die "build $ATTACH_VERSION state is $AST, not VALID"
+  attach_build "$AID"
+  exit 0
+fi
+LATEST_ID=""
 if [ "$MODE" = upload ]; then
   R=$(api GET "/v1/builds?filter%5Bapp%5D=$APP_ID&sort=-uploadedDate&limit=1")
   [ "$(echo "$R" | code)" = 200 ] || die "latest-build query failed: HTTP $(echo "$R" | code)"
   LATEST=$(echo "$R" | body | jq -r '.data[0].attributes.version // empty')
+  LATEST_ID=$(echo "$R" | body | jq -r '.data[0].id // empty')
   if [ -n "$LATEST" ]; then
     ver_gt "$BUILD" "$LATEST" || die "build $BUILD is not greater than latest uploaded build $LATEST"
   fi
@@ -104,6 +139,11 @@ if [ "$MODE" = dry-run ]; then
   unzip -p "$EXPORT/Orch.ipa" 'Payload/Orch.app/embedded.mobileprovision' 2>/dev/null \
     | security cms -D 2>/dev/null | plutil -extract Entitlements json -o - - 2>/dev/null \
     | jq -c '{aps:."aps-environment",groups:."com.apple.security.application-groups",get_task_allow:."get-task-allow"}' | tee -a "$LOG" || true
+  for t in Payload/Orch.app Payload/Orch.app/PlugIns/OrchNotify.appex Payload/Orch.app/PlugIns/OrchShare.appex; do
+    V=$(unzip -p "$EXPORT/Orch.ipa" "$t/Info.plist" | plutil -extract CFBundleVersion raw -o - -)
+    say "$t CFBundleVersion=$V"
+    [ "$V" = "$BUILD" ] || die "$t CFBundleVersion $V != $BUILD"
+  done
   say "dry-run OK: $(ls "$EXPORT"/*.ipa) (version $VERSION build $BUILD)"
   exit 0
 fi
@@ -113,32 +153,19 @@ say "uploaded version $VERSION build $BUILD"
 say "waiting for build $BUILD to finish processing"
 BUILD_ID=""; STATE=""
 for i in $(seq 1 60); do
-  R=$(api GET "/v1/builds?filter%5Bapp%5D=$APP_ID&filter%5Bversion%5D=$BUILD&limit=1")
+  R=$(api GET "/v1/builds?filter%5Bapp%5D=$APP_ID&sort=-uploadedDate&limit=1")
   [ "$(echo "$R" | code)" = 200 ] || die "builds query failed: HTTP $(echo "$R" | code)"
   BUILD_ID=$(echo "$R" | body | jq -r '.data[0].id // empty')
+  SEEN=$(echo "$R" | body | jq -r '.data[0].attributes.version // empty')
   STATE=$(echo "$R" | body | jq -r '.data[0].attributes.processingState // empty')
+  if [ -n "$BUILD_ID" ] && [ "$BUILD_ID" != "$LATEST_ID" ] && [ "$SEEN" != "$BUILD" ]; then
+    die "version mismatch: uploaded build number $BUILD but App Store Connect stored version $SEEN"
+  fi
+  [ "$BUILD_ID" = "$LATEST_ID" ] && STATE=""
   say "poll $i: state=${STATE:-not-visible-yet}"
   [ "$STATE" = VALID ] && break
   case "$STATE" in FAILED|INVALID) die "processing ended in $STATE";; esac
   sleep 30
 done
 [ "$STATE" = VALID ] || die "timed out waiting for processing (state=${STATE:-none})"
-
-R=$(api GET "/v1/apps/$APP_ID/betaGroups?filter%5Bname%5D=$GROUP_NAME&limit=50")
-[ "$(echo "$R" | code)" = 200 ] || die "betaGroups query failed"
-GROUP_ID=$(echo "$R" | body | jq -r --arg n "$GROUP_NAME" '[.data[]|select(.attributes.name==$n and .attributes.isInternalGroup==true)][0].id // empty')
-if [ -z "$GROUP_ID" ]; then
-  say "creating internal group $GROUP_NAME"
-  R=$(api POST /v1/betaGroups "$(jq -nc --arg n "$GROUP_NAME" --arg a "$APP_ID" \
-    '{data:{type:"betaGroups",attributes:{name:$n,isInternalGroup:true,hasAccessToAllBuilds:false},relationships:{app:{data:{type:"apps",id:$a}}}}}')")
-  [ "$(echo "$R" | code)" = 201 ] || { echo "$R" | body | jq -r '.errors[]?.detail' | tee -a "$LOG"; die "group create failed"; }
-  GROUP_ID=$(echo "$R" | body | jq -r .data.id)
-fi
-R=$(api POST "/v1/betaGroups/$GROUP_ID/relationships/builds" \
-  "$(jq -nc --arg b "$BUILD_ID" '{data:[{type:"builds",id:$b}]}')")
-case "$(echo "$R" | code)" in
-  204|409) say "build attached to group $GROUP_NAME (HTTP $(echo "$R" | code); 409 = already attached or auto-access)";;
-  *) echo "$R" | body | jq -r '.errors[]?.detail' | tee -a "$LOG"; die "attach failed";;
-esac
-R=$(api GET "/v1/builds/$BUILD_ID")
-say "final: processingState=$(echo "$R" | body | jq -r .data.attributes.processingState) expired=$(echo "$R" | body | jq -r .data.attributes.expired)"
+attach_build "$BUILD_ID"
