@@ -1,0 +1,128 @@
+import Foundation
+import OrchProtocol
+
+/// Header names are case-insensitive (host-api section 1): names are stored lower-case, two spellings of one name with
+/// different values are a conflict, and a conflict is refused rather than resolved.
+public enum WireError: Error, Equatable, Sendable {
+    case conflictingHeader(String)
+    case invalidHeaderName(String)
+    case invalidHeaderValue(String)
+}
+
+enum HeaderMap {
+    static func isToken(_ s: String) -> Bool {
+        !s.isEmpty && s.utf8.allSatisfy { c in
+            (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || "!#$%&'*+-.^_`|~".utf8.contains(c)
+        }
+    }
+
+    static func normalize(_ fields: some Sequence<(name: String, value: String)>) throws -> [String: String] {
+        var out: [String: String] = [:]
+        for (rawName, rawValue) in fields {
+            guard isToken(rawName) else { throw WireError.invalidHeaderName(rawName) }
+            let name = String(decoding: rawName.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 32 : $0 }, as: UTF8.self)
+            // Optional whitespace around a field value is not part of it; control characters never are.
+            let value = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+            guard value.utf8.allSatisfy({ $0 >= 0x20 && $0 != 0x7F }) else { throw WireError.invalidHeaderValue(name) }
+            if let existing = out[name], existing != value { throw WireError.conflictingHeader(name) }
+            out[name] = value
+        }
+        return out
+    }
+}
+
+/// What a transport returns. HTTP failures are values, not throws.
+public struct WireReply: Sendable, Equatable {
+    public let status: Int
+    /// Lower-case names.
+    public let headers: [String: String]
+    public let body: Data
+
+    public init(status: Int, headers: [String: String] = [:], body: Data = Data()) throws {
+        self.status = status
+        self.headers = try HeaderMap.normalize(headers.map { (name: $0.key, value: $0.value) })
+        self.body = body
+    }
+
+    /// From raw header fields in wire order (repeats allowed when equal).
+    public init(status: Int, headerFields: [(name: String, value: String)], body: Data = Data()) throws {
+        self.status = status
+        self.headers = try HeaderMap.normalize(headerFields)
+        self.body = body
+    }
+
+    public func header(_ name: String) -> String? {
+        headers[String(decoding: name.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 32 : $0 }, as: UTF8.self)]
+    }
+}
+
+/// One request as HTTP carries it. The in-process relay parses the target itself, exactly as a server would.
+public struct WireRequest: Sendable, Equatable {
+    public let method: String
+    /// Path and optional query, e.g. `/mobile/host-api/0/workspaces/<ws>/grants?epoch=2`.
+    public let target: String
+    public let headers: [String: String]
+    public let body: Data
+    /// The peer address as the relay sees it (rate limits are per address).
+    public let clientAddress: String
+
+    public init(method: String, target: String, headers: [String: String] = [:], body: Data = Data(), clientAddress: String) throws {
+        self.method = method; self.target = target; self.body = body; self.clientAddress = clientAddress
+        self.headers = try HeaderMap.normalize(headers.map { (name: $0.key, value: $0.value) })
+    }
+
+    public func header(_ name: String) -> String? {
+        headers[String(decoding: name.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 32 : $0 }, as: UTF8.self)]
+    }
+}
+
+public struct RelaySession: Sendable, Equatable { public let token: String; public init(token: String) { self.token = token } }
+
+public struct PairRoute: Sendable, Equatable {
+    public let workspaceID: ID16, offerID: ID16, requestID: ID16
+    public init(workspaceID: ID16, offerID: ID16, requestID: ID16) { self.workspaceID = workspaceID; self.offerID = offerID; self.requestID = requestID }
+}
+
+public struct BridgeRoute: Sendable, Equatable {
+    public let workspaceID: ID16, requestID: ID16
+    public init(workspaceID: ID16, requestID: ID16) { self.workspaceID = workspaceID; self.requestID = requestID }
+}
+
+public enum DropPart: String, Sendable { case descriptor, wraps, blob }
+
+/// The seam between the client and any relay (host-api section 1). Bytes in, bytes out: no crypto here. Constructed with
+/// a fixed `RealmContext` and allowed origin; callers cannot override either.
+public protocol RelayTransport: Sendable {
+    func challenge() async throws -> WireReply
+    func login(_ body: Data) async throws -> WireReply
+    func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
+    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply
+    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply
+    func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply
+    func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply
+    func card(workspaceID: ID16, session: RelaySession) async throws -> WireReply
+    func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply
+    func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply
+    func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply
+    func revocation(deviceID: ID16, session: RelaySession) async throws -> WireReply
+    func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
+    func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
+    func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply
+}
+
+/// Something that carries one request to a relay and brings back its reply (the HTTPS client later, the fake now).
+public protocol RequestSender: Sendable {
+    func send(_ request: WireRequest) async throws -> WireReply
+}
+
+/// Thrown by a transport. HTTP failures are not here: they are `WireReply` values.
+public enum TransportError: Error, Equatable, Sendable {
+    case realm(RealmViolation)
+    /// A grants epoch of 0 (reserved for pairing envelopes) or a counter outside its range, refused before any I/O.
+    case invalidEpoch
+    /// A session token or id that cannot be put on the wire safely.
+    case invalidArgument
+    /// The connection was lost; whether the relay committed the request is unknown.
+    case disconnected
+}
