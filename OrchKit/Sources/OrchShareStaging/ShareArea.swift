@@ -4,7 +4,7 @@ import OrchCoordination
 /// Everything the share extension and the app agree on inside `group.io.severin.orch.share` (A8, A10).
 ///
 ///   <share>/share/targets.json                       destinations index (app writes, extension reads)
-///   <share>/share/tombstones.json                    removal generations (OrchStore coordination)
+///   <share>/share/tombstones.json                    removal generations (OrchCoordination)
 ///   <share>/share/staging/<realm>/<ws>/<job>/        staged plaintext (extension writes, app claims)
 ///   <share>/share/quarantine/<realm>/<ws>/<job>/     jobs whose destination went away (wiped with the workspace)
 ///
@@ -38,7 +38,7 @@ public struct ShareArea: Sendable {
 
     static func validate(realm: String, ws: String) throws {
         // Same rules as StoreLayout (a test pins them): realm [a-z0-9_-]+, ws 32 lowercase hex. Kept local so this
-        // module needs only the coordination types (TombstoneCoordination) from OrchStore / OrchCoordination.
+        // module needs only the coordination types (TombstoneCoordination) from OrchCoordination.
         guard !realm.isEmpty, realm.utf8.allSatisfy({ ($0 >= 0x61 && $0 <= 0x7a) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2d || $0 == 0x5f }) else {
             throw ShareError.io("invalid realm")
         }
@@ -48,23 +48,61 @@ public struct ShareArea: Sendable {
     }
 
     /// Creates `dir` and every missing component below `shareDir` with Complete protection, excluded from backup.
+    /// An existing component that is not a real directory (a symbolic link, a file) is refused, never followed.
     func ensureDirectory(_ dir: URL) throws {
-        let fm = FileManager.default
         let base = shareDir.standardizedFileURL.pathComponents
         let target = dir.standardizedFileURL.pathComponents
         guard target.count >= base.count, Array(target.prefix(base.count)) == base else { throw ShareError.io("outside share dir") }
         var current = shareDir.standardizedFileURL
-        let rest = Array(target.dropFirst(base.count))
-        try Self.prepare(current, create: true)
-        for part in rest {
+        try Self.prepare(current, intermediates: true)
+        for part in target.dropFirst(base.count) {
             current = current.appendingPathComponent(part, isDirectory: true)
-            if !fm.fileExists(atPath: current.path) { try Self.prepare(current, create: true) }
+            try Self.prepare(current)
         }
     }
 
-    static func prepare(_ url: URL, create: Bool) throws {
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: url.path) { try fm.createDirectory(at: url, withIntermediateDirectories: true) }
+    /// True when `url` and every component between `shareDir` and it are real directories (lstat: no symbolic links).
+    func isRealDirectoryChain(_ url: URL) -> Bool {
+        let base = shareDir.standardizedFileURL.pathComponents
+        let target = url.standardizedFileURL.pathComponents
+        guard target.count >= base.count, Array(target.prefix(base.count)) == base else { return false }
+        var current = shareDir.standardizedFileURL
+        guard Self.isRealDirectory(current) else { return false }
+        for part in target.dropFirst(base.count) {
+            current = current.appendingPathComponent(part, isDirectory: true)
+            guard Self.isRealDirectory(current) else { return false }
+        }
+        return true
+    }
+
+    static func isRealDirectory(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    static func exists(_ url: URL) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0
+    }
+
+    /// Removes what is at `url` without following links: a symbolic link is unlinked itself; a directory is removed
+    /// only when every parent below `shareDir` is a real directory.
+    @discardableResult
+    func safeRemove(_ url: URL) -> Bool {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else { return true }
+        if (st.st_mode & S_IFMT) == S_IFLNK { return unlink(url.path) == 0 }
+        guard isRealDirectoryChain(url.deletingLastPathComponent()) else { return false }
+        return (try? FileManager.default.removeItem(at: url)) != nil
+    }
+
+    static func prepare(_ url: URL, intermediates: Bool = false) throws {
+        var st = stat()
+        if lstat(url.path, &st) == 0 {
+            guard (st.st_mode & S_IFMT) == S_IFDIR else { throw ShareError.io("not a real directory") }
+        } else {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: intermediates)
+        }
         Self.protect(url)
         var u = url
         var rv = URLResourceValues()
@@ -137,6 +175,7 @@ public enum ShareTargetIndex {
     /// Extension side. Missing file means the app never published a workspace (`.noWorkspaces`). Anything unreadable
     /// or invalid fails closed (`.unreadable`); removed (tombstoned) destinations are filtered out.
     public static func load(from area: ShareArea) throws -> [ShareTarget] {
+        if ShareArea.exists(area.shareDir), !ShareArea.isRealDirectory(area.shareDir) { throw ShareError.unreadable }
         let data: Data
         do { data = try ShareFS.readFile(area.targetsURL, cap: 256 * 1024) }
         catch ShareFS.ReadFailure.notFound { throw ShareError.noWorkspaces }

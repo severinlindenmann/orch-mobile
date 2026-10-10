@@ -296,3 +296,138 @@ struct FixRoundTests {
         #expect(left == ["a2", "b1"])   // newer generation and other workspace untouched
     }
 }
+
+struct LinkAndNameTests {
+    func staged(_ area: ShareArea, _ t: ShareTarget = target()) throws -> String {
+        let s = try StagingSession(area: area, target: t); try s.add(.text("secret")); return try s.commit(note: nil)
+    }
+    func outsideFile() throws -> (URL, URL) {
+        let dir = tmp(); let f = dir.appendingPathComponent("victim.txt")
+        try Data("victim".utf8).write(to: f); return (dir, f)
+    }
+    let live: Set = [LiveDestination(realm: "live", ws: WS, generation: 1)]
+
+    @Test func symlinkedJobDirIsNeverListedClaimedOrFollowed() throws {
+        let area = ShareArea(shareGroupRoot: tmp()); let inbox = ShareInbox(area: area)
+        let id = try staged(area)
+        let wsDir = try area.stagingDir(realm: "live", ws: WS)
+        let real = wsDir.appendingPathComponent(id)
+        let outside = tmp().appendingPathComponent(id)
+        try FileManager.default.moveItem(at: real, to: outside)
+        try FileManager.default.createSymbolicLink(at: real, withDestinationURL: outside)
+        #expect(inbox.peekReady().isEmpty)
+        #expect(inbox.claim(live: live).claimed.isEmpty && inbox.claim(live: []).quarantined.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: outside.appendingPathComponent("item-1").path))   // target untouched
+        inbox.purge(realm: "live", ws: WS)  // removes the link, not the target
+        #expect(FileManager.default.fileExists(atPath: outside.appendingPathComponent("item-1").path))
+    }
+
+    @Test func symlinkedRealmOrWorkspaceDirIsNotTraversedOrPurgedThrough() throws {
+        let area = ShareArea(shareGroupRoot: tmp()); let inbox = ShareInbox(area: area)
+        _ = try staged(area)
+        let realmDir = area.stagingRoot.appendingPathComponent("live")
+        let outsideRoot = tmp()
+        try FileManager.default.moveItem(at: realmDir, to: outsideRoot.appendingPathComponent("live"))
+        try FileManager.default.createSymbolicLink(at: realmDir, withDestinationURL: outsideRoot.appendingPathComponent("live"))
+        #expect(inbox.peekReady().isEmpty && inbox.claim(live: live).claimed.isEmpty)
+        try area.coordination.write(TombstoneRecord(realm: "live", ws: WS, generation: 1))
+        let r = inbox.purgeTombstoned()
+        inbox.purge(realm: "live", ws: WS)
+        inbox.sweep(now: Date().addingTimeInterval(30 * 86_400))
+        #expect(r.removed == 0)
+        // Everything the symlink pointed at survives.
+        #expect(names(outsideRoot.appendingPathComponent("live/\(WS)")).count == 1)
+        // A symlinked ws directory likewise.
+        let area2 = ShareArea(shareGroupRoot: tmp()); let inbox2 = ShareInbox(area: area2)
+        _ = try staged(area2)
+        let ws2 = try area2.stagingDir(realm: "live", ws: WS)
+        let out2 = tmp().appendingPathComponent("ws")
+        try FileManager.default.moveItem(at: ws2, to: out2)
+        try FileManager.default.createSymbolicLink(at: ws2, withDestinationURL: out2)
+        #expect(inbox2.peekReady().isEmpty)
+        inbox2.purge(realm: "live", ws: WS)
+        #expect(names(out2).count == 1)
+    }
+
+    @Test func symlinkedStagingRootIsRefused() throws {
+        let area = ShareArea(shareGroupRoot: tmp()); let inbox = ShareInbox(area: area)
+        _ = try staged(area)
+        let out = tmp().appendingPathComponent("staging")
+        try FileManager.default.moveItem(at: area.stagingRoot, to: out)
+        try FileManager.default.createSymbolicLink(at: area.stagingRoot, withDestinationURL: out)
+        #expect(inbox.peekReady().isEmpty)
+        #expect(throws: (any Error).self) { try StagingSession(area: area, target: target()).add(.text("x")) }
+        #expect(names(out.appendingPathComponent("live/\(WS)")).count == 1)
+    }
+
+    @Test func symlinkedItemIsNeverReadCopiedOrDeletedThrough() throws {
+        let area = ShareArea(shareGroupRoot: tmp()); let inbox = ShareInbox(area: area)
+        let id = try staged(area)
+        let (_, victim) = try outsideFile()
+        let item = try area.stagingDir(realm: "live", ws: WS).appendingPathComponent(id).appendingPathComponent("item-1")
+        try FileManager.default.removeItem(at: item)
+        try FileManager.default.createSymbolicLink(at: item, withDestinationURL: victim)
+        let job = inbox.peekReady()[0]
+        #expect(inbox.text(of: job.manifest.items[0], in: job) == nil)
+        inbox.complete(job)
+        #expect(try String(contentsOf: victim, encoding: .utf8) == "victim")   // removal unlinks the link only
+        // Quarantined copy of such a job cannot be redirected into a new job either.
+        let id2 = try staged(area, target(WS2))
+        let item2 = try area.stagingDir(realm: "live", ws: WS2).appendingPathComponent(id2).appendingPathComponent("item-1")
+        try FileManager.default.removeItem(at: item2)
+        try FileManager.default.createSymbolicLink(at: item2, withDestinationURL: victim)
+        let q = inbox.claim(live: []).quarantined[0]
+        #expect(throws: (any Error).self) { try inbox.redirect(q, to: LiveDestination(realm: "live", ws: WS, generation: 1)) }
+        #expect(inbox.peekReady().isEmpty)
+    }
+
+    @Test func symlinkedReadyMarkerDoesNotMakeAJobReady() throws {
+        let area = ShareArea(shareGroupRoot: tmp()); let inbox = ShareInbox(area: area)
+        let id = try staged(area)
+        let ready = try area.stagingDir(realm: "live", ws: WS).appendingPathComponent(id).appendingPathComponent("READY")
+        try FileManager.default.removeItem(at: ready)
+        let (_, victim) = try outsideFile()
+        try FileManager.default.createSymbolicLink(at: ready, withDestinationURL: victim)
+        #expect(inbox.peekReady().isEmpty)
+    }
+
+    @Test func pathStringsAreValidatedAsExactAsciiBytes() throws {
+        let area = ShareArea(shareGroupRoot: tmp())
+        let uuid = "11111111-1111-4111-8111-111111111111"
+        let badIDs = ["%2e%2e", "%2E%2E%2Ftargets.json", "..", "../x", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", uuid + "/", uuid + "\u{0}", " " + uuid,
+                      "１１１１１１１１-1111-4111-8111-111111111111",           // fullwidth digits
+                      "11111111-1111-4111-8111-11111111111\u{0131}",           // dotless i / look-alike
+                      String(uuid.dropLast()) + "а"]                           // Cyrillic a
+        for bad in badIDs {
+            #expect(throws: ShareError.self) { try StagingSession(area: area, target: target(), jobID: bad) }
+        }
+        for bad in ["Live", "LIVE", "li\u{0435}", "liv%65", "a/../b", "live/", ".", "..", "live\u{0}", "ｌｉｖｅ"] {
+            #expect(throws: ShareError.self) { try area.stagingDir(realm: bad, ws: WS) }
+        }
+        for bad in [String(repeating: "A", count: 32), String(repeating: "a", count: 31) + "%", String(repeating: "а", count: 32),
+                    String(repeating: "a", count: 31) + "\u{0301}", "%2e%2e" + String(repeating: "a", count: 26), "../" + String(repeating: "a", count: 29)] {
+            #expect(throws: ShareError.self) { try area.stagingDir(realm: "live", ws: bad) }
+        }
+        // On disk: directories with look-alike or uppercase names are ignored (and never deleted via other names).
+        let inbox = ShareInbox(area: area)
+        let s = try StagingSession(area: area, target: target()); try s.add(.text("x")); try s.commit(note: nil)
+        let wsDir = try area.stagingDir(realm: "live", ws: WS)
+        let real = wsDir.appendingPathComponent(s.id)
+        let upper = wsDir.appendingPathComponent(s.id.uppercased())
+        // On a case-insensitive volume the uppercase name aliases the real directory: it must not be accepted as a name.
+        _ = try? FileManager.default.copyItem(at: real, to: wsDir.appendingPathComponent("%2e%2e"))
+        try? FileManager.default.copyItem(at: real, to: wsDir.appendingPathComponent("Z" + s.id))
+        #expect(inbox.peekReady().map(\.dir.lastPathComponent) == [s.id])
+        _ = upper
+    }
+
+    @Test func manifestStringsAreComparedAsBytesNotCanonicalUnicode() throws {
+        let area = ShareArea(shareGroupRoot: tmp()); let inbox = ShareInbox(area: area)
+        let s = try StagingSession(area: area, target: target()); try s.add(.text("x")); let id = try s.commit(note: nil)
+        let dir = try area.stagingDir(realm: "live", ws: WS).appendingPathComponent(id)
+        var m = try JSONDecoder().decode(JobManifest.self, from: Data(contentsOf: dir.appendingPathComponent("manifest.json")))
+        m.realm = "live\u{0301}"
+        try JSONEncoder().encode(m).write(to: dir.appendingPathComponent("manifest.json"))
+        #expect(inbox.peekReady().isEmpty)
+    }
+}

@@ -52,7 +52,7 @@ printf 'import CryptoKit\n' >> "$tmp/repo/OrchKit/Sources/OrchShareStaging/Manif
 expect_failure "CryptoKit inside a module the share extension links"
 
 fresh_copy
-sed -i.bak 's/X/' "$tmp/repo/project.yml"
+sed -i.bak 's/products: \[OrchUI, OrchCoordination, OrchShareStaging\]/products: [OrchUI, OrchCoordination, OrchShareStaging, OrchCustody]/' "$tmp/repo/project.yml"
 expect_failure "share extension linking OrchCustody"
 fresh_copy
 printf 'import struct OrchCustody.DeviceKey\n' >> "$tmp/repo/ShareExtension/ShareViewController.swift"
@@ -75,10 +75,10 @@ printf 'func f() { _ = SecItemAdd }\n' >> "$tmp/repo/OrchKit/Sources/OrchShareSt
 expect_failure "SecItem in a module the share extension links"
 
 fresh_copy
-printf 'import struct CryptoKit.SHA256\n' >> "$tmp/repo/OrchKit/Sources/OrchStore/Module.swift"
-expect_failure "kind-qualified CryptoKit import in OrchStore (linked by the share extension)"
+printf 'import struct CryptoKit.SHA256\n' >> "$tmp/repo/OrchKit/Sources/OrchCoordination/Tombstones.swift"
+expect_failure "kind-qualified CryptoKit import in OrchCoordination (linked by the share extension)"
 fresh_copy
-sed -i.bak 's/products: \\[OrchUI, OrchCoordination, OrchShareStaging\\]/products: [OrchUI, OrchCoordination, OrchShareStaging, OrchStore]/' "$tmp/repo/project.yml"
+sed -i.bak 's/products: \[OrchUI, OrchCoordination, OrchShareStaging\]/products: [OrchUI, OrchCoordination, OrchShareStaging, OrchStore]/' "$tmp/repo/project.yml"
 expect_failure "share extension linking OrchStore (SQLite)"
 
 fresh_copy

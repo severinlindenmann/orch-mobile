@@ -15,17 +15,19 @@ public enum ProviderStager {
                 try await copyFileURLValue(p, session: session)
             }
         } else if p.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            let item = try await p.loadItem(forTypeIdentifier: UTType.url.identifier)
-            if let url = urlValue(item) { try session.add(.url(url.absoluteString)) }
-            else if let text = item as? String { try session.add(.url(text)) }
-            else { throw ShareError.unsupported("url") }
+            switch try await loadValue(p, UTType.url.identifier) {
+            case .url(let url): try session.add(.url(url.absoluteString))
+            case .string(let text): try session.add(.url(text))
+            default: throw ShareError.unsupported("url")
+            }
         } else if p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) || p.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
             let id = p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) ? UTType.plainText.identifier : UTType.text.identifier
-            let item = try await p.loadItem(forTypeIdentifier: id)
-            if let text = item as? String { try session.add(.text(text)) }
-            else if let data = item as? Data { try session.add(.text(String(decoding: data, as: UTF8.self))) }
-            else if let url = urlValue(item) { try session.add(.text(url.absoluteString)) }  // never read as a file
-            else { throw ShareError.unsupported("text") }
+            switch try await loadValue(p, id) {
+            case .string(let text): try session.add(.text(text))
+            case .data(let data): try session.add(.text(String(decoding: data, as: UTF8.self)))
+            case .url(let url): try session.add(.text(url.absoluteString))   // never read as a file
+            case .other: throw ShareError.unsupported("text")
+            }
         } else if let type = advertisedDataType(p) {
             try await copyRepresentation(p, type: type, session: session)
         } else {
@@ -33,11 +35,24 @@ public enum ProviderStager {
         }
     }
 
-    /// Providers hand a URL back as a URL or as its data representation.
-    static func urlValue(_ item: Any) -> URL? {
-        if let url = item as? URL { return url }
-        if let data = item as? Data { return URL(dataRepresentation: data, relativeTo: nil) }
-        return nil
+    /// A provider's value reduced to Sendable data inside the completion handler (`NSSecureCoding` is not Sendable).
+    enum LoadedValue: Sendable { case url(URL), data(Data), string(String), other }
+
+    /// Completion-handler variant on purpose: the async `loadItem` returns a non-Sendable value, which older compilers reject.
+    @MainActor static func loadValue(_ p: NSItemProvider, _ type: String) async throws -> LoadedValue {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<LoadedValue, Error>) in
+            p.loadItem(forTypeIdentifier: type, options: nil) { item, error in
+                if let error { c.resume(throwing: error); return }
+                // Providers hand a URL back as a URL or as its data representation.
+                if let url = item as? URL { c.resume(returning: .url(url)) }
+                else if let text = item as? String { c.resume(returning: .string(text)) }
+                else if let data = item as? Data {
+                    if type == UTType.url.identifier || type == UTType.fileURL.identifier,
+                       let url = URL(dataRepresentation: data, relativeTo: nil) { c.resume(returning: .url(url)) }
+                    else { c.resume(returning: .data(data)) }
+                } else { c.resume(returning: .other) }
+            }
+        }
     }
 
     /// A content type the provider genuinely advertises as data (not a URL, whose supertype is also data).
@@ -62,8 +77,8 @@ public enum ProviderStager {
 
     /// Provider with only `public.file-url`: the extension itself reads the file while access is valid.
     @MainActor private static func copyFileURLValue(_ p: NSItemProvider, session: StagingSession) async throws {
-        let item = try await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier)
-        guard let url = urlValue(item), url.isFileURL else { throw ShareError.unsupported("file url") }
+        let value = try await loadValue(p, UTType.fileURL.identifier)
+        guard case .url(let url) = value, url.isFileURL else { throw ShareError.unsupported("file url") }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         try session.add(.file(url, name: p.suggestedName ?? url.lastPathComponent, type: nil))
