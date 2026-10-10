@@ -55,16 +55,37 @@ extension FakeHost {
         try await beginRotation(remaining: remaining, relay: relay, session: session).value
     }
 
-    /// Every entry point installs the gate synchronously, before publication can suspend. Concurrent callers join it.
-    /// Only the publication task owns cleanup, so a waiter cannot clear the gate of a later rotation.
+    /// Keep the gate raised for the whole queue, including retries. A later request cannot restore a device
+    /// removed since the gate was raised. Compare full rosters (including keys/scopes), independent of order.
     private func beginRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) -> Task<Void, Error> {
-        if let rotation { return rotation }
         rotationRequired = true
-        pendingRotation = (remaining, relay, session)
+        let sameRoster = lastRotationRoster.map { previous in
+            previous.count == remaining.count && previous.allSatisfy { keys, scopes in
+                remaining.contains { $0.0 == keys && Set($0.1) == Set(scopes) }
+            }
+        } ?? false
+        if !sameRoster {
+            let previousIDs = lastRotationRoster.map { Set($0.map { $0.0.deviceID }) } ?? Set(roster.keys)
+            let requestedIDs = Set(remaining.map { $0.0.deviceID })
+            rotationRemoved.formUnion(previousIDs.subtracting(requestedIDs))
+            rotationRemoved.formUnion(core.revoked)
+            lastRotationRoster = remaining
+            pendingRotations.append((remaining.filter { !rotationRemoved.contains($0.0.deviceID) }, relay, session))
+        }
+        return drainRotations()
+    }
+
+    /// Only this task owns cleanup. Failed and unstarted requests stay queued for the next pump.
+    private func drainRotations() -> Task<Void, Error> {
+        if let rotation { return rotation }
         let task = Task {
             defer { rotation = nil }
-            try await publishRotation(remaining: remaining, relay: relay, session: session)
-            pendingRotation = nil
+            while let pending = pendingRotations.first {
+                try await publishRotation(remaining: pending.remaining, relay: pending.relay, session: pending.session)
+                pendingRotations.removeFirst()
+            }
+            lastRotationRoster = nil
+            rotationRemoved = []
             rotationRequired = false
         }
         rotation = task
@@ -198,15 +219,18 @@ extension FakeHost {
         }
     }
 
-    /// Publishes the pending rotation (grants, list, new epoch) for the roster minus every revoked device. Joins one in progress.
-    /// `rotationRequired` is cleared only on success.
+    /// Revocations use the same queue as public rotations; retries preserve every outstanding request.
+    /// `rotationRequired` is cleared only after the queue succeeds.
     @discardableResult
     private func runRotation() async -> Bool {
         let task: Task<Void, Error>
-        if let rotation { task = rotation }
-        else if let pending = pendingRotation {
+        if let pending = pendingRotations.last {
             let remaining = pending.remaining.filter { !core.revoked.contains($0.0.deviceID) }
-            task = beginRotation(remaining: remaining, relay: pending.relay, session: pending.session)
+            if remaining.count != pending.remaining.count {
+                task = beginRotation(remaining: remaining, relay: pending.relay, session: pending.session)
+            } else {
+                task = drainRotations()
+            }
         } else {
             guard let ctx = bridgeRelay else { return false }
             let remaining = roster.filter { !core.revoked.contains($0.key) }.map { ($0.value.keys, $0.value.scopes) }

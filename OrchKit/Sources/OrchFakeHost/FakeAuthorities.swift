@@ -107,7 +107,9 @@ public actor FakeHost {
     /// A rotation in progress. Requests wait for it, so nothing new is sealed under an epoch being retired.
     var rotation: Task<Void, Error>?
     /// Retained across publication failures, including public rotations with an explicitly changed roster.
-    var pendingRotation: (remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession)?
+    var pendingRotations: [(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession)] = []
+    var lastRotationRoster: [(DemoKeys, [String])]?
+    var rotationRemoved: Set<ID16> = []
     /// Set BEFORE any rotation suspends (or a revocation removes a member), cleared only after grants, list and epoch install. While set,
     /// no data is sealed; the next pump retries the publication.
     var rotationRequired = false
