@@ -123,11 +123,15 @@ public struct RealmContext: Sendable {
     /// The identity must carry this context's realm tag, which only an in-package custody sets: a wrapper custody that
     /// answers a Demo request with live keys (or the reverse) is refused with `RealmViolation.wrongStore`.
     public func deviceIdentity(custody: any DeviceKeyCustody, createIfMissing: Bool) throws -> DeviceIdentity {
+        // A stale Demo context must not touch custody at all (it would recreate keys a reset just deleted).
+        try generation?.check()
         let identity: DeviceIdentity
         do { identity = try custody.load(realm: realm) }
         catch CustodyError.missing where createIfMissing { identity = try custody.create(realm: realm) }
         try admit(identity: identity)
-        return identity
+        // Every Demo identity is leased to the context's generation: its handles stop signing when the Demo is reset.
+        guard let g = generation else { return identity }
+        return DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: g), kx: LeasedKeyAgreer(inner: identity.kx, generation: g), realm: identity.realm)
     }
 
     /// An identity of the other realm never signs, logs in or is bound in this one.

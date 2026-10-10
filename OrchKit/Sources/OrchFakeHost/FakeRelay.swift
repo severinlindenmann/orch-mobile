@@ -600,6 +600,9 @@ public actor FakeRelay: RequestSender {
             let key: BoxKey
             if response {
                 guard s.id == wsID else { return refuse(403, .notForThisDevice) }
+                // The recipient is checked now, after any fault delay and with no suspension before the store: a device revoked or
+                // removed while the host's response was in flight gets no mailbox.
+                if revoked.contains(h.device) { return refuse(403, .revoked) }
                 guard workspaces[wsID]?.list?.members.contains(where: { $0.deviceID == h.device }) == true else { return refuse(403, .notEligible) }
                 key = BoxKey(ws: wsID, device: h.device, offer: nil, rid: ridID)
             } else {

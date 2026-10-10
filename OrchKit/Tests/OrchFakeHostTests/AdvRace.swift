@@ -10,7 +10,13 @@ import OrchProtocol
 /// The security review's interleavings, with the fixed behaviour asserted. Every one drives a fault delay (an `await` inside the
 /// relay) and changes authoritative state while the request is suspended; the clock is injected, so the order is exact.
 @Suite struct AdvRace {
-    private func waitForSleepers(_ w: World, _ n: Int) async { while w.clock.sleeperCount < n { await Task.yield() } }
+    /// Bounded: a regression that stops requests reaching their delay fails the test instead of hanging CI.
+    private func waitForSleepers(_ w: World, _ n: Int) async -> Bool {
+        for _ in 0..<200_000 where w.clock.sleeperCount < n { await Task.yield() }
+        if w.clock.sleeperCount >= n { return true }
+        Issue.record("expected \(n) sleepers, saw \(w.clock.sleeperCount)")
+        return false
+    }
 
     @Test func aDeviceRemovedDuringADelayedPostIsRefusedAndNothingIsQueued() async throws {
         let faults = ScriptedFaults().enqueue(.delay(.seconds(5)), at: .beforeQueue, routePrefix: "POST bridge")
@@ -19,7 +25,7 @@ import OrchProtocol
         let env = try w.envelope(rid: rid)
         let (t, s) = (w.transport, w.phoneSession)
         let post = Task { try await t.bridgePost(env, route: BridgeRoute(workspaceID: w.ws, requestID: rid), session: s) }
-        await waitForSleepers(w, 1)
+        guard await waitForSleepers(w, 1) else { post.cancel(); return }
         // While the phone's request is suspended inside the actor, the host removes the phone (epoch 2, primary only).
         try await w.relay.putGrant(try await w.host.grant(for: w.primary.deviceKeys, epoch: 2), token: w.hostSession.token)
         try await w.relay.publishMemberList(try await w.host.memberList([(w.primaryID, World.all)], epoch: 2, listSeq: 2), token: w.hostSession.token)
@@ -38,7 +44,7 @@ import OrchProtocol
         let env = try w.envelope(rid: rid)
         let (t, s) = (w.transport, w.phoneSession)
         let post = Task { try await t.bridgePost(env, route: BridgeRoute(workspaceID: w.ws, requestID: rid), session: s) }
-        await waitForSleepers(w, 1)
+        guard await waitForSleepers(w, 1) else { post.cancel(); return }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID))
         w.clock.advance(by: .seconds(5))
         let r = try await post.value
@@ -59,7 +65,7 @@ import OrchProtocol
             let ws = w.ws
             tasks.append(Task { try await t.bridgePost(e, route: BridgeRoute(workspaceID: ws, requestID: rid), session: s) })
         }
-        await waitForSleepers(w, 5)
+        guard await waitForSleepers(w, 5) else { tasks.forEach { $0.cancel() }; return }
         w.clock.advance(by: .seconds(1))
         var statuses: [Int] = []; for task in tasks { statuses.append(try await task.value.status) }
         #expect(statuses.filter { $0 == 202 }.count == 1 && statuses.filter { $0 == 429 }.count == 4)
@@ -80,10 +86,29 @@ import OrchProtocol
             let target = "/mobile/host-api/0/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)"
             tasks.append(Task { try await relay.send(WireRequest(method: "POST", target: target, headers: ["Orch-Host-API": "0"], body: env, clientAddress: "198.51.100.7")) })
         }
-        await waitForSleepers(w, 4)
+        guard await waitForSleepers(w, 4) else { tasks.forEach { $0.cancel() }; return }
         w.clock.advance(by: .seconds(1))
         var statuses: [Int] = []; for task in tasks { statuses.append(try await task.value.status) }
         #expect(statuses.filter { $0 == 202 }.count == 2 && statuses.filter { $0 == 429 }.count == 2)
+    }
+
+    @Test func aDelayedHostResponseCannotRepopulateARevokedDevicesMailbox() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        let rid = ID16.fresh(0x34)
+        let rig = HostRig()
+        let resp = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
+        faults.enqueue(.delay(.seconds(3)), at: .beforeQueue, routePrefix: "POST bridge")
+        let (t, s, ws) = (w.transport, w.hostSession, w.ws)
+        let post = Task { try await t.bridgePost(resp, route: BridgeRoute(workspaceID: ws, requestID: rid), session: s) }
+        guard await waitForSleepers(w, 1) else { post.cancel(); return }
+        // The phone is revoked while the host's response is in flight (the revoked device is still in the last list).
+        try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID))
+        w.clock.advance(by: .seconds(3))
+        let r = try await post.value
+        #expect(r.status == 403 && errorCode(r) == "revoked")
+        let stored = await w.relay.storedBodyCount(), boxes = await w.relay.mailboxCount()
+        #expect(stored == 0 && boxes == 0)
     }
 
     @Test func aResetDuringADelayedPostStoresNothingAndTheCallerSeesAStaleGeneration() async throws {
@@ -93,13 +118,20 @@ import OrchProtocol
         let env = try w.envelope(rid: rid)
         let (t, s, ws) = (w.transport, w.phoneSession, w.ws)
         let post = Task { try await t.bridgePost(env, route: BridgeRoute(workspaceID: ws, requestID: rid), session: s) }
-        await waitForSleepers(w, 1)
+        guard await waitForSleepers(w, 1) else { post.cancel(); return }
         try await DemoSetup.reset(w.env, custody: w.custody, vaults: [w.vault])
         w.clock.advance(by: .seconds(5))
         await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await post.value }
         let stored = await w.relay.storedBodyCount(), sessions = await w.relay.sessionCount()
         #expect(stored == 0 && sessions == 0)
     }
+}
+
+private func waitForSleepers(_ w: World, _ n: Int) async -> Bool {
+    for _ in 0..<200_000 where w.clock.sleeperCount < n { await Task.yield() }
+    if w.clock.sleeperCount >= n { return true }
+    Issue.record("expected \(n) sleepers, saw \(w.clock.sleeperCount)")
+    return false
 }
 
 @Suite struct AdvGrant {
@@ -152,7 +184,7 @@ import OrchProtocol
         faults.enqueue(.delay(.seconds(20)), at: .beforeGrantPublication)
         let (relay, token) = (w.relay, w.hostSession.token)
         let upload = Task { try await relay.putGrant(grant, token: token) }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        guard await waitForSleepers(w, 1) else { upload.cancel(); return }
         w.clock.advance(by: .seconds(20))
         await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certExpired))) { try await upload.value }
         #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1) == false)
@@ -167,7 +199,7 @@ import OrchProtocol
         faults.enqueue(.delay(.seconds(2)), at: .beforeGrantPublication)
         let (relay, token) = (w.relay, w.hostSession.token)
         let upload = Task { try await relay.putGrant(grant, token: token) }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        guard await waitForSleepers(w, 1) else { upload.cancel(); return }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: keys.deviceID))
         w.clock.advance(by: .seconds(2))
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { try await upload.value }
