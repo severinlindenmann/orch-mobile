@@ -9,8 +9,8 @@ public enum RelayURL {
         let u = Array(s.utf8)
         func isHostChar(_ c: UInt8) -> Bool { (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) }
         func validPort(_ p: ArraySlice<UInt8>) -> Bool {
-            guard p.count >= 1, p.count <= 5, p.first != 0x30 else { return false }
-            return p.allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
+            guard p.count >= 1, p.count <= 5, p.first != 0x30, p.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return false }
+            return Int(String(decoding: p, as: UTF8.self))! <= 65535
         }
         func splitPort(_ rest: ArraySlice<UInt8>) -> (host: ArraySlice<UInt8>, port: ArraySlice<UInt8>?)? {
             if rest.first == UInt8(ascii: "[") {            // only [::1]
@@ -28,6 +28,12 @@ public enum RelayURL {
             guard let (host, port) = splitPort(u[https.count...]), !host.isEmpty, host.first != UInt8(ascii: "[") else { return false }
             guard isHostChar(host.first!), isHostChar(host.last!),
                   host.allSatisfy({ isHostChar($0) || $0 == UInt8(ascii: ".") || $0 == UInt8(ascii: "-") }) else { return false }
+            // no empty labels; no all-digit or hex-numeric label (2130706433, 0x7f000001, 1.2.3.4): those are IP spellings.
+            // Punycode labels (xn--) are accepted; a UI shows the ASCII host and never decodes IDN.
+            for label in host.split(separator: UInt8(ascii: "."), omittingEmptySubsequences: false) {
+                if label.isEmpty || label.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) { return false }
+                if label.starts(with: Array("0x".utf8)), label.dropFirst(2).allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) { return false }
+            }
             return port.map(validPort) ?? true
         }
         if u.starts(with: http) {
@@ -92,10 +98,13 @@ public struct VerifiedCard: Equatable, Sendable {
     /// The signed `o`.
     public let object: [String: JSONValue]
 
+    public var objectDigest: Data { Self.digest(object) }
+    public static func digest(_ o: [String: JSONValue]) -> Data { Data(SHA256.hash(data: (try? canonicalJSON(.object(o))) ?? Data())) }
+
     /// What a phone or relay keeps to judge the next card against.
     public var head: Card.Head {
         Card.Head(workspace: workspace, ownerPersonID: ownerPersonID, wsk: wsk, wxk: wxk, wxkVersion: wxkVersion, cardSeq: cardSeq,
-                  delegationObject: delegation.object)
+                  delegationObject: delegation.object, objectDigest: Self.digest(object))
     }
 }
 
@@ -181,14 +190,20 @@ public enum Card {
         public let wxk: AgreementPublicKey
         public let wxkVersion: UInt32, cardSeq: UInt32
         public let delegationObject: [String: JSONValue]
+        /// `H(cj(o))` of the accepted card: a same-sequence card with other content is a conflict.
+        public let objectDigest: Data
         public init(workspace: ID16, ownerPersonID: ID16, wsk: SigningPublicKey, wxk: AgreementPublicKey, wxkVersion: UInt32,
-                    cardSeq: UInt32, delegationObject: [String: JSONValue]) {
+                    cardSeq: UInt32, delegationObject: [String: JSONValue], objectDigest: Data) {
+            self.objectDigest = objectDigest
             self.workspace = workspace; self.ownerPersonID = ownerPersonID; self.wsk = wsk; self.wxk = wxk
             self.wxkVersion = wxkVersion; self.cardSeq = cardSeq; self.delegationObject = delegationObject
         }
     }
 
-    public static func checkUpdate(previous: Head?, next: VerifiedCard) throws {
+    /// Relay publication rules (section 7.1 "Update rules"): strictly increasing `card_seq`, `wxk_version` rising by exactly 1
+    /// with a different key. Not for a phone: a phone reconnecting sees the same card again and may have missed rotations;
+    /// it uses `checkSnapshot`.
+    public static func checkRelayUpdate(previous: Head?, next: VerifiedCard) throws {
         guard let p = previous else { return }
         guard next.workspace == p.workspace, next.ownerPersonID == p.ownerPersonID else { throw Refusal.otherWorkspace }
         guard next.wsk == p.wsk else { throw Refusal.wskChanged }
@@ -198,6 +213,29 @@ public enum Card {
         if next.wxkVersion == p.wxkVersion {
             guard next.wxk == p.wxk else { throw Refusal.wxkChangedWithoutVersion }
         } else if next.wxkVersion != p.wxkVersion &+ 1 || next.wxk == p.wxk || p.wxkVersion == UInt32.max {
+            throw Refusal.badWxkVersion
+        }
+    }
+
+    /// What a device does with a card it fetched, given the last card it accepted (`known`, nil on first contact or late join).
+    /// It keeps the identity pins (workspace, owner, `WSK`, delegation byte for byte), accepts the identical card again
+    /// (reconnect) and any forward jump (missed rotations), and refuses rollback and conflicting content under one sequence.
+    /// `WXK` must change exactly when `wxk_version` rises, never fall back.
+    public static func checkSnapshot(known: Head?, next: VerifiedCard) throws {
+        guard let k = known else { return }
+        guard next.workspace == k.workspace, next.ownerPersonID == k.ownerPersonID else { throw Refusal.otherWorkspace }
+        guard next.wsk == k.wsk else { throw Refusal.wskChanged }
+        guard let a = try? canonicalJSON(.object(next.delegation.object)), let b = try? canonicalJSON(.object(k.delegationObject)),
+              a == b else { throw Refusal.delegationChanged }
+        if next.cardSeq < k.cardSeq { throw Refusal.staleCard }
+        if next.cardSeq == k.cardSeq {
+            guard next.objectDigest == k.objectDigest else { throw Refusal.conflictingSnapshot }
+            return
+        }
+        if next.wxkVersion < k.wxkVersion { throw Refusal.badWxkVersion }
+        if next.wxkVersion == k.wxkVersion {
+            guard next.wxk == k.wxk else { throw Refusal.wxkChangedWithoutVersion }
+        } else if next.wxk == k.wxk {
             throw Refusal.badWxkVersion
         }
     }

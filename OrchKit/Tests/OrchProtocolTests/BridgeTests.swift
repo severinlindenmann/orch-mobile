@@ -70,7 +70,7 @@ import Testing
                 #expect(a.fetchGrants == (e["fetch_grants"].bool ?? false), "\(name)")
                 #expect(!a.clockWrong, "\(name)")
                 let rid = ID16(hex: c["mailbox"]["id"].str)!
-                #expect(table[rid]!.next == pending[rid]!.next + 1, "\(name)")
+                #expect(table[rid] == (a.last ? nil : Bridge.PendingRequest(next: pending[rid]!.next + 1, stream: pending[rid]!.stream, epoch: pending[rid]!.epoch)), "\(name)")
             case .drop(let why):
                 #expect(e["result"].str == "drop" && e["why"].str == why.code, "\(name)")
                 if case .hostSignature(let pin) = why { #expect(pin == e["pin_failure"].bool, "\(name)") }
@@ -137,15 +137,35 @@ import Testing
         let first = Bridge.checkResponse(env, context: r.ctx, pending: r.pending, mailbox: .init(id: r.rid, index: 0, last: true, stream: false), nowMs: r.now)
         guard case .accept(let a) = first.outcome else { Issue.record("accept"); return }
         #expect(a.offsetMs == 3_600_000 && a.refusal)
-        #expect(first.pending[r.rid]!.offsetAdopted)
-        // second one for the same rid: no new offset
-        var p2 = first.pending; p2[r.rid]!.next = 0
-        guard case .accept(let b) = Bridge.checkResponse(env, context: r.ctx, pending: p2, mailbox: .init(id: r.rid, index: 0, last: true, stream: false), nowMs: r.now).outcome else { Issue.record("accept 2"); return }
+        #expect(first.pending[r.rid] == nil)                                                    // `last` retires the rid
+        // a repeat of the chunk after `last` is dropped, signed or not
+        #expect(Bridge.checkResponse(env, context: r.ctx, pending: first.pending, mailbox: .init(id: r.rid, index: 0, last: true, stream: false), nowMs: r.now).outcome == .drop(.unknownRequest))
+        // a second stale_timestamp refusal for a rid that already adopted an offset gets the normal window check, not a pass
+        let adopted: [ID16: Bridge.PendingRequest] = [r.rid: .init(epoch: 3, offsetAdopted: true)]
+        let skewed = try r.chunk(flags: [.last, .refusal], ts: 1, meta: ["refusal": "stale_timestamp", "host_ms": .int(r.now)], data: Data())
+        #expect(r.check(skewed, pending: adopted) == .drop(.staleTimestamp))
+        guard case .accept(let b) = r.check(env, pending: adopted, now: r.now + 3_600_000) else { Issue.record("accept 2"); return }
         #expect(b.offsetMs == nil && !b.clockWrong)
         // more than 24 h away: the device clock is wrong, no offset
         let far = try r.chunk(flags: [.last, .refusal], meta: ["refusal": "stale_timestamp", "host_ms": .int(r.now + 90_000_000)], data: Data())
         guard case .accept(let c) = r.check(far) else { Issue.record("accept 3"); return }
         #expect(c.offsetMs == nil && c.clockWrong)
+    }
+
+    @Test func extremeClockDifferencesNeverTrap() throws {
+        let r = Rig()
+        let mb = Bridge.MailboxPosition(id: r.rid, index: 0, last: true, stream: false)
+        // nowMs - ts == Int64.min exactly (no overflow, but abs would trap)
+        let env = try r.chunk(ts: Int64.max)
+        #expect(Bridge.checkResponse(env, context: r.ctx, pending: r.pending, mailbox: mb, nowMs: -1).outcome == .drop(.staleTimestamp))
+        // host_ms - nowMs == Int64.min exactly: clock wrong, no offset, no trap
+        let refusal = try r.chunk(flags: [.last, .refusal], meta: ["refusal": "stale_timestamp", "host_ms": -1], data: Data())
+        guard case .accept(let a) = Bridge.checkResponse(refusal, context: r.ctx, pending: r.pending, mailbox: mb, nowMs: Int64.max).outcome else { Issue.record("accept"); return }
+        #expect(a.clockWrong && a.offsetMs == nil)
+        // the limits are inclusive
+        guard case .accept(let edge) = Bridge.checkResponse(try r.chunk(flags: [.last, .refusal], meta: ["refusal": "stale_timestamp", "host_ms": .int(r.now + Bridge.maxOffsetMs)], data: Data()),
+                                                            context: r.ctx, pending: r.pending, mailbox: mb, nowMs: r.now).outcome else { Issue.record("edge"); return }
+        #expect(edge.offsetMs == Bridge.maxOffsetMs)
     }
 
     @Test func staleEpochRefusalRules() throws {

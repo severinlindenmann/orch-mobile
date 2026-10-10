@@ -70,8 +70,9 @@ public struct PrimaryLedger: Equatable, Sendable {
 
     /// The primary draws `primary_nonce` (32 CSPRNG bytes) only now, after the keys reached it, and keeps the challenge as
     /// the only thing it will ever certify for this request. Built from the stored request, never from caller input.
-    package mutating func issueChallenge(requestID: ID16, primaryNonce: Data, primary: some Signer) throws -> SignedObject {
+    package mutating func issueChallenge(requestID: ID16, primaryNonce: Data, primary: some Signer, nowMs: Int64) throws -> SignedObject {
         guard let a = accepted[requestID] else { throw Refusal.unknownRequest }
+        guard nowMs < a.expiresMs else { throw Refusal.expired }
         guard primaryNonce.count == 32 else { throw CryptoFailure.invalidLength }
         guard Identifiers.personID(primary.publicKey) == a.person else { throw Refusal.otherPerson }
         guard challenges[requestID] == nil else { throw Refusal.replayed }
@@ -99,6 +100,8 @@ public struct PrimaryLedger: Equatable, Sendable {
         guard createdMs < expires else { throw Refusal.expired }
         guard Identifiers.personID(primary.publicKey) == person else { throw Refusal.otherPerson }
         guard Scopes.isValid(scopesMax), !scopesMax[0].bytesHasPrefix("drop:") else { throw Refusal.scopeExceeded }
+        // never wider than what the stored request asked for (both are prefixes of the ordered scopes)
+        guard let asked = accepted[requestID]?.inner.scopesMax, scopesMax.count <= asked.count else { throw Refusal.scopeExceeded }
         if let e = expiresMs, e <= createdMs { throw Refusal.malformed }
         let cert = try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "device_cert", "device_id": .string(device.hex), "person_id": .string(person.hex),

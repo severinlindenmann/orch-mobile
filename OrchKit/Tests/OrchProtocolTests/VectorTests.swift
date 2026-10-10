@@ -11,6 +11,8 @@ import Testing
 //   revocation_op               slice 2a: the host's bridge op for a PK-signed revocation
 //   ws_envelopes, publish       out of scope for the phone (ws->ws, orch-publish)
 //   relay_auth.cases            covered here only as the relay-side pure check (RelayAuth.check); the HTTP flow is slice 1
+//   reader slice                persist the highest version seen per document and treat a lower "latest" as an error (section 10.6);
+//                               DropDocument.verifyChain/checkPut are pure and hold no such state
 // The ed25519_small_order group and everything under suites."1" belong to suite 1, which this module does not implement.
 // Slice 0 gates run in BridgeTests, CardMembershipTests, CertRequestTests and DropTests: bridge.seal, bridge.device_cases,
 // card.cases/hosted_marker/card_key_wrap_to_phone, member_lists, wk_grants.cases, cert_request.* , relay_auth.cases, drop.*.

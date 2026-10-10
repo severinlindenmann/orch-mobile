@@ -243,7 +243,7 @@ public enum Bridge {
     }
 
     /// Section 8.8 for one chunk, in the vectors' order. Returns the outcome and the updated pending table (changed on
-    /// accept, and `offsetAdopted` on a verified stale_timestamp refusal). `pending` is the table keyed by rid.
+    /// accept; the rid is removed once its `last` chunk is accepted). `pending` is the table keyed by rid.
     public static func checkResponse(_ envelope: Data, context c: DeviceContext, pending: [ID16: PendingRequest],
                                      mailbox: MailboxPosition, nowMs: Int64) -> (outcome: ResponseOutcome, pending: [ID16: PendingRequest]) {
         func drop(_ r: DropReason) -> (ResponseOutcome, [ID16: PendingRequest]) { (.drop(r), pending) }
@@ -272,17 +272,17 @@ public enum Bridge {
         var offset: Int64?, clockWrong = false
         let isRefusal = h.flagSet.contains(.refusal)
         let refusalCode = meta["refusal"].string
-        if isRefusal, refusalCode.map({ $0.bytesEqual("stale_timestamp") }) == true, let hostMs = meta["host_ms"].int {
-            if !pend.offsetAdopted {
+        if isRefusal, !pend.offsetAdopted, refusalCode.map({ $0.bytesEqual("stale_timestamp") }) == true, let hostMs = meta["host_ms"].int {
+            do {
                 pend.offsetAdopted = true
                 let off = hostMs.subtractingReportingOverflow(nowMs)
-                if !off.overflow, abs(off.partialValue) <= maxOffsetMs { offset = off.partialValue } else { clockWrong = true }
+                if !off.overflow, off.partialValue >= -maxOffsetMs, off.partialValue <= maxOffsetMs { offset = off.partialValue } else { clockWrong = true }
             }
         } else {
             let local = saturatingAdd(nowMs, c.offsetMs)
             let ts = h.tsMs > UInt64(Int64.max) ? Int64.max : Int64(h.tsMs)
             let diff = local.subtractingReportingOverflow(ts)
-            if diff.overflow || abs(diff.partialValue) > windowMs { return drop(.staleTimestamp) }
+            if diff.overflow || diff.partialValue < -windowMs || diff.partialValue > windowMs { return drop(.staleTimestamp) }
         }
         var fetch = false
         if isRefusal, refusalCode.map({ $0.bytesEqual("stale_epoch") }) == true {
@@ -291,7 +291,9 @@ public enum Bridge {
             fetch = true
         }
         pend.next += 1
-        var table = pending; table[h.rid] = pend
+        var table = pending
+        // the last chunk completes the request: retire the rid so no further chunk (even a signed one) is accepted for it
+        table[h.rid] = h.flagSet.contains(.last) ? nil : pend
         return (.accept(Accepted(last: h.flagSet.contains(.last), refusal: isRefusal, meta: meta, data: data, offsetMs: offset,
                                  clockWrong: clockWrong, fetchGrants: fetch)), table)
     }

@@ -306,10 +306,21 @@ public struct DropDescriptor: Equatable, Sendable {
 public enum DropDocument {
     public struct Fork: Error, Equatable, Sendable { public let at: Int64 }
 
-    /// A reader MUST check that each version's `parent_hash` is the hash of the version before it, from version 1 up.
+    /// Fields that name the document: they must not change along a chain (the reference does not say so; see gaps.md).
+    static let identityFields = ["object_id", "space_id", "space_kind", "object_kind"]
+
+    static func sameDocument(_ a: [String: JSONValue], _ b: [String: JSONValue]) -> Bool {
+        identityFields.allSatisfy { k in a[k] != nil && a[k] == b[k] }
+    }
+
+    /// A reader MUST check that each version's `parent_hash` is the hash of the version before it, from version 1 up, and
+    /// (stricter than the reference) that every version names the same object, space and kinds as version 1.
     /// `versions` are signature-checked descriptor objects.
+    /// TODO(reader slice): a reader must also persist the highest version it has seen per document and treat a lower
+    /// "latest" as an error (section 10.6); that state lives outside this pure function.
     public static func verifyChain(_ versions: [[String: JSONValue]]) throws {
         for (i, o) in versions.enumerated() {
+            if i > 0, !sameDocument(o, versions[0]) { throw Fork(at: o["version"]?.int ?? -1) }
             let want: JSONValue = i == 0 ? .null : .string(B64U.encode(try DropDescriptor.parentHash(of: versions[i - 1])))
             guard o["version"] == .int(Int64(i + 1)), o["parent_hash"] == want else { throw Fork(at: o["version"]?.int ?? -1) }
         }
@@ -343,7 +354,8 @@ public enum DropDocument {
         let cur = Int64(state.current)
         let wantParent: JSONValue = state.head.flatMap { try? DropDescriptor.parentHash(of: $0) }.map { .string(B64U.encode($0)) } ?? .null
         let headOK = state.head != nil || state.current == 0
-        guard headOK, m == UInt64(state.current), new["parent"] == .int(cur), new["version"] == .int(cur + 1), new["parent_hash"] == wantParent,
+        let sameDoc = state.head.map { sameDocument(new, $0) } ?? true
+        guard headOK, sameDoc, m == UInt64(state.current), new["parent"] == .int(cur), new["version"] == .int(cur + 1), new["parent_hash"] == wantParent,
               state.current < UInt32.max else { return Reply(status: 409, error: "version_conflict", version: nil, current: state.current) }
         state.current += 1
         state.head = new

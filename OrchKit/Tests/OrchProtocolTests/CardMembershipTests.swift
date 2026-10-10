@@ -10,7 +10,7 @@ import Testing
     func head(_ stored: JSONValue) throws -> Card.Head {
         let o = stored["o"], d = stored["delegation"]
         return Card.Head(workspace: o["workspace_id"].id, ownerPersonID: o["owner_person_id"].id, wsk: o["wsk_pub"].sigPub, wxk: o["wxk_pub"].kxPub,
-                         wxkVersion: o["wxk_version"].u32, cardSeq: o["card_seq"].u32, delegationObject: d.object!)
+                         wxkVersion: o["wxk_version"].u32, cardSeq: o["card_seq"].u32, delegationObject: d.object!, objectDigest: VerifiedCard.digest(o.object!))
     }
 
     @Test func updateCases() throws {
@@ -21,7 +21,7 @@ import Testing
             let name = c["name"].str
             do {
                 let v = try Card.verify(c["card"], ownerKey: c["owner_pk_pub"].sigPub)
-                try Card.checkUpdate(previous: c["stored"].isNull ? nil : try head(c["stored"]), next: v)
+                try Card.checkRelayUpdate(previous: c["stored"].isNull ? nil : try head(c["stored"]), next: v)
                 ok += 1
                 #expect(!c["expect"]["ok"].isNull, "\(name) accepted")
                 #expect(JSONValue.object(v.object) == c["expect"]["ok"], "\(name)")
@@ -49,8 +49,8 @@ import Testing
         #expect(try Card.openSealedPart(of: base, ck: ck) == part)
         let next = try Card.verify(c["card_seq_2"], ownerKey: s2["keys"]["person_alice.sig"]["pub"].sigPub)
         #expect(next.cardSeq == 2 && next.wxkVersion == 2)
-        try Card.checkUpdate(previous: base.head, next: next)
-        #expect(throws: Refusal.staleCard) { try Card.checkUpdate(previous: next.head, next: base) }
+        try Card.checkRelayUpdate(previous: base.head, next: next)
+        #expect(throws: Refusal.staleCard) { try Card.checkRelayUpdate(previous: next.head, next: base) }
         // a wrong or foreign CK never opens the part, and nothing falls back to a plaintext name
         #expect(throws: CryptoFailure.authenticationFailed) { try Card.openSealedPart(of: base, ck: SymmetricKey(size: .bits256)) }
         #expect(throws: CryptoFailure.authenticationFailed) { try Card.openSealedPart(of: next, ck: ck) }      // ck of seq 1 vs seq 2
@@ -131,12 +131,12 @@ import Testing
         let c1 = try Card.verify(make(seq: 1, wxk: wxk1, version: 1, ck: ck1, hosted: nil), ownerKey: owner.publicKey)
         let part = try Card.openSealedPart(of: c1, ck: ck1)
         #expect(part.name == "N" && Card.hostedMarker(card: c1, sealedPart: part) == .init(marker: true, hostedBy: "(unknown)"))   // flag true, name null
-        try Card.checkUpdate(previous: nil, next: c1)
+        try Card.checkRelayUpdate(previous: nil, next: c1)
         let c2 = try Card.verify(make(seq: 2, wxk: wxk2, version: 2, ck: ck2, hosted: "Client AG"), ownerKey: owner.publicKey)
-        try Card.checkUpdate(previous: c1.head, next: c2)                                                  // a WXK rotation signed by WSK alone
-        #expect(throws: Refusal.badWxkVersion) { try Card.checkUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk2, version: 3, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
-        #expect(throws: Refusal.wxkChangedWithoutVersion) { try Card.checkUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk2, version: 1, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
-        #expect(throws: Refusal.badWxkVersion) { try Card.checkUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk1, version: 2, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
+        try Card.checkRelayUpdate(previous: c1.head, next: c2)                                                  // a WXK rotation signed by WSK alone
+        #expect(throws: Refusal.badWxkVersion) { try Card.checkRelayUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk2, version: 3, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
+        #expect(throws: Refusal.wxkChangedWithoutVersion) { try Card.checkRelayUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk2, version: 1, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
+        #expect(throws: Refusal.badWxkVersion) { try Card.checkRelayUpdate(previous: c1.head, next: try Card.verify(make(seq: 3, wxk: wxk1, version: 2, ck: ck2, hosted: nil), ownerKey: owner.publicKey)) }
         // sealed part with an extra field or the wrong types is malformed
         let bad = try ZeroNonceGCM.seal(key: KDF.kCard(ck: ck1, workspace: ws, cardSeq: 1), plaintext: canonicalJSON(["name": "n", "description": "d", "capabilities": ["a"], "hosted_by": nil, "x": 1]),
                                         aad: Card.sealedAAD(workspace: ws, cardSeq: 1))
@@ -164,7 +164,7 @@ import Testing
             do {
                 let list = try MemberList.verify(c["signed"], wsk: c["wsk_pub"].sigPub)
                 let prev = c["prev"].isNull ? nil : try MemberList.parse(object: c["prev"].object!)
-                try list.check(cardWorkspace: c["card_workspace_id"].id, previous: prev, directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
+                try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previous: prev, directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
                 ok += 1
                 let want = c["expect"]["ok"]
                 #expect(!want.isNull, "\(name) accepted")

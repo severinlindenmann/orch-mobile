@@ -61,9 +61,30 @@ public struct MemberList: Equatable, Sendable {
         return MemberList(workspace: ws, epoch: epoch, listSeq: seq, issuedMs: issued, members: members)
     }
 
-    /// The rest of section 7.2 (checks 3 to 9), as the relay applies them and as a phone can re-check a list it fetched.
+    /// What a device does with a list it fetched, given the last list it accepted (`known`, nil on first contact or late join,
+    /// when the first list it sees may carry any epoch and `list_seq >= 1`). Identical list again (reconnect) and forward jumps
+    /// (missed lists and rotations) pass; rollback, conflicting content under one `list_seq`, an epoch that falls, and a removal
+    /// without an epoch bump are refused. Certificates and grants of other members are the relay's to check: a phone does not
+    /// hold them (gap 27). The coordinator separately requires its own device and approved scopes.
+    public func checkSnapshot(cardWorkspace: ID16, known: MemberList?) throws {
+        guard workspace == cardWorkspace else { throw Refusal.otherWorkspace }
+        guard let k = known else {
+            guard listSeq >= 1 else { throw Refusal.badEpoch }
+            return
+        }
+        if listSeq < k.listSeq { throw Refusal.staleList }
+        if listSeq == k.listSeq {
+            guard self == k else { throw Refusal.conflictingSnapshot }
+            return
+        }
+        guard epoch >= k.epoch else { throw Refusal.badEpoch }
+        let now = Set(members.map(\.deviceID))
+        if epoch == k.epoch, k.members.contains(where: { !now.contains($0.deviceID) }) { throw Refusal.rotationRequired }
+    }
+
+    /// The rest of section 7.2 (checks 3 to 9), as the relay applies them before it publishes a list.
     /// `cardWorkspace` is the workspace of the card whose `wsk_pub` verified the list. `previous` is the last accepted list.
-    public func check(cardWorkspace: ID16, previous: MemberList?, directory: Directory, nowMs: Int64) throws {
+    public func checkRelayUpdate(cardWorkspace: ID16, previous: MemberList?, directory: Directory, nowMs: Int64) throws {
         guard workspace == cardWorkspace else { throw Refusal.otherWorkspace }
         if let p = previous {
             guard listSeq > p.listSeq else { throw Refusal.staleList }
@@ -83,6 +104,7 @@ public struct MemberList: Equatable, Sendable {
                 let person = certJSON.object?["o"]?.object?["person_id"]?.string
                 throw (person.map { !$0.bytesEqual(ownerHex) } ?? false) ? Refusal.otherPerson : r
             }
+            guard cert.deviceID == m.deviceID else { throw Refusal.certInvalid }
             guard !cert.isScopedAgent, let scopes = m.scopeStrings, Scopes.isValid(scopes), scopes.count <= cert.scopesMax.count else {
                 throw Refusal.scopeExceeded
             }

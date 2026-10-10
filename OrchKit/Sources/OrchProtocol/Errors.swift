@@ -29,6 +29,8 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case alreadySigned = "already_signed"
     case rejected
     case unknownRequest = "unknown_request"
+    /// Local (never on the wire): a snapshot that contradicts the one already accepted under the same sequence.
+    case conflictingSnapshot = "conflicting_snapshot"
 }
 
 /// Failures of the byte-level primitives (encodings, keys, AEAD).

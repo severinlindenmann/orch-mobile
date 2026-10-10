@@ -49,17 +49,17 @@ import Testing
         for c in cases {
             let name = c["name"].str
             var ledger = PrimaryLedger()
-            var lastOpened: ID16?
+            var lastOpened: ID16?, lastNow: Int64 = 0
             for st in c["steps"].items {
                 switch st["op"].str {
                 case "open":
                     let a = try CertRequest.openAsPrimary(st["signed"], card: card, myPerson: alice, me: me, myKey: primary, ledger: &ledger, nowMs: st["now_ms"].i64)
                     #expect(innerMatches(a, st["expect"]["ok"]), "\(name)")
-                    lastOpened = a.requestID
+                    lastOpened = a.requestID; lastNow = st["now_ms"].i64
                 case "reject":
                     ledger.reject(requestID: st["request_id"].id)
                 case "challenge":
-                    _ = try ledger.issueChallenge(requestID: st["request_id"].id, primaryNonce: st["primary_nonce"].hexData, primary: pk)
+                    _ = try ledger.issueChallenge(requestID: st["request_id"].id, primaryNonce: st["primary_nonce"].hexData, primary: pk, nowMs: lastNow)
                 case "sign":
                     let want = st["expect"]
                     let wantO = want["ok"]["o"]
@@ -88,14 +88,14 @@ import Testing
         var ledger = PrimaryLedger()
         let accepted = try CertRequest.openAsPrimary(reqStep["signed"], card: card, myPerson: alice, me: me, myKey: primary, ledger: &ledger, nowMs: reqStep["now_ms"].i64)
         // the challenge the primary signs
-        let ch = try ledger.issueChallenge(requestID: accepted.requestID, primaryNonce: cr["primary_nonce"].hexData, primary: pk)
+        let ch = try ledger.issueChallenge(requestID: accepted.requestID, primaryNonce: cr["primary_nonce"].hexData, primary: pk, nowMs: reqStep["now_ms"].i64)
         #expect(JSONValue.object(ch.object) == cr["challenge"]["o"])
         #expect(Data(Label.sigCertChallenge.utf8) + (try canonicalJSON(.object(ch.object))) == cr["signed_bytes_challenge"].hexData)
         #expect(Signature.verify(pk.publicKey, signature: cr["challenge"]["sig"].b64Data, message: cr["signed_bytes_challenge"].hexData))
         // a second challenge for the same request is refused (the code must not change under the human)
-        #expect(throws: Refusal.replayed) { try ledger.issueChallenge(requestID: accepted.requestID, primaryNonce: Data(count: 32), primary: pk) }
-        #expect(throws: CryptoFailure.invalidLength) { var l = ledger; _ = try l.issueChallenge(requestID: accepted.requestID, primaryNonce: Data(count: 31), primary: pk) }
-        #expect(throws: Refusal.unknownRequest) { try ledger.issueChallenge(requestID: .random(), primaryNonce: Data(count: 32), primary: pk) }
+        #expect(throws: Refusal.replayed) { try ledger.issueChallenge(requestID: accepted.requestID, primaryNonce: Data(count: 32), primary: pk, nowMs: 0) }
+        #expect(throws: CryptoFailure.invalidLength) { var l = ledger; _ = try l.issueChallenge(requestID: accepted.requestID, primaryNonce: Data(count: 31), primary: pk, nowMs: 0) }
+        #expect(throws: Refusal.unknownRequest) { try ledger.issueChallenge(requestID: .random(), primaryNonce: Data(count: 32), primary: pk, nowMs: 0) }
         // the phone's check
         let phoneSig = s2["keys"]["phone.sig"]["pub"].sigPub, phoneKx = s2["keys"]["phone.kx"]["pub"].kxPub
         let ws = s2["ids"]["workspace_a"].id, dev = s2["ids"]["device_phone"].id
@@ -133,7 +133,7 @@ import Testing
         let card = try verifiedCard(cr["cases"][0]["card"]), step = cr["cases"][0]["steps"][0]
         var ledger = PrimaryLedger()
         let a = try CertRequest.openAsPrimary(step["signed"], card: card, myPerson: s2["ids"]["person_alice"].id, me: me, myKey: primary, ledger: &ledger, nowMs: step["now_ms"].i64)
-        _ = try ledger.issueChallenge(requestID: a.requestID, primaryNonce: Data(repeating: 7, count: 32), primary: pk)
+        _ = try ledger.issueChallenge(requestID: a.requestID, primaryNonce: Data(repeating: 7, count: 32), primary: pk, nowMs: 0)
         let drop = "drop:" + s2["ids"]["shared_space"].str
         for scopes in [[drop], [], ["decide"], ["look", "type"], ["look", "decide", "operate", "type", "x"]] {
             #expect(throws: Refusal.scopeExceeded) { var l = ledger; _ = try l.signCertificate(requestID: a.requestID, labelSealed: Data(), createdMs: 0, expiresMs: nil, scopesMax: scopes, primary: pk) }
