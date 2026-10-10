@@ -115,7 +115,7 @@ public enum PushProcessor {
     /// The order of the checks is the vectors' order. Returns `.show` with the payload or `.drop`.
     package static func open(outer raw: Data, keys: Keyring) -> Outcome {
         if raw.count > maxOuterBytes { return .drop(.size) }
-        guard let m = try? StrictJSON.parse(raw).object, Set(m.keys) == ["v", "ws", "epoch", "c"], m["v"] == .int(2),
+        guard let m = try? StrictJSON.parse(raw, maxBytes: maxOuterBytes).object, Set(m.keys) == ["v", "ws", "epoch", "c"], m["v"] == .int(2),
               let ws = m["ws"]?.string.flatMap({ ID16(hex: $0) }),
               let c = m["c"]?.string.flatMap({ B64U.decode($0) }),
               let epochInt = m["epoch"]?.int else { return .drop(.shape) }
@@ -125,7 +125,7 @@ public enum PushProcessor {
 
         let aad = Data(Label.aadPush.utf8) + Bytes.u8(Suite2.id) + ws.bytes + Bytes.u32(epoch)
         guard let plain = try? SaltedAEAD.open(key: kPush, msgLabel: Label.kdfPushMsg, aad: aad, blob: c),
-              let innerValue = try? StrictJSON.parse(plain) else { return .drop(.tag) }
+              let innerValue = try? StrictJSON.parse(plain, maxBytes: maxOuterBytes) else { return .drop(.tag) }
         // Section 9 step 3: "the tag fails, or `inner` is not exactly {p, sig}" is one drop reason (`tag`).
         guard let inner = innerValue.object, Set(inner.keys) == ["p", "sig"],
               let sig = inner["sig"]?.string.flatMap({ B64U.decode($0, length: Suite2.signatureLength) }),

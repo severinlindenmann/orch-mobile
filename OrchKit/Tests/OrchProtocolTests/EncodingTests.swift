@@ -76,6 +76,15 @@ import Testing
         #expect(try canonicalJSON(v) == bytes)
     }
 
+    @Test func inputSizeCap() throws {
+        let doc = Data("{\"a\":\"\(String(repeating: "x", count: 100))\"}".utf8)
+        _ = try StrictJSON.parse(doc, maxBytes: doc.count)
+        #expect(throws: JSONError.self) { try StrictJSON.parse(doc, maxBytes: doc.count - 1) }
+        #expect(throws: JSONError.self) { try StrictJSON.parse(Data(count: StrictJSON.defaultMaxBytes + 1)) }
+        #expect(throws: JSONError.self) { try StrictJSON.parse(String(repeating: " ", count: 65_537) + "{}", maxBytes: 65_536) }
+        #expect(StrictJSON.defaultMaxBytes == 1 << 20)
+    }
+
     @Test func nestingLimit() throws {
         func nested(_ levels: Int) -> String { String(repeating: "[", count: levels) + String(repeating: "]", count: levels) }
         _ = try StrictJSON.parse(nested(16))
