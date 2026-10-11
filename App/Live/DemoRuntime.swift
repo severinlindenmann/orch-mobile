@@ -188,7 +188,12 @@ final class DemoRuntime {
         let ids = try await host.demoSeedViews(questions: DemoContent.questions(kind), tickets: DemoContent.tickets(kind))
         for (seed, id) in zip(DemoContent.questionAliases(kind), ids) { entry.aliases[seed] = id }
         switch scenario {
+        // An R1 host ignores a certificate the phone presents and asks the primary for its own key; the attack reaches a phone that
+        // already paired before (checklist 9b).
         case .r1Attack: await host.setR1Attack(true)
+        // A phone that already paired presents its certificate and an honest host would join it at once (protocol 8.3 step 5), so the
+        // primary could never be offline for it: this Demo host asks the primary regardless (checklist 10b).
+        case .primaryOffline: await host.setAsksPrimaryAlways(true)
         case .echoWrongKey: await host.setEchoWrongKey(.signing)
         case .linkUsed: entry.answers = false
         default: break

@@ -48,6 +48,7 @@ extension FakeHost {
         hostIsPrimary = v
     }
     public func setR1Attack(_ v: Bool) { r1Attack = v }
+    public func setAsksPrimaryAlways(_ v: Bool) { asksPrimaryAlways = v }
     public func setEchoWrongKey(_ k: EchoedKey?) { echoWrongKey = k }
     /// Adversarial knob (tests only): a compromised host ends a pairing claiming the primary said no, relaying `rejection` as it is,
     /// without the verification `progressCertPending` does. The phone must believe it only if it verifies under the pinned `PK`.
@@ -108,7 +109,10 @@ extension FakeHost {
         let v = p.version
         core.pendingPairs[device] = p
         let keys = DemoKeys(sig: p.dkSig, kx: p.dkKx)
-        if p.cert != nil {
+        // R1 (adversarial scenario): the compromised host ignores a certificate the phone presented and asks the primary for one of its
+        // own instead, so the attack also reaches an iPhone that is already one of the owner's devices (D-1). The Demo's
+        // `asksPrimaryAlways` does the same honestly (for the phone's own keys) to show the primary's phase.
+        if p.cert != nil, !bypassesPresentedCertificate {
             try await completeJoin(device: device, relay: relay, transport: transport, reserved: v)
         } else if hostIsPrimary {
             guard !isClientHosted else { throw PairingApprovalError.hostCannotBePrimary }
@@ -287,7 +291,9 @@ extension FakeHost {
             }
             // the request's certificate, or the directory's: has the primary certified exactly this device?
             // Both sources are tried: one that does not verify (or names other keys) never hides a good one in the other.
-            let directory = await relay.certificate(device: device)
+            // An R1 host wants its own key certified, not the phone admitted, and `asksPrimaryAlways` waits for the primary's answer:
+            // neither falls back to the phone's directory certificate.
+            let directory = bypassesPresentedCertificate ? nil : await relay.certificate(device: device)
             guard core.pendingPairs[device]?.version == v else { continue }
             let good = [view?.cert, directory].compactMap { $0 }.first { cert in
                 (try? DeviceCertificate.verify(cert, personKey: primary.publicKey, nowMs: now, revoked: core.revoked))
