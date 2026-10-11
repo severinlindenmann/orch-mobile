@@ -64,6 +64,18 @@ import OrchProtocol
         #expect(a.kind == .pinSubstitution)
     }
 
+    @Test func aRejectionWithoutAPinnedChallengeIsNotAttributedToThePrimary() async throws {
+        // audit fix: before any challenge reached the phone a genuine PK-signed rejection cannot be bound to this attempt (it may
+        // be a replay of an older request of the workspace), so the phone ends on the host's "rejected", never "denied"
+        let h = try await PairHarness.make(.primaryOffline)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        _ = try await h.drive(until: { if case .waitingPrimary = $0 { return true }; return false })
+        let old = try CertRejection.sign(requestID: .random(), workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: old.json)
+        #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
+    }
+
     @Test func theHostsOwnRejectionStaysARejection() async throws {
         let h = try await PairHarness.make(.firstTime)
         _ = try await h.startToHostCode()
@@ -203,6 +215,7 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
         let s = try await Self.run(h, c, until: { $0.isTerminal })
         guard case .ready = s else { Issue.record("\(s)"); return }
         #expect(t.logoutsStarted <= 1)
+        #expect(await c.joinSessionBinding() == nil, "ready drops the join session")
         await c.logoutTask?.cancel()
     }
 
@@ -212,6 +225,9 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
         #expect(s == .joining, "\(s)")
         _ = try await Self.run(h, c, steps: 3, until: { _ in false })     // the join logs in, then its grants fetch fails: it keeps the session
         #expect(await c.state == .joining)
+        // audit fix: the cached session is bound to this device, workspace and pairing generation
+        let b = try #require(await c.joinSessionBinding())
+        #expect(b.device == h.phoneID && b.ws == h.host.workspace)
         await c.cancel()                                     // returns although the logout it starts never answers
         #expect(await c.state == .cancelled)
         let task = try #require(await c.logoutTask, "the join session existed and its logout was started")

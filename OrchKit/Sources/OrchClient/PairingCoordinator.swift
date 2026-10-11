@@ -55,7 +55,9 @@ public actor PairingCoordinator {
     package private(set) var logoutTask: Task<Void, Never>?
     /// The join's relay session, reused across join retries until near expiry: the relay allows a device only a few live tokens
     /// (protocol-v2 section 19.1, 429 `quota_exceeded`), so a retry must never log in again while its token is still good.
-    private var joinSession: (device: ID16, session: RelaySession, expiresMs: Int64)?
+    /// Bound to the device, the workspace and the pairing generation it was opened for: never reused for another attempt.
+    private var joinSession: (device: ID16, ws: ID16, generation: Int64, session: RelaySession, expiresMs: Int64)?
+    package func joinSessionBinding() -> (device: ID16, ws: ID16, generation: Int64)? { joinSession.map { ($0.device, $0.ws, $0.generation) } }
     private var streams: [Int: AsyncStream<PairingState>.Continuation] = [:]
     private var nextStreamID = 0
     private var wakers: [Int: AsyncStream<Void>.Continuation] = [:]
@@ -681,10 +683,13 @@ public actor PairingCoordinator {
             // the wire verified the rejection under a PK matching the link's pin; it must also be the PK and the request this
             // pairing pinned (the challenge it showed), or it is a substitution
             guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
-            if let pinned = r.pkPub, pinned != pk.x963 { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
-            if let ch = r.challenge?.object?["o"]?.object, ch.idField("request_id") != requestID {
-                _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return
+            // "denied" names the primary, so it needs a binding to this pairing: the PK and the request of the challenge the phone
+            // pinned. Without a pinned challenge nothing ties the rejection to this attempt (it could be a replay of an older
+            // request of the same workspace): the phone ends on the host's authenticated "rejected" and attributes nothing.
+            guard let pinned = r.pkPub, let ch = r.challenge?.object?["o"]?.object, let pinnedRequest = ch.idField("request_id") else {
+                _ = await finish(.rejected, mine); return
             }
+            guard pinned == pk.x963, pinnedRequest == requestID else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
             _ = await finish(.denied, mine)
         case .expired: _ = await finish(.expired(r.certPendingSinceMs != nil ? .certification : .beforeApproval), mine)
         }
@@ -1114,11 +1119,13 @@ extension PairingCoordinator {
             guard mine == token else { return }
             let client = RelayClient(transport: cfg.transport)
             let s: RelaySession
-            if let cached = joinSession, cached.device == r.deviceID, cached.expiresMs - 30_000 > nowMs { s = cached.session }
+            if let cached = joinSession, cached.device == r.deviceID, cached.ws == r.ws, cached.generation == r.generation,
+               cached.expiresMs - 30_000 > nowMs { s = cached.session }
             else {
                 let opened = try await client.openDeviceSession(identity: id, deviceID: r.deviceID)
                 guard mine == token else { return }
-                joinSession = (r.deviceID, opened.session, opened.expiresMs)
+                endJoinSession()                                   // a session of another binding is logged out, never kept
+                joinSession = (r.deviceID, r.ws, r.generation, opened.session, opened.expiresMs)
                 s = opened.session
             }
             guard mine == token else { return }
