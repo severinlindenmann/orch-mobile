@@ -90,13 +90,18 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
-            # A dictionary rule ANDs its keys (a bare URL from Safari lacks text; Photos items are images/movies), so one OR'd predicate.
-            # Covers everything ProviderStager imports: files/images/movies (public.data), URLs, text. Max 5 attachments (ShareLimits).
+            # One OR'd predicate (a dictionary rule ANDs its keys, which hid the extension for image-only shares from Photos).
+            # public.data/url/text cover everything ProviderStager imports (files, images, movies, links, text). The count bound
+            # mirrors ShareLimits.maxItems: more than 5 matching attachments do not activate the extension.
             NSExtensionActivationRule: >-
               SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
-              ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
+              (ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
               OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
-              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text").@count >= 1).@count >= 1
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text")).@count >= 1).@count >= 1
+              AND SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
+              (ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text")).@count > 5).@count == 0
     dependencies:
       - package: OrchKit
         products: [OrchUI, OrchCoordination, OrchShareStaging]

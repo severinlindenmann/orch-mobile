@@ -113,11 +113,17 @@ final class ShareBridge {
             }
         }
         // Include the persisted index so a process restart cannot lose an unpublished removal.
-        let previous = Array(published.values) + ((try? ShareTargetIndex.load(from: area)) ?? [])
+        let persisted = (try? ShareTargetIndex.load(from: area)) ?? []
+        let previous = Array(published.values) + persisted
         do {
-            for old in Set(previous) where !world.workspaces.contains(where: {
-                (world.shareIdentity(of: $0.id)?.ws ?? Self.wsHex($0.id)) == old.ws && old.realm == realm
-            }) {
+            for old in Set(previous) {
+                if old.realm == realm {
+                    guard !world.workspaces.contains(where: { (world.shareIdentity(of: $0.id)?.ws ?? Self.wsHex($0.id)) == old.ws }) else { continue }
+                } else {
+                    // The OTHER realm's entries: a live app retires stale Demo targets (Demo storage is wiped each boot), but Demo
+                    // must never tombstone live targets (that would burn their generation and kill the destination for good).
+                    guard !world.isDemo, old.realm == "demo" else { continue }
+                }
                 try inbox.recordRemoval(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation))
             }
             try inbox.replayRemovals()
@@ -125,7 +131,9 @@ final class ShareBridge {
         tracked = nextTracked
         published = next
         listed = Set(next.keys)
-        try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] }, to: area)
+        // While Demo is active the persisted LIVE destinations stay visible (the extension labels Demo ones); imports are realm-checked.
+        let kept = world.isDemo ? persisted.filter { $0.realm == "live" } : []
+        try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] } + kept, to: area)
         lastPurge = inbox.purgeTombstoned()
     }
 

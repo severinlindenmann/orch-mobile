@@ -14,7 +14,7 @@ final class ShareExtensionTests: XCTestCase {
         if useMore || !orch.waitForExistence(timeout: 90) {
             // The extension may be hidden behind "More" on a fresh runtime: open it, find orch in the list, enable it.
             let more = app.cells["More"]
-            XCTAssertTrue(more.exists, "neither orch nor More is offered in the share sheet")
+            XCTAssertTrue(more.waitForExistence(timeout: 30), "neither orch nor More is offered in the share sheet")
             more.tap()
             // "Apps" list: the row is a table cell. (A bare label query also matches the app's own "orch" back button.)
             let row = app.tables.cells.containing(.staticText, identifier: "orch").firstMatch
@@ -31,11 +31,11 @@ final class ShareExtensionTests: XCTestCase {
 
     @MainActor
     private func stage(fixture: String, expectKinds: [String], file: StaticString = #filePath, line: UInt = #line) -> XCUIApplication {
-        let app = launch("share-fixture", extra: ["--hold-share-import", "--share-demo-targets"])
+        let app = launch("share-fixture", extra: ["--hold-share-import"])
         openExtension(app, fixtureButton: fixture)
         // The extension's own UI: destination first, then Save to send.
         let laptop = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'share.destination.' AND label CONTAINS 'Laptop'")).firstMatch
-        XCTAssertTrue(laptop.waitForExistence(timeout: 60), app.debugDescription, file: file, line: line)
+        XCTAssertTrue(laptop.waitForExistence(timeout: 15), app.debugDescription, file: file, line: line)
         let save = app.buttons["share.save"]
         XCTAssertFalse(save.isEnabled, "Save is disabled until a destination is chosen", file: file, line: line)
         laptop.tap()
@@ -72,7 +72,7 @@ final class ShareExtensionTests: XCTestCase {
     }
 
     @MainActor func testExtensionCanBeSelectedFromMore() {
-        let app = launch("share-fixture", extra: ["--hold-share-import", "--share-demo-targets"])
+        let app = launch("share-fixture", extra: ["--hold-share-import"])
         openExtension(app, fixtureButton: "share.fixture.text", useMore: true)
         XCTAssertTrue(app.buttons["share.cancel"].waitForExistence(timeout: 15))
         app.buttons["share.cancel"].tap()
@@ -107,10 +107,10 @@ final class ShareExtensionTests: XCTestCase {
     }
 
     @MainActor func testMixedFileTextAndLink() {
-        let app = launch("share-fixture", extra: ["--hold-share-import", "--share-demo-targets"])
+        let app = launch("share-fixture", extra: ["--hold-share-import"])
         openExtension(app, fixtureButton: "share.fixture.mixed")
         let laptop = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'share.destination.' AND label CONTAINS 'Laptop'")).firstMatch
-        XCTAssertTrue(laptop.waitForExistence(timeout: 60))
+        XCTAssertTrue(laptop.waitForExistence(timeout: 15))
         laptop.tap()
         app.buttons["share.save"].tap()
         XCTAssertTrue(app.staticTexts["Saved. Open orch to send."].waitForExistence(timeout: 15))
@@ -122,7 +122,7 @@ final class ShareExtensionTests: XCTestCase {
     }
 
     @MainActor func testCancelLeavesNothingStaged() {
-        let app = launch("share-fixture", extra: ["--hold-share-import", "--share-demo-targets"])
+        let app = launch("share-fixture", extra: ["--hold-share-import"])
         openExtension(app, fixtureButton: "share.fixture.file")
         XCTAssertTrue(app.buttons["share.cancel"].waitForExistence(timeout: 15))
         app.buttons["share.cancel"].tap()
@@ -137,7 +137,7 @@ final class ShareExtensionTests: XCTestCase {
     }
 
     @MainActor func testQuarantinedJobAsksForAnotherDestinationAndNeverRedirectsItself() {
-        let app = launch("drop", extra: ["--seed-share-quarantine", "--share-demo-targets"])
+        let app = launch("drop", extra: ["--seed-share-quarantine"])
         XCTAssertTrue(app.segmentedControls["drop.direction"].waitForExistence(timeout: 90)); app.segmentedControls["drop.direction"].buttons["Sending"].tap()
         let row = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.share-q-'")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 90))

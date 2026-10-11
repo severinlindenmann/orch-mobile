@@ -79,7 +79,7 @@ final class ShareModel {
             targets = try ShareTargetIndex.load(from: area)
             phase = .choosing
         } catch ShareError.noWorkspaces { phase = .noWorkspaces }
-        catch { unreadableReason = "index: \(error)"; phase = .unreadable }
+        catch { unreadableReason = ShareModel.code(for: error); phase = .unreadable }
     }
 
     var canSave: Bool { phase == .choosing && destination != nil && !providers.isEmpty }
@@ -122,6 +122,22 @@ final class ShareModel {
     func done() { finish() }
 
     func retry() { phase = .choosing }
+
+    /// Fixed, non-sensitive code for support evidence: never interpolates the error (it may carry paths).
+    static func code(for error: Error) -> String {
+        switch error as? ShareError {
+        case .noWorkspaces: "index: none"
+        case .unreadable: "index: unreadable"
+        case .tooManyItems: "index: items"
+        case .tooLarge: "index: size"
+        case .empty: "index: empty"
+        case .unsupported: "index: type"
+        case .destinationRemoved: "index: removed"
+        case .cancelled: "index: cancelled"
+        case .io: "index: io"
+        case nil: "index: other"
+        }
+    }
 
     static func message(for error: Error) -> String {
         switch error as? ShareError {
@@ -197,7 +213,7 @@ private struct ShareComposeView: View {
                         } label: {
                             HStack {
                                 Capsule().fill(OC.wsHues[abs(t.hue) % OC.wsHues.count]).frame(width: 4, height: 24)
-                                Text(verbatim: SafeText.inline(t.name, limit: 40) + (t.realm == "demo" ? " (Demo)" : "")).foregroundStyle(OC.text)
+                                Text(verbatim: t.realm == "demo" ? SafeText.inline(t.name, limit: 32) + " (Demo)" : SafeText.inline(t.name, limit: 40)).foregroundStyle(OC.text)
                                 Spacer()
                                 if model.destination == t.id { Image(systemName: "checkmark").foregroundStyle(OC.brand) }
                             }
