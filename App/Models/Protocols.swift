@@ -96,6 +96,11 @@ protocol PairingFlowModel: AnyObject, Observable {
 
 @MainActor
 protocol DropModel: AnyObject, Observable {
+    var dropStatus: String? { get }
+    var dropRefreshRevision: Int { get }
+    func canSend(to workspaceID: String) -> Bool
+    func refreshDrop() async
+    func verifyDropRow(_ id: String) async
     var workspaces: [WorkspaceInfo] { get }
     func items(_ direction: DropDirection) -> [DropItem]
     func item(id: String) -> DropItem?
@@ -151,3 +156,11 @@ extension AppServices {
         workspaceID(forQuestion: raw).map { ($0, raw) }
     }
 }
+
+ extension DropModel {
+    func canSend(to workspaceID: String) -> Bool { workspaces.contains { $0.id == workspaceID && $0.lifecycle == .live && $0.scopes.contains(.operate) } }
+    var dropStatus: String? { nil }
+    var dropRefreshRevision: Int { 0 }
+    func refreshDrop() async {}
+    func verifyDropRow(_ id: String) async {}
+ }

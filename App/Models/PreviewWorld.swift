@@ -11,6 +11,8 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var questions: [Question] = []
     var tickets: [Ticket] = []
     var dropItems: [DropItem] = []
+    var onRetryShared: (() -> Void)?
+    var onStopShared: (() -> Void)?
     var deviceLabel = "Demo iPhone"
     var notificationStatus: NotificationStatus = .allowed
     var pairingScenario: PairingScenario = .firstTime

@@ -10,7 +10,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertTrue(app.el("ticket.FAC-1").waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["1 of 3 done"].exists)
         app.el("ws.segment.files").tap()
-        XCTAssertTrue(app.el("ws.file.d-readme").waitForExistence(timeout: 5), "this workspace's Drop items")
+        XCTAssertTrue(app.el("ws.file.d-readme").waitForExistence(timeout: 30), "this workspace's verified Drop items")
         XCTAssertFalse(app.el("ws.file.d-deploy").exists, "other workspace's items are not listed")
         XCTAssertTrue(app.el("ws.files.openDrop").exists)
         app.el("ws.segment.terminal").tap()

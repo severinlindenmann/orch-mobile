@@ -86,7 +86,7 @@ struct HomeScreen: View {
             (services as? LiveServices)?.setActive(phase == .active)
             if phase == .active { if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() } }
         }
-        .onChange(of: services.home.workspaces.map(\.id)) { _, _ in bridge?.publishTargets() }
+        .onChange(of: services.home.workspaces) { _, _ in bridge?.publishTargets() }
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: .orchDebugShareRefresh)) { _ in bridge?.refresh() }
         #endif

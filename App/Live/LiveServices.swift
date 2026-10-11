@@ -5,6 +5,7 @@ import OrchFakeHost
 import OrchProtocol
 import OrchPush
 import OrchCustody
+import OrchShareStaging
 import UserNotifications
 
 /// The App's real service layer. In Demo it runs the real client stack against the in-process fakes (`DemoRuntime`); a build without a
@@ -20,8 +21,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private(set) var live: [LiveWorkspace] = []
     private(set) var pendingDecisions: [DecisionStatus] = []
     private(set) var lastChecked = Date()
-    private(set) var dropItems: [DropItem] = []
+    private var heldDropItems: [DropItem] = []
+    var dropItems: [DropItem] { live.flatMap { $0.drop?.rows ?? [] } + heldDropItems }
     private(set) var demoPushResult: String?
+    var onRetryShared: (() -> Void)?
+    var onStopShared: (() -> Void)?
     var deviceLabel = "Demo iPhone"
     var notificationStatus: NotificationStatus = .notAsked
     var pairingScenario: PairingScenario = .firstTime
@@ -65,6 +69,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func waitForReset() async { await resetTask?.value }
 
     private func transition(_ id: String, to state: WorkspaceLifecycle) {
+        if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
         lifecycle[id] = state
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
@@ -210,9 +215,20 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             scopes: Mapping.scopes(j.scopes), connection: .online, primaryLabel: "Demo Mac", notificationsOn: true)
         let ws = LiveWorkspace(workspaceID: j.workspace, generation: j.generation, api: BridgeWorkspaceAPI(session: j.session), info: info)
         ws.services = self
+        ws.downloadContainer = j.downloadContainer
         ws.draftURL = runtime?.draftURL(workspace: j.workspace)
+        if let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
-        if let kind { dropItems += DemoContent.drop(kind, workspaceID: info.id, now: Date()) }
+        Task {
+            if kind == .laptop, let drop = ws.drop {
+                do {
+                    let object = try await DemoSetup.seedDropSending(drop.service)
+                    guard drop.usable else { return }
+                    drop.aliases[object.descriptor.object.hex] = "d-sending"
+                } catch { if drop.usable { drop.report(error) } }
+            }
+            await ws.drop?.refresh()
+        }
         ws.start()
         Task { await refreshPending() }
     }
@@ -230,6 +246,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
+        if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
         refreshTasks = [:]
         if !active { reconcileTasks.values.forEach { $0.cancel() } }
@@ -239,12 +256,22 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             await previous?.value
             guard let self else { return }
             for ws in workspaces {
+                if let drop = ws.drop {
+                    if active && self.canUse(ws.info.id) { try? await drop.service.activate() }
+                    else { await drop.service.suspend() }
+                }
                 await ws.api.setForeground(active && self.canUse(ws.info.id))
             }
             guard active, self.active else { return }
+            // Local retention is independent of relay authorization and Drop alarms.
+            for ws in workspaces where ws.info.lifecycle != .removed {
+                do { try await ws.downloadContainer?.purgeExpiredDownloads(nowMs: ws.drop?.alarm == true ? .max : (self.runtime?.clock.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000))) }
+                catch { ws.drop?.status = "Local cleanup needs retry" }
+            }
             for ws in workspaces where self.canUse(ws.info.id) {
                 ws.start()
                 self.refreshTasks[ws.info.id] = Task { [weak self] in
+                    await ws.drop?.foreground()
                     await ws.api.refreshViews()
                     guard !Task.isCancelled, let self, self.canUse(ws.info.id) else { return }
                     await self.refreshPending(reconcile: true)
@@ -384,51 +411,77 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     // MARK: DropModel (simulated: no Drop service yet)
 
     func items(_ direction: DropDirection) -> [DropItem] { dropItems.filter { $0.direction == direction } }
-    func item(id: String) -> DropItem? { dropItems.first { $0.id == id } }
+    func item(id: String) -> DropItem? { dropItems.first { $0.id == id || $0.presentationID == id } }
     func items(workspace: String) -> [DropItem] { dropItems.filter { $0.workspaceID == workspace } }
 
+    func canSend(to workspaceID: String) -> Bool { eligibleShareDestination(workspaceID) }
+
     func send(_ draft: DropDraft) {
-        guard isLive(draft.workspaceID) else { return }
-        let names = draft.attachments.map(\.name)
-        let title = names.isEmpty ? "Note" : (names.count == 1 ? names[0] : "\(names.count) files")
-        let newID = "d-\(UUID().uuidString.prefix(6))"
-        dropItems.insert(DropItem(
-            id: newID, workspaceID: draft.workspaceID, name: title, bytes: draft.attachments.reduce(0) { $0 + $1.bytes },
-            kind: names.isEmpty ? .note : .file, direction: .sending, expires: Date().addingTimeInterval(Double(draft.expiryDays) * 86400),
-            versions: 1, unread: false, text: draft.note.isEmpty ? nil : draft.note, from: "This iPhone"), at: 0)
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
-            self.dropItems[i].simulatedDone = true
-        }
+        guard canUse(draft.workspaceID), let drop = live.first(where: { $0.info.id == draft.workspaceID })?.drop else { return }
+        drop.startSend(draft)
     }
 
-    // MARK: Share import (A10): destinations are the paired Demo workspaces; import lands in Sending (sealing arrives with the Drop slice)
-
-    func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? {
-        guard isLive(workspaceID) else { return nil }
-        return live.first { $0.info.id == workspaceID }.map { ($0.workspaceID.hex, $0.generation) }
+    func refreshDrop() async {
+        for ws in live where canUse(ws.info.id) { await ws.drop?.refresh() }
     }
-
-    func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date) {
-        guard isLive(workspaceID) else { return }
-        for item in items where !dropItems.contains(where: { $0.id == item.id }) {
-            dropItems.insert(DropItem(id: item.id, workspaceID: workspaceID, name: item.name, bytes: item.bytes, kind: item.kind,
-                                      direction: .sending, expires: expires, versions: 1, unread: false, text: item.text,
-                                      from: "This iPhone"), at: 0)
-            let newID = item.id
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(3))
-                guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
-                self.dropItems[i].simulatedDone = true
+    func verifyDropRow(_ id: String) async {
+        if let item = item(id: id), let drop = dropState(item.id) { await drop.verifyVisible(item.id); return }
+        // A fixture deep route resolves only after metadata verification; no fake object is inserted.
+        if id.hasPrefix("d-") {
+            await refreshDrop()
+            for drop in live.compactMap(\.drop) {
+                for row in drop.rows.prefix(12) {
+                    await drop.verifyVisible(row.id)
+                    if item(id: id) != nil { return }
+                }
             }
         }
     }
+    func dropState(_ id: String) -> LiveDrop? {
+        live.compactMap(\.drop).first { $0.objects[id] != nil || $0.rows.contains { $0.presentationID == id } }
+    }
+    private(set) var shareStatus: String?
+    var dropRefreshRevision: Int { live.reduce(0) { $0 + ($1.drop?.listRevision ?? 0) } }
+    var dropStatus: String? { live.compactMap { $0.drop?.status }.first ?? shareStatus ?? (live.contains { $0.drop?.loading == true } ? "Loading…" : nil) }
+    func shareProgress(_ value: String) { shareStatus = value }
+    func waitForShareActivation() async {
+        await waitForLifecycle()
+        for task in Array(refreshTasks.values) { await task.value }
+    }
+    func eligibleShareDestination(_ id: String) -> Bool {
+        canUse(id) && live.first(where: { $0.info.id == id })?.drop?.canOperate == true
+    }
+    func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        guard eligibleShareDestination(workspaceID), let drop = live.first(where: { $0.info.id == workspaceID })?.drop else { throw DropError.suspended }
+        try await drop.service.discardShareJob(job, inbox: inbox)
+        await drop.refresh()
+    }
+    func importShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        guard eligibleShareDestination(workspaceID), let drop = live.first(where: { $0.info.id == workspaceID })?.drop else { throw DropError.suspended }
+        let mine = drop.revision
+        let objects: [DropObject]
+        do { objects = try await drop.service.importShareJob(job, inbox: inbox) }
+        catch {
+            if mine == drop.revision && drop.workspace?.usable == true { drop.report(error) }
+            throw error
+        }
+        guard drop.canOperate, mine == drop.revision else { throw DropError.suspended }
+        for (index, object) in objects.enumerated() {
+            drop.aliases[object.descriptor.object.hex] = "share-\(job.manifest.jobID)-\(index)"
+        }
+        await drop.refresh()
+    }
+
+    func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? {
+        return live.first { $0.info.id == workspaceID }.map { ($0.workspaceID.hex, $0.generation) }
+    }
+
+    func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date) {}
 
     func setQuarantined(_ entries: [(job: String, workspaceID: String, name: String, bytes: Int, kind: DropKind, expires: Date)]) {
-        dropItems.removeAll { $0.quarantineJob != nil }
+        heldDropItems.removeAll { $0.quarantineJob != nil }
         for e in entries {
-            dropItems.insert(DropItem(id: "share-q-\(e.job)", workspaceID: e.workspaceID, name: e.name, bytes: e.bytes, kind: e.kind,
+            heldDropItems.insert(DropItem(id: "share-q-\(e.job)", workspaceID: e.workspaceID, name: e.name, bytes: e.bytes, kind: e.kind,
                                       direction: .sending, expires: e.expires, versions: 1, unread: false, text: nil,
                                       from: "This iPhone", quarantineJob: e.job), at: 0)
         }
@@ -440,7 +493,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func markRead(id: String) {
-        if let i = dropItems.firstIndex(where: { $0.id == id }) { dropItems[i].unread = false }
+        if let drop = dropState(id), let index = drop.rows.firstIndex(where: { $0.id == id || $0.presentationID == id }) {
+            drop.readIDs.insert(drop.rows[index].id); drop.rows[index].unread = false
+        }
     }
 
     // MARK: SettingsModel
@@ -483,6 +538,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             return LeaveReport(workspaceName: ws.info.name, server: .pendingOffline, incomplete: true)
         }
         transition(workspaceID, to: .removing)
+        await ws.drop?.service.invalidate()
         let name = ws.info.name
         // The share outbox journals the removal first; a failed journal keeps the workspace in place.
         guard beforeWorkspaceRemoval?(workspaceID) != false else {
@@ -505,7 +561,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
         transition(workspaceID, to: .removed)
         live.removeAll { $0.info.id == workspaceID }
-        dropItems.removeAll { $0.workspaceID == workspaceID }
+        heldDropItems.removeAll { $0.workspaceID == workspaceID }
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
         let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
         return LeaveReport(workspaceName: name, server: server)
@@ -525,7 +581,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let old { failedReset = old }
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
-        runtime = nil; live = []; dropItems = []; pendingDecisions = []; submitted = [:]
+        runtime = nil; live = []; heldDropItems = []; pendingDecisions = []; submitted = [:]
         reconcileTasks.values.forEach { $0.cancel() }
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
@@ -540,7 +596,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             guard let self else { return }
             if let booted = await pendingBoot?.value { self.failedReset = booted }
             await self.waitForLifecycle()
-            for ws in workspaces { await ws.stop() }
+            for ws in workspaces { await ws.drop?.service.invalidate(); await ws.stop() }
             do {
                 if let pending = self.failedReset { try await self.resetRuntime(pending) }
                 else if !self.options.uiTesting { try await self.finishInterruptedReset() }
@@ -575,3 +631,36 @@ final class UnavailableReviewModel: QuestionReviewModel {
     func invalidate() {}
     func retryAfterUnlock() {}
 }
+
+#if DEBUG
+extension LiveServices {
+    func demoDropPending() async {
+        guard options.uiTesting, let runtime, let drop = live.first(where: { $0.info.scopes.contains(.operate) })?.drop,
+              let id = drop.workspace?.info.id else { return }
+        for _ in 0..<100 where live.contains(where: { !($0.drop?.verifying.isEmpty ?? true) || $0.drop?.loading == true }) {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard drop.canOperate else { return }
+        runtime.faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET " + HostAPI.base + "/drop/")
+        await drop.send(.init(workspaceID: id, attachments: [], note: "Foreground recovery bytes"))
+    }
+    func demoDropReject() async {
+        guard options.uiTesting, let runtime else { return }
+        do { try await runtime.env.relay.demoRejectNextDrop() } catch { shareStatus = "Could not arm Demo fault" }
+    }
+    func demoDropInbox() async {
+        guard options.uiTesting, let runtime, let ws = live.first(where: { $0.info.scopes.contains(.operate) }),
+              let entry = runtime.entry(for: ws.workspaceID) else { return }
+        do {
+            try await entry.host.demoInboxDrop(relay: runtime.env.relay, transport: runtime.env.transport, session: entry.session)
+            await ws.drop?.refresh()
+        } catch { ws.drop?.report(error) }
+    }
+    func demoDropExpire() {
+        guard options.uiTesting else { return }
+        setActive(false)
+        runtime?.fastForward(seconds: 604801)
+        setActive(true)
+    }
+}
+#endif

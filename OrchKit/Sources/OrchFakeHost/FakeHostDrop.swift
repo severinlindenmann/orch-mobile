@@ -106,3 +106,22 @@ extension FakeHost {
         }
     }
 }
+
+public extension FakeHost {
+    /// An unclaimed inbox item for the bounded Demo claim UI test.
+    func demoInboxDrop(relay: FakeRelay, transport: any RelayTransport, session: RelaySession) async throws {
+        try capability.generation.check()
+        guard let wk = wks[epoch] else { throw DropError.unavailableKey }
+        let object = entropy.id16(), data = Data("Claimed Demo bytes".utf8)
+        let sealed = try DropUpload.seal(data, metadata: DropMetadata(name: "claim.txt", mime: "text/plain", size: Int64(data.count), transcript: nil),
+            object: object, workspace: workspace, author: workspace, authorKind: "workspace", signer: wsk,
+            wxk: wxk.publicKey, wxkVersion: 1, sender: nil, wk: wk, epoch: epoch, now: wall.nowMs,
+            expiry: DropUpload.addMs(wall.nowMs, 604800000))
+        var body = try StrictJSON.parse(sealed).object!
+        var descriptor = body["descriptor"]!.object!["o"]!.object!
+        descriptor["recipients"] = "inbox"
+        body["descriptor"] = try SignedObject.sign(descriptor, kind: .dropObject, signer: wsk).json
+        body["wraps"] = .array(body["wraps"]!.array!.filter { $0.object?["target_kind"] == "wxk" })
+        _ = try HostAPI.expect(await transport.dropPut(objectID: object, ifMatch: 0, body: canonicalJSON(.object(body)), session: session), status: 201)
+    }
+}

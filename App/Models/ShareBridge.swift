@@ -9,6 +9,13 @@ protocol ShareWorld: AnyObject {
     var workspaces: [WorkspaceInfo] { get }
     var beforeWorkspaceRemoval: ((String) -> Bool)? { get set }
     var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)? { get set }
+    var onRetryShared: (() -> Void)? { get set }
+    var onStopShared: (() -> Void)? { get set }
+    func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws
+    func waitForShareActivation() async
+    func eligibleShareDestination(_ id: String) -> Bool
+    func importShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws
+    func shareProgress(_ value: String)
     func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date)
     func setQuarantined(_ entries: [(job: String, workspaceID: String, name: String, bytes: Int, kind: DropKind, expires: Date)])
     /// The real workspace id (32 hex) and generation in the realm index; nil for the preview fake, whose ids are mapped.
@@ -16,8 +23,7 @@ protocol ShareWorld: AnyObject {
 }
 
 /// App side of the share outbox (A10). Publishes the destinations index, claims jobs the share extension staged,
-/// imports them into Drop "Sending" and deletes the staged plaintext. Sealing and upload follow with the real Drop
-/// slice; for now the import target is the `PreviewWorld` fake.
+/// awaits the workspace Drop service for durable confirmation and staged plaintext cleanup.
 @MainActor
 final class ShareBridge {
     static let groupIdentifier = "group.io.severin.orch.share"
@@ -28,15 +34,23 @@ final class ShareBridge {
     private let publishDemo: Bool
     /// Published destinations by preview workspace id (also the live set used to claim).
     private var published: [String: ShareTarget] = [:]
+    /// Retain identities even when scope/lifecycle prevents offering a workspace to the extension.
+    private var tracked: [String: ShareTarget] = [:]
     private var listed: Set<String> = []
-    private var recovered = false
+    private var attempted: Set<String> = []
+    private func key(_ job: StagedJob) -> String { "\(job.manifest.realm)/\(job.manifest.ws)/\(job.manifest.generation)/\(job.manifest.jobID)" }
     private var refreshing = false
+    private var task: Task<Void, Never>?
+    private var failed: [String: StagedJob] = [:]
+    func waitForRefresh() async { await task?.value }
     private(set) var lastPurge: (removed: Int, failed: Int) = (0, 0)
 
     init(area: ShareArea, world: any ShareWorld, publishDemo: Bool = false) {
         inbox = ShareInbox(area: area)
         self.world = world
         self.publishDemo = publishDemo
+        world.onRetryShared = { [weak self] in self?.retryFailed() }
+        world.onStopShared = { [weak self] in self?.stopFailed() }
         world.beforeWorkspaceRemoval = { [weak self] id in self?.prepareRemoval(id) ?? false }
         world.onRedirectQuarantined = { [weak self] job, ws in self?.redirect(job: job, to: ws) }
     }
@@ -67,10 +81,12 @@ final class ShareBridge {
     /// Journal before changing local workspace state; a failed tombstone keeps the workspace in place.
     private func prepareRemoval(_ id: String) -> Bool {
         do {
-            let hex = world.shareIdentity(of: id)?.ws ?? Self.wsHex(id)
-            let generation = try published[id]?.generation ?? ((inbox.area.coordination.records()
+            let identity = world.shareIdentity(of: id)
+            let target = tracked[id] ?? published[id]
+            let hex = identity?.ws ?? target?.ws ?? Self.wsHex(id)
+            let generation = try identity?.generation ?? target?.generation ?? ((inbox.area.coordination.records()
                 .filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0) + 1)
-            let record = TombstoneRecord(realm: published[id]?.realm ?? realm, ws: hex, generation: generation)
+            let record = TombstoneRecord(realm: target?.realm ?? realm, ws: hex, generation: generation)
             try inbox.recordRemoval(record)
             try inbox.area.coordination.write(record)
             return true
@@ -84,22 +100,28 @@ final class ShareBridge {
         do { try inbox.replayRemovals() } catch { return }
         guard let tombstones = try? coordination.records() else { return }
         var next: [String: ShareTarget] = [:]
-        if !world.isDemo || publishDemo {
-            for ws in world.workspaces {
-                let identity = world.shareIdentity(of: ws.id)
-                let hex = identity?.ws ?? Self.wsHex(ws.id)
-                let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
-                next[ws.id] = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
+        var nextTracked: [String: ShareTarget] = [:]
+        for ws in world.workspaces {
+            let identity = world.shareIdentity(of: ws.id)
+            let hex = identity?.ws ?? Self.wsHex(ws.id)
+            let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
+            let target = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
+            nextTracked[ws.id] = target
+            if (!world.isDemo || publishDemo) && world.eligibleShareDestination(ws.id) {
+                next[ws.id] = target
             }
         }
         // Include the persisted index so a process restart cannot lose an unpublished removal.
         let previous = Array(published.values) + ((try? ShareTargetIndex.load(from: area)) ?? [])
         do {
-            for old in Set(previous) where !next.values.contains(where: { $0.realm == old.realm && $0.ws == old.ws }) {
+            for old in Set(previous) where !world.workspaces.contains(where: {
+                (world.shareIdentity(of: $0.id)?.ws ?? Self.wsHex($0.id)) == old.ws && old.realm == realm
+            }) {
                 try inbox.recordRemoval(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation))
             }
             try inbox.replayRemovals()
         } catch { return }
+        tracked = nextTracked
         published = next
         listed = Set(next.keys)
         try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] }, to: area)
@@ -110,37 +132,73 @@ final class ShareBridge {
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
-        defer { refreshing = false }
+        task = Task {
+            await world.waitForShareActivation()
+            await performRefresh()
+            refreshing = false
+        }
+    }
+
+    private func performRefresh() async {
         publishTargets()
         guard let pending = try? inbox.pendingRemovals(), pending.isEmpty,
               (try? inbox.area.coordination.records()) != nil else { return }
         inbox.sweep()
         let live = Set(published.filter { listed.contains($0.key) }.values.map { LiveDestination(realm: $0.realm, ws: $0.ws, generation: $0.generation) })
-        // Only the first pass after launch may re-issue a `.claimed` job (a crashed import); later passes never do.
-        let result = inbox.claim(live: live, realm: realm, includeClaimed: !recovered)
-        recovered = true
-        for job in result.claimed {
-            if inbox.wasImported(job.manifest.jobID) { inbox.complete(job); continue }
-            guard importJob(job) else { continue }
-            inbox.markImported(job.manifest.jobID)
-            inbox.complete(job)
+        // Each job is admitted once per bridge lifetime. Deferred destinations retain startup recovery.
+        let deferred = Set(world.workspaces.filter { !world.eligibleShareDestination($0.id) }.map { ws in
+            let identity = world.shareIdentity(of: ws.id)
+            return LiveDestination(realm: realm, ws: identity?.ws ?? Self.wsHex(ws.id), generation: identity?.generation ?? 1)
+        })
+        let result = inbox.claim(live: live, realm: realm, includeClaimed: true, deferred: deferred)
+        for job in result.claimed where !attempted.contains(key(job)) {
+            attempted.insert(key(job))
+            await importJob(job)
         }
         showQuarantined()
     }
 
-    @discardableResult
-    private func importJob(_ job: StagedJob) -> Bool {
+    private func importJob(_ job: StagedJob) async {
         let m = job.manifest
-        guard let wsID = previewID(forHex: m.ws), m.realm == realm else { return false }
-        var items: [PreviewWorld.SharedItem] = []
-        for (n, item) in m.items.enumerated() {
-            let kind: DropKind = item.kind == .file ? .file : (item.kind == .url ? .url : .note)
-            let text = item.kind == .file ? nil : inbox.text(of: item, in: job).map { String($0.prefix(2000)) }
-            items.append(.init(id: "share-\(m.jobID)-\(n)", name: item.name, bytes: item.bytes, kind: kind, text: text))
+        guard let wsID = previewID(forHex: m.ws), m.realm == realm,
+              world.eligibleShareDestination(wsID) else { attempted.remove(key(job)); return }
+        world.shareProgress("Importing / sending / cleanup…")
+        do {
+            try await world.importShareJob(job, inbox: inbox, workspaceID: wsID)
+            guard m.realm == realm, world.eligibleShareDestination(wsID) else { attempted.remove(key(job)); return }
+            failed[key(job)] = nil
+            world.shareProgress("Share import confirmed; plaintext cleanup complete")
+        } catch {
+            guard m.realm == realm, world.eligibleShareDestination(wsID) else { attempted.remove(key(job)); return }
+            failed[key(job)] = job
+            world.shareProgress("Share import failed: retry or stop sending. Already-committed relay content may remain.")
         }
-        if let note = m.note { items.append(.init(id: "share-\(m.jobID)-note", name: "Note", bytes: note.utf8.count, kind: .note, text: note)) }
-        world.importShared(workspaceID: wsID, items: items, expires: Date(timeIntervalSince1970: m.createdAt).addingTimeInterval(ShareLimits.sevenDays))
-        return true
+    }
+
+    func retryFailed() {
+        guard !refreshing else { return }
+        refreshing = true
+        task = Task {
+            await world.waitForShareActivation()
+            for job in Array(failed.values) { await importJob(job) }
+            refreshing = false
+        }
+    }
+
+    func stopFailed() {
+        guard !refreshing else { return }
+        refreshing = true
+        task = Task {
+            defer { refreshing = false }
+            for job in Array(failed.values) {
+                guard let id = previewID(forHex: job.manifest.ws), world.eligibleShareDestination(id) else { continue }
+                do {
+                    try await world.stopShareJob(job, inbox: inbox, workspaceID: id)
+                    failed[key(job)] = nil
+                    world.shareProgress("Stopped sending. Already-committed relay content may remain.")
+                } catch { world.shareProgress("Share cleanup failed: retry later") }
+            }
+        }
     }
 
     private func showQuarantined() {
@@ -157,11 +215,10 @@ final class ShareBridge {
     /// The user chose another destination for a quarantined job. Copy-then-delete under the destination's tombstone
     /// lock; if anything fails the quarantined original stays and is shown again.
     func redirect(job: String, to workspaceID: String) {
-        guard let target = published[workspaceID], listed.contains(workspaceID),
+        guard world.eligibleShareDestination(workspaceID), let target = published[workspaceID], listed.contains(workspaceID),
               let q = inbox.quarantined().first(where: { $0.manifest.jobID == job && $0.manifest.realm == realm }) else { return }
         if let moved = try? inbox.redirect(q, to: LiveDestination(realm: target.realm, ws: target.ws, generation: target.generation)) {
-            if inbox.wasImported(moved.manifest.jobID) { inbox.complete(moved) }
-            else if importJob(moved) { inbox.markImported(moved.manifest.jobID); inbox.complete(moved) }
+            task = Task { await world.waitForShareActivation(); await importJob(moved); showQuarantined() }
         }
         showQuarantined()
     }
@@ -183,3 +240,33 @@ extension ShareBridge {
     }
 }
 #endif
+
+@MainActor
+extension ShareWorld {
+    func waitForShareActivation() async {}
+    func eligibleShareDestination(_ id: String) -> Bool {
+        workspaces.contains { $0.id == id && $0.lifecycle == .live && $0.scopes.contains(.operate) }
+    }
+    func shareProgress(_ value: String) {}
+}
+
+@MainActor
+extension PreviewWorld {
+    func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        guard inbox.complete(job) else { throw ShareError.io("cleanup") }
+    }
+    func importShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        var items: [PreviewWorld.SharedItem] = []
+        for (n, item) in job.manifest.items.enumerated() {
+            items.append(.init(id: "share-\(job.manifest.jobID)-\(n)", name: item.name, bytes: item.bytes,
+                               kind: item.kind == .file ? .file : (item.kind == .url ? .url : .note),
+                               text: inbox.text(of: item, in: job)))
+        }
+        if let note = job.manifest.note {
+            items.append(.init(id: "share-\(job.manifest.jobID)-note", name: "Note", bytes: note.utf8.count, kind: .note, text: note))
+        }
+        importShared(workspaceID: workspaceID, items: items,
+                     expires: Date(timeIntervalSince1970: job.manifest.createdAt + ShareLimits.sevenDays))
+        guard inbox.complete(job) else { throw ShareError.io("cleanup") }
+    }
+}

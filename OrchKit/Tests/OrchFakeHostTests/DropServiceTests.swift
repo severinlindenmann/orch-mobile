@@ -246,12 +246,14 @@ extension DropServiceTests {
         await adversary.set(blob: true)
         await #expect(throws: (any Error).self) { _ = try await service.download(first) }
         await adversary.set(descriptor: true)
-        await #expect(throws: (any Error).self) { _ = try await service.list(.sending) }
+        let tampered = try await service.listVerifiedRows(.sending)
+        #expect(tampered.objects.isEmpty && tampered.blocked.count == 1)
         await adversary.set()
         _ = try await service.send(Data("updated".utf8), name: "doc", document: first)
         let restarted = try await w.dropService(phone)
         await adversary.set(list: old)
-        await #expect(throws: (any Error).self) { _ = try await restarted.list(.sending) }
+        let rolledBack = try await restarted.listVerifiedRows(.sending)
+        #expect(rolledBack.objects.isEmpty && rolledBack.blocked.count == 1)
         #expect(try FileManager.default.contentsOfDirectory(atPath: w.env.layout.filesDir(w.ws.hex).path).isEmpty)
     }
 
@@ -693,5 +695,20 @@ extension DropServiceTests {
         #expect(try await reopenedDB.query("SELECT body FROM drop_uploads ORDER BY object").compactMap { $0.blob("body") } == bodies)
         #expect(try await reopenedDB.query("SELECT object FROM drop_uploads WHERE done=1").count == 2)
         #expect(try await restarted.list(.sending).count == 2)
+    }
+}
+
+extension DropServiceTests {
+    @Test func malformedListRowDoesNotHideValidNeighbor() async throws {
+        let w = try await World.drop(), adversary = DropAdversary(w.relay)
+        let transport = try RoutedRelayTransport(context: w.env.context, origin: w.env.context.origin, sender: adversary, clientAddress: "test")
+        let phone = try await w.makePhone(transport: transport), service = try await w.dropService(phone)
+        _ = try await service.send(Data("first".utf8), name: "first")
+        _ = try await service.send(Data("second".utf8), name: "second")
+        await adversary.set(descriptor: true)
+        let result = try await service.listVerifiedRows(.sending)
+        #expect(result.blocked.count == 1)
+        #expect(result.objects.count == 1)
+        #expect(try await service.metadataVerified(result.objects[0]).size > 0)
     }
 }

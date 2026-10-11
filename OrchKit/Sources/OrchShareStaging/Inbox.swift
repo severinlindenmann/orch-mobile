@@ -34,11 +34,12 @@ public struct ShareInbox: Sendable {
     /// whose generation differs, moves to quarantine: never redirected to another workspace.
     /// - Parameter includeClaimed: startup recovery. An import that crashed after the rename left `<job>.claimed`;
     ///   only the recovery pass may hand those out again, so a claim that is still being imported is never re-issued.
-    public func claim(live: Set<LiveDestination>, realm: String? = nil, includeClaimed: Bool = true) -> ClaimResult {
+    public func claim(live: Set<LiveDestination>, realm: String? = nil, includeClaimed: Bool = true, deferred: Set<LiveDestination> = []) -> ClaimResult {
         var result = ClaimResult()
         for job in jobs(in: area.stagingRoot, requireReady: true) {
             let m = job.manifest
             if let realm, m.realm != realm { continue }
+            if deferred.contains(LiveDestination(realm: m.realm, ws: m.ws, generation: m.generation)) { continue }
             let isLive = live.contains(LiveDestination(realm: m.realm, ws: m.ws, generation: m.generation))
             guard let base = try? area.stagingDir(realm: m.realm, ws: m.ws) else { continue }
             let alreadyClaimed = job.dir.lastPathComponent.hasSuffix(JobFiles.claimedSuffix)
@@ -92,14 +93,17 @@ public struct ShareInbox: Sendable {
     /// all plaintext is gone, so a failed deletion or interrupted cleanup is retried by the next recovery claim.
     /// The final metadata-only directory is also safe for the partial-job janitor after an interruption.
     package func cleanupCompleted(_ job: StagedJob,
+                                  beforeRemovingItem: (@Sendable () async throws -> Void)? = nil,
                                   afterRemovingItem: (@Sendable (String) async throws -> Void)? = nil) async throws {
         let dir: DirFD
         do { dir = try area.openDir(job.dir) }
         catch ShareFS.ReadFailure.notFound { return }
         for name in try ShareFS.list(dir).sorted() where name != JobFiles.manifest && name != JobFiles.ready {
+            try await beforeRemovingItem?()
             guard ShareFS.removeTree(dir, name) else { throw ShareError.io("remove staged plaintext") }
             try await afterRemovingItem?("import.cleanup.removed:\(name)")
         }
+        try await beforeRemovingItem?()
         guard area.safeRemove(job.dir) else { throw ShareError.io("remove completed job") }
     }
 

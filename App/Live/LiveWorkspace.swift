@@ -2,11 +2,14 @@ import Foundation
 import Observation
 import OrchClient
 import OrchProtocol
+import OrchStore
 
 /// One joined `(realm, workspace, generation)`: the verified identity from the join, plus what the workspace API reads. The screens get
 /// only this display model; the session behind `BridgeWorkspaceAPI` is never reachable from here (host-api section 1).
 @MainActor @Observable
 final class LiveWorkspace: WorkspaceModel {
+    var drop: LiveDrop?
+    var downloadContainer: WorkspaceContainer?
     let workspaceID: ID16
     let generation: Int64
     @ObservationIgnored let api: any WorkspaceAPI

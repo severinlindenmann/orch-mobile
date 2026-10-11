@@ -48,6 +48,9 @@ struct WorkspaceScreen: View {
         .sheet(isPresented: $composing) {
             DropComposeSheet(model: services.drop, preset: workspaceID) {}
         }
+        .task(id: segment) {
+            if segment == .files { await services.drop.refreshDrop() }
+        }
     }
 
     private var header: some View {
@@ -165,7 +168,8 @@ struct WorkspaceScreen: View {
             if items.isEmpty { Text("Nothing in Drop for this workspace.").foregroundStyle(OC.textMuted) }
             ForEach(items) { item in
                 NavigationLink(value: Route.dropItem(item.id)) { DropRow(item: item, workspaces: services.drop.workspaces) }
-                    .accessibilityIdentifier("ws.file.\(item.id)")
+                    .accessibilityIdentifier("ws.file.\(item.presentationID)")
+                    .task(id: services.drop.dropRefreshRevision) { await services.drop.verifyDropRow(item.id) }
             }
         }
         Section {

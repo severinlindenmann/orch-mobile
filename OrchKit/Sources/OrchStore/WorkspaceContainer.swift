@@ -182,6 +182,11 @@ extension WorkspaceContainer {
 
     public func writeDrop(_ data: Data, object: String, version: UInt32, expiresMs: Int64?,
                           now: @Sendable @escaping () -> Int64) async throws -> URL {
+        try await writeDropVerified(data, object: object, version: version, expiresMs: expiresMs, now: now).url
+    }
+
+    public func writeDropVerified(_ data: Data, object: String, version: UInt32, expiresMs: Int64?,
+                                  now: @Sendable @escaping () -> Int64) async throws -> (url: URL, deadlineMs: Int64) {
         try StoreLayout.validate(ws: object)
         try await index.requireNotRemoved(ws: ws, generation: generation)
         let layout = self.layout, ws = self.ws, generation = self.generation
@@ -197,7 +202,8 @@ extension WorkspaceContainer {
                                [.int(Int64(version)), expiresMs.map(SQLValue.int) ?? .null, .int(downloadedAt), .text(object)])
                 let url = directory.appendingPathComponent("\(object)-\(version)")
                 try data.write(to: url, options: [.atomic, .completeFileProtection])
-                return url
+                let (cap, overflow) = downloadedAt.addingReportingOverflow(604800000)
+                return (url, min(expiresMs ?? .max, overflow ? .max : cap))
             }
         }
     }
@@ -207,7 +213,12 @@ extension WorkspaceContainer {
         // Never wait for a cross-process lock on the cooperative pool.
         guard let result = try layout.tombstones.ifNotRemoved(realm: layout.realm, ws: ws, generation: generation, timeout: 0, {
             try body(layout.filesDir(ws))
-        }) else { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
+        }) else {
+            if layout.tombstones.removalStatus(realm: layout.realm, ws: ws, generation: generation) == .removed {
+                throw StoreError.workspaceRemoved(ws: ws, generation: generation)
+            }
+            throw StoreError.removalStateUnknown(ws: ws, generation: generation)
+        }
         return result
     }
 
