@@ -141,6 +141,7 @@ struct DropAttachment: Identifiable, Hashable, Sendable {
     var bytes: Int
     /// A labelled sample, not a real pick.
     var isSample = false
+    var data: Data = Data()
 }
 
 struct DropDraft: Sendable {

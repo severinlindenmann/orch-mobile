@@ -3,6 +3,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 import OrchUI
 import QuickLook
+import OrchProtocol
 
 struct DropScreen: View {
     let services: any AppServices
@@ -38,6 +39,24 @@ struct DropScreen: View {
                     NavigationLink(value: Route.dropItem(item.id)) { DropRow(item: item, workspaces: model.workspaces) }
                         .accessibilityIdentifier("drop.item.\(item.presentationID)")
                         .task { await model.verifyDropRow(item.id) }
+                }
+            }
+            if direction == .sending, let live = services as? LiveServices {
+                ForEach(live.live, id: \.info.id) { ws in
+                    if let drop = ws.drop {
+                        ForEach(drop.failures, id: \.object) { failure in
+                            Section("Failed upload") {
+                                Text(verbatim: failure.reason)
+                                Button("Retry") { Task { await drop.resolve(failure, retry: true) } }
+                                    .disabled(!drop.canOperate).accessibilityIdentifier("drop.retry")
+                                Button("Stop sending") { Task { await drop.resolve(failure, retry: false) } }
+                                    .disabled(!drop.canOperate).accessibilityIdentifier("drop.stop")
+                                Text("Already-committed relay content may remain.")
+                            }
+                        }
+                        Button("Resume pending uploads") { Task { await drop.foreground() } }
+                            .disabled(!drop.canOperate).accessibilityIdentifier("drop.resume")
+                    }
                 }
             }
             Section {
@@ -116,7 +135,7 @@ struct DropItemScreen: View {
                     Section("Choose another destination") {
                         Text("The workspace this was meant for was removed from this iPhone. Nothing was sent. It is kept here until you pick where it goes, or it expires.")
                             .font(OF.meta).foregroundStyle(OC.textMuted)
-                        ForEach(model.workspaces.filter { $0.lifecycle == .live }) { ws in
+                        ForEach(model.workspaces.filter { $0.lifecycle == .live && $0.scopes.contains(.operate) }) { ws in
                             Button { model.redirectQuarantined(id: item.id, to: ws.id) } label: {
                                 HStack {
                                     WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
@@ -129,6 +148,10 @@ struct DropItemScreen: View {
                 }
                 if let drop = (services as? LiveServices)?.dropState(itemID) {
                     if let status = drop.status { Text(verbatim: status) }
+                    if drop.objects[item.id]?.descriptor.recipients == .inbox {
+                        Button("Claim") { Task { await drop.claim(item.id) } }
+                            .disabled(!drop.canOperate).accessibilityIdentifier("drop.claim")
+                    }
                     Button("Open") { Task { await drop.open(item.id) } }
                         .disabled(!drop.usable || !item.verified || item.bytes == 0)
                         .accessibilityIdentifier("drop.open")
@@ -176,7 +199,7 @@ struct DropComposeSheet: View {
     }
 
     private var total: Int { attachments.reduce(0) { $0 + $1.bytes } }
-    private var canSend: Bool { model.workspaces.contains { $0.id == destination && $0.lifecycle == .live } && (!attachments.isEmpty || !note.isEmpty) }
+    private var canSend: Bool { model.workspaces.contains { $0.id == destination && $0.lifecycle == .live && $0.scopes.contains(.operate) } && (!attachments.isEmpty || !note.isEmpty) }
 
     var body: some View {
         NavigationStack {
@@ -187,7 +210,7 @@ struct DropComposeSheet: View {
                         .accessibilityIdentifier("drop.demoLabel")
                 }
                 Section("1. Send to") {
-                    ForEach(model.workspaces.filter { $0.lifecycle == .live }) { ws in
+                    ForEach(model.workspaces.filter { $0.lifecycle == .live && $0.scopes.contains(.operate) }) { ws in
                         Button { destination = ws.id } label: {
                             HStack {
                                 WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
@@ -217,7 +240,7 @@ struct DropComposeSheet: View {
                     .accessibilityIdentifier("drop.photos")
                     Button { importing = true } label: { Label("Choose files", systemImage: "folder") }
                         .accessibilityIdentifier("drop.files")
-                    Button { add(DropAttachment(id: UUID(), name: "Sample file (not a real pick)", bytes: 12_000, isSample: true)) } label: {
+                    Button { add(DropAttachment(id: UUID(), name: "Sample file.txt", bytes: 12_000, isSample: true, data: Data(repeating: 65, count: 12_000))) } label: {
                         Label("Add a sample attachment", systemImage: "doc.badge.plus")
                     }
                     .accessibilityIdentifier("drop.sample")
@@ -250,8 +273,12 @@ struct DropComposeSheet: View {
                 for url in urls {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                    add(DropAttachment(id: UUID(), name: url.lastPathComponent, bytes: size))
+                    do {
+                        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                        guard size <= DropLimits.maxBytes else { error = "That would be more than 25 MB."; continue }
+                        let data = try Data(contentsOf: url)
+                        add(DropAttachment(id: UUID(), name: url.lastPathComponent, bytes: data.count, data: data))
+                    } catch { self.error = "Could not read this file." }
                 }
             }
             .onChange(of: photos) { _, items in
@@ -260,8 +287,8 @@ struct DropComposeSheet: View {
                 Task {
                     for (i, item) in picked.enumerated() {
                         // Real size from the picked data; nothing is invented.
-                        let data = try? await item.loadTransferable(type: Data.self)
-                        add(DropAttachment(id: UUID(), name: "Photo \(attachments.count + i + 1)", bytes: data?.count ?? 0))
+                        guard let data = try? await item.loadTransferable(type: Data.self) else { error = "Could not read this photo."; continue }
+                        add(DropAttachment(id: UUID(), name: "Photo \(attachments.count + i + 1)", bytes: data.count, data: data))
                     }
                 }
             }

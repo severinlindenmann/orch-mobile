@@ -11,9 +11,11 @@ final class LiveDrop {
     let service: DropService
     unowned let workspace: LiveWorkspace
     private(set) var revision = 0
-    private(set) var status: String?
+    var status: String?
     private(set) var alarm = false
     private(set) var loading = false
+    private(set) var sending = false
+    var canOperate: Bool { usable && workspace.info.scopes.contains(.operate) }
     var verifying: Set<String> = []
     var objects: [String: DropObject] = [:]
     var downloads: [String: DropDownload] = [:]
@@ -153,3 +155,52 @@ extension LiveDrop {
         } catch { if mine == revision && workspace.usable { report(error) } }
     }
  }
+
+extension LiveDrop {
+    func send(_ draft: DropDraft) async {
+        guard canOperate, !sending, draft.attachments.count <= DropLimits.maxAttachments,
+              draft.attachments.reduce(0, { $0 + $1.data.count }) <= DropLimits.maxBytes else { return }
+        sending = true; status = "Sending…"
+        let mine = revision
+        defer { sending = false }
+        do {
+            if draft.attachments.isEmpty {
+                _ = try await service.send(Data(draft.note.utf8), name: "note.txt", mime: "text/plain")
+            } else {
+                for attachment in draft.attachments {
+                    guard canOperate, mine == revision else { return }
+                    _ = try await service.send(attachment.data, name: attachment.name,
+                                               transcript: draft.note.isEmpty ? nil : draft.note)
+                }
+            }
+            guard canOperate, mine == revision else { return }
+            await refresh()
+            status = "Sent (confirmed)"
+        } catch {
+            guard workspace.usable, mine == revision else { return }
+            report(error)
+            // A durable pending identity is recovered by resumeUploads, never a fresh send.
+            do { failures = try await service.failedUploads() } catch { report(error) }
+        }
+    }
+    func claim(_ id: String) async {
+        guard canOperate, let object = objects[id], object.descriptor.recipients == .inbox else { return }
+        let mine = revision
+        do {
+            try await service.claim(object)
+            guard canOperate, mine == revision else { return }
+            await refresh(); await verifyVisible(id)
+        } catch { if mine == revision && workspace.usable { report(error) } }
+    }
+    func resolve(_ failure: DropUploadFailure, retry: Bool) async {
+        guard canOperate else { return }
+        let mine = revision
+        do {
+            if retry { _ = try await service.retryUpload(object: failure.object, version: failure.version) }
+            else { try await service.discardUpload(object: failure.object, version: failure.version) }
+            guard canOperate, mine == revision else { return }
+            await refresh()
+            status = retry ? "Sent (confirmed)" : "Stopped sending. Already-committed relay content may remain."
+        } catch { if mine == revision && workspace.usable { report(error) } }
+    }
+}

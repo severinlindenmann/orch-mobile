@@ -401,7 +401,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func item(id: String) -> DropItem? { dropItems.first { $0.id == id || $0.presentationID == id } }
     func items(workspace: String) -> [DropItem] { dropItems.filter { $0.workspaceID == workspace } }
 
-    func send(_ draft: DropDraft) {}
+    func send(_ draft: DropDraft) {
+        guard canUse(draft.workspaceID), let drop = live.first(where: { $0.info.id == draft.workspaceID })?.drop else { return }
+        Task { await drop.send(draft) }
+    }
 
     func refreshDrop() async {
         for ws in live where canUse(ws.info.id) { await ws.drop?.refresh() }
