@@ -67,6 +67,7 @@ public actor DropService {
         guard try await db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(key)]).isEmpty else { throw DropError.abandoned }
     }
     private func requireActiveUpload(_ object: ID16, _ version: UInt32) async throws {
+        try await requireActive(Self.importAbandonmentKey(object))
         let db = try await session.cfg.container.database()
         guard let body = try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") else { throw DropError.abandoned }
         try await requireActive(Self.abandonmentKey(object, version, body))
@@ -74,6 +75,10 @@ public actor DropService {
     }
     private nonisolated static func abandonmentKey(_ object: ID16, _ version: UInt32, _ body: Data) -> String {
         "upload:\(object.hex):\(version):\(B64U.encode(Data(SHA256.hash(data: body))))"
+    }
+    // Import retries retain their object identity even when no sealed upload remains.
+    private nonisolated static func importAbandonmentKey(_ object: ID16) -> String {
+        "import:\(object.hex)"
     }
     let session: WorkspaceSession
     let card: VerifiedCard
@@ -230,6 +235,7 @@ public actor DropService {
         let expiry = expiresMs ?? DropUpload.addMs(now, 604800000)
         guard expiry > now, expiry <= DropUpload.addMs(now, 604800000) else { throw DropError.expired }
         let object = chosenObject ?? document?.descriptor.object ?? session.cfg.entropy.id16()
+        if chosenObject != nil { try await requireActive(Self.importAbandonmentKey(object)) }
         if chosenObject != nil, try await session.cfg.container.database().query("SELECT object FROM drop_uploads WHERE object=? AND version=1", [.text(object.hex)]).first != nil {
             return try await upload(object: object, version: 1)
         }
@@ -243,6 +249,8 @@ public actor DropService {
             now: now, expiry: expiry, parent: document?.descriptor, kind: kind.rawValue)
         let db = try await session.cfg.container.database()
         try await db.transaction { tx in
+            // Recheck atomically with persistence in case discard ran while sealing.
+            guard try tx.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.importAbandonmentKey(object))]).isEmpty else { throw DropError.abandoned }
             guard try tx.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.abandonmentKey(object, parent + 1, body))]).isEmpty else { throw DropError.abandoned }
             try tx.execute("INSERT OR IGNORE INTO drop_uploads(object,version,body,done) VALUES(?,?,?,0)", [.text(object.hex), .int(Int64(parent + 1)), .blob(body)])
             guard let stored = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(parent + 1))]).first?.blob("body") else { throw DropError.malformed }
@@ -326,7 +334,9 @@ public actor DropService {
         try await hook?("discard.upload.admitted")
         let db = try await session.cfg.container.database()
         try await db.transaction { tx in
-            if let body = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") {
+            if try !tx.query("SELECT object FROM drop_imports WHERE object=?", [.text(object.hex)]).isEmpty {
+                try tx.execute("INSERT OR IGNORE INTO drop_abandoned(key) VALUES(?)", [.text(Self.importAbandonmentKey(object))])
+            } else if let body = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") {
                 try tx.execute("INSERT OR IGNORE INTO drop_abandoned(key) VALUES(?)", [.text(Self.abandonmentKey(object, version, body))])
             }
             try tx.execute("DELETE FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
