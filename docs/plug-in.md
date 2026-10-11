@@ -212,18 +212,19 @@ Source: host API §§3,5–6; Slice 2b `PairingCoordinator.swift`, `FakeHostPair
 - Echo both phone keys; pin SAS nonce/owner/challenge. Approval is an explicit code comparison,
   never a timer or transport success. Do not regress state or substitute a challenge after display.
 - If certification is needed, send §8.4 cert_request signed by WSK and sealed to the primary's dk_kx.
-  The inner carries device_id, both keys, cleaned label, scopes_max and offer_id.
+  The inner carries device_id, both keys, cleaned label, scopes_max, offer_id and the phone's `attempt`; `o` repeats
+  offer_id, attempt, device_id and dk_hash in clear (P3-D28), and the primary refuses a mismatch with the inner (malformed).
   Primary verifies the request/delegation, opens stored keys, issues one pinned challenge and signs
   those exact keys only after cert-code confirmation. The phone never holds PK/PVK (D-2).
 - Queues are §19.3 routes (P3-D11): the host posts its request with W(g) and reads
   `GET /v2/cert-requests/{id}`; the primary polls, challenges and rejects with its own device session
   (D(p), addressee). Rejection is the PK-signed `cert_rejection` (label `orch/v2/sig/cert-rejection|`).
-  The host verifies it under PK for its request and relays it unchanged in its `rejected` answer as
-  `{"state":"rejected","wsk_pub","pk_pub","rejection"}`; a host's own rejection carries neither field.
-  The phone shows `denied` only after pk_pin, the PK signature, workspace and person check AND a match
-  with the pinned PK and the request id of the challenge it showed; an invalid one is dropped (keep
-  waiting), another request alarms, and an unbindable one (no pinned challenge) ends as plain `rejected`.
-  The `rejected` answer's `pk_pub` + `rejection` are an orch-mobile addition pending orch-relay adoption (gaps Q4).
+  The host verifies it under PK for its request (and the attempt binding) and relays it unchanged in the long
+  `rejected` form `{"state":"rejected","wsk_pub","pk_pub","rejection"}`; its own rejection is the short form.
+  The pair request meta is exactly `{op, dk_sig_pub, dk_kx_pub, label, cert, attempt}`; a resend keeps the attempt,
+  a new attempt (same keys) is `pairing_closed`. `approved` carries the join anchor `list_seq`, `card_seq`, `baseline`
+  from relay-accepted objects only. The phone runs §8.4 step 5 and §8.3's rejected checks in the G3b order
+  (keys/device before attempt and offer); only a full pass shows "Denied by the owner".
   A real host must not stall on a relay `rejection` that does not verify: ignore it and keep checking the
   challenge and both certificate sources (the request's and the directory's), as FakeHost does.
 - Publish valid own-key certificate → one membership publication (list, every member's current WK grant, the CK wrap) → approved.

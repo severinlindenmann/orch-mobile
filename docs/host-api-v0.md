@@ -613,11 +613,11 @@ A late response cannot recreate a cancelled generation. Never retain a pending s
 | question_changed | hash mismatch forces authoritative reload and a fresh immutable review |
 | lostResponse | fault after commit; restart resends stored envelope/same rid first; expired/unknown replay falls back to question fetch; no duplicate side effect |
 
-Primary rejection is the P3-D11 `cert_rejection` (PK-signed). The host relays it in its `rejected` answer with
-`pk_pub` (an orch-mobile addition to §8.3's answer shape pending orch-relay adoption, ignored by older devices;
-[gaps Q4](gaps.md#pr4-open-spec-items-blockers-before-real-relay-use)); the phone believes it only
-when it verifies and binds to the pinned PK and challenge request id, and otherwise never attributes the
-rejection to the primary. The phone joining timeout stays provisional. UI clock scaling changes no check order.
+Primary rejection is the P3-D11/P3-D28 `cert_rejection` (PK-signed, bound to the attempt: `offer_id`, `attempt`,
+`device_id`, `dk_hash`, `expires_ms`). The host relays it in the long `rejected` form `{state, wsk_pub, pk_pub, rejection}`
+(protocol-v2 §8.3, orch-relay 04da0e7); the short form `{state, wsk_pub}` is its own refusal. The phone shows "Denied by the
+owner" (`pair.deniedByOwner`, attributed to the pinned owner key) only after every §8.3 check; anything else is the unattributed
+"The pairing was refused", and a rejection naming a foreign device raises the alarm. The phone joining timeout stays provisional. UI clock scaling changes no check order.
 
 ## 7. Implementation slices and evidence gates
 
