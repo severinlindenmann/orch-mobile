@@ -743,7 +743,7 @@ public actor WorkspaceSession {
             let c = (until - now).components
             throw SessionError.epochRefetchDeferred(retryAfterMs: max(1, c.seconds * 1000 + c.attoseconds / 1_000_000_000_000_000))
         }
-        let after = try await refreshGrants()
+        let after = try await refreshGrants(forceList: true)       // the signed list, even if no grant is above the held head (Q10)
         if after > before { epochHintLimiter.reset() }
         return after
     }

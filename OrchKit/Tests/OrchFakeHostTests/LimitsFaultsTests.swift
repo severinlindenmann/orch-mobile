@@ -212,7 +212,7 @@ import OrchProtocol
         #expect(try await w.postRequest(rid: rid).status == 202)
         for seq in 0..<3 {
             let e = try w.sealedResponse(rig: rig, rid: rid, seq: UInt64(seq), flags: seq == 2 ? [.last] : [])
-            #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)
+            #expect(try await w.host.postBridgeChunk(e, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
             sent.append(e)
         }
         func poll() async throws -> [HostAPI.Chunk] { try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession)) }

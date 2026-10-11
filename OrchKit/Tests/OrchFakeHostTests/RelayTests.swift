@@ -82,7 +82,7 @@ import OrchProtocol
         for (n, seq) in [UInt64(0), 1, UInt64(UInt32.max) + 2, UInt64(maxSafeInt)].enumerated() {
             let last = n == 3
             let e = try w.envelope(direction: .toDevice, rid: rid, seq: seq, flags: last ? [.last] : [], signer: hostSigner)
-            let r = try await w.transport.bridgePost(e, route: route, session: w.hostSession)
+            let r = try await w.host.postBridgeChunk(e, rid: route.requestID, relay: w.relay, session: w.hostSession)
             #expect(r.status == 202)
             ids.append(seq)
         }
@@ -132,7 +132,7 @@ import OrchProtocol
         let idx = UInt64(UInt32.max) + 1
         #expect(try await w.postRequest(rid: rid).status == 202)
         let e = try w.envelope(direction: .toDevice, rid: rid, seq: idx, flags: [.last], signer: SoftwareSigner())
-        #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(e, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         let reply = try await w.transport.bridgePoll(route: route, after: UInt64(UInt32.max), session: w.phoneSession)
         #expect(String(decoding: reply.body, as: UTF8.self).contains("\"idx\":4294967296"))
         #expect(try chunkList(reply).map(\.idx) == [idx])
