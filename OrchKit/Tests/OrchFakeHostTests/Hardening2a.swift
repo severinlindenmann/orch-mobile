@@ -162,7 +162,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(try await again.session.uncertainRequests().isEmpty)
     }
 
-    @Test(arguments: [(299_000 as Int64, true), (301_000, false)])
+    @Test(arguments: [(239_000 as Int64, true), (241_000, false)])   // the last automatic resend starts by ~240 s (orch-29 Q11)
     func resendWindowBoundary(ageMs: Int64, replayed: Bool) async throws {
         let faults = ScriptedFaults()
         var lim = RelayLimits(); lim.sessionLifetimeMs = 7_200_000

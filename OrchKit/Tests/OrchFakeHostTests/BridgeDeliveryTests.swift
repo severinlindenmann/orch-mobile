@@ -80,7 +80,7 @@ import OrchStore
         #expect(fresh?.requeues == 0 && fresh?.firstMs == first + 900_000)
     }
 
-    @Test func fakeRelayAnswersAnUnknownOrExpiredRidWith410AndNeverResurrectsAChunk() async throws {
+    @Test func fakeRelayAnswersAnUnknownOrExpiredRidWith410AndReStoresOnlyExactBytes() async throws {
         var lim = RelayLimits(); lim.sessionLifetimeMs = 7_200_000            // the sessions outlive the 900 s rid
         let w = try await World.make(limits: lim)
         let rig = HostRig()
@@ -91,10 +91,24 @@ import OrchStore
         #expect(try await w.postRequest(rid: rid).status == 202)
         #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         w.clock.advance(milliseconds: 60_000)
-        // A stored replay of the expired chunk is accepted (202) but brings nothing back.
-        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         #expect(try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession)).isEmpty)
-        w.clock.advance(milliseconds: 840_000)                               // 900 s after the request: the rid is gone
+        // Q11 (P3-D27): other bytes for the expired index stay a conflict; the EXACT bytes are stored again for 60 s.
+        let other = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
+        let conflict = try await w.host.postBridgeChunk(other, rid: route.requestID, relay: w.relay, session: w.hostSession)
+        #expect(conflict.status == 409 && errorCode(conflict) == "chunk_conflict")
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
+        let polled = try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession))
+        #expect(polled.map(\.envelope) == [chunk])
+        // A live duplicate is free; after eight re-stores the ninth is terminal.
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
+        for _ in 2...8 {
+            w.clock.advance(milliseconds: 60_000)
+            #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
+        }
+        w.clock.advance(milliseconds: 60_000)
+        let ninth = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
+        #expect(ninth.status == 409 && errorCode(ninth) == "retry_exhausted")
+        w.clock.advance(milliseconds: 360_000)                               // 900 s after the request: the rid is gone
         let gone = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
         #expect(gone.status == 410 && errorCode(gone) == "expired")
     }
@@ -108,6 +122,59 @@ import OrchStore
         got.append(l.admit(at: .seconds(223)))
         #expect(got == [true, true, true, true, true, true, true, false])
         #expect(l.nextAllowed(at: .seconds(223)) == .seconds(282))
+    }
+
+    /// Q11: no interim `already_done(unknown)` for a copy of a request whose handler is still running (it would take index 0
+    /// from the real answer); the real answer is the only one.
+    @Test func aCopyOfARunningRequestGetsNoInterimAnswer() async throws {
+        let w = try await World.make()
+        let gate = HandlerGate()
+        await w.host.setHandler({ _ in await gate.wait(); return .response(status: 200, headers: [:], data: Data("real".utf8)) })
+        let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0xB3))
+        let host = w.host
+        let first = Task { await host.process(envelope: env, mailbox: h.rid) }
+        while !gate.isEntered { await Task.yield() }
+        let copy = await w.host.process(envelope: env, mailbox: h.rid)
+        #expect(copy.isEmpty)
+        gate.open()
+        let answer = await first.value
+        #expect(answer.count == 1)
+        // Later copies get the very same bytes.
+        let replay = await w.host.process(envelope: env, mailbox: h.rid)
+        #expect(replay == answer)
+    }
+
+    /// Q11: removing a device exhausts its chunks' re-store counts and drops every body, so a re-added device never gets an old
+    /// answer back.
+    @Test func removingADeviceExhaustsItsChunksReStores() async throws {
+        let w = try await World.make()
+        let rig = HostRig()
+        let rid = ID16.fresh(0xB4)
+        #expect(try await w.postRequest(rid: rid).status == 202)
+        let chunk = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
+        #expect(try await w.host.postBridgeChunk(chunk, rid: rid, relay: w.relay, session: w.hostSession).status == 202)
+        _ = try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 2)
+        let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: rid))
+        #expect(record.chunks[0]?.restores == RidStore.maxRestores && record.chunks[0]?.envelope == nil)
+        #expect(await w.relay.storedBodyCount() == 0)
+    }
+
+    /// Q11: a host's stored `stale_timestamp` re-posted later still carries the host_ms of its first receipt, so the phone takes
+    /// its clock offset against the time of its FIRST send, not of the late delivery.
+    @Test func aLateStaleTimestampReplayUsesTheFirstSend() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        let phone = try await w.makePhone(skewMs: 600_000)                    // ten minutes ahead
+        let s = phone.session
+        faults.enqueue(.disconnect, at: .pollDelivery)
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: httpGet) }
+        let p = try #require(try await s.pendingRequests().first)
+        #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)   // stale_timestamp, stored
+        w.clock.advance(milliseconds: 30_000); phone.clock.advance(milliseconds: 30_000)
+        // The resend reads the stored refusal 30 s later; a resend never re-signs (U8), but the offset is adopted.
+        await #expect(throws: SessionError.uncertain(logical: p.logical)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
+        let off = try await s.clockOffsetMs()
+        #expect(abs(off + 600_000) < 5_000, "offset \(off) against the first send")
     }
 
     // MARK: helpers
