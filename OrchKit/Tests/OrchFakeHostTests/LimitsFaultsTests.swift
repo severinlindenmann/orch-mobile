@@ -182,10 +182,11 @@ import OrchProtocol
         let env = try w.envelope(rid: rid)
         let t = w.transport, s = w.phoneSession
         let task = Task { try await t.bridgePost(env, route: route, session: s) }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        let clock = w.clock
+        await eventually("the delayed post parks on the injected clock") { clock.sleeperCount == 1 }
         #expect(try await w.relay.pendingRequests(workspace: w.ws, token: w.hostSession.token).isEmpty)
         w.clock.advance(by: .seconds(29))
-        await Task.yield()
+        await settleBriefly(yields: 20, minMs: 50)               // negative: a slow runner must not let the 29 s look like 30
         #expect(w.clock.sleeperCount == 1)
         w.clock.advance(by: .seconds(1))
         #expect(try await task.value.status == 202)

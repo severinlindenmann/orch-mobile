@@ -183,6 +183,7 @@ public actor PairingCoordinator {
         token += 1
         let mine = token
         publish(.parsing)
+        try? await crashPoint("start.reserved")          // test seam, like `resume.row`: the lifecycle is held and nothing else has happened
         do { try checkConfig(); try cfg.context.admit(origin: link.origin) } catch { return fail(violation(error), mine) }
         let ws = link.workspace
         do {

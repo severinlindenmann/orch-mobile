@@ -55,7 +55,7 @@ import OrchStore
         await h.host.setHostile { $0.wrapKey = SymmetricKey(size: .bits256) }
         let log = StateLog(); await log.attach(h.coordinator)
         let end = try await h.completeFirstTime()
-        await log.settled(); await log.stop()
+        await log.settled(h.coordinator); await log.stop()
         #expect(end == .failed(.verification(reason: "card_key")))
         let ws = try await h.env.index.workspaces(), rows = try await h.env.index.pairings(), prof = try await h.env.index.profile(ws: h.host.workspace.hex)
         #expect(ws.isEmpty && rows.isEmpty && prof == nil && h.vaultItems.isEmpty)             // no partial install, no WK left behind

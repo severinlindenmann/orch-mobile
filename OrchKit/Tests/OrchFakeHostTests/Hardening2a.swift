@@ -314,7 +314,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
             async let a = s.resend(rid: p.rid)
             async let b = s.resend(rid: p.rid)
             while gate.postGate.entered == 0 { await Task.yield() }
-            for _ in 0..<100 { await Task.yield() }               // the second caller has had every chance to start its own driver
+            await settleBriefly()                                 // the second caller has had every chance to start its own driver
             gate.postGate.open()
             return try await [a, b]
         }
@@ -707,7 +707,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let rt = Task { await host.process(envelope: renv, mailbox: rh.rid) }
         while !pub.isEntered { await Task.yield() }
         hgate.open()                                   // handler returns mid-publication
-        for _ in 0..<200 { await Task.yield() }
+        await settleBriefly(yields: 200)
         pub.open()
         let chunks = await t.value
         _ = await rt.value

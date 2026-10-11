@@ -97,3 +97,66 @@ struct SkewedWall: WallClock {
     let skewMs: Int64
     var nowMs: Int64 { base.nowMs + skewMs }
 }
+
+
+// MARK: timing helpers (deterministic under load)
+
+/// Polls `condition` (yielding between looks) until it holds or `timeoutSeconds` of REAL time pass. Returns whether it held; records an
+/// issue with `what` and the optional `diagnostics` on timeout, so a stalled runner fails loudly instead of hanging or flaking.
+@discardableResult
+func eventually(_ what: String, timeoutSeconds: Int = 60, diagnostics: () async -> String = { "" },
+                _ condition: () async -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds))
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        await Task.yield()
+    }
+    if await condition() { return true }
+    Issue.record("timed out after \(timeoutSeconds) s of real time waiting for: \(what) \(await diagnostics())")
+    return false
+}
+
+/// Gives a concurrent task every chance to reach a point that cannot be observed (a negative check: "nothing happened yet"). Waits for
+/// both `yields` scheduler yields and `minMs` of real time, so a loaded runner cannot make the yields pass before the other task started.
+/// Only used where the assertion that follows can never turn a slow runner into a failure of a correct implementation.
+func settleBriefly(yields: Int = 100, minMs: Int = 200) async {
+    let until = ContinuousClock.now.advanced(by: .milliseconds(minMs))
+    var n = 0
+    while n < yields || ContinuousClock.now < until { await Task.yield(); n += 1 }
+}
+
+extension PairHarness {
+    /// Runs the injected clock for a test that has `coordinator.run()` going in a task: the clock advances only while run() is parked
+    /// on it (a registered sleeper) or after a real-time stall with no observable progress (run() awaiting storage or relay work with
+    /// no sleep registered). Scheduler yields are never counted as elapsed simulated time. Bounded by 60 s of real time and `simCapMs`
+    /// of simulated time; `pump` lets the fakes act between ticks.
+    func tickRunLoop(stepMs: Int64 = 1000, pump: Bool = false, simCapMs: Int64 = 3_600_000,
+                     until: @Sendable (PairingState) -> Bool) async throws -> (state: PairingState, met: Bool, diagnostics: String) {
+        let startMs = clock.nowMs
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        var lastState = await coordinator.state
+        var lastRequests = await relay.requestsReceived
+        var unchangedSince = ContinuousClock.now
+        var unchangedYields = 0
+        while ContinuousClock.now < deadline, clock.nowMs - startMs < simCapMs {
+            let state = await coordinator.state
+            if until(state) { return (state, true, "") }
+            if pump { try await rig.pump() }
+            let requests = await relay.requestsReceived
+            if state != lastState || requests != lastRequests {
+                lastState = state; lastRequests = requests
+                unchangedSince = .now; unchangedYields = 0
+            }
+            let stalled = unchangedYields >= 1_000 && unchangedSince.duration(to: .now) >= .milliseconds(100)
+            if clock.sleeperCount > 0 || stalled {
+                clock.advance(milliseconds: stepMs)
+                unchangedSince = .now; unchangedYields = 0
+            }
+            await Task.yield()
+            unchangedYields += 1
+        }
+        let state = await coordinator.state
+        let diag = "state=\(state), elapsedSimMs=\(clock.nowMs - startMs), requests=\(await relay.requestsReceived), sleepers=\(clock.sleeperCount)"
+        return (state, until(state), diag)
+    }
+}
