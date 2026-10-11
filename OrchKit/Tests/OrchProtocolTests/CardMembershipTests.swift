@@ -170,7 +170,7 @@ import Testing
     }
 
     /// Relay vectors 386a6cb (P3-D6): every member list now carries `persons` and per-member `person_id`, which the strict
-    /// `MemberList.parse` rejects (malformed). Measured: all 14 cases fail for that reason, so all 14 are listed. Each is wrapped
+    /// `MemberList.parse` rejects (malformed). Measured: 13 of 14 fail for that reason and are listed; signed_by_another_workspace_key still passes (bad_signature is checked before shape) and stays unwrapped. Each is wrapped
     /// on its own (non-intermittent: it fails once PR3 makes it pass, forcing removal from this set).
     static let pr3ExpectedFailureMemberLists: Set<String> = [
         "first_list",
@@ -185,8 +185,7 @@ import Testing
         "other_persons_device",
         "scoped_agent_as_member",
         "scopes_above_cert",
-        "missing_grant_for_new_epoch",
-        "signed_by_another_workspace_key"
+        "missing_grant_for_new_epoch"
     ]
 
     @Test func memberListCases() throws {
@@ -216,7 +215,7 @@ import Testing
                 withKnownIssue("PR3: member_list persons / person_id not parsed yet") { try run() }
             } else { try run() }
         }
-        #expect(known == Self.pr3ExpectedFailureMemberLists.count)
+        #expect(known == 13 && Self.pr3ExpectedFailureMemberLists.count == 13)
         #expect(ok == 0)   // all accepted cases are in the PR3 set; PR3 sets this back to 3
     }
 
