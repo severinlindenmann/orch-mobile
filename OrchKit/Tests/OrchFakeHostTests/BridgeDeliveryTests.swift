@@ -179,6 +179,82 @@ import OrchStore
         #expect(abs(off + 600_000) < 5_000, "offset \(off) against the first send")
     }
 
+    /// P3-D27: pairing answers are never stored again. After the body expired, an identical re-post is a stored replay (202, nothing
+    /// comes back) and other bytes for the answered index are 409 `chunk_conflict`.
+    @Test func aPairingAnswerIsNeverReStored() async throws {
+        let w = try await World.make()
+        let offer = ID16.fresh(0xC7), rid = ID16.fresh(0xC8)
+        let target = "\(HostAPI.base)/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)"
+        func post(_ body: Data) async throws -> WireReply {
+            let gen = try await w.host.holderGeneration(relay: w.relay, session: w.hostSession)     // the 40 s lease, renewed
+            return try await w.relay.send(WireRequest(method: "POST", target: target,
+                headers: ["authorization": "Bearer " + w.hostSession.token, "orch-holder": String(gen), "content-type": "application/octet-stream"],
+                body: body, clientAddress: "198.51.100.7"))
+        }
+        func polled() async throws -> [HostAPI.Chunk] {
+            try chunkList(try await w.relay.send(WireRequest(method: "GET", target: target, headers: [:], clientAddress: "203.0.113.9")))
+        }
+        let answer = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
+        #expect(try await post(answer).status == 202)
+        #expect(try await polled().count == 1)
+        w.clock.advance(milliseconds: 60_000)
+        #expect(try await polled().isEmpty)
+        let again = try await post(answer)
+        #expect(again.status == 202)
+        #expect(try await polled().isEmpty)                                 // a stored replay: nothing stored again
+        let other = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
+        let conflict = try await post(other)
+        #expect(conflict.status == 409)
+        #expect(errorCode(conflict) == "chunk_conflict")
+        #expect(try await polled().isEmpty)
+    }
+
+    /// The host substitutes its kept answer only when it answers a KNOWN request again, after the §8.6 device checks: a device
+    /// revoked at the host gets the refusal for an identical resend, never the old answer.
+    @Test func aKeptAnswerNeverReplacesADeviceCheckRefusal() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        await w.host.setHandler({ _ in .response(status: 200, headers: [:], data: Data("old".utf8)) })
+        let phone = try await w.makePhone()
+        let s = phone.session
+        faults.enqueue(.disconnect, at: .pollDelivery)
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: httpGet) }
+        let p = try #require(try await s.pendingRequests().first)
+        #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
+        let first = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: p.rid)?.chunks[0])
+        await w.host.markRevoked(w.phoneID)                                  // the host's own view (§8.6 step 4)
+        let env = try #require(try await s.storedEnvelope(rid: p.rid))
+        let answer = await w.host.process(envelope: env, mailbox: p.rid)
+        let chunk = try #require(answer.first)
+        #expect(RidStore.digest(chunk) != first.digest)
+        let opened = try openChunk(chunk, wk: await w.host.wkFor(1))
+        #expect(opened.meta == HostRefusal.revoked.meta)
+    }
+
+    /// #47 follow-up: a RELAY-level 409 `rid_conflict` on the same-rid re-seal is the host's rid_conflict one hop earlier: the
+    /// original attempt comes back, uncertain (not left pending until the resend window ends).
+    @Test func aRelayRidConflictOnTheSameRidReSealRestoresTheOriginal() async throws {
+        let w = try await World.make()
+        let counter = Counter()
+        await w.host.setHandler({ _ in counter.bump(); return .response(status: 200, headers: [:], data: Data()) })
+        let phone = try await w.makePhone()
+        let s = phone.session
+        let (host, relay, hostSession, primary, phoneKeys) = (w.host, w.relay, w.hostSession, w.primary, w.phone)
+        // An honest relay that queued the first copy and still answered stale_epoch (it keeps the record): the re-seal conflicts.
+        await w.relay.lieWithStaleEpochOnNextRequest(epoch: 2, deliver: true, forgets: false) {
+            try await host.rotate(remaining: [(primary.deviceKeys, World.all), (phoneKeys, ["look", "decide"])], relay: relay, session: hostSession)
+        }
+        do { _ = try await w.serve(phone) { try await s.exchange(meta: httpGet) }; Issue.record("expected uncertain") }
+        catch let e as SessionError { guard case .uncertain = e else { Issue.record("\(e)"); return } }
+        let u = try await s.uncertainRequests()
+        #expect(u.count == 1)
+        let original = try #require(u.first)
+        #expect(original.epoch == 1)
+        #expect(original.seq == 1)
+        let pending = try await s.pendingRequests()
+        #expect(pending.isEmpty)
+    }
+
     // MARK: helpers
 
     /// Runs `body` while only the phone's clock ticks: nobody serves, so nothing answers.
