@@ -264,6 +264,10 @@ before any relay operation. Suspension before sealing completes leaves no partia
   expired object is dropped silently FIRST, then one naming an own earlier attempt (both `device_id` AND `dk_hash`) is
   `stale_attempt`, and only the rest alarm; a short form with extra fields is `not_a_pairing_answer`. Coordinator-level tests:
   `RejectionThroughTheCoordinatorTests`.
+- **No UI test for `fresh_keys_unavailable`:** the Demo cannot reach it. The App runs one pairing at a time and a new invitation
+  cancels the previous one, so a second live pairing on the same uncertified keys exists only after a crash between two
+  attempts; `AttemptBindingTests.noFreshKeysWhileAnotherPairingUsesThem` covers it below the UI, and the App maps the reason to
+  its own message (`PairingRefusal.keysInUse`).
 - **Open question for orch-29:** above the anchor's `list_seq` the phone takes the list's scopes as the spec says, unbounded by the
   certificate's `scopes_max`. Should they be bounded by `scopes_max`? Behaviour unchanged until answered.
 - **Pre-amendment pairing records** (no `attempt`/`dk_hash`) no longer decode: pairings in flight under the old shape are discarded on
