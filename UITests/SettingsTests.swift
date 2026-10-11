@@ -10,7 +10,7 @@ final class SettingsTests: XCTestCase {
         let message = app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'even if you are offline'")).firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertTrue(message.label.contains("may stay pending"))
-        app.buttons["settings.leave.confirm"].tap()
+        app.buttons["settings.leave.confirm"].firstMatch.tap()
         XCTAssertTrue(app.el("settings.leave.done").waitForExistence(timeout: 30))
         XCTAssertTrue(app.el("settings.leave.server").label.contains("Notifications"))
         app.buttons["settings.leave.close"].tap()
@@ -25,7 +25,7 @@ final class SettingsTests: XCTestCase {
         let app = launch("settings/workspace/client-vm")
         XCTAssertTrue(app.buttons["settings.leave"].waitForExistence(timeout: 90))
         app.buttons["settings.leave"].tap()
-        let confirm = app.buttons["settings.leave.confirm"]
+        let confirm = app.buttons["settings.leave.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 90))
         confirm.tap()
         XCTAssertTrue(app.el("settings.leave.server").waitForExistence(timeout: 30))
@@ -37,7 +37,7 @@ final class SettingsTests: XCTestCase {
         let app = launch("settings/workspace/laptop")
         XCTAssertTrue(app.buttons["settings.leave"].waitForExistence(timeout: 90))
         app.buttons["settings.leave"].tap()
-        let confirm = app.buttons["settings.leave.confirm"]
+        let confirm = app.buttons["settings.leave.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
         XCTAssertTrue(app.el("settings.leave.done").waitForExistence(timeout: 30))
@@ -50,10 +50,15 @@ final class SettingsTests: XCTestCase {
 
     @MainActor
     func testDemoNotificationGoesThroughPushSimulator() {
+        addUIInterruptionMonitor(withDescription: "notifications") { alert in
+            for label in ["Allow", "OK"] where alert.buttons[label].exists { alert.buttons[label].tap(); return true }
+            return false
+        }
         let app = launch("settings/workspace/laptop")
         let send = app.buttons["demo.push"]
         XCTAssertTrue(send.waitForExistence(timeout: 90))
         send.tap()
+        app.tap()   // lets the interruption monitor handle a permission prompt
         let result = app.el("demo.push.result")
         XCTAssertTrue(result.waitForExistence(timeout: 30))
         let ok = NSPredicate(format: "label CONTAINS 'Local notification scheduled'")
@@ -86,9 +91,11 @@ final class SettingsTests: XCTestCase {
         let app = launch("settings/workspace/laptop")
         let offline = app.switches["demo.offline"]
         XCTAssertTrue(offline.waitForExistence(timeout: 90))
-        offline.tap()
+        offline.switches.firstMatch.exists ? offline.switches.firstMatch.tap() : offline.tap()
+        if (offline.value as? String) != "1" { offline.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap() }
+        XCTAssertEqual(offline.value as? String, "1")
         app.buttons["settings.leave"].tap()
-        let confirm = app.buttons["settings.leave.confirm"]
+        let confirm = app.buttons["settings.leave.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
         XCTAssertTrue(app.el("settings.leave.done").waitForExistence(timeout: 30))
