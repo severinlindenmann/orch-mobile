@@ -82,9 +82,10 @@ import Testing
         // logs, checkpoints or gate hashes (host/relay side, docs/gaps.md #25), so OrchProtocol has no `Label.*` for them.
         let knownNotUsedByThePhone: Set<String> = [
             "sig_ticket_event", "sig_ws_event", "sig_host_event", "sig_checkpoint",
+            "sig_cert_rejection",   // PR4 (pairing/primary): cert rejection is the primary-device flow
             "h_section", "h_value", "h_gate", "h_policy", "h_people", "h_question_id", "h_event", "h_grant_secret"
         ]
-        #expect(knownNotUsedByThePhone.count == 12)
+        #expect(knownNotUsedByThePhone.count == 13)
         #expect(knownNotUsedByThePhone.isDisjoint(with: Set(mine.keys)))
         #expect(Set(l.keys) == Set(mine.keys).union(knownNotUsedByThePhone))
         for (k, v) in l where !knownNotUsedByThePhone.contains(k) { #expect(mine[k] == v.str, "\(k)") }
@@ -454,14 +455,14 @@ import Testing
         let run: Set<String> = ["keys", "ids", "sign", "hkdf", "salted_aead", "seal", "seal_open", "label_sealed", "certs", "revocations",
                                 "card", "wk_grants", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop"]
         let partial: Set<String> = ["bridge"]                       // seal, device_cases and sas run; host_cases, pair_answers, links deferred
-        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish"]
+        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish", "p3"]  // p3: relay state-machine cases, replayed by the HTTP fixture PRs (PR3+)
         let meta: Set<String> = ["suite", "name"]
         let all = Set(s2.object!.keys)
         #expect(all == run.union(partial).union(deferred).union(meta), "unaccounted: \(all.subtracting(run).subtracting(partial).subtracting(deferred).subtracting(meta))")
         let b = s2["bridge"].object!
         #expect(b["seal"]?.array?.count == 1 && b["device_cases"]?.array?.count == 11 && b["host_cases"]?.array?.count == 47
                 && b["pair_answers"]?.array?.count == 20 && b["links"]?.array?.count == 6)
-        #expect(s2["card"]["cases"].items.count == 16 && s2["card"]["hosted_marker"].items.count == 4 && s2["member_lists"].items.count == 14
+        #expect(s2["card"]["cases"].items.count == 19 && s2["card"]["hosted_marker"].items.count == 4 && s2["member_lists"].items.count == 14
                 && s2["wk_grants"]["cases"].items.count == 3 && s2["cert_request"]["cases"].items.count == 10
                 && s2["cert_request"]["open_cases"].items.count == 5 && s2["relay_auth"]["cases"].items.count == 6)
         let d = s2["drop"]

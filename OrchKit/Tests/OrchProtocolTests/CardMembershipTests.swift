@@ -13,23 +13,37 @@ import Testing
                          wxkVersion: o["wxk_version"].u32, cardSeq: o["card_seq"].u32, delegationObject: d.object!, objectDigest: VerifiedCard.digest(o.object!))
     }
 
+    /// Relay vectors 386a6cb: an identical same-seq card is now an exact retry (accepted); product `Card.checkRelayUpdate`
+    /// still refuses it as stale_card. Product semantics change in PR3 (membership/persons), so the case is an expected failure until then.
+    static let pr3ExpectedFailureCards: Set<String> = ["same_seq"]
+
     @Test func updateCases() throws {
         let cases = card["cases"].items
-        #expect(cases.count == 16)
+        #expect(cases.count == 19)
         var ok = 0
+        var knownIssueHits = 0
         for c in cases {
             let name = c["name"].str
-            do {
-                let v = try Card.verify(c["card"], ownerKey: c["owner_pk_pub"].sigPub)
-                try Card.checkRelayUpdate(previous: c["stored"].isNull ? nil : try head(c["stored"]), next: v)
-                ok += 1
-                #expect(!c["expect"]["ok"].isNull, "\(name) accepted")
-                #expect(JSONValue.object(v.object) == c["expect"]["ok"], "\(name)")
-            } catch let r as Refusal {
-                #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
+            func run() throws {
+                do {
+                    let v = try Card.verify(c["card"], ownerKey: c["owner_pk_pub"].sigPub)
+                    try Card.checkRelayUpdate(previous: c["stored"].isNull ? nil : try head(c["stored"]), next: v)
+                    ok += 1
+                    #expect(!c["expect"]["ok"].isNull, "\(name) accepted")
+                    #expect(JSONValue.object(v.object) == c["expect"]["ok"], "\(name)")
+                } catch let r as Refusal {
+                    #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
+                }
+            }
+            if Self.pr3ExpectedFailureCards.contains(name) {
+                knownIssueHits += 1
+                withKnownIssue("PR3: exact same-seq card retry is accepted by the relay contract") { try run() }
+            } else {
+                try run()
             }
         }
-        #expect(ok == 3)
+        #expect(knownIssueHits == Self.pr3ExpectedFailureCards.count)
+        #expect(ok == 3)   // 4 accepted cases, minus same_seq (PR3 known issue)
     }
 
     @Test func signedBytesAndSealedPart() throws {
@@ -155,7 +169,13 @@ import Testing
         return .init(ownerKey: d["owner_pk_pub"].sigPub, certs: certs, revoked: Set(d["revoked"].items.map(\.id)), grants: grants)
     }
 
+    /// Relay vectors 386a6cb (P3-D6): member lists now carry `persons` and per-member `person_id`. `MemberList.parse` rejects
+    /// the new shape (strict keys), so every case is an expected failure until PR3 (membership/persons) updates the parser.
     @Test func memberListCases() throws {
+        withKnownIssue("PR3: member_list persons / person_id not parsed yet", isIntermittent: false) { try memberListCasesBody() }
+    }
+
+    func memberListCasesBody() throws {
         let cases = s2["member_lists"].items
         #expect(cases.count == 14)
         var ok = 0
