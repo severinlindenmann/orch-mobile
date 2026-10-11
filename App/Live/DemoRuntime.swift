@@ -174,7 +174,7 @@ final class DemoRuntime {
     /// A new Demo host (the "Mac") with its first offer: the link its Remote tab would show.
     func createInvitation(scenario: PairingScenario) async throws -> Invitation {
         let kind = nextKind()
-        let host = try DemoSetup.makeHost(env, primary: primary, name: kind.name, clientHosted: kind.clientHosted, hostedBy: kind.hostedBy)
+        let host = try DemoSetup.makeHost(env, primary: primary, name: kind.name, clientHosted: kind.clientHosted, hostedBy: kind.hostedBy, demoDropFixtures: true)
         let cert: JSONValue
         if let primaryCert { cert = primaryCert } else { cert = try await primary.certifyOwnDevice(); primaryCert = cert }
         let session = try await host.publishInitial(relay: env.relay, transport: env.transport,

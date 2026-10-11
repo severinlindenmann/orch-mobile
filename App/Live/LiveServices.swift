@@ -20,7 +20,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private(set) var live: [LiveWorkspace] = []
     private(set) var pendingDecisions: [DecisionStatus] = []
     private(set) var lastChecked = Date()
-    private(set) var dropItems: [DropItem] = []
+    private var heldDropItems: [DropItem] = []
+    var dropItems: [DropItem] { live.flatMap { $0.drop?.rows ?? [] } + heldDropItems }
     private(set) var demoPushResult: String?
     var deviceLabel = "Demo iPhone"
     var notificationStatus: NotificationStatus = .notAsked
@@ -214,7 +215,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         ws.draftURL = runtime?.draftURL(workspace: j.workspace)
         if let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
-        if let kind { dropItems += DemoContent.drop(kind, workspaceID: info.id, now: Date()) }
+        Task {
+            if kind == .laptop, let drop = ws.drop {
+                do { _ = try await DemoSetup.seedDropSending(drop.service) } catch { drop.report(error) }
+            }
+            await ws.drop?.refresh()
+        }
         ws.start()
         Task { await refreshPending() }
     }
@@ -391,51 +397,33 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     // MARK: DropModel (simulated: no Drop service yet)
 
     func items(_ direction: DropDirection) -> [DropItem] { dropItems.filter { $0.direction == direction } }
-    func item(id: String) -> DropItem? { dropItems.first { $0.id == id } }
+    func item(id: String) -> DropItem? { dropItems.first { $0.id == id || $0.presentationID == id } }
     func items(workspace: String) -> [DropItem] { dropItems.filter { $0.workspaceID == workspace } }
 
-    func send(_ draft: DropDraft) {
-        guard isLive(draft.workspaceID) else { return }
-        let names = draft.attachments.map(\.name)
-        let title = names.isEmpty ? "Note" : (names.count == 1 ? names[0] : "\(names.count) files")
-        let newID = "d-\(UUID().uuidString.prefix(6))"
-        dropItems.insert(DropItem(
-            id: newID, workspaceID: draft.workspaceID, name: title, bytes: draft.attachments.reduce(0) { $0 + $1.bytes },
-            kind: names.isEmpty ? .note : .file, direction: .sending, expires: Date().addingTimeInterval(Double(draft.expiryDays) * 86400),
-            versions: 1, unread: false, text: draft.note.isEmpty ? nil : draft.note, from: "This iPhone"), at: 0)
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
-            self.dropItems[i].simulatedDone = true
-        }
-    }
+    func send(_ draft: DropDraft) {}
 
-    // MARK: Share import (A10): destinations are the paired Demo workspaces; import lands in Sending (sealing arrives with the Drop slice)
+    func refreshDrop() async {
+        for ws in live where canUse(ws.info.id) { await ws.drop?.refresh() }
+    }
+    func verifyDropRow(_ id: String) async {
+        if let drop = live.compactMap(\.drop).first(where: { $0.objects[id] != nil }) { await drop.verifyVisible(id) }
+    }
+    func dropState(_ id: String) -> LiveDrop? {
+        live.compactMap(\.drop).first { $0.objects[id] != nil }
+    }
+    var dropStatus: String? { live.compactMap { $0.drop?.status }.first }
 
     func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? {
         guard isLive(workspaceID) else { return nil }
         return live.first { $0.info.id == workspaceID }.map { ($0.workspaceID.hex, $0.generation) }
     }
 
-    func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date) {
-        guard isLive(workspaceID) else { return }
-        for item in items where !dropItems.contains(where: { $0.id == item.id }) {
-            dropItems.insert(DropItem(id: item.id, workspaceID: workspaceID, name: item.name, bytes: item.bytes, kind: item.kind,
-                                      direction: .sending, expires: expires, versions: 1, unread: false, text: item.text,
-                                      from: "This iPhone"), at: 0)
-            let newID = item.id
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(3))
-                guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
-                self.dropItems[i].simulatedDone = true
-            }
-        }
-    }
+    func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date) {}
 
     func setQuarantined(_ entries: [(job: String, workspaceID: String, name: String, bytes: Int, kind: DropKind, expires: Date)]) {
-        dropItems.removeAll { $0.quarantineJob != nil }
+        heldDropItems.removeAll { $0.quarantineJob != nil }
         for e in entries {
-            dropItems.insert(DropItem(id: "share-q-\(e.job)", workspaceID: e.workspaceID, name: e.name, bytes: e.bytes, kind: e.kind,
+            heldDropItems.insert(DropItem(id: "share-q-\(e.job)", workspaceID: e.workspaceID, name: e.name, bytes: e.bytes, kind: e.kind,
                                       direction: .sending, expires: e.expires, versions: 1, unread: false, text: nil,
                                       from: "This iPhone", quarantineJob: e.job), at: 0)
         }
@@ -447,7 +435,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func markRead(id: String) {
-        if let i = dropItems.firstIndex(where: { $0.id == id }) { dropItems[i].unread = false }
+        if let drop = dropState(id), let index = drop.rows.firstIndex(where: { $0.id == id }) { drop.rows[index].unread = false }
     }
 
     // MARK: SettingsModel
@@ -513,7 +501,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
         transition(workspaceID, to: .removed)
         live.removeAll { $0.info.id == workspaceID }
-        dropItems.removeAll { $0.workspaceID == workspaceID }
+        heldDropItems.removeAll { $0.workspaceID == workspaceID }
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
         let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
         return LeaveReport(workspaceName: name, server: server)
@@ -533,7 +521,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let old { failedReset = old }
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
-        runtime = nil; live = []; dropItems = []; pendingDecisions = []; submitted = [:]
+        runtime = nil; live = []; heldDropItems = []; pendingDecisions = []; submitted = [:]
         reconcileTasks.values.forEach { $0.cancel() }
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]

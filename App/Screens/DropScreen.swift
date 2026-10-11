@@ -27,6 +27,7 @@ struct DropScreen: View {
                 .listRowBackground(Color.clear)
             }
             Section {
+                if let status = model.dropStatus { Text(verbatim: status).accessibilityIdentifier("drop.status") }
                 let items = model.items(direction)
                 if items.isEmpty {
                     Text(direction == .received ? "Nothing received yet." : "Nothing is being sent.")
@@ -34,17 +35,20 @@ struct DropScreen: View {
                 }
                 ForEach(items) { item in
                     NavigationLink(value: Route.dropItem(item.id)) { DropRow(item: item, workspaces: model.workspaces) }
-                        .accessibilityIdentifier("drop.item.\(item.id)")
+                        .accessibilityIdentifier("drop.item.\(item.presentationID)")
+                        .task { await model.verifyDropRow(item.id) }
                 }
             }
             Section {
-                Label("Drop is simulated in this build: nothing is uploaded or received.", systemImage: "info.circle")
+                Label("Demo: real encrypted transfers within this iPhone.", systemImage: "info.circle")
                     .font(OF.meta).foregroundStyle(OC.demo).accessibilityIdentifier("drop.simulatedBanner")
                 Text("Files and notes expire after 7 days. Links are shown as text and never opened for you.")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
-                SimulationNotice()
+
             }
         }
+        .task { await model.refreshDrop() }
+        .refreshable { await model.refreshDrop() }
         .navigationTitle("Drop")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -69,13 +73,13 @@ struct DropRow: View {
                     if item.unread { Circle().fill(OC.youMark).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                     Text(verbatim: item.displayName).lineLimit(1)
                 }
-                Text(verbatim: "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))")
+                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))" : "\(ws?.displayName ?? "") · Metadata not verified")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                 if item.quarantineJob != nil {
                     Label("Destination removed. Choose another destination.", systemImage: "exclamationmark.triangle")
                         .font(OF.meta).foregroundStyle(OC.warn)
                 } else if item.direction == .sending {
-                    Label(item.simulatedDone ? "Sent (simulated)" : "Sending (simulated)",
+                    Label(item.simulatedDone ? "Sent (confirmed)" : "Sending…",
                           systemImage: item.simulatedDone ? "checkmark.circle" : "arrow.up.circle")
                         .font(OF.meta).foregroundStyle(item.simulatedDone ? OC.ok : OC.info)
                 }
@@ -168,7 +172,7 @@ struct DropComposeSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Label("Demo: nothing leaves this iPhone. Sending is simulated.", systemImage: "theatermasks")
+                    Label("Demo: real encrypted transfers within this iPhone.", systemImage: "theatermasks")
                         .foregroundStyle(OC.demo)
                         .accessibilityIdentifier("drop.demoLabel")
                 }

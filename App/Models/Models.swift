@@ -122,6 +122,12 @@ struct DropItem: Identifiable, Hashable, Sendable {
     var simulatedDone = false
     /// Set for a share job whose destination was removed: it is held back, never sent and never redirected on its own.
     var quarantineJob: String? = nil
+    var verified = true
+    var presentationID: String {
+        guard verified else { return id }
+        return ["readme.txt": "d-readme", "empty.txt": "d-empty", "note.txt": "d-note", "link.txt": "d-url",
+                "deployment.txt": "d-deploy", "Runbook": "d-runbook", "phone-note.txt": "d-sending"][name] ?? id
+    }
 }
 
 struct DropSummary: Hashable, Sendable {
