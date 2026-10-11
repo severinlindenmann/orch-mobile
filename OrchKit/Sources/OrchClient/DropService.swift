@@ -61,10 +61,17 @@ public actor DropService {
     public func suspend() {
         lifecycleEpoch &+= 1
         suspended = true
-        uploads.values.forEach { $0.cancel() }
-        imports.values.forEach { $0.cancel() }
+        uploads.values.forEach { $0.task.cancel() }
+        imports.values.forEach { $0.task.cancel() }
     }
-    public func invalidate() { invalidated = true; suspend() }
+    public func invalidate() async {
+        invalidated = true; suspend()
+        // Cancellation-uncooperative transports/hooks must not hold Leave forever.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !running.isEmpty && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
     public func activate() throws {
         guard !invalidated else { throw DropError.suspended }
         suspended = false
@@ -73,8 +80,14 @@ public actor DropService {
         try Task.checkCancellation()
         guard !suspended, !invalidated, Self.operationEpoch.map({ $0 == lifecycleEpoch }) ?? true else { throw DropError.suspended }
     }
-    private var imports: [String: Task<[DropObject], Error>] = [:]
-    private var uploads: [String: Task<DropObject, Error>] = [:]
+    private struct Operation<Value: Sendable> {
+        let id: UUID
+        let epoch: UInt64
+        let task: Task<Value, Error>
+    }
+    private var imports: [String: Operation<[DropObject]>] = [:]
+    private var uploads: [String: Operation<DropObject>] = [:]
+    private var running: Set<UUID> = []
     // All work for an upload/job, including discard, passes through this FIFO admission.
     private var admissions: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var hook: (@Sendable (String) async throws -> Void)?
@@ -124,7 +137,13 @@ public actor DropService {
         try session.cfg.context.generation?.check()
     }
 
-    private func auth() async throws -> RelaySession { try await check(); return try await session.dropRelaySession() }
+    private func auth() async throws -> RelaySession {
+        try await check()
+        let result = try await session.dropRelaySession()
+        try await hook?("auth.acquired")
+        try await check()
+        return result
+    }
     private func check() async throws { try requireAvailable(); try await session.ensureCurrent(); try requireAvailable() }
     private func parse(_ reply: WireReply, fields: Set<String>, status: Int = 200) throws -> [String: JSONValue] {
         _ = try HostAPI.expect(reply, status: status)
@@ -134,6 +153,7 @@ public actor DropService {
     }
     private func membership(operate: Bool = false) async throws -> MemberList {
         let s = try await auth()
+        try requireAvailable()
         let raw = try await RelayClient(transport: session.cfg.transport).memberList(workspace: card.workspace, session: s)
         let list = try MemberList.verify(raw, wsk: card.wsk)
         guard list.workspace == card.workspace, list.members.contains(where: { $0.deviceID == session.cfg.deviceID && ($0.scopeStrings?.contains(operate ? "operate" : "look") ?? false) }) else { throw DropError.unauthorized }
@@ -167,6 +187,7 @@ public actor DropService {
     }
     private func get(_ id: ID16, _ version: UInt32, _ part: DropPart) async throws -> WireReply {
         let s = try await auth()
+        try requireAvailable()
         let reply = try await session.cfg.transport.dropGet(objectID: id, version: version, part: part, session: s)
         try await check()
         return reply
@@ -206,6 +227,7 @@ public actor DropService {
         try await purgeExpiredDownloads()
         let members = try await membership(), s = try await auth()
         let query: JSONValue = ["host_api": 0, "workspace_id": .string(card.workspace.hex), "direction": .string(direction.rawValue)]
+        try requireAvailable()
         let o = try parse(await session.cfg.transport.dropList(canonicalJSON(query), session: s), fields: ["objects"])
         guard let rows = o["objects"]?.array, rows.count <= 1024 else { throw DropError.tooLarge }
         var result: [DropObject] = []
@@ -230,10 +252,15 @@ public actor DropService {
         try requireAvailable()
         guard job.manifest.realm == session.cfg.context.realm.rawValue, job.manifest.ws == card.workspace.hex,
               job.manifest.generation == session.generation else { throw DropError.unauthorized }
-        if let task = imports[job.manifest.jobID] { return try await task.value }
-        let task = Task { try await self.performImport(job, inbox: inbox) }
-        imports[job.manifest.jobID] = task
-        defer { imports[job.manifest.jobID] = nil }
+        if let operation = imports[job.manifest.jobID], operation.epoch == lifecycleEpoch { return try await operation.task.value }
+        let id = UUID()
+        running.insert(id)
+        let task = Task {
+            defer { self.running.remove(id) }
+            return try await self.performImport(job, inbox: inbox)
+        }
+        imports[job.manifest.jobID] = Operation(id: id, epoch: lifecycleEpoch, task: task)
+        defer { if imports[job.manifest.jobID]?.id == id { imports[job.manifest.jobID] = nil } }
         return try await task.value
     }
 
@@ -343,11 +370,15 @@ public actor DropService {
     }
     private func upload(object: ID16, version: UInt32, retry: Bool = false) async throws -> DropObject {
         let key = "upload:\(object.hex):\(version)"
-        if let task = uploads[key] {
+        try requireAvailable()
+        if let operation = uploads[key], operation.epoch == lifecycleEpoch {
             try await hook?("upload.coalesced:\(object.hex)")
-            return try await task.value
+            return try await operation.task.value
         }
+        let id = UUID()
+        running.insert(id)
         let task = Task {
+            defer { self.running.remove(id) }
             try await self.hook?("upload.requested:\(object.hex)")
             await self.admit(key)
             defer { self.release(key) }
@@ -359,8 +390,8 @@ public actor DropService {
             }
             return try await self.uploadCurrent(object: object, version: version)
         }
-        uploads[key] = task
-        defer { uploads[key] = nil }
+        uploads[key] = Operation(id: id, epoch: lifecycleEpoch, task: task)
+        defer { if uploads[key]?.id == id { uploads[key] = nil } }
         return try await task.value
     }
 
