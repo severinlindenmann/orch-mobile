@@ -211,6 +211,9 @@ public enum Card {
         guard next.wsk == p.wsk else { throw Refusal.wskChanged }
         guard let a = try? canonicalJSON(.object(next.delegation.object)), let b = try? canonicalJSON(.object(p.delegationObject)),
               a == b else { throw Refusal.delegationChanged }
+        // P3-D4: the same verified card (same canonical object, so the same `sealed_hash` and `ck_commit`) is an idempotent retry;
+        // other content under the same sequence stays `stale_card`.
+        if next.objectDigest == p.objectDigest { return }
         guard next.cardSeq > p.cardSeq else { throw Refusal.staleCard }
         if next.wxkVersion == p.wxkVersion {
             guard next.wxk == p.wxk else { throw Refusal.wxkChangedWithoutVersion }
