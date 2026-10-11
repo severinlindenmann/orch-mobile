@@ -59,9 +59,13 @@ final class ShareExtensionTests: XCTestCase {
         app.buttons["share.fixture.import"].tap()
         app.buttons["share.fixture.drop"].tap()
         XCTAssertTrue(app.segmentedControls["drop.direction"].waitForExistence(timeout: 90)); app.segmentedControls["drop.direction"].buttons["Sending"].tap()
-        let item = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.share-'")).firstMatch
+        let item = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.share-' AND label CONTAINS 'Sent (confirmed)'")).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 90), app.debugDescription, file: file, line: line)
-        // Plaintext is deleted after import: nothing staged remains.
+        XCTAssertTrue(app.staticTexts["drop.status"].waitForExistence(timeout: 10))
+        let confirmed = NSPredicate(format: "label == %@", "Share import confirmed; plaintext cleanup complete")
+        expectation(for: confirmed, evaluatedWith: app.staticTexts["drop.status"])
+        waitForExpectations(timeout: 30)
+        // Plaintext is deleted after confirmed import and cleanup.
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["share.fixture.inspect"].tap()
         XCTAssertEqual(app.staticTexts["share.fixture.status"].label, "ready jobs: 0 items: ", file: file, line: line)
@@ -90,7 +94,7 @@ final class ShareExtensionTests: XCTestCase {
         // The link is shown as text, never opened.
         app.buttons["share.fixture.drop"].tap()
         XCTAssertTrue(app.segmentedControls["drop.direction"].waitForExistence(timeout: 90)); app.segmentedControls["drop.direction"].buttons["Sending"].tap()
-        app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.share-'")).firstMatch.tap()
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.share-' AND label CONTAINS 'Sent (confirmed)'")).firstMatch.tap()
         XCTAssertTrue(app.descendants(matching: .any)["drop.item.text"].waitForExistence(timeout: 5))
     }
 
@@ -131,7 +135,7 @@ final class ShareExtensionTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 90))
         XCTAssertTrue(row.label.contains("Choose another destination"), row.label)
         row.tap()
-        let target = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'drop.redirect.' AND label CONTAINS 'Client VM'")).firstMatch
+        let target = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'drop.redirect.' AND label CONTAINS 'Laptop'")).firstMatch
         XCTAssertTrue(target.waitForExistence(timeout: 5))
         target.tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()

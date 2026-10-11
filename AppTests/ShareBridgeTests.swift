@@ -19,26 +19,44 @@ final class ShareBridgeTests: XCTestCase {
         try s.add(.text("hello")); try s.commit(note: "n")
     }
 
+    func testTemporaryScopeLossDoesNotTombstoneAndPreservesRecovery() async throws {
+        let (world, bridge, area) = try make()
+        bridge.publishTargets()
+        try stageText(area, to: "laptop")
+        let destination = LiveDestination(realm: "demo", ws: ShareBridge.wsHex("laptop"), generation: 1)
+        _ = ShareInbox(area: area).claim(live: [destination])
+        let index = try XCTUnwrap(world.workspaces.firstIndex { $0.id == "laptop" })
+        world.workspaces[index].scopes.remove(.operate)
+        bridge.refresh(); await bridge.waitForRefresh()
+        XCTAssertTrue(try area.coordination.records().isEmpty)
+        XCTAssertEqual(ShareInbox(area: area).peekReady().count, 1)
+        XCTAssertTrue(ShareInbox(area: area).quarantined().isEmpty)
+        world.workspaces[index].scopes.insert(.operate)
+        bridge.refresh(); await bridge.waitForRefresh()
+        XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
+        XCTAssertEqual(world.items(.sending).filter { $0.id.hasPrefix("share-") }.count, 2)
+    }
+
     func testPublishedTargetsAreMinimalAndReadable() throws {
         let (_, bridge, area) = try make()
         bridge.publishTargets()
         let targets = try ShareTargetIndex.load(from: area)
-        XCTAssertEqual(Set(targets.map(\.name)), ["Laptop", "Client VM"])
+        XCTAssertEqual(Set(targets.map(\.name)), ["Laptop"])
         XCTAssertTrue(targets.allSatisfy { $0.realm == "demo" && $0.generation == 1 })
     }
 
-    func testClaimImportsIntoSendingAndDeletesPlaintext() throws {
+    func testClaimImportsIntoSendingAndDeletesPlaintext() async throws {
         let (world, bridge, area) = try make()
         bridge.publishTargets()
         try stageText(area, to: "laptop")
-        bridge.refresh()
+        bridge.refresh(); await bridge.waitForRefresh()
         let sent = world.items(.sending).filter { $0.id.hasPrefix("share-") }
         XCTAssertEqual(sent.count, 2)  // the text item and the note
         XCTAssertTrue(sent.allSatisfy { $0.workspaceID == "laptop" })
         XCTAssertEqual(sent.first { $0.kind == .note && $0.name == "Note" && $0.text == "n" } != nil, true)
         XCTAssertTrue(sent.allSatisfy { $0.id.count > "share-".count + 36 })   // keyed by the full job id
         XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
-        bridge.refresh()  // idempotent
+        bridge.refresh(); await bridge.waitForRefresh()  // idempotent
         XCTAssertEqual(world.items(.sending).filter { $0.id.hasPrefix("share-") }.count, 2)
     }
 
@@ -54,19 +72,20 @@ final class ShareBridgeTests: XCTestCase {
         XCTAssertEqual(try ShareTargetIndex.load(from: area).map(\.name), ["Laptop"])
     }
 
-    func testRemovedDestinationIsQuarantinedThenRedirectedByChoice() throws {
+    func testRemovedDestinationIsQuarantinedThenRedirectedByChoice() async throws {
         let (world, bridge, area) = try make()
         bridge.publishTargets()
         try stageText(area, to: "gone")
-        bridge.refresh()
+        bridge.refresh(); await bridge.waitForRefresh()
         let q = try XCTUnwrap(world.items(.sending).first { $0.quarantineJob != nil })
         XCTAssertTrue(world.items(.sending).filter { $0.id.hasPrefix("share-") && $0.quarantineJob == nil }.isEmpty)
-        world.redirectQuarantined(id: q.id, to: "client-vm")
+        world.redirectQuarantined(id: q.id, to: "laptop")
+        await bridge.waitForRefresh()
         XCTAssertNil(world.items(.sending).first { $0.quarantineJob != nil })
-        XCTAssertTrue(world.items(.sending).contains { $0.id.hasPrefix("share-") && $0.workspaceID == "client-vm" })
+        XCTAssertTrue(world.items(.sending).contains { $0.id.hasPrefix("share-") && $0.workspaceID == "laptop" })
     }
 
-    func testDemoWorkspacesAreNotOfferedToTheExtensionByDefault() throws {
+    func testDemoWorkspacesAreNotOfferedToTheExtensionByDefault() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-\(UUID().uuidString)")
         let world = PreviewWorld(demo: true)
         let bridge = try XCTUnwrap(ShareBridge.make(world: world, override: root))
@@ -78,7 +97,7 @@ final class ShareBridgeTests: XCTestCase {
         let t = ShareTarget(realm: "demo", ws: ShareBridge.wsHex("laptop"), name: "x", hue: 0, generation: 1)
         let s = try StagingSession(area: ShareArea(shareGroupRoot: root), target: t)
         try s.add(.text("x")); try s.commit(note: nil)
-        liveBridge.refresh()
+        liveBridge.refresh(); await liveBridge.waitForRefresh()
         XCTAssertEqual(ShareInbox(area: ShareArea(shareGroupRoot: root)).peekReady().count, 1)
         XCTAssertTrue(live.items(.sending).isEmpty)
     }
@@ -135,14 +154,14 @@ final class ShareBridgeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: wsDir.path))
     }
 
-    func testRecoveryReissuesAClaimedJobOnlyOnTheFirstPass() throws {
+    func testRecoveryReissuesAClaimedJobOnlyOnTheFirstPass() async throws {
         let (world, bridge, area) = try make()
         bridge.publishTargets()
         try stageText(area, to: "laptop")
         // Simulate a crash after the rename but before the import.
         let live: Set = [LiveDestination(realm: "demo", ws: ShareBridge.wsHex("laptop"), generation: 1)]
         XCTAssertEqual(ShareInbox(area: area).claim(live: live, realm: "demo").claimed.count, 1)
-        bridge.refresh()   // first pass after launch: recovery imports it
+        bridge.refresh(); await bridge.waitForRefresh()   // first pass after launch: recovery imports it
         XCTAssertEqual(world.items(.sending).filter { $0.id.hasPrefix("share-") }.count, 2)
         XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
     }

@@ -139,7 +139,11 @@ public actor WorkspaceSession {
             try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
             _ = try await cfg.container.database()
         } catch {
-            if case StoreError.removalStateUnknown = error { throw error }
+            // Availability failures are not authoritative evidence of removal.
+            switch error {
+            case StoreError.workspaceRemoved, RealmViolation.staleGeneration: break
+            default: throw error
+            }
             cancelAll()
             invalidateReviews()
             poller?.cancel(); poller = nil

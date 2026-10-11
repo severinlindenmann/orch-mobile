@@ -60,7 +60,7 @@ removing the prior attempt. Returned fields must match the saved UTF-8 bytes.
 Live in Demo: pairing (PairingCoordinator), Home/Workspace/Questions/Tickets (BridgeWorkspaceAPI snapshots and events), signing
 (QuestionReview + decide), pending/uncertain decisions and reconcile, new tickets (one persisted creationID per exact draft),
 Leave (LocalWipe), Reset/Leave Demo (DemoSetup.reset), Demo push (PushSimulator), share destinations/import (ShareBridge via ShareWorld).
-Simulated: Drop (no Drop service yet; labelled in the UI), terminal, and two Demo sign controls: "Review fails to load" fails the
+Live Drop uses encrypted service transfers and awaited share import (details below). Simulated: terminal and two Demo sign controls: "Review fails to load" fails the
 next review read in the app (nothing is signed or stored), and (Simulator only) "Locked" locks the simulated device key for one attempt and releases it
 by itself after 2 s (the person unlocking the phone; retrying never unlocks anything). Ticket drafts live in the workspace directory
 and go with the local wipe; a failed wipe is reported as "removal incomplete" and never as removed. An interrupted Demo reset is
@@ -103,3 +103,45 @@ removes local staged plaintext. A fresh document seal may reuse an uncommitted
 version after discard; the discarded sealed body remains blocked.
 
 `DropService.setHook` is a test seam and must never be wired in app code.
+
+The app now owns an observable `LiveDrop` beside each `LiveWorkspace`. Pairing retains
+its verified card behind `JoinedWorkspace.makeDropService()`; screens receive no
+signing material or FakeHost. Lists carry verified descriptors, while at most three
+visible-row downloads at a time supply names, plaintext sizes, MIME and transcript.
+Unverified rows are neutral. Metadata is cached by generation/object/version and
+is not re-downloaded on ordinary refresh. Demo fixture aliases are presentation
+mappings to actual objects; Laptop Sending is seeded through the public service.
+
+`canUse`, generation ownership and operation revisions guard actions and publication.
+Background dismisses previews and suspends service work. Service lifecycle epochs also reject old operations after reactivation. Leave/reset clear models
+and invalidate the service before wipe; failed removal remains unavailable. Busy
+locks preserve rows and show “Busy lock: try again”. Unknown removal and unavailable
+keys fail closed without asserting removal. Cryptographic/integrity and client/store
+rollback errors latch an alarm, clear displayed plaintext and block the service.
+
+Open uses the service's atomic Complete-protected object/version file directly.
+`DropDownload.deadlineMs` comes from the persisted download transaction and is the
+minimum of signed expiry and download + seven days. Active preview monitoring uses
+the Demo clock and dismisses on expiry, lock, quarantine or a newer version. Empty
+files have an explicit state; URL payloads stay literal text. QuickLook extensionless
+file handling and its own caches still need a device spike; no unmanaged copy is made.
+
+Compose keeps picked file/photo bytes; document reads happen inside security-scoped
+access. Limits use actual byte counts. Note-only sends are UTF-8 and attached notes
+are metadata transcripts. `confirmedUploads` exposes durable read-back success; a listed descriptor alone is never displayed as confirmed. Failed and pending uploads
+retain their durable identities for Retry/Stop or foreground recovery. Inbox Claim is
+explicit and operate-only; unavailable keys never imply that an item is unclaimed.
+
+Foreground activation is serialized, then each usable workspace purges, resumes all
+pending uploads, inspects results and reloads failures independently. Share recovery
+awaits foreground work. ShareBridge awaits `importShareJob`; the service owns durable
+completion and plaintext cleanup. Failed jobs stay available for explicit Retry/Stop
+and startup recovery. Only live operate-capable destinations are published; temporary
+quarantine/scope loss neither journals removal nor redirects staged jobs.
+
+Tests: `LiveDropTests` covers busy/unknown removal, alarms, late Leave/reset publication,
+and foreground expiry/recovery. `DropSuspensionTests` exercises paused download,
+unstructured upload and interrupted cleanup boundaries. Bounded Drop and Share UI
+tests assert verified content, file/text sends, Claim permissions, Retry/Stop and
+confirmation plus cleanup. The app never wires `DropService.setHook`. Demo restart
+still wipes its realm; durable restart coverage remains in OrchKit integration tests.

@@ -47,7 +47,9 @@ extension DropServiceTests {
         phone.clock.advance(milliseconds: 1000)
         let other = trigger == "download" ? try await service.send(Data("other".utf8), name: "other", expiresMs: phone.clock.nowMs + 1000) : nil
         let downloadedAt = phone.clock.nowMs
-        let url = try await service.download(object)
+        let verified = try await service.downloadVerified(object)
+        let url = verified.url
+        #expect(verified.deadlineMs == downloadedAt + 604800000)
         #expect(try await phone.container.database().query("SELECT downloaded_at FROM drop_heads WHERE object=?", [.text(id.hex)]).first?.int("downloaded_at") == downloadedAt)
         await phone.container.close()
         let restartedPhone = try await w.makePhone(), restarted = try await w.dropService(restartedPhone)

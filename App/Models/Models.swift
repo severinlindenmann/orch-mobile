@@ -118,16 +118,16 @@ struct DropItem: Identifiable, Hashable, Sendable {
     /// Plain-text content for notes and URLs (URLs are text, never fetched).
     var text: String?
     var from: String
-    /// Simulated transfer finished (UI simulation only).
+    /// Confirmed by service read-back (PreviewWorld uses a simulated transition).
     var simulatedDone = false
     /// Set for a share job whose destination was removed: it is held back, never sent and never redirected on its own.
     var quarantineJob: String? = nil
     var verified = true
-    var presentationID: String {
-        guard verified else { return id }
-        return ["readme.txt": "d-readme", "empty.txt": "d-empty", "note.txt": "d-note", "link.txt": "d-url",
-                "deployment.txt": "d-deploy", "Runbook": "d-runbook", "phone-note.txt": "d-sending"][name] ?? id
-    }
+    var alias: String?
+    var stopped = false
+    var mime: String? = nil
+    var hasSignedExpiry = true
+    var presentationID: String { alias ?? id }
 }
 
 struct DropSummary: Hashable, Sendable {

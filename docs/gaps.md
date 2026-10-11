@@ -195,8 +195,8 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
   P2 host must commit these atomically to durable storage. Creation receipts do not
   expire in v0; changed canonical fields under one device/creation ID return sealed
   HTTP-style 409 creation_conflict, never rid_conflict.
-- Demo Drop fixtures are metadata only and remain outside host-view snapshots; full
-  Drop bytes and service wiring belong to Slice 5. No interoperability claim is added.
+- Demo Drop fixtures now carry real encrypted bytes through DropService; they remain outside host-view snapshots.
+  Visible rows use bounded verified downloads for metadata (F4/F6 remain open). No interoperability claim is added.
 - A decision submission rechecks connectivity and current question state before custody
   signs. A failed preflight leaves no signed decision row. The host still performs CAS
   after the last read to handle a concurrent answer or content edit. Both preflight
@@ -220,3 +220,13 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
 - **Read availability during grant lag (low):** read paths refresh membership too; a newer list arriving before this device's grant makes `list`/`download` fail with `unavailableKey` until the grant lands. Consider relaxing epoch equality for look-only reads.
 - **Real host must gate rewrap on `claimed_by`:** in the fake only the relay's `putRewrap` refuses an unclaimed inbox; `FakeHost.rewrapDrop` does not check claim state itself. The real host must check it (defence in depth).
 - **F7 done — app foreground purge and recovery wired — plaintext expiry:** `drop_heads` persists the downloaded version, signed object expiry, and local `downloaded_at`. Plaintext expires at the earlier of the signed expiry (if any) and 7 days after download, including documents with null `expires_ms`; withholding newer versions cannot extend that local deadline. Re-download after purge starts a new local retention period without clearing the verified head. Drop list/download and the public foreground hook `purgeExpiredDownloads()` remove expired files, superseded versions, and untracked legacy files and downloads without a recorded download time. Verified newer heads purge older plaintext immediately. Publication checks the current head and expiry inside the same SQLite transaction used by cleanup, under the tombstone lock, and atomically replaces the file. HookGate/fake-clock tests cover signed expiry, the 7-day document cap, re-download, restart, newer versions, and preview publication races. After serialized foreground activation the app purges each usable workspace, resumes uploads, inspects every result, and reloads failures independently. Drop open and preview reuse also purge; active previews use the persisted local deadline on the Demo clock. Cleanup runs on these entry points; relay expiry alone does not delete local plaintext while the app is inactive.
+
+
+### Drop UI follow-up risks
+
+- QuickLook uses the protected extensionless object/version URL directly. Device verification
+  of type inference and QuickLook-managed caches remains open; the app makes no preview copy.
+- Local preview deadlines are persisted and checked with the Demo clock. Inactive cleanup
+  still waits for foreground; the UI does not promise background deletion.
+- Unknown/removed device authors continue to fail closed; no certificate-directory or
+  protocol-scope expansion is introduced by this UI wiring.

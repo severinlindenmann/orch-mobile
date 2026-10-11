@@ -155,6 +155,15 @@ struct InboxTests {
         try s.add(.text("hello")); return try s.commit(note: nil)
     }
 
+    @Test func temporarilyUnavailableDestinationStaysStaged() throws {
+        let area = ShareArea(shareGroupRoot: tmp()), destination = LiveDestination(realm: "live", ws: WS, generation: 1)
+        let id = try staged(area, target()), inbox = ShareInbox(area: area)
+        #expect(inbox.claim(live: [], deferred: [destination]) == ClaimResult())
+        #expect(inbox.peekReady().map(\.manifest.jobID) == [id])
+        #expect(inbox.quarantined().isEmpty)
+        #expect(inbox.claim(live: [destination]).claimed.map(\.manifest.jobID) == [id])
+    }
+
     @Test func claimsLiveJobsAndQuarantinesOrphans() throws {
         let base = tmp(); let area = ShareArea(shareGroupRoot: base); let inbox = ShareInbox(area: area)
         let live = try staged(area, target())

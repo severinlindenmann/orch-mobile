@@ -62,29 +62,4 @@ enum DemoContent {
         }
     }
 
-    /// Drop is simulated in this build (no Drop service yet): names only, no bytes.
-    static func drop(_ kind: DemoRuntime.Kind, workspaceID: String, now: Date) -> [DropItem] {
-        let week = now.addingTimeInterval(7 * 86400)
-        switch kind {
-        case .laptop:
-            return [
-                DropItem(id: "d-readme", workspaceID: workspaceID, name: "readme.txt", bytes: 1_240, kind: .file, direction: .received, expires: week,
-                         versions: 1, unread: true, text: nil, from: "Demo Mac"),
-                DropItem(id: "d-note", workspaceID: workspaceID, name: "Short note", bytes: 38, kind: .note, direction: .received, expires: week,
-                         versions: 1, unread: true, text: "Remember to compare both codes.", from: "Demo Mac"),
-                DropItem(id: "d-url", workspaceID: workspaceID, name: "Link", bytes: 25, kind: .url, direction: .received, expires: week,
-                         versions: 1, unread: false, text: "https://example.invalid/", from: "Demo Mac"),
-                DropItem(id: "d-sending", workspaceID: workspaceID, name: "photo.jpg", bytes: 2_400_000, kind: .file, direction: .sending,
-                         expires: week, versions: 1, unread: false, text: nil, from: "This iPhone"),
-            ]
-        case .clientVM:
-            return [
-                DropItem(id: "d-deploy", workspaceID: workspaceID, name: "deployment.txt", bytes: 5_312, kind: .file, direction: .received,
-                         expires: week, versions: 1, unread: false, text: nil, from: "Demo Mac"),
-                DropItem(id: "d-runbook", workspaceID: workspaceID, name: "Runbook", bytes: 48_200, kind: .file, direction: .received,
-                         expires: week, versions: 2, unread: true, text: nil, from: "Demo Mac"),
-            ]
-        case .lab: return []
-        }
-    }
 }

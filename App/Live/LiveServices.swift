@@ -5,6 +5,7 @@ import OrchFakeHost
 import OrchProtocol
 import OrchPush
 import OrchCustody
+import OrchShareStaging
 import UserNotifications
 
 /// The App's real service layer. In Demo it runs the real client stack against the in-process fakes (`DemoRuntime`); a build without a
@@ -23,6 +24,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private var heldDropItems: [DropItem] = []
     var dropItems: [DropItem] { live.flatMap { $0.drop?.rows ?? [] } + heldDropItems }
     private(set) var demoPushResult: String?
+    var onRetryShared: (() -> Void)?
+    var onStopShared: (() -> Void)?
     var deviceLabel = "Demo iPhone"
     var notificationStatus: NotificationStatus = .notAsked
     var pairingScenario: PairingScenario = .firstTime
@@ -217,7 +220,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         register(ws)
         Task {
             if kind == .laptop, let drop = ws.drop {
-                do { _ = try await DemoSetup.seedDropSending(drop.service) } catch { drop.report(error) }
+                do {
+                    let object = try await DemoSetup.seedDropSending(drop.service)
+                    guard drop.usable else { return }
+                    drop.aliases[object.descriptor.object.hex] = "d-sending"
+                } catch { if drop.usable { drop.report(error) } }
             }
             await ws.drop?.refresh()
         }
@@ -256,9 +263,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             }
             guard active, self.active else { return }
             for ws in workspaces where self.canUse(ws.info.id) {
-                await ws.drop?.foreground()
                 ws.start()
                 self.refreshTasks[ws.info.id] = Task { [weak self] in
+                    await ws.drop?.foreground()
                     await ws.api.refreshViews()
                     guard !Task.isCancelled, let self, self.canUse(ws.info.id) else { return }
                     await self.refreshPending(reconcile: true)
@@ -401,6 +408,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func item(id: String) -> DropItem? { dropItems.first { $0.id == id || $0.presentationID == id } }
     func items(workspace: String) -> [DropItem] { dropItems.filter { $0.workspaceID == workspace } }
 
+    func canSend(to workspaceID: String) -> Bool { eligibleShareDestination(workspaceID) }
+
     func send(_ draft: DropDraft) {
         guard canUse(draft.workspaceID), let drop = live.first(where: { $0.info.id == draft.workspaceID })?.drop else { return }
         Task { await drop.send(draft) }
@@ -410,15 +419,49 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         for ws in live where canUse(ws.info.id) { await ws.drop?.refresh() }
     }
     func verifyDropRow(_ id: String) async {
-        if let drop = live.compactMap(\.drop).first(where: { $0.objects[id] != nil }) { await drop.verifyVisible(id) }
+        if let item = item(id: id), let drop = dropState(item.id) { await drop.verifyVisible(item.id); return }
+        // A fixture deep route resolves only after metadata verification; no fake object is inserted.
+        if id.hasPrefix("d-") {
+            await refreshDrop()
+            for drop in live.compactMap(\.drop) {
+                for row in drop.rows.prefix(12) {
+                    await drop.verifyVisible(row.id)
+                    if item(id: id) != nil { return }
+                }
+            }
+        }
     }
     func dropState(_ id: String) -> LiveDrop? {
-        live.compactMap(\.drop).first { $0.objects[id] != nil }
+        live.compactMap(\.drop).first { $0.objects[id] != nil || $0.rows.contains { $0.presentationID == id } }
     }
-    var dropStatus: String? { live.compactMap { $0.drop?.status }.first }
+    private(set) var shareStatus: String?
+    var dropRefreshRevision: Int { live.reduce(0) { $0 + ($1.drop?.listRevision ?? 0) } }
+    var dropStatus: String? { live.compactMap { $0.drop?.status }.first ?? shareStatus ?? (live.contains { $0.drop?.loading == true } ? "Loading…" : nil) }
+    func shareProgress(_ value: String) { shareStatus = value }
+    func waitForShareActivation() async {
+        await waitForLifecycle()
+        for task in Array(refreshTasks.values) { await task.value }
+    }
+    func eligibleShareDestination(_ id: String) -> Bool {
+        canUse(id) && live.first(where: { $0.info.id == id })?.drop?.canOperate == true
+    }
+    func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        guard eligibleShareDestination(workspaceID), let drop = live.first(where: { $0.info.id == workspaceID })?.drop else { throw DropError.suspended }
+        try await drop.service.discardShareJob(job, inbox: inbox)
+        await drop.refresh()
+    }
+    func importShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        guard eligibleShareDestination(workspaceID), let drop = live.first(where: { $0.info.id == workspaceID })?.drop else { throw DropError.suspended }
+        let mine = drop.revision
+        let objects = try await drop.service.importShareJob(job, inbox: inbox)
+        guard drop.canOperate, mine == drop.revision else { throw DropError.suspended }
+        for (index, object) in objects.enumerated() {
+            drop.aliases[object.descriptor.object.hex] = "share-\(job.manifest.jobID)-\(index)"
+        }
+        await drop.refresh()
+    }
 
     func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? {
-        guard isLive(workspaceID) else { return nil }
         return live.first { $0.info.id == workspaceID }.map { ($0.workspaceID.hex, $0.generation) }
     }
 
@@ -439,7 +482,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func markRead(id: String) {
-        if let drop = dropState(id), let index = drop.rows.firstIndex(where: { $0.id == id }) { drop.rows[index].unread = false }
+        if let drop = dropState(id), let index = drop.rows.firstIndex(where: { $0.id == id || $0.presentationID == id }) {
+            drop.readIDs.insert(drop.rows[index].id); drop.rows[index].unread = false
+        }
     }
 
     // MARK: SettingsModel
@@ -575,3 +620,36 @@ final class UnavailableReviewModel: QuestionReviewModel {
     func invalidate() {}
     func retryAfterUnlock() {}
 }
+
+#if DEBUG
+extension LiveServices {
+    func demoDropPending() async {
+        guard options.uiTesting, let runtime, let drop = live.first(where: { $0.info.scopes.contains(.operate) })?.drop,
+              let id = drop.workspace?.info.id else { return }
+        for _ in 0..<100 where live.contains(where: { !($0.drop?.verifying.isEmpty ?? true) || $0.drop?.loading == true }) {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard drop.canOperate else { return }
+        runtime.faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET " + HostAPI.base + "/drop/")
+        await drop.send(.init(workspaceID: id, attachments: [], note: "Foreground recovery bytes"))
+    }
+    func demoDropReject() async {
+        guard options.uiTesting, let runtime else { return }
+        do { try await runtime.env.relay.demoRejectNextDrop() } catch { shareStatus = "Could not arm Demo fault" }
+    }
+    func demoDropInbox() async {
+        guard options.uiTesting, let runtime, let ws = live.first(where: { $0.info.scopes.contains(.operate) }),
+              let entry = runtime.entry(for: ws.workspaceID) else { return }
+        do {
+            try await entry.host.demoInboxDrop(relay: runtime.env.relay, transport: runtime.env.transport, session: entry.session)
+            await ws.drop?.refresh()
+        } catch { ws.drop?.report(error) }
+    }
+    func demoDropExpire() {
+        guard options.uiTesting else { return }
+        setActive(false)
+        runtime?.fastForward(seconds: 604801)
+        setActive(true)
+    }
+}
+#endif

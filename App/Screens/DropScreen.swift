@@ -30,6 +30,13 @@ struct DropScreen: View {
             }
             Section {
                 if let status = model.dropStatus { Text(verbatim: status).accessibilityIdentifier("drop.status") }
+                ForEach(model.workspaces.filter { $0.lifecycle != .live }) { ws in
+                    Text(verbatim: "\(ws.displayName): unavailable")
+                }
+                if let live = services as? LiveServices,
+                   live.live.contains(where: { $0.drop?.loading == true || $0.drop?.sending == true || !($0.drop?.verifying.isEmpty ?? true) }) || live.shareStatus?.hasPrefix("Importing") == true {
+                    ProgressView().accessibilityIdentifier("drop.progress")
+                }
                 let items = model.items(direction)
                 if items.isEmpty {
                     Text(direction == .received ? "Nothing received yet." : "Nothing is being sent.")
@@ -38,14 +45,19 @@ struct DropScreen: View {
                 ForEach(items) { item in
                     NavigationLink(value: Route.dropItem(item.id)) { DropRow(item: item, workspaces: model.workspaces) }
                         .accessibilityIdentifier("drop.item.\(item.presentationID)")
-                        .task { await model.verifyDropRow(item.id) }
+                        .task(id: model.dropRefreshRevision) { await model.verifyDropRow(item.id) }
                 }
             }
             if direction == .sending, let live = services as? LiveServices {
+                if live.shareStatus != nil {
+                    Button("Retry share import") { live.onRetryShared?() }.accessibilityIdentifier("drop.share.retry")
+                    Button("Stop sending share jobs") { live.onStopShared?() }.accessibilityIdentifier("drop.share.stop")
+                }
                 ForEach(live.live, id: \.info.id) { ws in
                     if let drop = ws.drop {
                         ForEach(drop.failures, id: \.object) { failure in
                             Section("Failed upload") {
+                                Text(verbatim: ws.info.displayName)
                                 Text(verbatim: failure.reason)
                                 Button("Retry") { Task { await drop.resolve(failure, retry: true) } }
                                     .disabled(!drop.canOperate).accessibilityIdentifier("drop.retry")
@@ -59,6 +71,16 @@ struct DropScreen: View {
                     }
                 }
             }
+            #if DEBUG
+            if let live = services as? LiveServices, live.options.uiTesting {
+                Section("Demo test controls") {
+                    Button("Stage pending transfer") { Task { await live.demoDropPending() } }.accessibilityIdentifier("drop.demo.pending")
+                    Button("Reject next upload") { Task { await live.demoDropReject() } }.accessibilityIdentifier("drop.demo.reject")
+                    Button("Add inbox item") { Task { await live.demoDropInbox() } }.accessibilityIdentifier("drop.demo.inbox")
+                    Button("Expire downloads and foreground") { live.demoDropExpire() }.accessibilityIdentifier("drop.demo.expire")
+                }
+            }
+            #endif
             Section {
                 Label("Demo: real encrypted transfers within this iPhone.", systemImage: "info.circle")
                     .font(OF.meta).foregroundStyle(OC.demo).accessibilityIdentifier("drop.simulatedBanner")
@@ -93,13 +115,13 @@ struct DropRow: View {
                     if item.unread { Circle().fill(OC.youMark).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                     Text(verbatim: item.displayName).lineLimit(1)
                 }
-                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · expires \(Fmt.relative(item.expires))" : "\(ws?.displayName ?? "") · Metadata not verified")
+                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · \(item.hasSignedExpiry ? "expires " + Fmt.relative(item.expires) : "no signed expiry")" : "\(ws?.displayName ?? "") · Metadata not verified")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                 if item.quarantineJob != nil {
                     Label("Destination removed. Choose another destination.", systemImage: "exclamationmark.triangle")
                         .font(OF.meta).foregroundStyle(OC.warn)
                 } else if item.direction == .sending {
-                    Label(item.simulatedDone ? "Sent (confirmed)" : "Sending…",
+                    Label(item.stopped ? "Stopped sending" : (item.simulatedDone ? "Sent (confirmed)" : "Sending…"),
                           systemImage: item.simulatedDone ? "checkmark.circle" : "arrow.up.circle")
                         .font(OF.meta).foregroundStyle(item.simulatedDone ? OC.ok : OC.info)
                 }
@@ -122,12 +144,13 @@ struct DropItemScreen: View {
                     VStack(alignment: .leading, spacing: OS.s2) {
                         if let ws { WorkspaceHeader(name: ws.name, color: ws.color, hostedBy: ws.hostedBy, clientHosted: ws.clientHosted) }
                         Text(verbatim: item.displayName).font(.title2.weight(.semibold))
-                        Text(verbatim: "\(item.kind.rawValue.capitalized) · \(Fmt.bytes(item.bytes)) · from \(item.displayFrom)")
+                        Text(verbatim: item.verified ? "\(item.kind.rawValue.capitalized) · \(Fmt.bytes(item.bytes)) · from \(item.displayFrom)" : "Metadata not verified · from \(item.displayFrom)")
                             .font(OF.meta).foregroundStyle(OC.textMuted)
                     }
                 }
                 Section("Details") {
-                    LabeledContent("Expires", value: Fmt.relative(item.expires))
+                    LabeledContent("Expires", value: item.hasSignedExpiry ? Fmt.relative(item.expires) : "No signed expiry")
+                    if let mime = item.mime { LabeledContent("Type", value: mime) }
                     LabeledContent("Versions", value: "\(item.versions)")
                     LabeledContent("Direction", value: item.direction == .received ? "Received" : "Sending")
                 }
@@ -135,7 +158,7 @@ struct DropItemScreen: View {
                     Section("Choose another destination") {
                         Text("The workspace this was meant for was removed from this iPhone. Nothing was sent. It is kept here until you pick where it goes, or it expires.")
                             .font(OF.meta).foregroundStyle(OC.textMuted)
-                        ForEach(model.workspaces.filter { $0.lifecycle == .live && $0.scopes.contains(.operate) }) { ws in
+                        ForEach(model.workspaces.filter { model.canSend(to: $0.id) }) { ws in
                             Button { model.redirectQuarantined(id: item.id, to: ws.id) } label: {
                                 HStack {
                                     WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
@@ -153,7 +176,7 @@ struct DropItemScreen: View {
                             .disabled(!drop.canOperate).accessibilityIdentifier("drop.claim")
                     }
                     Button("Open") { Task { await drop.open(item.id) } }
-                        .disabled(!drop.usable || !item.verified || item.bytes == 0)
+                        .disabled(!drop.usable || !item.verified || item.bytes == 0 || item.kind == .url)
                         .accessibilityIdentifier("drop.open")
                 }
                 if let text = item.text {
@@ -199,7 +222,7 @@ struct DropComposeSheet: View {
     }
 
     private var total: Int { attachments.reduce(0) { $0 + $1.bytes } }
-    private var canSend: Bool { model.workspaces.contains { $0.id == destination && $0.lifecycle == .live && $0.scopes.contains(.operate) } && (!attachments.isEmpty || !note.isEmpty) }
+    private var canSend: Bool { model.workspaces.contains { $0.id == destination && model.canSend(to: $0.id) } && (!attachments.isEmpty || !note.isEmpty) }
 
     var body: some View {
         NavigationStack {
@@ -210,7 +233,7 @@ struct DropComposeSheet: View {
                         .accessibilityIdentifier("drop.demoLabel")
                 }
                 Section("1. Send to") {
-                    ForEach(model.workspaces.filter { $0.lifecycle == .live && $0.scopes.contains(.operate) }) { ws in
+                    ForEach(model.workspaces.filter { model.canSend(to: $0.id) }) { ws in
                         Button { destination = ws.id } label: {
                             HStack {
                                 WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())

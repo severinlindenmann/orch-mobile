@@ -213,7 +213,12 @@ extension WorkspaceContainer {
         // Never wait for a cross-process lock on the cooperative pool.
         guard let result = try layout.tombstones.ifNotRemoved(realm: layout.realm, ws: ws, generation: generation, timeout: 0, {
             try body(layout.filesDir(ws))
-        }) else { throw StoreError.removalStateUnknown(ws: ws, generation: generation) }
+        }) else {
+            if layout.tombstones.removalStatus(realm: layout.realm, ws: ws, generation: generation) == .removed {
+                throw StoreError.workspaceRemoved(ws: ws, generation: generation)
+            }
+            throw StoreError.removalStateUnknown(ws: ws, generation: generation)
+        }
         return result
     }
 

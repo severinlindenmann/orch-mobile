@@ -32,6 +32,11 @@ public struct DropDownload: Sendable, Equatable {
     public let deadlineMs: Int64
 }
 
+public struct DropUploadIdentity: Sendable, Hashable {
+    public let object: ID16
+    public let version: UInt32
+}
+
 public struct DropUploadFailure: Sendable, Equatable {
     public let object: ID16
     public let version: UInt32
@@ -49,9 +54,12 @@ public struct DropUploadResult: Sendable {
 public actor DropService {
     public enum Direction: String, Sendable { case received, sending }
     public enum Kind: String, Sendable { case file, document }
+    @TaskLocal private static var operationEpoch: UInt64?
+    private var lifecycleEpoch: UInt64 = 0
     private var suspended = false
     private var invalidated = false
     public func suspend() {
+        lifecycleEpoch &+= 1
         suspended = true
         uploads.values.forEach { $0.cancel() }
         imports.values.forEach { $0.cancel() }
@@ -63,7 +71,7 @@ public actor DropService {
     }
     private func requireAvailable() throws {
         try Task.checkCancellation()
-        guard !suspended, !invalidated else { throw DropError.suspended }
+        guard !suspended, !invalidated, Self.operationEpoch.map({ $0 == lifecycleEpoch }) ?? true else { throw DropError.suspended }
     }
     private var imports: [String: Task<[DropObject], Error>] = [:]
     private var uploads: [String: Task<DropObject, Error>] = [:]
@@ -190,6 +198,11 @@ public actor DropService {
     }
 
     public func list(_ direction: Direction = .received) async throws -> [DropObject] {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.list(direction) }
+        }
+        try requireAvailable()
         try await purgeExpiredDownloads()
         let members = try await membership(), s = try await auth()
         let query: JSONValue = ["host_api": 0, "workspace_id": .string(card.workspace.hex), "direction": .string(direction.rawValue)]
@@ -210,6 +223,11 @@ public actor DropService {
     /// plaintext is deleted after every non-abandoned item is confirmed by read-back and job completion is durable.
     /// Completed jobs retry cleanup only and return no new objects; deletion failures are reported to the caller.
     public func importShareJob(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.importShareJob(job, inbox: inbox) }
+        }
+        try requireAvailable()
         guard job.manifest.realm == session.cfg.context.realm.rawValue, job.manifest.ws == card.workspace.hex,
               job.manifest.generation == session.generation else { throw DropError.unauthorized }
         if let task = imports[job.manifest.jobID] { return try await task.value }
@@ -231,7 +249,7 @@ public actor DropService {
         let db = try await session.cfg.container.database()
         if try await !db.query("SELECT job FROM drop_completed_jobs WHERE job=?", [.text(job.manifest.jobID)]).isEmpty {
             try await check()
-            try await inbox.cleanupCompleted(job, afterRemovingItem: hook)
+            try await inbox.cleanupCompleted(job, beforeRemovingItem: { try await self.check() }, afterRemovingItem: hook)
             return []
         }
         var result: [DropObject] = []
@@ -242,6 +260,7 @@ public actor DropService {
             guard let id = try await db.query("SELECT object FROM drop_imports WHERE job=? AND item=?", [.text(job.manifest.jobID), .int(Int64(i))]).first?.text("object").flatMap(ID16.init(hex:)) else { throw DropError.malformed }
             if try await !db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.importAbandonmentKey(id))]).isEmpty { continue }
             do {
+            try await check()
             let data = try inbox.contents(of: item, in: job)
             result.append(try await sendData(data, name: item.name, mime: item.kind == .url ? "text/uri-list" : (item.kind == .text ? "text/plain" : "application/octet-stream"),
                 transcript: job.manifest.note, expiresMs: nil, document: nil, chosenObject: id))
@@ -255,13 +274,18 @@ public actor DropService {
             try tx.execute("INSERT OR IGNORE INTO drop_completed_jobs(job) VALUES(?)", [.text(job.manifest.jobID)])
         }
         try await check()
-        try await inbox.cleanupCompleted(job, afterRemovingItem: hook)
+        try await inbox.cleanupCompleted(job, beforeRemovingItem: { try await self.check() }, afterRemovingItem: hook)
         return result
     }
 
     public func send(_ data: Data, name: String, mime: String = "application/octet-stream", transcript: String? = nil,
                      expiresMs: Int64? = nil, kind: Kind = .file, document: DropObject? = nil) async throws -> DropObject {
-        try await sendData(data, name: name, mime: mime, transcript: transcript, expiresMs: expiresMs, document: document, chosenObject: nil, kind: kind)
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.send(data, name: name, mime: mime, transcript: transcript, expiresMs: expiresMs, kind: kind, document: document) }
+        }
+        try requireAvailable()
+        return try await sendData(data, name: name, mime: mime, transcript: transcript, expiresMs: expiresMs, document: document, chosenObject: nil, kind: kind)
     }
 
     /// Fresh DEK per version. The exact sealed upload is durable before the first PUT.
@@ -281,6 +305,7 @@ public actor DropService {
         guard parent < Self.maxVersions, document == nil || document?.descriptor.objectKind == "document" else { throw DropError.malformed }
         let epoch = try await session.currentEpoch()
         let wk = try await session.dropKey(epoch)
+        try await check()
         let body = try DropUpload.seal(data, metadata: DropMetadata(name: name, mime: mime, size: Int64(data.count), transcript: transcript),
             object: object, workspace: card.workspace, author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig,
             wxk: card.wxk, wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: wk, epoch: epoch,
@@ -300,6 +325,11 @@ public actor DropService {
 
     /// Recover every pending row independently; stale uncommitted bodies get a fresh DEK.
     public func resumeUploads() async throws -> [DropUploadResult] {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.resumeUploads() }
+        }
+        try requireAvailable()
         try await check()
         let rows = try await session.cfg.container.database().query("SELECT object,version FROM drop_uploads WHERE done=0 ORDER BY object,version")
         var result: [DropUploadResult] = []
@@ -353,6 +383,11 @@ public actor DropService {
 
     /// Terminal outcomes survive restart and remain visible until explicitly resolved.
     public func failedUploads() async throws -> [DropUploadFailure] {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.failedUploads() }
+        }
+        try requireAvailable()
         try await check()
         let rows = try await session.cfg.container.database().query("SELECT object,version,failure FROM drop_uploads WHERE done=2")
         return try rows.map { row in
@@ -361,14 +396,41 @@ public actor DropService {
         }
     }
 
+    /// Only these uploads have passed exact descriptor and blob read-back.
+    public func confirmedUploads() async throws -> [DropUploadIdentity] {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.confirmedUploads() }
+        }
+        try requireAvailable()
+        try await check()
+        let rows = try await session.cfg.container.database().query("SELECT object,version FROM drop_uploads WHERE done=1")
+        try await check()
+        return try rows.map { row in
+            guard let object = row.text("object").flatMap(ID16.init(hex:)), let version = row.int("version"),
+                  version > 0, version <= UInt32.max else { throw DropError.malformed }
+            return DropUploadIdentity(object: object, version: UInt32(version))
+        }
+    }
+
     /// Explicitly retry a terminal row; conflict bytes are never overwritten automatically.
     public func retryUpload(object: ID16, version: UInt32) async throws -> DropObject {
-        try await upload(object: object, version: version, retry: true)
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.retryUpload(object: object, version: version) }
+        }
+        try requireAvailable()
+        return try await upload(object: object, version: version, retry: true)
     }
 
     /// Stops local sending of this sealed upload; present this as "stopped sending", not "deleted".
     /// A PUT whose response was lost may already have committed; its content remains on the relay.
     public func discardUpload(object: ID16, version: UInt32) async throws {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.discardUpload(object: object, version: version) }
+        }
+        try requireAvailable()
         let key = "upload:\(object.hex):\(version)"
         await admit(key)
         defer { release(key) }
@@ -389,6 +451,11 @@ public actor DropService {
     /// Content already committed by a PUT (including a lost response) remains on the relay.
     /// Tombstone precedes cleanup and survives failed deletion and stale in-memory job handles.
     public func discardShareJob(_ job: StagedJob, inbox: ShareInbox) async throws {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.discardShareJob(job, inbox: inbox) }
+        }
+        try requireAvailable()
         guard job.manifest.ws == card.workspace.hex, job.manifest.generation == session.generation,
               job.manifest.realm == session.cfg.context.realm.rawValue else { throw DropError.unauthorized }
         let key = "job:\(job.manifest.jobID)"
@@ -430,9 +497,11 @@ public actor DropService {
                     guard try DropDescriptor.parentHash(of: parent!.raw) == descriptor.parentHash else { throw DropError.conflict }
                 }
                 guard let expiry = descriptor.expiresMs, expiry > session.cfg.wall.nowMs else { throw DropError.expired }
+                let currentKey = try await session.dropKey(members.epoch)
+                try await check()
                 let fresh = try DropUpload.seal(plaintext, metadata: metadata, object: object, workspace: card.workspace,
                     author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig, wxk: card.wxk,
-                    wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: await session.dropKey(members.epoch),
+                    wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: currentKey,
                     epoch: members.epoch, now: session.cfg.wall.nowMs, expiry: expiry, parent: parent, kind: descriptor.objectKind)
                 let db = try await session.cfg.container.database()
                 try await check()
@@ -474,6 +543,11 @@ public actor DropService {
 
     /// The phone asks the host to claim; only the host signs the §10.5 claim.
     public func claim(_ object: DropObject) async throws {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.claim(object) }
+        }
+        try requireAvailable()
         guard object.descriptor.recipients == .inbox else { throw DropError.malformed }
         _ = try await verified(object.signed, wraps: object.wraps.map(\.json), members: membership(operate: true))
         try await check()
@@ -489,11 +563,21 @@ public actor DropService {
 
     /// Call on app foreground; no network access is needed to remove expired local plaintext.
     public func purgeExpiredDownloads() async throws {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.purgeExpiredDownloads() }
+        }
+        try requireAvailable()
         try await check()
         try await session.cfg.container.purgeExpiredDownloads(nowMs: session.cfg.wall.nowMs)
     }
 
     public func downloadVerified(_ object: DropObject) async throws -> DropDownload {
+        // Nested operations and unstructured children retain the admitting lifecycle epoch.
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.downloadVerified(object) }
+        }
+        try requireAvailable()
         try await purgeExpiredDownloads()
         let members = try await membership()
         let current = try await verified(object.signed, wraps: object.wraps.map(\.json), members: members)

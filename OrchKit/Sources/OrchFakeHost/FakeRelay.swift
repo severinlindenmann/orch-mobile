@@ -24,6 +24,7 @@ public struct RelayLimits: Sendable {
 /// envelope. The `publish*`, `putGrant` and `putCardKeyWrap` methods stand in for orch-publish and the host's authenticated
 /// uploads (protocol section 12.1 is not modelled); each runs the relay's full checks.
 public actor FakeRelay: RequestSender {
+    private var demoDropRejections = 0
     public nonisolated let context: RealmContext
     public nonisolated let origin: String
     let clock: any Clock<Duration>
@@ -795,7 +796,17 @@ extension FakeRelay {
         }
     }
 
+    /// Deterministic Demo control; applies only to the next encrypted Drop PUT.
+    public func demoRejectNextDrop() throws {
+        try checkLive()
+        demoDropRejections += 1
+    }
+
     private func dropRoute(_ r: WireRequest, _ path: [String], _ query: String?, protocolRoute: Bool = false) throws -> WireReply {
+        if r.method == "PUT", demoDropRejections > 0 {
+            demoDropRejections -= 1
+            return adapterError(422, "demo_upload_rejected")
+        }
         guard protocolRoute ? (r.method == "PUT" || r.method == "POST" && path.last == "claim") : (r.method == "GET" || path == ["drop", "list"]) else { return adapterError(404, "not_found") }
         guard let session = authenticate(r) else { return adapterError(401, "unauthenticated") }
         guard query == nil else { return refuse(400, .malformed) }
