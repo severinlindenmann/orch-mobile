@@ -62,6 +62,41 @@ final class SettingsTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsDemoControlSchedulesNotification() {
+        let app = launch("settings")
+        // The first use may raise the system permission prompt; allow it.
+        addUIInterruptionMonitor(withDescription: "notifications") { alert in
+            for label in ["Allow", "OK"] where alert.buttons[label].exists { alert.buttons[label].tap(); return true }
+            return false
+        }
+        let send = app.buttons["demo.sendNotification"]
+        var tries = 0
+        while !send.exists && tries < 6 { app.swipeUp(); tries += 1 }
+        XCTAssertTrue(send.waitForExistence(timeout: 90))
+        send.tap()
+        let result = app.el("demo.sendNotification.result")
+        XCTAssertTrue(result.waitForExistence(timeout: 30))
+        let settled = NSPredicate(format: "label CONTAINS 'scheduled' OR label CONTAINS 'iOS Settings'")
+        expectation(for: settled, evaluatedWith: result)
+        waitForExpectations(timeout: 60)
+    }
+
+    @MainActor
+    func testOfflineLeaveStillRemovesLocally() {
+        let app = launch("settings/workspace/laptop")
+        let offline = app.switches["demo.offline"]
+        XCTAssertTrue(offline.waitForExistence(timeout: 90))
+        offline.tap()
+        app.buttons["settings.leave"].tap()
+        let confirm = app.buttons["settings.leave.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        confirm.tap()
+        XCTAssertTrue(app.el("settings.leave.done").waitForExistence(timeout: 30))
+        XCTAssertFalse(app.el("settings.leave.incomplete").exists)
+        XCTAssertTrue(app.el("settings.leave.server").label.contains("pending"))
+    }
+
+    @MainActor
     func testRevocationExplanationIsDistinct() {
         let app = launch("settings", seed: false)
         let revocation = app.el("settings.revocation")

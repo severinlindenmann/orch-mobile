@@ -198,6 +198,67 @@ final class LiveLifecycleTests: XCTestCase {
         services.exitDemo(); await bounded { await services.waitForReset() }
     }
 
+    func testOfflineLeaveWipesLocallyAndKeepsServerCleanupPending() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let ws = workspace(services)
+        let id = ws.info.id
+        var cleaned: [String] = []
+        services.serverCleanup = { cleaned.append($0.ws) }
+        let report = await services.leave(workspaceID: id, simulateOffline: true)
+        XCTAssertFalse(report.incomplete)
+        XCTAssertNil(report.failure)
+        XCTAssertEqual(report.server, .pendingOffline)
+        XCTAssertEqual(services.state(for: id), .removed)
+        XCTAssertTrue(services.workspaces.isEmpty)
+        let tombstones = try await runtime.env.index.tombstones()
+        XCTAssertTrue(tombstones.contains { $0.record.ws == ws.workspaceID.hex && $0.phase >= LocalWipe.donePhase })
+        // The server half is a persisted pending item, not a failure.
+        XCTAssertEqual(services.pendingServerCleanups.map(\.name), [ws.info.name])
+        XCTAssertEqual(ServerCleanupStore(defaults: services.cleanupDefaults).load().count, 1)
+        XCTAssertTrue(cleaned.isEmpty)
+        await services.retryServerCleanup()
+        XCTAssertEqual(cleaned, [ws.workspaceID.hex])
+        XCTAssertTrue(services.pendingServerCleanups.isEmpty)
+        services.exitDemo(); await bounded { await services.waitForReset() }
+    }
+
+    func testServerCleanupStaysPendingWhileStillFailing() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        _ = workspace(services)
+        services.serverCleanup = { _ in throw ViewError.offline }
+        let id = services.workspaces[0].id
+        _ = await services.leave(workspaceID: id, simulateOffline: true)
+        await services.retryServerCleanup()
+        XCTAssertEqual(services.pendingServerCleanups.count, 1)
+        services.exitDemo(); await bounded { await services.waitForReset() }
+    }
+
+    func testFailedShareJournalDoesNotBlockLocalWipe() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let ws = workspace(services)
+        services.beforeWorkspaceRemoval = { _ in false }
+        let report = await services.leave(workspaceID: ws.info.id, simulateOffline: true)
+        XCTAssertFalse(report.incomplete)
+        XCTAssertEqual(services.state(for: ws.info.id), .removed)
+        services.exitDemo(); await bounded { await services.waitForReset() }
+    }
+
+    func testGenuineLocalWipeFailureStaysIncompleteEvenOffline() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let ws = workspace(services)
+        services.wipeWorkspace = { _, _ in throw ViewError.offline }
+        let report = await services.leave(workspaceID: ws.info.id, simulateOffline: true)
+        XCTAssertTrue(report.incomplete)
+        XCTAssertNotNil(report.failure)
+        XCTAssertEqual(services.state(for: ws.info.id), .removalIncomplete)
+        XCTAssertTrue(services.pendingServerCleanups.isEmpty)   // nothing is "removed", so no server cleanup is queued
+        services.exitDemo(); await bounded { await services.waitForReset() }
+    }
+
     func testBackgroundDoesNotWaitForSuspendedRefresh() async {
         let services = LiveServices(options: options)
         let api = WorkspaceStub()

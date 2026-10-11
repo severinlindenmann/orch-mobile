@@ -272,6 +272,12 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     var demoPushResult: String? { nil }
     func demoSendPush(workspaceID: String) {}
+    func demoSendNotification() async {}
+    func refreshNotificationStatus() async {}
+    func openNotificationSettings() {}
+    var pushDiagnostics: String { "" }
+    var pendingServerCleanups: [PendingServerCleanup] { [] }
+    func retryServerCleanup() async {}
 
     func setNotifications(_ on: Bool, workspaceID: String) {
         if let i = workspaces.firstIndex(where: { $0.id == workspaceID }) { workspaces[i].notificationsOn = on }

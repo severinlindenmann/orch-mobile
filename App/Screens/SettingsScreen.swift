@@ -15,6 +15,26 @@ struct SettingsScreen: View {
                     .accessibilityIdentifier("settings.deviceLabel")
                 LabeledContent("Key custody", value: model.custody)
                 LabeledContent("Notifications", value: notificationText)
+                if model.notificationStatus == .denied {
+                    Button("Open iOS Settings") { model.openNotificationSettings() }
+                        .accessibilityIdentifier("settings.notifications.openSettings")
+                }
+                if !model.pushDiagnostics.isEmpty {
+                    Text(verbatim: model.pushDiagnostics).font(OF.meta).foregroundStyle(OC.textMuted)
+                        .accessibilityIdentifier("settings.push.diagnostics")
+                }
+            }
+            if !model.pendingServerCleanups.isEmpty {
+                Section {
+                    ForEach(model.pendingServerCleanups) { item in
+                        Label("\(SafeText.inline(item.name, limit: 40)): server cleanup pending", systemImage: "arrow.triangle.2.circlepath")
+                            .accessibilityIdentifier("settings.serverCleanup.\(item.ws)")
+                    }
+                    Button("Retry now") { Task { await model.retryServerCleanup() } }
+                        .accessibilityIdentifier("settings.serverCleanup.retry")
+                } header: { Text("Finish on your Mac") } footer: {
+                    Text("These workspaces are already removed from this iPhone. Stopping their notifications on the server is retried when you are online.")
+                }
             }
             Section("Workspaces") {
                 if model.workspaces.isEmpty { Text("No workspaces.").foregroundStyle(OC.textMuted) }
@@ -47,6 +67,7 @@ struct SettingsScreen: View {
             }
         }
         .navigationTitle("Settings")
+        .task { await model.refreshNotificationStatus() }
         .alert("Reset this iPhone?", isPresented: $confirmReset) {
             Button("Reset this iPhone", role: .destructive) { model.resetThisiPhone(); path = [] }
                 .accessibilityIdentifier("settings.reset.confirm")
@@ -71,6 +92,12 @@ struct SettingsScreen: View {
             }
             Picker("Next answer ends as", selection: Binding(get: { model.signOutcome }, set: { model.signOutcome = $0 })) {
                 ForEach(SignOutcome.liveCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Button("Send a demo question notification") { Task { await model.demoSendNotification() } }
+                .accessibilityIdentifier("demo.sendNotification")
+            if let result = model.demoPushResult {
+                Text(verbatim: result).font(OF.meta).foregroundStyle(OC.textMuted)
+                    .accessibilityIdentifier("demo.sendNotification.result")
             }
             Button("Reset Demo data") { model.resetDemoData() }.accessibilityIdentifier("demo.reset")
             Button("Leave Demo", role: .destructive) { model.exitDemo(); path = [] }
@@ -128,6 +155,10 @@ struct WorkspaceSettingsScreen: View {
                     Section {
                         Label("Removal incomplete. This workspace is still on this iPhone. Try again.", systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(OC.warn).accessibilityIdentifier("settings.leave.incomplete")
+                        if let failure = report.failure {
+                            Text(verbatim: "Details: \(failure)").font(OF.meta).foregroundStyle(OC.textMuted)
+                                .accessibilityIdentifier("settings.leave.failure")
+                        }
                     }
                 }
                 Section {
@@ -164,7 +195,7 @@ struct WorkspaceSettingsScreen: View {
     private func serverText(_ r: LeaveReport) -> String {
         switch r.server {
         case .done: "Notifications for \(SafeText.inline(r.workspaceName, limit: 40)) were stopped on the server."
-        case .pendingOffline: "You are offline, so stopping notifications on the server is still pending. It will be tried again."
+        case .pendingOffline: "You are offline, so stopping notifications on the server is still pending. It will be tried again when you are back online. Finish on your Mac if it stays pending."
         case .finishOnMac: "This iPhone can't remove itself from the server for \(SafeText.inline(r.workspaceName, limit: 40)). Finish on your Mac."
         }
     }

@@ -338,6 +338,16 @@ struct LeaveReport: Hashable, Sendable {
     let server: LeaveServerStatus
     /// The local wipe did not finish: the workspace is still listed and nothing is reported as removed. Leave can be tried again.
     var incomplete = false
+    /// Why the local wipe failed (only with `incomplete`), shown so a genuine failure is diagnosable.
+    var failure: String?
+}
+
+/// Server-side cleanup of a workspace that is already gone from this iPhone (U9). Holds no key material.
+struct PendingServerCleanup: Codable, Hashable, Sendable, Identifiable {
+    var id: String { ws }
+    let ws: String
+    let name: String
+    let since: Date
 }
 
 enum NotificationStatus: String, Hashable, Sendable { case notAsked, allowed, denied }
