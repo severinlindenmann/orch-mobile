@@ -6,7 +6,7 @@ extension ShareInbox {
 
     public func pendingRemovals() throws -> [TombstoneRecord] {
         let data: Data
-        do { data = try ShareFS.readFile(removalsURL, cap: 256 * 1024) }
+        do { data = try area.readFile(removalsURL, cap: 256 * 1024) }
         catch ShareFS.ReadFailure.notFound { return [] }
         let records = try JSONDecoder().decode([TombstoneRecord].self, from: data)
         for r in records { try ShareArea.validate(realm: r.realm, ws: r.ws) }

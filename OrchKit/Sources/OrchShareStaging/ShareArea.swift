@@ -47,74 +47,84 @@ public struct ShareArea: Sendable {
         }
     }
 
-    /// Creates `dir` and every missing component below `shareDir` with Complete protection, excluded from backup.
-    /// An existing component that is not a real directory (a symbolic link, a file) is refused, never followed.
-    func ensureDirectory(_ dir: URL) throws {
-        let base = shareDir.standardizedFileURL.pathComponents
-        let target = dir.standardizedFileURL.pathComponents
-        guard target.count >= base.count, Array(target.prefix(base.count)) == base else { throw ShareError.io("outside share dir") }
-        var current = shareDir.standardizedFileURL
-        try Self.prepare(current, intermediates: true)
-        for part in target.dropFirst(base.count) {
-            current = current.appendingPathComponent(part, isDirectory: true)
-            try Self.prepare(current)
-        }
-    }
+    // MARK: fd-relative access
+    //
+    // Every operation resolves its URL to components below `shareDir` once (lexically), then walks them from the
+    // root descriptor with `openat(O_NOFOLLOW|O_DIRECTORY)`. There is no separate "check" step: a component swapped
+    // for a symbolic link fails the walk, and a swapped-in real directory is still inside the share area.
 
-    /// True when `url` and every component between `shareDir` and it are real directories (lstat: no symbolic links).
-    func isRealDirectoryChain(_ url: URL) -> Bool {
+    /// Components of `url` below `shareDir`; nil when `url` is outside it or has an unusable component.
+    func components(of url: URL) -> [String]? {
         let base = shareDir.standardizedFileURL.pathComponents
         let target = url.standardizedFileURL.pathComponents
-        guard target.count >= base.count, Array(target.prefix(base.count)) == base else { return false }
-        var current = shareDir.standardizedFileURL
-        guard Self.isRealDirectory(current) else { return false }
-        for part in target.dropFirst(base.count) {
-            current = current.appendingPathComponent(part, isDirectory: true)
-            guard Self.isRealDirectory(current) else { return false }
-        }
-        return true
+        guard target.count >= base.count, Array(target.prefix(base.count)) == base else { return nil }
+        let rel = Array(target.dropFirst(base.count))
+        guard rel.allSatisfy({ (try? ShareFS.checkName($0)) != nil }) else { return nil }
+        return rel
     }
 
-    static func isRealDirectory(_ url: URL) -> Bool {
-        var st = stat()
-        return lstat(url.path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR
+    /// Opens `url` (a directory below `shareDir`, or `shareDir` itself) through the walk; `create` makes missing
+    /// components with Complete protection, excluded from backup.
+    func openDir(_ url: URL, create: Bool = false) throws -> DirFD {
+        guard let rel = components(of: url) else { throw ShareError.io("outside share dir") }
+        return try ShareFS.walk(root: shareDir.standardizedFileURL, rel, create: create)
     }
 
+    /// The verified parent directory of `url` and its last component.
+    func openParent(_ url: URL, create: Bool = false) throws -> (dir: DirFD, name: String) {
+        guard let rel = components(of: url), let last = rel.last else { throw ShareError.io("outside share dir") }
+        return (try ShareFS.walk(root: shareDir.standardizedFileURL, Array(rel.dropLast()), create: create), last)
+    }
+
+    func ensureDirectory(_ dir: URL) throws { _ = try openDir(dir, create: true) }
+
+    func readFile(_ url: URL, cap: Int) throws -> Data {
+        let (dir, name) = try openParent(url)
+        return try ShareFS.readFile(dir, name, cap: cap)
+    }
+
+    func writeFile(_ data: Data, to url: URL) throws {
+        let (dir, name) = try openParent(url, create: true)
+        try ShareFS.writeAtomic(dir, name, data)
+    }
+
+    func listNames(_ url: URL) -> [String] {
+        guard let dir = try? openDir(url) else { return [] }
+        return (try? ShareFS.list(dir)) ?? []
+    }
+
+    func isRegularFile(_ url: URL) -> Bool {
+        guard let (dir, name) = try? openParent(url) else { return false }
+        return ShareFS.isRegular(dir, name)
+    }
+
+    func modificationDate(_ url: URL) -> Date? {
+        guard let (dir, name) = try? openParent(url), let st = ShareFS.statEntry(dir, name) else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1e9)
+    }
+
+    /// Renames `from` to `to` between two verified parent directories (`renameat`).
+    func rename(_ from: URL, to: URL) -> Bool {
+        guard let (fd, fname) = try? openParent(from), let (td, tname) = try? openParent(to) else { return false }
+        return ShareFS.rename(fd, fname, td, tname)
+    }
+
+    /// Removes what is at `url` without following links, through descriptors only. A missing entry (or a missing or
+    /// link-swapped parent) is not an error for the former and a failure for the latter.
+    @discardableResult
+    func safeRemove(_ url: URL) -> Bool {
+        guard let rel = components(of: url), let last = rel.last else { return false }
+        do {
+            let parent = try ShareFS.walk(root: shareDir.standardizedFileURL, Array(rel.dropLast()))
+            return ShareFS.removeTree(parent, last)
+        } catch ShareFS.ReadFailure.notFound { return true }
+        catch { return false }
+    }
+
+    /// Presence test for tests and diagnostics (lstat: a link counts as present).
     static func exists(_ url: URL) -> Bool {
         var st = stat()
         return lstat(url.path, &st) == 0
-    }
-
-    /// Removes what is at `url` without following links: a symbolic link is unlinked itself; a directory is removed
-    /// only when every parent below `shareDir` is a real directory.
-    @discardableResult
-    func safeRemove(_ url: URL) -> Bool {
-        var st = stat()
-        guard lstat(url.path, &st) == 0 else { return true }
-        if (st.st_mode & S_IFMT) == S_IFLNK { return unlink(url.path) == 0 }
-        guard isRealDirectoryChain(url.deletingLastPathComponent()) else { return false }
-        return (try? FileManager.default.removeItem(at: url)) != nil
-    }
-
-    static func prepare(_ url: URL, intermediates: Bool = false) throws {
-        var st = stat()
-        if lstat(url.path, &st) == 0 {
-            guard (st.st_mode & S_IFMT) == S_IFDIR else { throw ShareError.io("not a real directory") }
-        } else {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: intermediates)
-        }
-        Self.protect(url)
-        var u = url
-        var rv = URLResourceValues()
-        rv.isExcludedFromBackup = true
-        try? u.setResourceValues(rv)
-    }
-
-    /// NSFileProtectionComplete (a no-op off iOS).
-    static func protect(_ url: URL) {
-        #if os(iOS)
-        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
-        #endif
     }
 }
 
@@ -164,20 +174,14 @@ public enum ShareTargetIndex {
         try area.ensureDirectory(area.shareDir)
         let clipped = targets.map { ShareTarget(realm: $0.realm, ws: $0.ws, name: String($0.name.prefix(80)), hue: $0.hue, generation: $0.generation) }
         let data = try JSONEncoder().encode(File(version: 1, targets: clipped))
-        try data.write(to: area.targetsURL, options: .atomic)
-        ShareArea.protect(area.targetsURL)
-        var u = area.targetsURL
-        var rv = URLResourceValues()
-        rv.isExcludedFromBackup = true
-        try? u.setResourceValues(rv)
+        try area.writeFile(data, to: area.targetsURL)
     }
 
     /// Extension side. Missing file means the app never published a workspace (`.noWorkspaces`). Anything unreadable
     /// or invalid fails closed (`.unreadable`); removed (tombstoned) destinations are filtered out.
     public static func load(from area: ShareArea) throws -> [ShareTarget] {
-        if ShareArea.exists(area.shareDir), !ShareArea.isRealDirectory(area.shareDir) { throw ShareError.unreadable }
         let data: Data
-        do { data = try ShareFS.readFile(area.targetsURL, cap: 256 * 1024) }
+        do { data = try area.readFile(area.targetsURL, cap: 256 * 1024) }
         catch ShareFS.ReadFailure.notFound { throw ShareError.noWorkspaces }
         catch { throw ShareError.unreadable }
         guard let file = try? JSONDecoder().decode(File.self, from: data), file.version == 1 else { throw ShareError.unreadable }

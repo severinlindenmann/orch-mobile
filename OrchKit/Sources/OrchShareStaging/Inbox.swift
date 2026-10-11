@@ -36,7 +36,6 @@ public struct ShareInbox: Sendable {
     ///   only the recovery pass may hand those out again, so a claim that is still being imported is never re-issued.
     public func claim(live: Set<LiveDestination>, realm: String? = nil, includeClaimed: Bool = true) -> ClaimResult {
         var result = ClaimResult()
-        let fm = FileManager.default
         for job in jobs(in: area.stagingRoot, requireReady: true) {
             let m = job.manifest
             if let realm, m.realm != realm { continue }
@@ -49,13 +48,13 @@ public struct ShareInbox: Sendable {
                     continue
                 }
                 let claimed = base.appendingPathComponent(m.jobID + JobFiles.claimedSuffix, isDirectory: true)
-                if rename(job.dir.path, claimed.path) == 0 { result.claimed.append(StagedJob(manifest: m, dir: claimed)) }
+                if area.rename(job.dir, to: claimed) { result.claimed.append(StagedJob(manifest: m, dir: claimed)) }
             } else if let q = try? area.quarantineDir(realm: m.realm, ws: m.ws) {
                 do {
                     try area.ensureDirectory(q)
                     let dest = q.appendingPathComponent(m.jobID, isDirectory: true)
                     area.safeRemove(dest)
-                    guard rename(job.dir.path, dest.path) == 0 else { throw ShareError.io("rename") }
+                    guard area.rename(job.dir, to: dest) else { throw ShareError.io("rename") }
                     result.quarantined.append(StagedJob(manifest: m, dir: dest))
                 } catch { /* stays staged; the next pass retries, the janitor bounds it */ }
             }
@@ -72,8 +71,7 @@ public struct ShareInbox: Sendable {
     /// Text for text/URL items: `O_NOFOLLOW`, regular file, capped at `maxBytes` (display needs far less than a job).
     public func text(of item: StagedItem, in job: StagedJob, maxBytes: Int = 16 * 1024) -> String? {
         guard item.kind != .file, item.bytes >= 0, item.file.hasPrefix("item-"), !item.file.contains("/") else { return nil }
-        guard area.isRealDirectoryChain(job.dir),
-              let data = try? ShareFS.readFile(job.dir.appendingPathComponent(item.file), cap: ShareLimits.maxTotalBytes) else { return nil }
+        guard let data = try? area.readFile(job.dir.appendingPathComponent(item.file), cap: ShareLimits.maxTotalBytes) else { return nil }
         return String(decoding: data.prefix(maxBytes), as: UTF8.self)
     }
 
@@ -91,12 +89,11 @@ public struct ShareInbox: Sendable {
         ids.append(jobID)
         if ids.count > 500 { ids.removeFirst(ids.count - 500) }
         guard let data = try? JSONEncoder().encode(ids), (try? area.ensureDirectory(area.shareDir)) != nil else { return }
-        try? data.write(to: ledgerURL, options: .atomic)
-        ShareArea.protect(ledgerURL)
+        try? area.writeFile(data, to: ledgerURL)
     }
 
     private func ledger() -> [String] {
-        guard let data = try? ShareFS.readFile(ledgerURL, cap: 64 * 1024) else { return [] }
+        guard let data = try? area.readFile(ledgerURL, cap: 64 * 1024) else { return [] }
         return ((try? JSONDecoder().decode([String].self, from: data)) ?? []).filter(JobID.isValid)
     }
 
@@ -108,34 +105,35 @@ public struct ShareInbox: Sendable {
     /// in quarantine (and at worst a duplicate that the next claim collapses).
     /// - Parameter beforeRemovingOriginal: test seam for the interruption between publish and delete.
     public func redirect(_ job: StagedJob, to target: LiveDestination, beforeRemovingOriginal: (() throws -> Void)? = nil) throws -> StagedJob {
-        let fm = FileManager.default
-        let quarantinePath = try ShareFS.canonical(area.quarantineRoot)
-        guard ShareFS.isInside(try ShareFS.canonical(job.dir), root: quarantinePath), job.dir.lastPathComponent == job.manifest.jobID,
-              area.isRealDirectoryChain(job.dir), job.manifest.isValid() else { throw ShareError.io("not a quarantined job") }
+        // The job must sit at exactly <quarantine>/<realm>/<ws>/<jobID>; the walk below re-verifies every component.
+        guard let rel = area.components(of: job.dir), let q = area.components(of: area.quarantineRoot),
+              rel.count == q.count + 3, Array(rel.prefix(q.count)) == q,
+              job.dir.lastPathComponent == job.manifest.jobID, job.manifest.isValid(),
+              let srcDir = try? area.openDir(job.dir) else { throw ShareError.io("not a quarantined job") }
         var m = job.manifest
         m.realm = target.realm; m.ws = target.ws; m.generation = target.generation
         guard m.isValid() else { throw ShareError.io("invalid destination") }
         let base = try area.stagingDir(realm: m.realm, ws: m.ws)
         let published: StagedJob? = try area.coordination.ifNotRemoved(realm: target.realm, ws: target.ws, generation: target.generation) {
-            try area.ensureDirectory(base)
-            let building = base.appendingPathComponent(m.jobID + ".redirect", isDirectory: true)
-            area.safeRemove(building)
-            try fm.createDirectory(at: building, withIntermediateDirectories: false)
+            let baseDir = try area.openDir(base, create: true)
+            let buildingName = m.jobID + ".redirect"
+            ShareFS.removeTree(baseDir, buildingName)
+            let building = try ShareFS.openDir(baseDir, buildingName, create: true)
             do {
                 for item in m.items {
-                    let src = job.dir.appendingPathComponent(item.file)
-                    let bytes = try StagingSession.streamCopy(from: src, to: building.appendingPathComponent(item.file),
-                                                              limit: item.bytes, forbidden: [])
+                    let inFD = try ShareFS.openFile(srcDir, item.file)
+                    defer { close(inFD) }
+                    let bytes = try StagingSession.streamCopy(fromFD: inFD, toDir: building, name: item.file, limit: item.bytes, forbidden: [])
                     guard bytes == item.bytes else { throw ShareError.unreadable }
                 }
-                try JSONEncoder().encode(m).write(to: building.appendingPathComponent(JobFiles.manifest), options: .atomic)
-                try Data("1".utf8).write(to: building.appendingPathComponent(JobFiles.ready), options: .atomic)
-                let final = base.appendingPathComponent(m.jobID + JobFiles.claimedSuffix, isDirectory: true)
-                area.safeRemove(final)
-                guard rename(building.path, final.path) == 0 else { throw ShareError.io("rename") }
-                return StagedJob(manifest: m, dir: final)
+                try ShareFS.writeAtomic(building, JobFiles.manifest, JSONEncoder().encode(m))
+                try ShareFS.writeAtomic(building, JobFiles.ready, Data("1".utf8))
+                let finalName = m.jobID + JobFiles.claimedSuffix
+                ShareFS.removeTree(baseDir, finalName)
+                guard ShareFS.rename(baseDir, buildingName, baseDir, finalName) else { throw ShareError.io("rename") }
+                return StagedJob(manifest: m, dir: base.appendingPathComponent(finalName, isDirectory: true))
             } catch {
-                area.safeRemove(building)
+                ShareFS.removeTree(baseDir, buildingName)
                 throw error
             }
         }
@@ -161,7 +159,6 @@ public struct ShareInbox: Sendable {
     public func purgeTombstoned() -> (removed: Int, failed: Int) {
         guard let records = try? area.coordination.records(), !records.isEmpty else { return (0, 0) }
         var removed = 0, failed = 0
-        let fm = FileManager.default
         for root in [area.stagingRoot, area.quarantineRoot] {
             for dir in jobDirectories(in: root) {
                 let ws = dir.deletingLastPathComponent().lastPathComponent
@@ -178,7 +175,6 @@ public struct ShareInbox: Sendable {
     @discardableResult
     public func sweep(now: Date = Date(), expiry: TimeInterval = ShareLimits.sevenDays, partialTTL: TimeInterval = ShareLimits.partialTTL) -> Int {
         var removed = 0
-        let fm = FileManager.default
         for root in [area.stagingRoot, area.quarantineRoot] {
             for dir in jobDirectories(in: root) {
                 let ready = hasReady(dir)
@@ -186,8 +182,7 @@ public struct ShareInbox: Sendable {
                 let age: TimeInterval
                 if ready, let manifest { age = now.timeIntervalSince1970 - manifest.createdAt }
                 else {
-                    let attrs = try? fm.attributesOfItem(atPath: dir.path)
-                    let stamp = (attrs?[.modificationDate] as? Date) ?? (attrs?[.creationDate] as? Date) ?? .distantPast
+                    let stamp = area.modificationDate(dir) ?? .distantPast
                     age = now.timeIntervalSince(stamp)
                 }
                 let limit = (ready && manifest != nil) ? expiry : (root == area.quarantineRoot ? expiry : partialTTL)
@@ -200,42 +195,36 @@ public struct ShareInbox: Sendable {
     // MARK: scanning
 
     private func manifest(at dir: URL) -> JobManifest? {
-        guard let data = try? ShareFS.readFile(dir.appendingPathComponent(JobFiles.manifest), cap: 64 * 1024),
+        guard let data = try? area.readFile(dir.appendingPathComponent(JobFiles.manifest), cap: 64 * 1024),
               let m = try? JSONDecoder().decode(JobManifest.self, from: data), m.isValid() else { return nil }
         return m
     }
 
-    /// <root>/<realm>/<ws>/<job> directories. Every level is a real directory (lstat: symbolic links are never
-    /// followed), the realm and ws names are the exact ASCII shapes the stager creates (case-sensitive, no
-    /// look-alikes), and the job directory's real path equals the path built from those names.
+    /// <root>/<realm>/<ws>/<job> directories, enumerated by descriptor walk: every level is opened `O_NOFOLLOW`
+    /// (symbolic links are never followed), the realm and ws names are the exact ASCII shapes the stager creates
+    /// (case-sensitive, no look-alikes), and each level must be a real directory entry of the one above.
     private func jobDirectories(in root: URL) -> [URL] {
-        guard area.isRealDirectoryChain(root) else { return [] }
-        guard let canonicalRoot = try? ShareFS.canonical(root) else { return [] }
-        func children(_ url: URL, valid: (String) -> Bool) -> [URL] {
-            ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).compactMap { name in
-                guard valid(name) else { return nil }
-                let child = url.appendingPathComponent(name, isDirectory: true)
-                return ShareArea.isRealDirectory(child) ? child : nil
-            }
+        guard let rootDir = try? area.openDir(root) else { return [] }
+        func children(_ dir: DirFD, valid: (String) -> Bool) -> [String] {
+            ((try? ShareFS.list(dir)) ?? []).filter { valid($0) && ShareFS.isDirectory(dir, $0) }
         }
         let realmOK: (String) -> Bool = { (try? ShareArea.validate(realm: $0, ws: String(repeating: "a", count: 32))) != nil }
         let wsOK: (String) -> Bool = { (try? ShareArea.validate(realm: "x", ws: $0)) != nil }
         var out: [URL] = []
-        for realm in children(root, valid: realmOK) {
-            for ws in children(realm, valid: wsOK) {
-                for job in children(ws, valid: { $0.utf8.allSatisfy { $0 < 0x80 } && !$0.isEmpty && !$0.contains("/") }) {
-                    let expected = canonicalRoot + "/" + realm.lastPathComponent + "/" + ws.lastPathComponent + "/" + job.lastPathComponent
-                    if (try? ShareFS.canonical(job)) == expected { out.append(job) }
+        for realm in children(rootDir, valid: realmOK) {
+            guard let realmDir = try? ShareFS.openDir(rootDir, realm) else { continue }
+            for ws in children(realmDir, valid: wsOK) {
+                guard let wsDir = try? ShareFS.openDir(realmDir, ws) else { continue }
+                for job in children(wsDir, valid: { $0.utf8.allSatisfy { $0 < 0x80 } && !$0.isEmpty && !$0.contains("/") }) {
+                    out.append(root.appendingPathComponent(realm, isDirectory: true).appendingPathComponent(ws, isDirectory: true)
+                        .appendingPathComponent(job, isDirectory: true))
                 }
             }
         }
         return out
     }
 
-    private func hasReady(_ dir: URL) -> Bool {
-        var st = stat()
-        return lstat(dir.appendingPathComponent(JobFiles.ready).path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
-    }
+    private func hasReady(_ dir: URL) -> Bool { area.isRegularFile(dir.appendingPathComponent(JobFiles.ready)) }
 
     private func jobs(in root: URL, requireReady: Bool) -> [StagedJob] {
         var out: [StagedJob] = []
