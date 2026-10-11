@@ -131,3 +131,92 @@ import OrchProtocol
         }
     }
 }
+
+/// Forwards everything to the in-process transport except `logout`, which never answers (a hostile or stalled relay), and can make
+/// `grants` fail as a transport loss so a join keeps its session and retries.
+final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
+    let inner: any RelayTransport
+    private let lock = NSLock()
+    private var failGrants = false, logouts = 0
+    var logoutsStarted: Int { lock.withLock { logouts } }
+    func setFailGrants(_ v: Bool) { lock.withLock { failGrants = v } }
+    init(_ inner: any RelayTransport) { self.inner = inner }
+    var context: RealmContext { inner.context }
+    func logout(session: RelaySession) async throws -> WireReply {
+        lock.withLock { logouts += 1 }
+        try await Task.sleep(for: .seconds(3600))          // real time: nothing on a lifecycle path may wait for this
+        return try await inner.logout(session: session)
+    }
+    func challenge() async throws -> WireReply { try await inner.challenge() }
+    func login(_ body: Data) async throws -> WireReply { try await inner.login(body) }
+    func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try await inner.pairingPost(envelope, route: route) }
+    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after) }
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try await inner.bridgePost(envelope, route: route, session: session) }
+    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply { try await inner.bridgePoll(route: route, after: after, session: session) }
+    func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply {
+        if lock.withLock({ failGrants }) { throw TransportError.disconnected }
+        return try await inner.grants(workspaceID: workspaceID, epoch: epoch, session: session)
+    }
+    func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try await inner.memberList(workspaceID: workspaceID, session: session) }
+    func card(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try await inner.card(workspaceID: workspaceID, session: session) }
+    func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply {
+        try await inner.cardKey(workspaceID: workspaceID, cardSequence: cardSequence, session: session)
+    }
+    func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await inner.registerPush(body, session: session) }
+    func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await inner.unregisterPush(body, session: session) }
+    func revocation(deviceID: ID16) async throws -> WireReply { try await inner.revocation(deviceID: deviceID) }
+    func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
+        try await inner.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session)
+    }
+    func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await inner.dropList(query, session: session) }
+    func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply {
+        try await inner.dropGet(objectID: objectID, version: version, part: part, session: session)
+    }
+}
+
+/// The join session's logout is fire-and-forget: ready and cancel complete while a logout hangs (security review of PR2, low).
+@Suite(.timeLimit(.minutes(1))) struct JoinSessionLogoutTests {
+    static func run(_ h: PairHarness, _ c: PairingCoordinator, steps: Int = 200, until: @Sendable (PairingState) -> Bool) async throws -> PairingState {
+        for _ in 0..<steps {
+            let s = await c.state
+            if until(s) { return s }
+            try await h.rig.pump(); await c.poll(); h.clock.advance(milliseconds: 1000)
+        }
+        return await c.state
+    }
+
+    static func joining(failGrants: Bool) async throws -> (PairHarness, PairingCoordinator, HangingLogoutTransport) {
+        let h = try await PairHarness.make(.existingCert)
+        let t = HangingLogoutTransport(h.env.transport)
+        t.setFailGrants(failGrants)
+        var cfg = h.config; cfg.transport = t
+        let c = PairingCoordinator(cfg)
+        try await h.rig.enrollExistingCertificate(into: cfg)
+        _ = await c.start(link: try h.link(try await h.rig.newOffer()))
+        _ = try await run(h, c, until: isComparingHost)
+        try await h.host.approvePairing(device: h.phoneID, confirmedComparison: true, relay: h.relay, transport: h.env.transport)
+        return (h, c, t)
+    }
+
+    @Test func readyDoesNotWaitForTheLogout() async throws {
+        let (h, c, t) = try await Self.joining(failGrants: false)
+        let s = try await Self.run(h, c, until: { $0.isTerminal })
+        guard case .ready = s else { Issue.record("\(s)"); return }
+        #expect(t.logoutsStarted <= 1)
+        await c.logoutTask?.cancel()
+    }
+
+    @Test func cancelDoesNotWaitForTheLogout() async throws {
+        let (h, c, t) = try await Self.joining(failGrants: true)
+        let s = try await Self.run(h, c, steps: 30, until: { $0 == .joining })
+        #expect(s == .joining, "\(s)")
+        _ = try await Self.run(h, c, steps: 3, until: { _ in false })     // the join logs in, then its grants fetch fails: it keeps the session
+        #expect(await c.state == .joining)
+        await c.cancel()                                     // returns although the logout it starts never answers
+        #expect(await c.state == .cancelled)
+        let task = try #require(await c.logoutTask, "the join session existed and its logout was started")
+        for _ in 0..<200 where t.logoutsStarted == 0 { await Task.yield() }
+        #expect(t.logoutsStarted == 1)
+        task.cancel()
+    }
+}

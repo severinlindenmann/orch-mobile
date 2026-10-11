@@ -43,11 +43,16 @@ public actor PairingCoordinator {
     private var retryNotBeforeMs: Int64 = 0
     private var failures = 0
     /// Drops the join's relay session: forgotten at once, and a best-effort logout so it does not count against the device's token quota.
-    private func endJoinSession() async {
+    /// Never awaited on the lifecycle paths (start, cancel, dismiss, finish, ready): the cache is cleared synchronously and the logout
+    /// runs detached, so a slow or hostile relay cannot hold a cancel or a terminal state back until the transport times out.
+    private func endJoinSession() {
         guard let c = joinSession else { return }
         joinSession = nil
-        _ = try? await cfg.transport.logout(session: c.session)
+        let transport = cfg.transport
+        logoutTask = Task.detached { _ = try? await transport.logout(session: c.session) }
     }
+    /// The last detached logout (tests wait on it; nothing in the lifecycle does).
+    package private(set) var logoutTask: Task<Void, Never>?
     /// The join's relay session, reused across join retries until near expiry: the relay allows a device only a few live tokens
     /// (protocol-v2 section 19.1, 429 `quota_exceeded`), so a retry must never log in again while its token is still good.
     private var joinSession: (device: ID16, session: RelaySession, expiresMs: Int64)?
@@ -199,7 +204,7 @@ public actor PairingCoordinator {
         token += 1
         let mine = token
         publish(.parsing)
-        await endJoinSession()
+        endJoinSession()
         try? await crashPoint("start.reserved")          // test seam, like `resume.row`: the lifecycle is held and nothing else has happened
         do { try checkConfig(); try cfg.context.admit(origin: link.origin) } catch { return fail(violation(error), mine) }
         let ws = link.workspace
@@ -369,7 +374,7 @@ public actor PairingCoordinator {
         lifecycleBusy = true; defer { lifecycleBusy = false }
         token += 1
         await drainInstall()
-        await endJoinSession()
+        endJoinSession()
         _ = await eraseAll()
         record = nil
         publish(.cancelled)
@@ -380,7 +385,7 @@ public actor PairingCoordinator {
     public func dismiss() async {
         guard !dead else { return }
         lifecycleBusy = true; defer { lifecycleBusy = false }
-        await endJoinSession()
+        endJoinSession()
         if record != nil { token += 1; await drainInstall(); _ = await eraseAll(); record = nil }
         for row in (try? await cfg.index.pairings()) ?? [] where row.terminal != nil {
             if let ws = ID16(hex: row.ws) { _ = await purgeResidue(ws: ws, createdKeys: row.createdKeys, keepRow: false, gate: true) }
@@ -794,7 +799,7 @@ public actor PairingCoordinator {
         token += 1
         let t = token
         await drainInstall()
-        await endJoinSession()
+        endJoinSession()
         _ = await eraseAll()
         guard t == token else { return current }          // a cancel interleaved: it owns the final state
         record = nil
@@ -1258,7 +1263,7 @@ extension PairingCoordinator {
             record = nil
             let joined = JoinedWorkspace(workspace: r.ws, generation: r.generation, name: v.part.name, hosted: v.hosted, scopes: approved.scopes,
                                          epoch: v.epoch, origin: r.origin, session: session, dropCard: v.card)
-            await endJoinSession()
+            endJoinSession()
             publish(.ready(JoinedHandle(joined: joined)))
             signalWake()
         } catch {
