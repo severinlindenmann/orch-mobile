@@ -275,22 +275,27 @@ extension FakeHost {
             if let rej = view?.rejection {
                 // only a rejection that verifies under the owner's PK for exactly this request ends the pairing as the primary's
                 // "no"; anything else is ignored (the pairing keeps waiting and expires on its own)
+                // A rejection that does not verify is ignored and the request is checked as if it had none (challenge, certificate):
+                // an unauthenticated relay field must never stall a pairing.
                 if let r = try? CertRejection.verify(rej, pk: primary.publicKey), r.requestID == rid, r.workspace == workspace,
                    r.person == primary.personID {
                     core.pendingPairs[device]?.rejection = rej
                     transition(device, to: "rejected")
+                    continue
                 }
-                continue
             }
             if p.challenge == nil, let ch = view?.challenge {
                 core.pendingPairs[device]?.challenge = ch          // relayed unchanged in the next cert_pending answer
             }
             // the request's certificate, or the directory's: has the primary certified exactly this device?
+            // Both sources are tried: one that does not verify (or names other keys) never hides a good one in the other.
             let directory = await relay.certificate(device: device)
-            let found = view?.cert ?? directory
             guard core.pendingPairs[device]?.version == v else { continue }
-            if let cert = found, (try? DeviceCertificate.verify(cert, personKey: primary.publicKey, nowMs: now, revoked: core.revoked))
-                .map({ $0.signingKey == p.dkSig && $0.agreementKey == p.dkKx }) == true {
+            let good = [view?.cert, directory].compactMap { $0 }.first { cert in
+                (try? DeviceCertificate.verify(cert, personKey: primary.publicKey, nowMs: now, revoked: core.revoked))
+                    .map({ $0.signingKey == p.dkSig && $0.agreementKey == p.dkKx }) == true
+            }
+            if let cert = good {
                 core.pendingPairs[device]?.cert = cert
                 do { try await completeJoin(device: device, relay: relay, transport: transport) } catch { lastPairingError = "\(error)" }
             }

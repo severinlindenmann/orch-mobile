@@ -249,6 +249,9 @@ final class LivePairingModel: PairingFlowModel {
                 guard let runtime = await services.demoRuntime() else { return }
                 let device = runtime.env.deviceID
                 if let prompt = await runtime.primary.openPrompts().first(where: { $0.deviceID == device }) {
+                    // Before the phone pinned the challenge the client cannot bind the signed rejection and ends on plain
+                    // `rejected`; this panel knows the primary said no, so that outcome is worded as the primary's.
+                    rejectedBy = .rejectedOnPrimary
                     try? await runtime.primary.reject(request: prompt.requestID, relay: runtime.env.relay)
                 } else {
                     // Nothing was opened yet: the human at the primary turns the request down, so the pairing ends here.

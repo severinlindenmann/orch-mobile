@@ -203,6 +203,9 @@ Source: host API §§3,5–6; Slice 2b `PairingCoordinator.swift`, `FakeHostPair
   The phone shows `denied` only after pk_pin, the PK signature, workspace and person check AND a match
   with the pinned PK and the request id of the challenge it showed; an invalid one is dropped (keep
   waiting), another request alarms, and an unbindable one (no pinned challenge) ends as plain `rejected`.
+  The `rejected` answer's `pk_pub` + `rejection` are an orch-mobile addition pending orch-relay adoption (gaps Q4).
+  A real host must not stall on a relay `rejection` that does not verify: ignore it and keep checking the
+  challenge and both certificate sources (the request's and the directory's), as FakeHost does.
 - Publish valid own-key certificate → current WK grant → CK wrap → member list → approved.
   No grant/CK wrap for an uncertified device. Re-check pending version around every suspension;
   rejection during publication wins, and removing an already-published member requires rotation.

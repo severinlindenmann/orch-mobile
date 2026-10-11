@@ -116,6 +116,7 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     public func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/drop/list", query, session: session) }
 
     public func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply {
+        // protocol-v2 section 19 ("Long polls take `wait` from 0 to 25 s"; 19.6: integer 0..25), as cert_requests_poll.json sends
         if let w = wait, !(0...25).contains(w) { throw TransportError.invalidArgument }
         return try await get("\(R)/persons/\(person.hex)/cert-requests" + (wait.map { "?wait=\($0)" } ?? ""), session: session)
     }

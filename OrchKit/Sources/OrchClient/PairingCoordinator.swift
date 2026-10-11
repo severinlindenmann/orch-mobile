@@ -45,11 +45,16 @@ public actor PairingCoordinator {
     /// Drops the join's relay session: forgotten at once, and a best-effort logout so it does not count against the device's token quota.
     /// Never awaited on the lifecycle paths (start, cancel, dismiss, finish, ready): the cache is cleared synchronously and the logout
     /// runs detached, so a slow or hostile relay cannot hold a cancel or a terminal state back until the transport times out.
+    /// The detached task has no timeout of its own: the transport's request timeout bounds it (FakeRelay answers at once), and
+    /// a failed logout only leaves the token to expire (15 min). It is best-effort and never retried.
     private func endJoinSession() {
         guard let c = joinSession else { return }
         joinSession = nil
+        logOut(c.session)
+    }
+    private func logOut(_ session: RelaySession) {
         let transport = cfg.transport
-        logoutTask = Task.detached { _ = try? await transport.logout(session: c.session) }
+        logoutTask = Task.detached { _ = try? await transport.logout(session: session) }
     }
     /// The last detached logout (tests wait on it; nothing in the lifecycle does).
     package private(set) var logoutTask: Task<Void, Never>?
@@ -688,8 +693,10 @@ public actor PairingCoordinator {
             // "denied" names the primary, so it needs a binding to this pairing: the PK and the request of the challenge the phone
             // pinned. Without a pinned challenge nothing ties the rejection to this attempt (it could be a replay of an older
             // request of the same workspace): the phone ends on the host's authenticated "rejected" and attributes nothing.
-            guard let pinned = r.pkPub, let ch = r.challenge?.object?["o"]?.object, let pinnedRequest = ch.idField("request_id") else {
-                _ = await finish(.rejected, mine); return
+            guard let pinned = r.pkPub, let pinnedChallenge = r.challenge else { _ = await finish(.rejected, mine); return }
+            // a pinned challenge that no longer parses binds nothing: alarm, as for `approved`
+            guard let ch = pinnedChallenge.object?["o"]?.object, let pinnedRequest = ch.idField("request_id") else {
+                _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return
             }
             guard pinned == pk.x963, pinnedRequest == requestID else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
             _ = await finish(.denied, mine)
@@ -973,6 +980,8 @@ public actor PairingCoordinator {
     }
     /// Tests only: a damaged pinned challenge in the live record (as a corrupted store would leave it).
     package func damagePinnedChallengeForTest(_ v: JSONValue) { record?.challenge = v }
+    /// Tests only: forget the pinned `sas_nonce` (as if no `pending` answer had been seen).
+    package func clearSasNonceForTest() { record?.sasNonce = nil }
 
     func storeCertificate(_ cert: JSONValue, owner: SigningPublicKey) throws {
         let data = try canonicalJSON(["cert": cert, "pk_pub": .string(B64U.encode(owner.x963))])
@@ -1138,7 +1147,9 @@ extension PairingCoordinator {
                cached.expiresMs - 30_000 > nowMs { s = cached.session }
             else {
                 let opened = try await client.openDeviceSession(identity: id, deviceID: r.deviceID)
-                guard mine == token else { return }
+                // superseded (cancel, restart) while logging in: the fresh token is never cached, so log it out at once or quick
+                // repeats would use up the device's eight live tokens
+                guard mine == token else { logOut(opened.session); return }
                 endJoinSession()                                   // a session of another binding is logged out, never kept
                 joinSession = (r.deviceID, r.ws, r.generation, opened.session, opened.expiresMs)
                 s = opened.session

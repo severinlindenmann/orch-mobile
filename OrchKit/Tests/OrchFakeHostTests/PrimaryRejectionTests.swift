@@ -161,8 +161,9 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
         try await Task.sleep(for: .seconds(3600))          // real time: nothing on a lifecycle path may wait for this
         return try await inner.logout(session: session)
     }
+    let loginGate = OpenGate()
     func challenge() async throws -> WireReply { try await inner.challenge() }
-    func login(_ body: Data) async throws -> WireReply { try await inner.login(body) }
+    func login(_ body: Data) async throws -> WireReply { await loginGate.pass(); return try await inner.login(body) }
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try await inner.pairingPost(envelope, route: route) }
     func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after) }
     func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try await inner.bridgePost(envelope, route: route, session: session) }
@@ -280,5 +281,53 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
         #expect(await c.storedCertificateIsPresentable() == false)
         try await c.storeCertificate(try cert(SoftwareSigner()), owner: owner.publicKey)        // not signed by the stated owner
         #expect(await c.storedCertificateIsPresentable() == nil)
+    }
+}
+
+/// PR #45 review follow-ups.
+@Suite(.timeLimit(.minutes(1))) struct PairingReviewFollowUpTests {
+    @Test func aDeniedAnswerWithoutAPinnedSasNonceIsARegression() async throws {
+        let h = try await PrimaryRejectionTests.toComparingPrimary()
+        let rid = try #require(await h.host.pairingRequestID(of: h.phoneID))
+        await h.coordinator.clearSasNonceForTest()
+        let rej = try CertRejection.sign(requestID: rid, workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: rej.json)
+        let s = try await h.drive(until: { $0.isTerminal })
+        guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
+        #expect(a.kind == .regression)
+    }
+
+    @Test func anUnparsablePinnedChallengeOnDeniedRaisesTheAlarm() async throws {
+        let h = try await PrimaryRejectionTests.toComparingPrimary()
+        let rid = try #require(await h.host.pairingRequestID(of: h.phoneID))
+        await h.coordinator.damagePinnedChallengeForTest(.string("damaged"))
+        let rej = try CertRejection.sign(requestID: rid, workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: rej.json)
+        let s = try await h.drive(until: { $0.isTerminal })
+        guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
+        #expect(a.kind == .pinSubstitution)
+    }
+
+    @Test func aTokenOpenedAfterACancelIsLoggedOut() async throws {
+        let h = try await PairHarness.make(.existingCert)
+        let t = HangingLogoutTransport(h.env.transport)
+        var cfg = h.config; cfg.transport = t
+        let c = PairingCoordinator(cfg)
+        try await h.rig.enrollExistingCertificate(into: cfg)
+        _ = await c.start(link: try h.link(try await h.rig.newOffer()))
+        _ = try await JoinSessionLogoutTests.run(h, c, until: isComparingHost)
+        try await h.host.approvePairing(device: h.phoneID, confirmedComparison: true, relay: h.relay, transport: h.env.transport)
+        _ = try await JoinSessionLogoutTests.run(h, c, until: { $0 == .joining })
+        t.loginGate.close()
+        let poller = Task { await c.poll() }                 // the join is now inside openDeviceSession, held at login
+        for _ in 0..<2000 where t.loginGate.entered == 0 { await Task.yield() }
+        #expect(t.loginGate.entered == 1)
+        await c.cancel()
+        t.loginGate.open()
+        await poller.value
+        for _ in 0..<2000 where t.logoutsStarted == 0 { await Task.yield() }
+        #expect(t.logoutsStarted == 1, "the superseded login's token is logged out")
+        #expect(await c.joinSessionBinding() == nil)
+        await c.logoutTask?.cancel()
     }
 }

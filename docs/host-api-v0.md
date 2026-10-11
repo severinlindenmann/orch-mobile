@@ -573,7 +573,8 @@ A late response cannot recreate a cancelled generation. Never retain a pending s
 | lostResponse | fault after commit; restart resends stored envelope/same rid first; expired/unknown replay falls back to question fetch; no duplicate side effect |
 
 Primary rejection is the P3-D11 `cert_rejection` (PK-signed). The host relays it in its `rejected` answer with
-`pk_pub` (an orch-mobile addition to §8.3's answer shape, ignored by older devices); the phone believes it only
+`pk_pub` (an orch-mobile addition to §8.3's answer shape pending orch-relay adoption, ignored by older devices;
+[gaps Q4](gaps.md#pr4-open-spec-items-blockers-before-real-relay-use)); the phone believes it only
 when it verifies and binds to the pinned PK and challenge request id, and otherwise never attributes the
 rejection to the primary. The phone joining timeout stays provisional. UI clock scaling changes no check order.
 
