@@ -82,8 +82,14 @@ Sources for every row: host API §§1,3,4 and `RoutedRelayTransport.swift`, `Hos
 | POST | R/session/challenge | – | `{}` → 200 `{challenge:b64u32,expires_ms}` | 400 malformed; 413 too_large; 429 rate_limited | 16 KiB; 60 s challenge; §12.2, §19.1 |
 | POST | R/session/login | – | `{challenge,kind:"device" or "workspace",id,sig:b64u64}` → 200 `{token,expires_ms}` | 400 malformed/cert_invalid/cert_expired; 401 bad_signature/unknown_challenge/expired; 403 revoked; 429 quota_exceeded (8 live tokens/device) | 16 KiB; consumed challenge, 15 min session; §12.2, §19.1 |
 | POST | R/session/logout | D or H | `{}` → 200 `{}` | 400 malformed; 413 too_large; 401 unauthenticated (no bearer) | 16 KiB; idempotent, 200 for unknown/expired token; §19.1; FakeRelay only, no phone call yet |
-| POST | R/workspaces/{ws}/pair/{offer}/{rid} | – request; H response | raw epoch-0 ORB2 → 202 `{}` | 400 malformed/wrong_suite; 401 unauthenticated/unknown_workspace; 403 not_for_this_device; 429 rate_limited | 64 KiB envelope; B; §8.3/8.9, provisional v0 |
-| GET | R/workspaces/{ws}/pair/{offer}/{rid}[?after=N] | – | empty → 200 chunks | 400 malformed; 429 rate_limited | J; B; 120 polls/min/address; §8.9, provisional v0 |
+| POST | R/workspaces/{ws}/pair/{offer}/{rid} | – request (direction 1); W(g) + `Orch-Holder` answer (direction 2) | raw epoch-0 ORB2 → 202 `{}` | 400 malformed/too_large (ORB2 cap)/wrong_suite; 401 unauthenticated/unknown_workspace; 403 not_eligible; 409 fenced; 429 rate_limited/quota_exceeded; 503 overloaded | 64 KiB envelope; B; §8.3/8.9, §19.3 (pair_*_post.json) |
+| GET | R/workspaces/{ws}/pair/{offer}/{rid}[?after=N&wait=s] | – | empty → 200 chunks | 400 malformed; 429 rate_limited/quota_exceeded; 503 overloaded | J; B; 120 polls/min/address; wait 0..25 (FakeRelay answers at once); §19.3 (pair_poll.json) |
+| POST | R/accounts | – | `{invite,pk_pub,device_cert,challenge,sig}` → 200 `{person_id}` | 400 malformed/wrong_suite/cert_invalid; 401 bad_signature/unknown_challenge/expired; 403 not_eligible; 409 account_exists; 413 | 64 KiB; exact retry 200 by digest; `RelayClient.createAccount`; P3-D3 |
+| GET | R/persons/{p}/cert-requests[?wait=s] | D(p), addressee | empty → 200 `{requests:[signed cert_request]}` (open/challenged, unexpired, this device) | 400 malformed/cert_expired; 401; 403 not_eligible/revoked; 429 quota_exceeded; 503 overloaded | `RelayClient.certRequests`; §19.3 |
+| POST | R/cert-requests/{id}/challenge | D(p), addressee | `{challenge: PK-signed}` → 200 `{}` | 400 malformed/wrong_suite/cert_expired; 401 bad_signature/unauthenticated; 403 not_eligible/not_for_this_device/other_person/revoked; 404; 409 replayed/already_signed/other_workspace; 410 expired; 413 | 16 KiB; identical `cj(o)` (re-signed or not) → 200; `RelayClient.submitCertChallenge`; P3-D11 |
+| POST | R/cert-requests/{id}/rejection | D(p), addressee | `{rejection: PK-signed cert_rejection}` → 200 `{}` | as challenge | 16 KiB; identical `cj(o)` → 200; `RelayClient.submitCertRejection`; P3-D11 |
+| POST | R/persons/{p}/cert-requests | W(g) + `Orch-Holder`, card owner = p | `{request: WSK-signed}` → 200 `{request_id}` | 400 malformed/wrong_suite; 401 bad_signature/unauthenticated; 403 not_eligible/not_for_this_device/other_person; 409 fenced/other_workspace/replayed/request_open; 410; 413; 429 quota_exceeded | host route (FakeHost); 1 open per workspace, 64 per person |
+| GET | R/cert-requests/{id} | W, the requester | empty → 200 `{state,challenge,cert,rejection}` | 400; 401; 403 not_eligible; 404 | host route (FakeHost); kept until expires_ms + 60 s |
 | POST | R/workspaces/{ws}/bridge/{rid} | D request; H response | raw ORB2 → 202 `{}` | 400 malformed/wrong_suite; 401 unauthenticated; 403 not_eligible/not_for_this_device/revoked; 429 quota_exceeded | 1 MiB request / 256 KiB chunk; B; §8.9, provisional v0 |
 | GET | R/workspaces/{ws}/bridge/{rid}[?after=N] | D, current member, own mailbox | empty → 200 chunks | 400 malformed; 401 unauthenticated; 403 not_eligible/revoked | J; B; §8.9, provisional v0 |
 | GET | R/workspaces/{ws}/grants[?epoch=N] | D, current member | empty → 200 `{grants:[signedWKGrant]}` | 400 malformed; 401 unauthenticated; 403 not_eligible/revoked; 404 not_found | J; epoch ≥1; §7.3, provisional v0 |
@@ -189,10 +195,14 @@ Source: host API §§3,5–6; Slice 2b `PairingCoordinator.swift`, `FakeHostPair
   The inner carries device_id, both keys, cleaned label, scopes_max and offer_id.
   Primary verifies the request/delegation, opens stored keys, issues one pinned challenge and signs
   those exact keys only after cert-code confirmation. The phone never holds PK/PVK (D-2).
-- Define host→primary request, primary→host challenge, certificate-directory lookup and rejection
-  routes/auth/retention. Fake internal queues expire with request +60 s grace; no wire contract exists.
-  A real rejection marker needs authenticated authority (proposed PK-signed cert_rejection), or use
-  timeout/expired; copying the fake's unauthenticated rejection marker would permit cancellation attacks.
+- Queues are §19.3 routes (P3-D11): the host posts its request with W(g) and reads
+  `GET /v2/cert-requests/{id}`; the primary polls, challenges and rejects with its own device session
+  (D(p), addressee). Rejection is the PK-signed `cert_rejection` (label `orch/v2/sig/cert-rejection|`).
+  The host verifies it under PK for its request and relays it unchanged in its `rejected` answer as
+  `{"state":"rejected","wsk_pub","pk_pub","rejection"}`; a host's own rejection carries neither field.
+  The phone shows `denied` only after pk_pin, the PK signature, workspace and person check AND a match
+  with the pinned PK and the request id of the challenge it showed; an invalid one is dropped (keep
+  waiting), another request alarms, and an unbindable one (no pinned challenge) ends as plain `rejected`.
 - Publish valid own-key certificate → current WK grant → CK wrap → member list → approved.
   No grant/CK wrap for an uncertified device. Re-check pending version around every suspension;
   rejection during publication wins, and removing an already-published member requires rotation.
