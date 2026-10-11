@@ -58,7 +58,7 @@ orch-mobile. Section references were checked against both files on 10 Oct 2026. 
 
 Found while implementing `OrchProtocol` and `OrchPush` against `docs/protocol-v2.md` and `vectors_v2.json`. Each entry names the reading the code takes. No vector contradicts any of them; none is resolved by guessing silently.
 
-- **JSON nesting depth (§2.3, "at most 16 levels").** The Python reference (`_check_json`) counts depth from 0 and fails only when `depth > 16`, so it accepts 17 nested containers. Swift implements 16 container levels at most. The reference should change to `depth >= 16` (counting the current container). No vector covers it.
+- **JSON nesting depth (§2.3, "at most 16 levels").** Resolved upstream in orch-relay #32: the Python reference now counts the root as level 1, accepting 16 and refusing 17, as Swift always did. Vectors `strict_parse.depth_16`, `depth_17`, `depth_16_objects`, `depth_17_objects` cover it and run in `strictParseVectors`.
 - **`device_id` that is not hex in a revocation (§6.2, §14).** Python compares the string with the certificate's `device_id` and answers `other_person`; Swift parses it as an id first and answers `malformed`. The protocol text should say which.
 - **Revocation refusal order (§6.2, §14).** The reference answers `bad_signature` for a wrong field set. Swift answers `bad_signature` only when the signature fails, and `malformed` for wrong `v`/`suite`/`kind`, wrong field set, a `person_id` that is not the signer's, a reason outside the list or a non-integer `revoked_ms`. The reference should follow.
 - **§2.5 cleaning.** `Cn` (unassigned) and Default_Ignorable_Code_Point depend on the Unicode version of the Swift runtime. The reference uses a fixed range table. They can differ for code points added later.

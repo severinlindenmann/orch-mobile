@@ -1,8 +1,8 @@
 # vectors_v2.json provenance
 
 - Source: orch-relay `tests/vectors_v2.json` (protocol v2 test vectors, `docs/protocol-v2.md` section 16)
-- orch-relay commit (HEAD when copied): `2b3c2e43c9748849f6ec46c62f7b58853e0bc9ef`
-- Last commit touching the file upstream: `9aa1731f77db6dd09847cf38475f7c320168fe47` (P0: orch v2 wire protocol, vectors and reference (#23))
-- sha256: `cfeb2865f90222a762b61a8475fde247346ba461fd75c0b0050f12e1df0c3a54`
-- Copied: 2026-10-10, unmodified. Re-copy and update this file together; never edit the JSON by hand.
+- orch-relay commit (HEAD when copied): `3e96d9cab1636ffaa10aae6b6603ed48b351833b`
+- Last commit touching the file upstream: `da8c591560a2047edc8c90a5d8cce69adbae12af` (F1 shared vectors and the section 2.3 depth rule; orch-relay #32)
+- sha256: `c6b94d6a8166e5ff189e36c68824e29a497c3f8f6d17c91f3091af653ae3fe01`
+- Copied: 2026-10-11, unmodified. Re-copy and update this file together; never edit the JSON by hand.
 - Test targets reach it through the `OrchTestVectors` target (`Vectors.data`), which holds the only copy.
