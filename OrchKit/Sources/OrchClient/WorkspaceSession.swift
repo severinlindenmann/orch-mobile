@@ -716,6 +716,8 @@ extension WorkspaceSession {
         catch { try await ensureCurrent(); throw ViewError.offline }
         return try await driveDecision(id, first: first)
     }
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     public func pendingDecisions() async throws -> [DecisionStatus] {
         try await ensureCurrent()
         return try await cfg.container.database().query("SELECT * FROM decisions WHERE state <> 'resolved' ORDER BY rowid").compactMap { r in
@@ -723,6 +725,8 @@ extension WorkspaceSession {
             return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: r.text("state") == "uncertain" ? .uncertain : .pending)
         }
     }
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     public func reconcileDecision(_ id: ID16) async throws -> DecisionOutcome {
         guard foreground, !preparingDecisions.contains(id) || decisionDrivers[id] != nil else { throw ViewError.offline }
         return try await driveDecision(id)

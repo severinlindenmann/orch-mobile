@@ -20,16 +20,14 @@ actor StateLog {
     }
     private func add(_ s: PairingState) { states.append(s) }
     func stop() { task?.cancel() }
-    /// Waits (real-time bound 60 s) until the log has consumed everything the coordinator published, i.e. its last entry is the
-    /// coordinator's current state, then gives a few more yields for anything published after.
+    /// Waits for a published snapshot, not `state`: expiry may change that getter without publishing.
     func settled(_ c: PairingCoordinator) async {
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while ContinuousClock.now < deadline {
-            if states.last == (await c.state) { break }
+            if states.last == (await c.lastPublishedState) { return }
             await Task.yield()
         }
-        if states.last != (await c.state) { Issue.record("StateLog did not catch up within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")") }
-        for _ in 0..<10 { await Task.yield() }
+        Issue.record("StateLog did not consume the last published state within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")")
     }
     var showedHostCode: Bool { states.contains { isComparingHost($0) } }
     var showedPrimaryCode: Bool { states.contains { isComparingPrimary($0) } }
@@ -624,6 +622,20 @@ extension PairHarness {
 }
 
 @Suite struct PairingLoopTests {
+    @Test func stateLogSettlesAfterAnUnpublishedExpiry() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let log = StateLog(); await log.attach(h.coordinator)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        _ = try await h.drive(until: isComparingPrimary)
+        #expect(isComparingPrimary(await h.coordinator.lastPublishedState))
+        h.clock.advance(milliseconds: 600_000)
+        #expect(!isComparingPrimary(await h.coordinator.state))
+        await log.settled(h.coordinator)
+        #expect(isComparingPrimary(await log.states.last ?? .idle))
+        await log.stop()
+    }
+
     /// The run loop sleeps on the injected clock and polls when due; the code is hidden at the challenge's expiry without any poll.
     @Test func testRunLoopDrivesThePairingAndHidesTheCodeAtExpiry() async throws {
         let h = try await PairHarness.make(.firstTime)

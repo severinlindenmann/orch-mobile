@@ -7,7 +7,9 @@ let WS = String(repeating: "a", count: 32)
 let WS2 = String(repeating: "b", count: 32)
 
 func tmp() -> URL {
-    let u = FileManager.default.temporaryDirectory.appendingPathComponent("orchshare-\(UUID().uuidString)", isDirectory: true)
+    // NSTemporaryDirectory is inside the hosted simulator app's forbidden home directory.
+    // The simulator's shared /tmp is outside both home and the fixture App Group roots.
+    let u = URL(fileURLWithPath: "/tmp", isDirectory: true).resolvingSymlinksInPath().appendingPathComponent("orchshare-\(UUID().uuidString)", isDirectory: true)
     try! FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
     return u
 }

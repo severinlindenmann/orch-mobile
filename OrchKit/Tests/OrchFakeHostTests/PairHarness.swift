@@ -160,3 +160,16 @@ extension PairHarness {
         return (state, until(state), diag)
     }
 }
+
+/// Run one retry, waiting for its injected backoff before advancing exactly that delay.
+func rotationRetry<T: Sendable>(_ w: World, milliseconds: Int64 = 100,
+                                _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    let task = Task { try await operation() }
+    guard await eventually("rotation retry backoff", diagnostics: { "sleepers=\(w.clock.sleeperCount)" },
+                           { w.clock.sleeperCount == 1 }) else {
+        task.cancel()
+        throw CancellationError()
+    }
+    w.clock.advance(milliseconds: milliseconds)
+    return try await task.value
+}

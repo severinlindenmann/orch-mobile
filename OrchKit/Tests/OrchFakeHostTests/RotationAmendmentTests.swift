@@ -15,8 +15,10 @@ import OrchProtocol
             try await w.host.rotate(remaining: remaining, relay: w.relay, session: w.hostSession)
         }
         let fresh = try await w.host.openSession(transport: w.transport)
-        if resubmit { try await w.host.rotate(remaining: remaining, relay: w.relay, session: fresh) }
-        else { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: fresh) }
+        try await rotationRetry(w) {
+            if resubmit { try await w.host.rotate(remaining: remaining, relay: w.relay, session: fresh) }
+            else { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: fresh) }
+        }
         #expect(await w.host.rotationRequired == false)
         #expect(await w.host.epoch == 3)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 3))
@@ -67,11 +69,11 @@ import OrchProtocol
         await #expect(throws: TestCrash.self) {
             try await w.host.rotate(remaining: [(w.phone, ["look"])], relay: w.relay, session: w.hostSession)
         }
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         #expect(await w.host.rotationEpoch == 2)
         #expect(calls.value == 1)
         #expect(await w.host.rotationRequired)
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        _ = try await rotationRetry(w, milliseconds: 200) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         #expect(await w.host.epoch == 3)
         #expect(calls.value == 2)
         #expect(await w.host.rotationRequired == false)
@@ -84,9 +86,13 @@ import OrchProtocol
         await #expect(throws: TestCrash.self) {
             try await w.host.rotate(remaining: [(w.phone, ["look"])], relay: w.relay, session: w.hostSession)
         }
-        let start = ContinuousClock.now
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
-        #expect(start.duration(to: .now) >= .milliseconds(100))
+        let retry = Task { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+        guard await eventually("retry sleeper", { w.clock.sleeperCount == 1 }) else { retry.cancel(); return }
+        #expect(calls.value == 1)
+        w.clock.advance(milliseconds: 99)
+        #expect(calls.value == 1 && w.clock.sleeperCount == 1)
+        w.clock.advance(milliseconds: 1)
+        _ = try await retry.value
         #expect(calls.value == 2)
     }
 }

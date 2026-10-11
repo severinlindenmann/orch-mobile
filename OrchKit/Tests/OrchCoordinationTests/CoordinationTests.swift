@@ -43,3 +43,56 @@ struct CoordinationTests {
         #expect(inner == .some(nil))
     }
 }
+
+struct TombstoneFileSafetyTests {
+    @Test func corruptBytesArePreservedWhenRepublishingAnEmptySet() throws {
+        let dir = coordTmp(), file = dir.appendingPathComponent("tombstones.json")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bytes = Data("broken json".utf8)
+        try bytes.write(to: file)
+        let c = TombstoneCoordination(directories: [dir])
+        try c.republish(complete: [])
+        #expect(try c.records().isEmpty)
+        let aside = try #require(FileManager.default.contentsOfDirectory(atPath: dir.path).first { $0.hasPrefix("tombstones.json.corrupt-") })
+        #expect(try Data(contentsOf: dir.appendingPathComponent(aside)) == bytes)
+    }
+
+    @Test(arguments: ["tombstones.json", "tombstones.lock"])
+    func plantedSymlinkIsRefused(name: String) throws {
+        let dir = coordTmp(), outside = coordTmp().appendingPathComponent("victim")
+        defer { try? FileManager.default.removeItem(at: dir); try? FileManager.default.removeItem(at: outside.deletingLastPathComponent()) }
+        let bytes = Data("[]".utf8)
+        try bytes.write(to: outside)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent(name), withDestinationURL: outside)
+        let c = TombstoneCoordination(directories: [dir])
+        let record = TombstoneRecord(realm: "live", ws: "workspace", generation: 1)
+        #expect(c.removalStatus(realm: "live", ws: record.ws, generation: 1) == .unknown)
+        #expect(throws: (any Error).self) { try c.records() }
+        #expect(throws: (any Error).self) { try c.write(record) }
+        #expect(throws: (any Error).self) { try c.republish(complete: [record]) }
+        var ran = false
+        _ = try? c.ifNotRemoved(realm: "live", ws: record.ws, generation: 1) { ran = true }
+        #expect(!ran)
+        #expect(try Data(contentsOf: outside) == bytes)
+    }
+
+    @Test(arguments: ["tombstones.json", "tombstones.lock"], [false, true])
+    func nonregularAndOversizedEntriesAreRefused(name: String, oversized: Bool) throws {
+        let dir = coordTmp(), file = dir.appendingPathComponent(name)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        if oversized { try Data(repeating: 0, count: TombstoneFS.cap + 1).write(to: file) }
+        else { #expect(mkfifo(file.path, 0o600) == 0) }
+        let c = TombstoneCoordination(directories: [dir])
+        #expect(throws: (any Error).self) { try c.records() }
+        #expect(c.removalStatus(realm: "live", ws: "workspace", generation: 1) == .unknown)
+    }
+
+    @Test func directorySymlinkIsRefused() throws {
+        let base = coordTmp(), outside = coordTmp(), link = base.appendingPathComponent("coordination")
+        defer { try? FileManager.default.removeItem(at: base); try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let c = TombstoneCoordination(directories: [link])
+        #expect(throws: (any Error).self) { try c.write(TombstoneRecord(realm: "live", ws: "workspace", generation: 1)) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+}
