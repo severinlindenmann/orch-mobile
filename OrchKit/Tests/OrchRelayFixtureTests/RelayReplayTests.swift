@@ -344,7 +344,12 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
             for c in f.cases where FixtureCoverage.caseOverrides[caseID(f, c)] == nil { try await replay(f, c); n += 1 }
         }
         #expect(n == Self.expectedReplayed)
-        #expect(Self.expectedReplayed == FixtureCoverage.expectedCaseCount - FixtureCoverage.caseOverrides.count - FixtureCoverage.pending.keys.reduce(0) { acc, name in
-            acc + (Self.files.first { $0.fileName == name }?.cases.count ?? 0) })
+        // Split up: the one-expression form exceeds Xcode 16.4's type-checker time limit.
+        var pendingCases = 0
+        for name in FixtureCoverage.pending.keys {
+            pendingCases += Self.files.first(where: { $0.fileName == name })?.cases.count ?? 0
+        }
+        let expected: Int = FixtureCoverage.expectedCaseCount - FixtureCoverage.caseOverrides.count - pendingCases
+        #expect(Self.expectedReplayed == expected)
     }
 }
