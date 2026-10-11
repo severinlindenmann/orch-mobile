@@ -294,7 +294,7 @@ struct WipeTests {
 
     @Test func concurrentCoordinationStress() async throws {
         // Fresh directories race first creation of tombstones.lock: Darwin can return ENOENT
-        // for concurrent O_CREAT | O_NOFOLLOW opens. Precreating the lock hides that bug.
+        // for concurrent non-exclusive O_CREAT opens. Precreating the lock hides that bug.
         for _ in 0..<200 {
             let base = tempDir()
             defer { try? FileManager.default.removeItem(at: base) }

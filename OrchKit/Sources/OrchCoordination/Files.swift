@@ -8,7 +8,8 @@ func retryOnInterrupt(_ operation: () -> Int32) -> Int32 {
 }
 
 /// Lock files are stable: never unlink or replace them while coordination users may be active.
-/// Darwin can return ENOENT when O_CREAT | O_NOFOLLOW races another creator. Open existing
+/// Darwin (APFS) can return ENOENT for any concurrent non-exclusive O_CREAT (with or without O_NOFOLLOW;
+/// O_NOFOLLOW is not the cause and must stay). Open existing
 /// first, then use exclusive creation so a losing creator gets EEXIST and reopens the winner.
 func openCoordinationLock(_ path: String, relativeTo directory: Int32 = AT_FDCWD) -> Int32 {
     let flags = O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
