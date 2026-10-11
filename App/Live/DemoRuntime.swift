@@ -77,8 +77,8 @@ final class DemoRuntime {
             fm.containerURL(forSecurityApplicationGroupIdentifier: id) ?? base.appendingPathComponent(fallback, isDirectory: true)
         }
         return try StoreLayout(appRoot: base.appendingPathComponent("app", isDirectory: true),
-                               pushGroupRoot: temporary ? base.appendingPathComponent("push", isDirectory: true) : group("group.io.severin.orch", "push"),
-                               shareGroupRoot: temporary ? base.appendingPathComponent("share", isDirectory: true) : group("group.io.severin.orch.share", "share"),
+                               pushGroupRoot: group("group.io.severin.orch", "push"),
+                               shareGroupRoot: group("group.io.severin.orch.share", "share"),
                                realm: Realm.demo.rawValue)
     }
 

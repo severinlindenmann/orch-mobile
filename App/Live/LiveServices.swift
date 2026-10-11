@@ -11,7 +11,7 @@ import UserNotifications
 /// reachable relay has no workspaces at all (pairing says so). Screens see only the view-model protocols (A4): never FakeHost, custody
 /// or signing.
 @MainActor @Observable
-final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
+final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, ShareWorld {
     private enum Keys { static let demo = "orch.demo.entered" }
 
     let options: LaunchOptions
@@ -27,6 +27,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
     var pairingScenario: PairingScenario = .firstTime
     var signOutcome: SignOutcome = .accepted
     @ObservationIgnored private(set) var runtime: DemoRuntime?
+    @ObservationIgnored var beforeWorkspaceRemoval: ((String) -> Bool)?
+    @ObservationIgnored var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)?
     @ObservationIgnored private var resetTask: Task<Void, Never>?
     @ObservationIgnored private var bootTask: Task<DemoRuntime?, Never>?
     @ObservationIgnored private var submitted: [String: ReviewValue] = [:]
@@ -301,6 +303,40 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
         }
     }
 
+    // MARK: Share import (A10): destinations are the paired Demo workspaces; import lands in Sending (sealing arrives with the Drop slice)
+
+    func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? {
+        live.first { $0.info.id == workspaceID }.map { ($0.workspaceID.hex, $0.generation) }
+    }
+
+    func importShared(workspaceID: String, items: [PreviewWorld.SharedItem], expires: Date) {
+        for item in items where !dropItems.contains(where: { $0.id == item.id }) {
+            dropItems.insert(DropItem(id: item.id, workspaceID: workspaceID, name: item.name, bytes: item.bytes, kind: item.kind,
+                                      direction: .sending, expires: expires, versions: 1, unread: false, text: item.text,
+                                      from: "This iPhone"), at: 0)
+            let newID = item.id
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, let i = self.dropItems.firstIndex(where: { $0.id == newID }) else { return }
+                self.dropItems[i].simulatedDone = true
+            }
+        }
+    }
+
+    func setQuarantined(_ entries: [(job: String, workspaceID: String, name: String, bytes: Int, kind: DropKind, expires: Date)]) {
+        dropItems.removeAll { $0.quarantineJob != nil }
+        for e in entries {
+            dropItems.insert(DropItem(id: "share-q-\(e.job)", workspaceID: e.workspaceID, name: e.name, bytes: e.bytes, kind: e.kind,
+                                      direction: .sending, expires: e.expires, versions: 1, unread: false, text: nil,
+                                      from: "This iPhone", quarantineJob: e.job), at: 0)
+        }
+    }
+
+    func redirectQuarantined(id: String, to workspaceID: String) {
+        guard let job = dropItems.first(where: { $0.id == id })?.quarantineJob else { return }
+        onRedirectQuarantined?(job, workspaceID)
+    }
+
     func markRead(id: String) {
         if let i = dropItems.firstIndex(where: { $0.id == id }) { dropItems[i].unread = false }
     }
@@ -340,6 +376,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
             return LeaveReport(workspaceName: "Workspace", server: .finishOnMac)
         }
         let name = ws.info.name
+        // The share outbox journals the removal first; a failed journal keeps the workspace in place.
+        guard beforeWorkspaceRemoval?(workspaceID) != false else { return LeaveReport(workspaceName: name, server: .pendingOffline) }
         let canDeregister = ws.info.scopes.contains(.operate)
         await ws.stop()
         reconcileTasks.values.forEach { $0.cancel() }

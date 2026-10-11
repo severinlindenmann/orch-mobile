@@ -24,7 +24,7 @@ enum DemoContent {
                                  createdAgoMs: 20 * min),
                 DemoQuestionSeed(ticket: "MOB-1", text: "Merge\u{00A0}now? Variation\u{FE00} mark and e\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306} stack.",
                                  options: [DemoOptionSeed("ok", "Approve"), DemoOptionSeed("ok2", "Approve\u{200B}")], createdAgoMs: 8 * min),
-                DemoQuestionSeed(ticket: "MOB-2", text: "Which one?", options: [DemoOptionSeed("a", "Yes"), DemoOptionSeed("b", "Yes")],
+                DemoQuestionSeed(ticket: "MOB-2", text: "Which one?", options: [DemoOptionSeed("a", "Yes"), DemoOptionSeed("b", "Y\u{0435}s")],
                                  createdAgoMs: 7 * min),
                 DemoQuestionSeed(ticket: "MOB-1", text: "Use the Demo Mac as primary?", options: [DemoOptionSeed("yes", "Yes"), DemoOptionSeed("no", "No")],
                                  createdAgoMs: 180 * min, answer: .init(optionID: "yes", byLabel: "Demo Mac", agoMs: 120 * min)),
