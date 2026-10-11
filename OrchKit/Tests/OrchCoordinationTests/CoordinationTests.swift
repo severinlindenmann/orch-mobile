@@ -96,3 +96,37 @@ struct TombstoneFileSafetyTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 }
+
+struct FlockFileSafetyTests {
+    @Test func symlinkedParentIsRefused() throws {
+        let root = coordTmp()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = root.appendingPathComponent("real", isDirectory: true)
+        let alias = root.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        #expect(throws: CoordinationFiles.FileError.self) {
+            try CoordinationFiles.withFlock(alias.appendingPathComponent("lock").path) { Issue.record("unsafe body ran") }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: real.path).isEmpty)
+    }
+
+    @Test(arguments: ["hardlink", "symlink", "fifo"])
+    func unsafeLockIsRefused(kind: String) throws {
+        let root = coordTmp()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let victim = root.appendingPathComponent("victim")
+        let lock = root.appendingPathComponent("lock")
+        let bytes = Data("keep".utf8)
+        try bytes.write(to: victim)
+        switch kind {
+        case "hardlink": try FileManager.default.linkItem(at: victim, to: lock)
+        case "symlink": try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: victim)
+        default: #expect(mkfifo(lock.path, 0o600) == 0)
+        }
+        #expect(throws: CoordinationFiles.FileError.self) {
+            try CoordinationFiles.withFlock(lock.path) { Issue.record("unsafe body ran") }
+        }
+        #expect(try Data(contentsOf: victim) == bytes)
+    }
+}

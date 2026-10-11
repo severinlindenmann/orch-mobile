@@ -112,6 +112,7 @@ public final class LocalWipe: Sendable {
         let layout = index.layout
         let fm = FileManager.default
         for f in StoreLayout.sqliteFiles(try layout.wsDatabaseURL(ws)) where fm.fileExists(atPath: f.path) { try fm.removeItem(at: f) }
+        // Replay locks live in push/locks, outside the purgeable push state directory. Never remove them.
         for d in [try layout.filesDir(ws), try layout.tmpDir(ws), try layout.stagedJobsDir(ws), try layout.quarantineDir(ws), try layout.pushStateDir(ws)]
         where fm.fileExists(atPath: d.path) { try fm.removeItem(at: d) }
     }

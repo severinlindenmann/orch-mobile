@@ -66,13 +66,22 @@ public enum CoordinationFiles {
         #endif
     }
 
-    /// Runs `body` holding flock on `path` (created O_NOFOLLOW). `blocking: false` returns nil at once if the lock is
+    /// Runs `body` holding flock on a single-link regular file, relative to a non-symlink parent directory.
+    /// Lock files and their parent directories must remain stable. `blocking: false` returns nil at once if the lock is
     /// taken (the body does not run).
     /// `timeout` (with `blocking: true`): poll `LOCK_NB` for at most that long, then return nil.
     public static func withFlock<T>(_ path: String, exclusive: Bool = true, blocking: Bool = true, timeout: TimeInterval? = nil, _ body: () throws -> T) throws -> T? {
-        let fd = openCoordinationLock(path)
+        let url = URL(fileURLWithPath: path)
+        let directory = retryOnInterrupt({ open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) })
+        guard directory >= 0 else { throw FileError.io("lock directory open \(errno)") }
+        defer { close(directory) }
+        let fd = openCoordinationLock(url.lastPathComponent, relativeTo: directory)
         guard fd >= 0 else { throw FileError.io("lock open \(errno)") }
         defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_nlink == 1 else {
+            throw FileError.io("lock must be a single-link regular file")
+        }
         let base = exclusive ? LOCK_EX : LOCK_SH
         if let timeout, blocking {
             let deadline = Date().addingTimeInterval(timeout)
