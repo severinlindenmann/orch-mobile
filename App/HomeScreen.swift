@@ -37,6 +37,7 @@ struct HomeScreen: View {
     @State private var settingsPath: [Route] = []
     @State private var composeOnDropTab = false
     @State private var pendingRoute: [Route]
+    @State private var routeOnHome = false
 
     /// With tabs, Drop / Settings / Questions are tabs, never a second copy pushed on Home: switch tabs instead.
     private func select(_ route: Route) {
@@ -53,16 +54,25 @@ struct HomeScreen: View {
         !(forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo)) && !services.home.workspaces.isEmpty
     }
 
-    /// Applies a held deep-link route to its tab once tabs exist.
+    /// Applies a held deep-link route to its tab once tabs exist. With no workspaces (empty Demo) there are never tabs for it, so the
+    /// route is pushed on Home instead; if workspaces appear later it is moved to its tab.
     private func adoptInitialRoute() {
-        guard showsTabs, let first = pendingRoute.first else { return }
-        let rest = Array(pendingRoute.dropFirst())
-        pendingRoute = []
+        if !showsTabs {
+            if !pendingRoute.isEmpty { path = pendingRoute; pendingRoute = []; routeOnHome = true }
+            return
+        }
+        let source: [Route]
+        if !pendingRoute.isEmpty { source = pendingRoute; pendingRoute = [] }
+        else if routeOnHome { source = path; path = [] }
+        else { return }
+        routeOnHome = false
+        guard let first = source.first else { return }
+        let rest = Array(source.dropFirst())
         switch first {
         case .drop: dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
         case .settings: settingsPath = rest; tab = .settings
         case .needsYou: questionsPath = rest; tab = .questions
-        default: break
+        default: path = source
         }
     }
 
