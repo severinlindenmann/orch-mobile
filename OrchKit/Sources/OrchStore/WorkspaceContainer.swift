@@ -50,6 +50,10 @@ public actor WorkspaceContainer {
         Migration(version: 6, statements: [
             "ALTER TABLE drop_uploads ADD COLUMN failure TEXT",
         ]),
+        Migration(version: 7, statements: [
+            "ALTER TABLE drop_uploads ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            "CREATE TABLE drop_abandoned (key TEXT PRIMARY KEY)",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {

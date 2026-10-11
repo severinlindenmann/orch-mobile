@@ -6,7 +6,7 @@ import OrchShareStaging
 import OrchStore
 
 public enum DropError: Error, Equatable, Sendable {
-    case malformed, unauthorized, expired, integrity, rollback, conflict, tooLarge, unavailableKey
+    case malformed, unauthorized, expired, integrity, rollback, conflict, tooLarge, unavailableKey, abandoned
     case uploadRejected(status: Int)
     case versionConflict(current: UInt32)
 
@@ -49,6 +49,27 @@ public actor DropService {
     public enum Kind: String, Sendable { case file, document }
     private var imports: [String: Task<[DropObject], Error>] = [:]
     private var uploads: [String: Task<DropObject, Error>] = [:]
+    // All work for an upload/job, including discard, passes through this FIFO admission.
+    private var admissions: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var hook: (@Sendable (String) async throws -> Void)?
+    package func setHook(_ hook: (@Sendable (String) async throws -> Void)?) { self.hook = hook }
+    private func admit(_ key: String) async {
+        if admissions[key] == nil { admissions[key] = []; return }
+        await withCheckedContinuation { admissions[key, default: []].append($0) }
+    }
+    private func release(_ key: String) {
+        if admissions[key]?.isEmpty == false { admissions[key]!.removeFirst().resume() }
+        else { admissions[key] = nil }
+    }
+    private func requireActive(_ key: String) async throws {
+        let db = try await session.cfg.container.database()
+        guard try await db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(key)]).isEmpty else { throw DropError.abandoned }
+    }
+    private func requireActiveUpload(_ object: ID16, _ version: UInt32) async throws {
+        try await requireActive("upload:\(object.hex):\(version)")
+        let db = try await session.cfg.container.database()
+        guard try await db.query("SELECT job FROM drop_imports JOIN drop_abandoned ON key='job:' || job WHERE object=?", [.text(object.hex)]).isEmpty else { throw DropError.abandoned }
+    }
     let session: WorkspaceSession
     let card: VerifiedCard
     let certificates: [ID16: DeviceCertificate]
@@ -167,6 +188,11 @@ public actor DropService {
     }
 
     private func performImport(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
+        let key = "job:\(job.manifest.jobID)"
+        try await hook?("import.requested")
+        await admit(key)
+        defer { release(key) }
+        try await requireActive(key)
         try await check()
         guard job.manifest.realm.utf8.elementsEqual(session.cfg.context.realm.rawValue.utf8),
               job.manifest.ws.utf8.elementsEqual(card.workspace.hex.utf8), job.manifest.generation == session.generation else { throw DropError.unauthorized }
@@ -199,8 +225,8 @@ public actor DropService {
         let expiry = expiresMs ?? DropUpload.addMs(now, 604800000)
         guard expiry > now, expiry <= DropUpload.addMs(now, 604800000) else { throw DropError.expired }
         let object = chosenObject ?? document?.descriptor.object ?? session.cfg.entropy.id16()
-        if chosenObject != nil, let row = try await session.cfg.container.database().query("SELECT body FROM drop_uploads WHERE object=? AND version=1", [.text(object.hex)]).first, let body = row.blob("body") {
-            return try await upload(object: object, version: 1, body: body)
+        if chosenObject != nil, try await session.cfg.container.database().query("SELECT object FROM drop_uploads WHERE object=? AND version=1", [.text(object.hex)]).first != nil {
+            return try await upload(object: object, version: 1)
         }
         let parent = document?.descriptor.version ?? 0
         guard parent < Self.maxVersions, document == nil || document?.descriptor.objectKind == "document" else { throw DropError.malformed }
@@ -211,42 +237,61 @@ public actor DropService {
             wxk: card.wxk, wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: wk, epoch: epoch,
             now: now, expiry: expiry, parent: document?.descriptor, kind: kind.rawValue)
         let db = try await session.cfg.container.database()
-        let winner: Data = try await db.transaction { tx in
+        try await db.transaction { tx in
+            guard try tx.query("SELECT key FROM drop_abandoned WHERE key=?", [.text("upload:\(object.hex):\(parent + 1)")]).isEmpty else { throw DropError.abandoned }
             try tx.execute("INSERT OR IGNORE INTO drop_uploads(object,version,body,done) VALUES(?,?,?,0)", [.text(object.hex), .int(Int64(parent + 1)), .blob(body)])
             guard let stored = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(parent + 1))]).first?.blob("body") else { throw DropError.malformed }
             if chosenObject == nil && stored != body { throw DropError.conflict }
-            return stored
         }
-        return try await upload(object: object, version: parent + 1, body: winner)
+        return try await upload(object: object, version: parent + 1)
     }
 
     /// Recover every pending row independently; stale uncommitted bodies get a fresh DEK.
     public func resumeUploads() async throws -> [DropUploadResult] {
         try await check()
-        let rows = try await session.cfg.container.database().query("SELECT object,version,body FROM drop_uploads WHERE done=0")
+        let rows = try await session.cfg.container.database().query("SELECT object,version FROM drop_uploads WHERE done=0 ORDER BY object,version")
         var result: [DropUploadResult] = []
         for row in rows {
-            guard let id = row.text("object").flatMap(ID16.init(hex:)), let n = row.int("version"), n > 0, n <= UInt32.max, let body = row.blob("body") else { throw DropError.malformed }
-            do { result.append(DropUploadResult(object: id, version: UInt32(n), result: .success(try await upload(object: id, version: UInt32(n), body: body)))) }
+            guard let id = row.text("object").flatMap(ID16.init(hex:)), let n = row.int("version"), n > 0, n <= UInt32.max else { throw DropError.malformed }
+            try await hook?("resume.row:\(id.hex)")
+            do { result.append(DropUploadResult(object: id, version: UInt32(n), result: .success(try await upload(object: id, version: UInt32(n))))) }
             catch { result.append(DropUploadResult(object: id, version: UInt32(n), result: .failure(error))) }
         }
         return result
     }
-    private func upload(object: ID16, version: UInt32, body: Data) async throws -> DropObject {
-        let key = "\(object.hex):\(version)"
+    private func upload(object: ID16, version: UInt32, retry: Bool = false) async throws -> DropObject {
+        let key = "upload:\(object.hex):\(version)"
         if let task = uploads[key] { return try await task.value }
         let task = Task {
-            do { return try await self.performUpload(object: object, version: version, body: body) }
-            catch {
-                if let e = error as? DropError, e.terminalUpload {
-                    try await self.session.cfg.container.database().execute("UPDATE drop_uploads SET done=2,failure=? WHERE object=? AND version=?", [.text(String(describing: e)), .text(object.hex), .int(Int64(version))])
-                }
-                throw error
+            try await self.hook?("upload.requested:\(object.hex)")
+            await self.admit(key)
+            defer { self.release(key) }
+            try await self.requireActiveUpload(object, version)
+            let db = try await self.session.cfg.container.database()
+            if retry {
+                try await db.execute("UPDATE drop_uploads SET done=0,failure=NULL WHERE object=? AND version=? AND done=2", [.text(object.hex), .int(Int64(version))])
             }
+            return try await self.uploadCurrent(object: object, version: version)
         }
         uploads[key] = task
         defer { uploads[key] = nil }
         return try await task.value
+    }
+
+    // Reload only after admission. Each recursive reseal gets its own revision-scoped outcome.
+    private func uploadCurrent(object: ID16, version: UInt32) async throws -> DropObject {
+        try await requireActiveUpload(object, version)
+        let db = try await session.cfg.container.database()
+        guard let row = try await db.query("SELECT body,revision,done FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first,
+              let body = row.blob("body"), let revision = row.int("revision") else { throw DropError.abandoned }
+        guard row.int("done") != 2 else { throw DropError.conflict }
+        do { return try await performUpload(object: object, version: version, body: body, revision: revision) }
+        catch {
+            if let e = error as? DropError, e.terminalUpload {
+                try await db.execute("UPDATE drop_uploads SET done=2,failure=? WHERE object=? AND version=? AND revision=? AND done=0", [.text(String(describing: e)), .text(object.hex), .int(Int64(version)), .int(revision)])
+            }
+            throw error
+        }
     }
 
     /// Terminal outcomes survive restart and remain visible until explicitly resolved.
@@ -261,30 +306,40 @@ public actor DropService {
 
     /// Explicitly retry a terminal row; conflict bytes are never overwritten automatically.
     public func retryUpload(object: ID16, version: UInt32) async throws -> DropObject {
-        let db = try await session.cfg.container.database()
-        guard let body = try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") else { throw DropError.malformed }
-        try await db.execute("UPDATE drop_uploads SET done=0,failure=NULL WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
-        return try await upload(object: object, version: version, body: body)
+        try await upload(object: object, version: version, retry: true)
     }
 
     public func discardUpload(object: ID16, version: UInt32) async throws {
-        if let task = uploads["\(object.hex):\(version)"] { _ = try? await task.value }
-        try await session.cfg.container.database().execute("DELETE FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
+        let key = "upload:\(object.hex):\(version)"
+        await admit(key)
+        defer { release(key) }
+        try await hook?("discard.upload.admitted")
+        let db = try await session.cfg.container.database()
+        try await db.transaction { tx in
+            try tx.execute("INSERT OR IGNORE INTO drop_abandoned(key) VALUES(?)", [.text(key)])
+            try tx.execute("DELETE FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
+        }
     }
 
-    /// Explicit abandonment also removes staged plaintext and its item mappings.
+    /// Tombstone precedes cleanup and survives failed deletion and stale in-memory job handles.
     public func discardShareJob(_ job: StagedJob, inbox: ShareInbox) async throws {
-        if let task = imports[job.manifest.jobID] { _ = try? await task.value }
         guard job.manifest.ws == card.workspace.hex, job.manifest.generation == session.generation,
               job.manifest.realm == session.cfg.context.realm.rawValue else { throw DropError.unauthorized }
+        let key = "job:\(job.manifest.jobID)"
+        await admit(key)
+        defer { release(key) }
+        try await hook?("discard.job.admitted")
         let db = try await session.cfg.container.database()
+        try await db.execute("INSERT OR IGNORE INTO drop_abandoned(key) VALUES(?)", [.text(key)])
+        try await hook?("discard.job.tombstoned")
         let rows = try await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)])
         for row in rows { if let id = row.text("object").flatMap(ID16.init(hex:)) { try await discardUpload(object: id, version: 1) } }
+        try await hook?("discard.job.cleanup")
+        guard inbox.complete(job) else { throw ShareError.io("remove staged plaintext") }
         try await db.execute("DELETE FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)])
-        inbox.complete(job)
     }
 
-    private func performUpload(object: ID16, version: UInt32, body: Data) async throws -> DropObject {
+    private func performUpload(object: ID16, version: UInt32, body: Data, revision: Int64) async throws -> DropObject {
         let members = try await membership(operate: true)
         let s = try await auth()
         guard let o = try StrictJSON.parse(body, maxBytes: 36 << 20).object,
@@ -311,12 +366,8 @@ public actor DropService {
                     wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: await session.dropKey(members.epoch),
                     epoch: members.epoch, now: session.cfg.wall.nowMs, expiry: expiry, parent: parent, kind: descriptor.objectKind)
                 let db = try await session.cfg.container.database()
-                let winner: Data = try await db.transaction { tx in
-                    try tx.execute("UPDATE drop_uploads SET body=? WHERE object=? AND version=? AND body=?", [.blob(fresh), .text(object.hex), .int(Int64(version)), .blob(body)])
-                    guard let saved = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") else { throw DropError.malformed }
-                    return saved
-                }
-                return try await performUpload(object: object, version: version, body: winner)
+                try await db.execute("UPDATE drop_uploads SET body=?,revision=revision+1 WHERE object=? AND version=? AND revision=? AND done=0", [.blob(fresh), .text(object.hex), .int(Int64(version)), .int(revision)])
+                return try await uploadCurrent(object: object, version: version)
             }
             guard descriptor.expiresMs.map({ $0 > session.cfg.wall.nowMs }) ?? true else { throw DropError.expired }
         } else if existing.status != 200 { _ = try HostAPI.expect(existing) }
@@ -324,6 +375,7 @@ public actor DropService {
         let stale = try wraps.map(DropWrapRecord.init(json:)).contains { $0.targetKind == .wk && $0.keyVersion < members.epoch }
         do {
             if existing.status == 404 || !stale {
+                try await requireActiveUpload(object, version)
                 let reply = try await session.cfg.transport.dropPut(objectID: object, ifMatch: version - 1, body: body, session: s)
                 if reply.status == 409, let n = try StrictJSON.parse(reply.body).object?["current"]?.int, n >= 0, n <= UInt32.max { conflictCurrent = UInt32(n) }
                 if (400..<500).contains(reply.status), reply.status != 409, reply.status != 429 { throw DropError.uploadRejected(status: reply.status) }
@@ -344,7 +396,7 @@ public actor DropService {
             throw DropError.conflict
         }
         let result = try await verified(signed, wraps: wraps, members: membership())
-        try await session.cfg.container.database().execute("UPDATE drop_uploads SET done=1,failure=NULL WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
+        try await session.cfg.container.database().execute("UPDATE drop_uploads SET done=1,failure=NULL WHERE object=? AND version=? AND revision=? AND done=0", [.text(object.hex), .int(Int64(version)), .int(revision)])
         return result
     }
 

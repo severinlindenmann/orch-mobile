@@ -425,3 +425,113 @@ extension DropServiceTests {
         #expect(try await phone.container.database().query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).isEmpty)
     }
 }
+
+extension DropServiceTests {
+    @Test func recoveryReloadsLaterResealedAndConfirmedRow() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let db = try await phone.container.database()
+        let first = ID16.fresh(0x61), later = ID16.fresh(0x62)
+        for id in [first, later] {
+            try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(id.hex), .blob(try await w.dropBody(id: id))])
+        }
+        try await w.host.rotate(remaining: [(w.phone, World.all)], relay: w.relay, session: w.hostSession)
+        let gate = HookGate(), point = "resume.row:\(first.hex)"
+        await gate.hold(point)
+        await service.setHook { await gate.hit($0) }
+        let recovery = Task { try await service.resumeUploads() }
+        await gate.waitArrived(point)
+        let confirmed = try await service.retryUpload(object: later, version: 1)
+        #expect(confirmed.wraps.contains { $0.targetKind == .wk && $0.keyVersion == 2 })
+        await gate.release(point)
+        let results = try await recovery.value
+        #expect(results.count == 2)
+        for result in results { _ = try result.result.get() }
+        let row = try #require(await db.query("SELECT revision,done,failure FROM drop_uploads WHERE object=?", [.text(later.hex)]).first)
+        #expect(row.int("revision") == 1 && row.int("done") == 1 && row.text("failure") == nil)
+        #expect(try await service.failedUploads().isEmpty)
+    }
+
+    @Test func discardAdmissionBlocksSnapshotRecoveryAndRetry() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let db = try await phone.container.database(), id = ID16.fresh(0x66)
+        try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(id.hex), .blob(try await w.dropBody(id: id))])
+        let gate = HookGate(), point = "resume.row:\(id.hex)"
+        await gate.hold(point, "discard.upload.admitted")
+        await service.setHook { await gate.hit($0) }
+        let recovery = Task { try await service.resumeUploads() }
+        await gate.waitArrived(point)
+        let discard = Task { try await service.discardUpload(object: id, version: 1) }
+        await gate.waitArrived("discard.upload.admitted")
+        await gate.release(point)
+        await gate.waitArrived("upload.requested:\(id.hex)")
+        let retry = Task { try await service.retryUpload(object: id, version: 1) }
+        await gate.release("discard.upload.admitted")
+        try await discard.value
+        let results = try await recovery.value
+        #expect(results.count == 1)
+        #expect(throws: DropError.abandoned) { try results[0].result.get() }
+        await #expect(throws: DropError.abandoned) { try await retry.value }
+        let restarted = try await w.dropService(phone)
+        await #expect(throws: DropError.abandoned) { try await restarted.retryUpload(object: id, version: 1) }
+        #expect(try await restarted.resumeUploads().isEmpty)
+        #expect(try await service.list(.sending).isEmpty)
+    }
+
+    private func stagedDrop(_ w: World) throws -> (ShareInbox, StagedJob) {
+        let area = ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot)
+        let staging = try StagingSession(area: area, target: ShareTarget(realm: "demo", ws: w.ws.hex, name: "Laptop", hue: 0, generation: 1))
+        try staging.add(.text("abandoned content")); try staging.commit(note: nil)
+        let inbox = ShareInbox(area: area)
+        return (inbox, try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first))
+    }
+
+    @Test func shareDiscardAdmissionBlocksImport() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let (inbox, job) = try stagedDrop(w), gate = HookGate()
+        await gate.hold("discard.job.admitted")
+        await service.setHook { await gate.hit($0) }
+        let discard = Task { try await service.discardShareJob(job, inbox: inbox) }
+        await gate.waitArrived("discard.job.admitted")
+        let importing = Task { try await service.importShareJob(job, inbox: inbox) }
+        await gate.waitArrived("import.requested")
+        await gate.release("discard.job.admitted")
+        try await discard.value
+        await #expect(throws: DropError.abandoned) { try await importing.value }
+        #expect(try await service.list(.sending).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: job.dir.path))
+    }
+
+    @Test(arguments: ["discard.job.tombstoned", "discard.job.cleanup", "deletion.failure"])
+    func shareAbandonmentSurvivesCrashAndFailedPlaintextRemoval(point: String) async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let (inbox, job) = try stagedDrop(w)
+        let db = try await phone.container.database(), id = ID16.fresh(0x67)
+        try await db.execute("INSERT INTO drop_imports(job,item,object) VALUES(?,0,?)", [.text(job.manifest.jobID), .text(id.hex)])
+        try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(id.hex), .blob(try await w.dropBody(id: id))])
+        if point == "deletion.failure" {
+            // Exceed the fd-relative remover's depth bound: deterministic failure, no permissions assumption.
+            let deep = (0..<65).reduce(job.dir.appendingPathComponent("deep")) { url, _ in url.appendingPathComponent("d") }
+            try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        } else {
+            await service.setHook(Crashing(point: point).hook)
+        }
+        await #expect(throws: (any Error).self) { try await service.discardShareJob(job, inbox: inbox) }
+        #expect(FileManager.default.fileExists(atPath: job.dir.path))
+        #expect(try await db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text("job:\(job.manifest.jobID)")]).count == 1)
+        #expect(try await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).count == 1)
+        let restarted = try await w.dropService(phone)
+        if point != "deletion.failure" {
+            let reclaimed = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
+            await #expect(throws: DropError.abandoned) { try await restarted.importShareJob(reclaimed, inbox: inbox) }
+        }
+        await #expect(throws: DropError.abandoned) { try await restarted.importShareJob(job, inbox: inbox) }
+        for result in try await restarted.resumeUploads() {
+            #expect(throws: DropError.abandoned) { try result.result.get() }
+        }
+        #expect(try await restarted.list(.sending).isEmpty)
+        if point == "deletion.failure" { try FileManager.default.removeItem(at: job.dir.appendingPathComponent("deep")) }
+        try await restarted.discardShareJob(job, inbox: inbox)
+        #expect(!FileManager.default.fileExists(atPath: job.dir.path))
+        #expect(try await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).isEmpty)
+    }
+}

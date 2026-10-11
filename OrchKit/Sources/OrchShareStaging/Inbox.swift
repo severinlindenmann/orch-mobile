@@ -85,7 +85,8 @@ public struct ShareInbox: Sendable {
     }
 
     /// Deletes the staged plaintext after the app has imported it.
-    public func complete(_ job: StagedJob) { area.safeRemove(job.dir) }
+    @discardableResult
+    public func complete(_ job: StagedJob) -> Bool { area.safeRemove(job.dir) }
 
     // MARK: durable import ledger (idempotency by full job id)
 
