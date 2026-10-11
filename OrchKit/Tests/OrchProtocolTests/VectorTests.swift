@@ -455,7 +455,7 @@ import Testing
         let run: Set<String> = ["keys", "ids", "sign", "hkdf", "salted_aead", "seal", "seal_open", "label_sealed", "certs", "revocations",
                                 "card", "wk_grants", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop"]
         let partial: Set<String> = ["bridge"]                       // seal, device_cases and sas run; host_cases, pair_answers, links deferred
-        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish", "p3"]  // p3: relay state-machine cases, replayed by the HTTP fixture PRs (PR3+)
+        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish", "p3"]  // p3: relay state machine; its membership cases replay in OrchRelayFixtureTests.P3MembershipVectorTests, the rest with PR4/PR5
         let meta: Set<String> = ["suite", "name"]
         let all = Set(s2.object!.keys)
         #expect(all == run.union(partial).union(deferred).union(meta), "unaccounted: \(all.subtracting(run).subtracting(partial).subtracting(deferred).subtracting(meta))")

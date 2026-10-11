@@ -229,20 +229,42 @@ import OrchProtocol
         #expect(faults.remaining == 0)
     }
 
-    @Test func faultBeforeGrantPublicationLeavesNoGrant() async throws {
+    @Test func faultBeforeMembershipPublicationCommitsNothing() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
         let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         try await w.relay.publishCertificate(try await w.primary.certify(keys, label: "N", scopesMax: ["look"]))
-        faults.enqueue(.drop, at: .beforeGrantPublication)
-        let grant = try await w.host.grant(for: keys, epoch: 1)
-        await #expect(throws: TransportError.disconnected) { try await w.relay.putGrant(grant, token: w.hostSession.token) }
+        faults.enqueue(.drop, at: .beforeMembershipPublication)
+        let roster = w.baseRoster + [(keys, ["look"])]
+        await #expect(throws: TransportError.disconnected) { try await w.publish(roster, epoch: 1, listSeq: 2, wraps: [keys]) }
         #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1) == false)
-        // Because the grant is missing, the list that names the device is still refused.
-        let list = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"]), (keys.deviceID, ["look"])], epoch: 1, listSeq: 2)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .missingGrant))) { try await w.relay.publishMemberList(list, token: w.hostSession.token) }
-        try await w.relay.putGrant(grant, token: w.hostSession.token)
-        try await w.relay.publishMemberList(list, token: w.hostSession.token)
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 1)
+        // The identical bytes again: committed once, list, grant and wrap together.
+        try await w.publish(roster, epoch: 1, listSeq: 2, wraps: [keys])
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1))
+        #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: keys.deviceID, cardSeq: 1))
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 2)
+    }
+
+    /// A reply lost after the commit (section 19.7): the exact bytes again answer the committed result before any freshness check,
+    /// even once the card moved on and a member's certificate expired.
+    @Test func lostMembershipReplyRetriesWithTheExactBytes() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
+        try await w.relay.publishCertificate(try await w.primary.certify(keys, label: "N", scopesMax: ["look"], lifetimeMs: 60_000))
+        let body = try await w.host.membershipBody(roster: w.baseRoster + [(keys, ["look"])], epoch: 1, listSeq: 2, wraps: [keys])
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "PUT /v2/workspaces/\(w.ws.hex)/membership")
+        await #expect(throws: TransportError.disconnected) { try await w.host.sendMembership(body, relay: w.relay, session: w.hostSession) }
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 2)
+        w.clock.advance(milliseconds: 60_000)                // the new member's certificate has expired
+        let r = try await w.host.sendMembership(body, relay: w.relay, session: w.hostSession)
+        #expect(r.listSeq == 2 && r.epoch == 1)
+        // Other bytes for the same sequence are not a retry.
+        let other = try await w.host.membershipBody(roster: w.baseRoster, epoch: 1, listSeq: 2)
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .staleList))) {
+            try await w.host.sendMembership(other, relay: w.relay, session: w.hostSession)
+        }
     }
 
     // MARK: Demo reset scope

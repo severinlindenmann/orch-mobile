@@ -74,35 +74,55 @@ import Testing
                                "label_sealed": .string(B64U.encode(Data(count: 40))), "created_ms": 1, "expires_ms": .null,
                                "scopes_max": .array(scopes.map { .string($0) })], kind: .deviceCert, signer: pk).json
     }
-    func list(_ ws: ID16, epoch: Int64, seq: Int64, ids: [ID16], scopes: [String] = ["look"]) -> MemberList {
+    func list(_ ws: ID16, epoch: Int64, seq: Int64, ids: [ID16], scopes: [String] = ["look"], person: ID16, persons: [ID16] = []) -> MemberList {
         let sorted = ids.sorted { $0.hex < $1.hex }
         return try! MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": .int(epoch),
-                                              "list_seq": .int(seq), "issued_ms": 1,
-                                              "members": .array(sorted.map { ["device_id": .string($0.hex), "scopes": .array(scopes.map { .string($0) })] })])
+                                              "list_seq": .int(seq), "issued_ms": 1, "persons": .array(persons.map { .string($0.hex) }),
+                                              "members": .array(sorted.map { ["device_id": .string($0.hex), "person_id": .string(person.hex),
+                                                                               "scopes": .array(scopes.map { .string($0) })] })])
     }
 
     @Test func memberListChecks() throws {
         let pk = SoftwareSigner(), a = SoftwareSigner(), b = SoftwareSigner()
         let ida = Identifiers.deviceID(a.publicKey), idb = Identifiers.deviceID(b.publicKey), ws = ID16.random()
+        let me = Identifiers.personID(pk.publicKey)
         var dir = MemberList.Directory(ownerKey: pk.publicKey, certs: [ida: try cert(pk, a), idb: try cert(pk, b)], revoked: [],
                                        grants: [.init(device: ida, epoch: 1), .init(device: idb, epoch: 1), .init(device: ida, epoch: 2)])
-        let l1 = list(ws, epoch: 1, seq: 1, ids: [ida, idb])
+        let l1 = list(ws, epoch: 1, seq: 1, ids: [ida, idb], person: me)
         try l1.checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10)
         // removal without rotation
-        #expect(throws: Refusal.rotationRequired) { try list(ws, epoch: 1, seq: 2, ids: [ida]).checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10) }
-        try list(ws, epoch: 2, seq: 2, ids: [ida]).checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10)
+        #expect(throws: Refusal.rotationRequired) { try list(ws, epoch: 1, seq: 2, ids: [ida], person: me).checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10) }
+        try list(ws, epoch: 2, seq: 2, ids: [ida], person: me).checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10)
         // revoked
         dir.revoked = [idb]
         #expect(throws: Refusal.revoked) { try l1.checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
         dir.revoked = []
         // scope beyond cert
         #expect(throws: Refusal.scopeExceeded) {
-            try list(ws, epoch: 1, seq: 1, ids: [ida], scopes: ["look", "decide", "operate"]).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10)
+            try list(ws, epoch: 1, seq: 1, ids: [ida], scopes: ["look", "decide", "operate"], person: me).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10)
         }
         // a cert filed under another device id must not admit that id
         let ghost = ID16.random()
         dir.certs[ghost] = try cert(pk, a); dir.grants.insert(.init(device: ghost, epoch: 1))
-        #expect(throws: Refusal.certInvalid) { try list(ws, epoch: 1, seq: 1, ids: [ghost]).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
+        #expect(throws: Refusal.certInvalid) { try list(ws, epoch: 1, seq: 1, ids: [ghost], person: me).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
+        // P3-D6: an entry naming another person than its certificate's; a listed person without a member device (G0a review 1);
+        // another person's device needs that person in `persons` and an account key.
+        let bob = SoftwareSigner(), bobDev = SoftwareSigner(), bobID = Identifiers.personID(bob.publicKey), idc = Identifiers.deviceID(bobDev.publicKey)
+        #expect(throws: Refusal.otherPerson) { try list(ws, epoch: 1, seq: 1, ids: [ida], person: bobID).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
+        #expect(throws: Refusal.otherPerson) { try list(ws, epoch: 1, seq: 1, ids: [ida], person: me, persons: [bobID]).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
+        dir.certs[idc] = try cert(bob, bobDev); dir.grants.insert(.init(device: idc, epoch: 2))
+        let withBob = try MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": 2, "list_seq": 2,
+                                                    "issued_ms": 1, "persons": [.string(bobID.hex)],
+                                                    "members": .array([(ida, me), (idc, bobID)].sorted { $0.0.hex < $1.0.hex }.map {
+                                                        ["device_id": .string($0.0.hex), "person_id": .string($0.1.hex), "scopes": ["look"]] })])
+        #expect(throws: Refusal.otherPerson) { try withBob.checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10) }   // no account
+        dir.persons[bobID] = bob.publicKey
+        try withBob.checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10)
+        // a first list must name a device of the card owner
+        dir.grants.insert(.init(device: idc, epoch: 1))
+        #expect(throws: Refusal.otherPerson) {
+            try list(ws, epoch: 1, seq: 1, ids: [idc], person: bobID, persons: [bobID]).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10)
+        }
     }
 
     @Test func hostedMarker() {

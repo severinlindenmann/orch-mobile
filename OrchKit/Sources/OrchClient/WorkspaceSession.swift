@@ -175,12 +175,19 @@ public actor WorkspaceSession {
         }
     }
 
-    /// Keeps `WK_e` in custody without making `e` current. An epoch's key never changes.
+    /// Keeps `WK_e` in custody without making `e` current. A CONFIRMED epoch's key never changes (`grantConflict`). For an epoch
+    /// not yet confirmed, a different WSK-signed key replaces the stored one, so a refused publication's grant seen early is not
+    /// pinned. This does NOT stop a hostile relay from locking the device out: it can serve the refused key in the very refresh that
+    /// confirms the epoch, and that key is then pinned (the same power as first-wins, moved). Confidentiality is unchanged: nothing
+    /// is sealed under an unconfirmed key. The lasting fix is `wk_commit` in the member list (gaps.md).
     private func store(epoch: UInt32, key: SymmetricKey) async throws {
         try await ensureCurrent()
         guard epoch >= 1 else { throw SessionError.noKeyForEpoch(epoch) }
         if let existing = try? cfg.vault.get(ws: cfg.workspace.hex, purpose: wkPurpose(epoch)) {
-            guard existing == key.rawBytes else { throw SessionError.grantConflict }
+            if existing != key.rawBytes {
+                guard Int64(epoch) > (try await cfg.container.epochHighWater()) else { throw SessionError.grantConflict }
+                try cfg.vault.put(key.rawBytes, ws: cfg.workspace.hex, purpose: wkPurpose(epoch))
+            }
         } else {
             try cfg.vault.put(key.rawBytes, ws: cfg.workspace.hex, purpose: wkPurpose(epoch))
         }
@@ -218,12 +225,32 @@ public actor WorkspaceSession {
         var confirmed = confirmedEpoch ?? 0
         if confirmed < top {
             let list = try await withRelay { s in try await RelayClient(transport: cfg.transport).memberList(workspace: cfg.workspace, session: s) }
-            let m = try MemberList.verify(list, wsk: cfg.wsk)
-            guard m.workspace == cfg.workspace else { throw SessionError.badResponse }
+            let m = try await acceptMemberList(list)
             confirmed = max(confirmed, m.epoch)
         }
         if let target = opened.filter({ $0 <= confirmed }).max() { try await cfg.container.raiseEpochHighWater(Int64(target)) }
         return try await currentEpoch()
+    }
+
+    /// Every member list this device acts on goes through here: the signature with the pinned `WSK`, this workspace, an epoch not
+    /// below the confirmed one, and the persisted head of the last accepted list (P3-D6): an older `list_seq` is `stale_list`, other
+    /// content under the same `list_seq` a conflict, a falling epoch `bad_epoch`. The head is recorded in the same transaction.
+    package func acceptMemberList(_ raw: JSONValue) async throws -> MemberList {
+        try await ensureCurrent()
+        let m = try MemberList.verify(raw, wsk: cfg.wsk)
+        guard m.workspace == cfg.workspace else { throw SessionError.badResponse }
+        guard Int64(m.epoch) >= (try await cfg.container.epochHighWater()) else { throw Refusal.badEpoch }
+        guard let o = raw.object?["o"]?.object, let bytes = try? canonicalJSON(.object(o)) else { throw Refusal.malformed }
+        do {
+            try await cfg.container.acceptMemberListHead(listSeq: m.listSeq, epoch: Int64(m.epoch), digest: Data(SHA256.hash(data: bytes)))
+        } catch let e as MemberListHeadError {
+            switch e {
+            case .rollback: throw Refusal.staleList
+            case .conflict: throw Refusal.conflictingSnapshot
+            case .epochFell: throw Refusal.badEpoch
+            }
+        }
+        return m
     }
 
     // MARK: relay session

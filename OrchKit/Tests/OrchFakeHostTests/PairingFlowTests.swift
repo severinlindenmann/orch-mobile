@@ -189,8 +189,10 @@ extension PairHarness {
             // the relay itself refuses key material for a device without a certificate (defence in depth)
             let session = try await h.host.openSession(transport: h.env.transport)
             let keys = DemoKeys(h.env.device.publicKeys)
-            await #expect(throws: ClientError.self) { try await h.relay.putGrant(try await h.host.grant(for: keys, epoch: 1), token: session.token) }
-            await #expect(throws: ClientError.self) { try await h.relay.putCardKeyWrap(device: h.phoneID, cardSeq: 1, sealed: try await h.host.cardKeyWrap(for: keys), token: session.token) }
+            let body = try await h.host.membershipBody(roster: await h.host.rosterEntries() + [(keys, ["look"])], epoch: 1, listSeq: 2, wraps: [keys])
+            await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certInvalid))) {
+                try await h.host.sendMembership(body, relay: h.relay, session: session)
+            }
             #expect(await h.noKeyMaterial(for: h.phoneID))
             // and the host will not finish a join without one
             await #expect(throws: PairingApprovalError.self) { try await h.host.completeJoin(device: h.phoneID, relay: h.relay, transport: h.env.transport) }

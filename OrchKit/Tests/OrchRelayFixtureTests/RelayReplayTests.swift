@@ -18,7 +18,7 @@ final class MutableWall: WallClock, @unchecked Sendable {
     func set(_ v: Int64) { lock.lock(); ms = v; lock.unlock() }
 }
 
-private final class ScriptedEntropy: Entropy, @unchecked Sendable {
+final class ScriptedEntropy: Entropy, @unchecked Sendable {
     private let lock = NSLock()
     private var queue: [Data]
     init(_ queue: [Data]) { self.queue = queue }
@@ -31,10 +31,10 @@ private final class ScriptedEntropy: Entropy, @unchecked Sendable {
 
 let fixtureOrigin = "https://relay.dev.severin.io"
 private let otherOrigin = "https://other.relay.example.org"
-private let fixtureDevice = ID16(hex: "4177b27d8e4ac182e8d388b247d2b136")!
+let fixtureDevice = ID16(hex: "4177b27d8e4ac182e8d388b247d2b136")!
 
 /// The vectors' `seed` is not the raw scalar: the reference derives `d = int(seed) mod (n-1) + 1`.
-private func scalar(fromSeed seed: Data) -> Data {
+func scalar(fromSeed seed: Data) -> Data {
     let n = Array(Hex.decode("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")!)
     func cmp(_ a: [UInt8], _ b: [UInt8]) -> Int { for (x, y) in zip(a, b) where x != y { return x < y ? -1 : 1 }; return 0 }
     func sub(_ a: [UInt8], _ b: [UInt8]) -> [UInt8] {
@@ -67,8 +67,13 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
 
 @Suite struct FixtureReplayTests {
     static let files = FixtureSchemaTests.files
-    /// 4 session_challenge + 10 session_login + 4 session_logout cases, and the 104 cases of the nine PR4 files.
-    static let expectedReplayed = 18 + 104
+    /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 120 cases of the twelve PR3 directory and
+    /// membership files, and the 104 cases of the nine PR4 files.
+    static let expectedReplayed = 18 + 120 + 104
+
+    /// The instant of every fixture case that has one (all 386a6cb cases use 1790000000000). The three condition-only cases
+    /// (victim_person_without_member, other_workspace_person_refused x2) carry no `given.now_ms`; they replay at that same instant.
+    static let conditionOnlyNowMs: Int64 = 1_790_000_000_000
 
     static func file(_ name: String) throws -> Fixtures.File { try #require(files.first { $0.fileName == name }) }
 
@@ -92,7 +97,12 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
 
     func replay(_ f: Fixtures.File, _ c: Fixtures.Case) async throws {
         let id = caseID(f, c)
-        let now = try #require(c.given["now_ms"]?.int, "\(id) now_ms")
+        // the three late-added condition-only cases carry no now_ms; they share every other case's instant
+        let now: Int64
+        if let n = c.given["now_ms"]?.int { now = n } else {
+            #expect(c.given["condition"] != nil && c.given["scenario"] == nil, "\(id) now_ms")
+            now = Self.conditionOnlyNowMs
+        }
         let req = c.request, resp = c.response
         var script: [Data] = []     // the relay mints the challenge or the token the fixture shows
         if f.fileName == "session_challenge.json", c.name == "success" { script = [try #require(resp["json"]?["challenge"]?.string.flatMap { B64U.decode($0) })] }
@@ -164,9 +174,14 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
             default: Issue.record("\(id): no seed for this scenario"); return
             }
         default:
-            guard try await Self.seedPR4(f, c, relay, wall, now) else { Issue.record("\(id): no seed for this scenario"); return }
+            if PR3Replay.files.contains(f.fileName) {
+                guard try await PR3Replay.seed(f, c, relay) else { Issue.record("\(id): no seed for this scenario"); return }
+            } else {
+                guard try await Self.seedPR4(f, c, relay, wall, now) else { Issue.record("\(id): no seed for this scenario"); return }
+            }
         }
 
+        if c.given["scenario"]?.string == "exact_bytes_already_committed" { try await check(f, c, relay) }   // the first, committing send
         try await check(f, c, relay)
         if mustBeConsumed, let challenge { #expect(!(await relay.outstandingChallenges.contains(challenge)), "\(id): the challenge is consumed") }
         if f.fileName == "session_logout.json", c.name == "success" {
@@ -180,7 +195,7 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         if f.fileName == "session_challenge.json", challengeCapCase { #expect(await relay.outstandingChallenges.count == 3, "\(id): nothing is evicted") }
     }
 
-    private func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay) async throws {
+    func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay) async throws {
         let id = caseID(f, c)
         var headers: [String: String] = [:]
         for (k, v) in c.request["headers"]?.object ?? [:] { if let s = v.string { headers[k] = s } }

@@ -494,7 +494,7 @@ extension PairHarness {
     }
 
     @Test func aRejectionBeforeAnyPublicationOfTheJoinWins() async throws {
-        for stage in ["complete.cert", "complete.grant", "complete.wrap", "complete.list"] {
+        for stage in ["complete.cert", "complete.list"] {
             let h = try await PairHarness.make(.hostIsPrimary)
             _ = try await h.startToHostCode()
             let gate = HookGate(); await gate.hold(stage)

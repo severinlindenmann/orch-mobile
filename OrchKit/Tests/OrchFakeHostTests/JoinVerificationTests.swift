@@ -157,6 +157,17 @@ import OrchStore
         // this device must be in the list, with exactly the approved scopes
         let without = try await h.host.memberList([(h.primary.deviceID, World.all)], epoch: 1, listSeq: 9)
         #expect(failure(f) { try f.verify(list: without) } == "JoinFailure(reason: \"member_scopes\")")
+        // P3-D6: this device listed under another person, a listed person without a member device, or a list without an owner device
+        let stranger = ID16.random()
+        let asOther = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 1, listSeq: 9,
+                                                  persons: [stranger], personOf: [h.phoneID: stranger])
+        #expect(failure(f) { try f.verify(list: asOther) } == "JoinFailure(reason: \"member_scopes\")")
+        let victim = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 1, listSeq: 9,
+                                                 persons: [stranger])
+        #expect(failure(f) { try f.verify(list: victim) } == "JoinFailure(reason: \"member_persons\")")
+        let noOwner = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 1, listSeq: 9,
+                                                  persons: [stranger], personOf: [h.primary.deviceID: stranger, h.phoneID: stranger])
+        #expect(failure(f) { try f.verify(list: noOwner) } == "JoinFailure(reason: \"member_persons\")")
         // the list epoch is at least the approved epoch, and the installed grant is the list epoch
         let approvedLater = PairingRecord.Approved(scopes: ["look", "decide"], cert: .null, epoch: 2)
         #expect(failure(f) { try f.verify(approved: approvedLater) } == "JoinFailure(reason: \"member_epoch\")")
@@ -213,7 +224,10 @@ import OrchStore
         #expect(await PairingCoordinator(h.config).start(link: try h.link(again)) == .failed(.alreadyMember))
         // an existing certificate (D-1) is reused: a second workspace does not ask the primary
         let second = try DemoSetup.makeHost(h.env, primary: h.primary, name: "Desk")
-        let cert = try await h.primary.certifyOwnDevice()
+        // directory certificates are immutable per device (cert_conflict otherwise): the primary's stored one is reused
+        let stored = await h.relay.certificate(device: h.primary.deviceID)
+        let cert: JSONValue
+        if let stored { cert = stored } else { cert = try await h.primary.certifyOwnDevice() }
         _ = try await second.publishInitial(relay: h.relay, transport: h.env.transport, devices: [(h.primary.deviceKeys, cert, World.all)])
         let offer2 = try await second.createOffer()
         let c2 = PairingCoordinator(h.config)

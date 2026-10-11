@@ -298,9 +298,10 @@ Optional `epoch=<positive integer>` selects one; default returns all grants elig
 All require authenticated current membership and non-revocation; recipient comes from the session.
 No foreign-device selector. Missing data is 404 `not_found`, unauthorized is 403 `not_eligible`.
 Protocol signature/shape errors retain §14 codes; these HTTP fetch wrappers have no additional signature.
-WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Upload grants before publishing a list.
+WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Lists carry `persons` and a `person_id` per member (P3-D6).
+Grants are published with their list in one `PUT /v2/workspaces/{ws}/membership` (P3-D7, §19.2), never staged.
 Verify signatures, identity binding and monotonic epoch/list/card counters before committing anything.
-Confirmed fetch routes and authorization are still required from P3 ([gap 24](gaps.md)).
+Routes and authorization are protocol-v2 §19.1/§19.2; the FakeRelay replays orch-relay's HTTP fixtures for them ([gap 24](gaps.md)).
 
 `GET R/workspaces/{ws}/card-key?card_seq=N` returns exactly
 `{"workspace_id":"$ws","device_id":"$sessionDevice","card_seq":N,"sealed":"$b64u"}`.
@@ -384,8 +385,8 @@ Confirm post-wipe unregister authorization with P3 ([gaps 20–21](gaps.md)); no
 
 An authorized remaining Operate device/primary can issue exact §6.3
 `{"op":"member_remove","device_id":"$id"}` via its own dk_sig/K_bridge, response WSK/K_bridge.
-No host_api added. Host rotates, uploads remaining grants, publishes list; relay deletes departed mailboxes,
-grants and subscriptions. Its success projection may be `{"host_api":0,"removed":true}` (provisional).
+No host_api added. Host rotates: one atomic membership publication of the list and every remaining grant
+(protocol-v2 P3-D7); the relay deletes departed devices' mailboxes, grants, card-key wraps and subscriptions. Its success projection may be `{"host_api":0,"removed":true}` (provisional).
 Look/Decide phones cannot self-remove through this op; forbidden_scope is correct, even for themselves.
 A PK-signed revocation (§6.2) instead kills the identity across all workspaces: verify then wipe all,
 invalidate cert/device keys and require new keys. Phone is never primary in P4 (D-2).
@@ -450,7 +451,7 @@ Include a Sending entry and an old-epoch object in the rotation scenario; no rea
 FakeRelay actor owns directory certs/revocations, cards, member lists, grants/CK wraps, sessions/challenges,
 mailboxes with TTL, rate budgets, push registrations, Drop blobs/descriptors/wraps/claims and queues.
 It has no WK, CK, S, DEK or authority private keys; route authorization never decrypts bridge content.
-It checks §8.9 header/session membership, §12.2 login, §7 publication order and §10 atomic CAS/claims.
+It checks §8.9 header/session membership, §12.2 login, §19.2 atomic membership publication and §10 atomic CAS/claims.
 FakeHost actor owns WSK/WXK, epoch keys/history, CK per card, offers/S/sas_nonce, device label registry,
 seq windows/rid records, snapshots, durable mutation receipts and per-entity push timestamp counters.
 It implements §8.6 in order, including silence before tag, budgets, replay/quota semantics and rotation.

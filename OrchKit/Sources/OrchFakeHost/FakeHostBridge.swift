@@ -50,16 +50,18 @@ extension FakeHost {
     /// Deletes an old epoch's key (vector `epoch_whose_key_the_host_deleted_dropped`).
     public func deleteKey(epoch e: UInt32) { core.keys[e] = nil }
 
-    /// Rotation invariants (protocol §8.5):
+    /// Rotation invariants (protocol §8.5, P3-D7 atomic publication):
     /// I1: No data is sealed while the gate is up, except the revocation reply (empty refusals are allowed).
-    /// I2: Clear the gate only after grants, list and installEpoch succeed for one consistent roster.
-    /// I3: Retire failed uncommitted attempts, deleting grants after authenticated acknowledgement; retries use fresh keys and increasing epochs.
+    /// I2: Clear the gate only after one publication (list and every grant, atomically) committed and installEpoch ran for one consistent roster.
+    /// I3: Bytes that may have left the host are resent identically, never resealed; a publication the relay refused is discarded with
+    ///     its uncommitted key, so a key the relay saw for a refused roster is never activated. Epochs never skip at the relay.
     /// I4: The final roster excludes every queued removal and every relay/host revocation.
     /// I5: One task serializes requests; same-roster requests on the same relay join using current credentials.
     /// I6: Failures retain the gate and pending work; pump retries it.
-    /// I7: Recovery leaves no final-epoch grant for a removed/revoked device.
+    /// I7: Recovery leaves no final-epoch grant for a removed/revoked device (a resend that commits an older roster is followed by e+2).
     ///
-    /// Rotation (section 7.2 host rules): `WK_{e+1}`, a grant for every remaining device, then the list.
+    /// Rotation (section 7.2 host rules): persist `WK_{e+1}`, seal and persist a grant for every remaining device, publish the list
+    /// and grants atomically, then seal under `e+1`.
     public func rotate(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
         try await beginRotation(remaining: remaining, relay: relay, session: session).value
     }
@@ -167,47 +169,31 @@ extension FakeHost {
         rotationSessions[ObjectIdentifier(relay)] ?? fallback
     }
 
-    private func retirePending(fallback: RelaySession) async throws {
-        guard let pending = pendingRetirement else { return }
-        let body = try RotationAbandon.signed(workspace: workspace, epoch: pending.epoch, signer: wsk)
-        let session = currentRotationSession(pending.relay, fallback: fallback)
-        let request = try WireRequest(method: "POST",
-            target: "\(HostAPI.base)/workspaces/\(workspace.hex)/rotation-abandon",
-            headers: ["authorization": "Bearer \(session.token)"],
-            body: canonicalJSON(body), clientAddress: "198.51.100.7")
-        _ = try HostAPI.expect(await pending.relay.send(request), status: 200)
-        pendingRetirement = nil
-    }
-
     private func publishRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
-        try await retirePending(fallback: session)
-        guard max(epoch, rotationEpoch) < UInt32.max else { throw Refusal.badEpoch }
-        rotationEpoch = max(epoch, rotationEpoch) + 1
-        let next = rotationEpoch
-        // Allocate before any suspension, including a failure before the first upload.
-        wks[next] = SymmetricKey(data: entropy.bytes(32))
-        do {
-            try await publishHook?()
+        let s = currentRotationSession(relay, fallback: session)
+        try await withPublicationLock {
+            // An earlier attempt's bytes that may have left are settled first (resent identically); what they commit is installed.
+            // When they were this very rotation (its reply was lost), it is done.
+            let before = epoch
+            if let done = try await resolvePending(relay: relay, session: currentRotationSession(relay, fallback: s)),
+               done.epoch > before, rostersEqual(done.roster, remaining) { return }
+            let base = max(epoch, relayEpochFloor)
+            guard base < UInt32.max else { throw Refusal.badEpoch }
+            let next = base + 1
+            _ = wk(next)                                   // persisted before anything is sealed under it
             try await checkRotationRoster(remaining, relay: relay)
             endOpenStreams(newEpoch: next)
-            listSeq += 1
-            for (k, _) in remaining {
-                try await relay.putGrant(try grant(for: k, epoch: next), token: currentRotationSession(relay, fallback: session).token)
+            _ = try preparePublication(roster: remaining, epoch: next, wraps: [])
+            do {
+                try await publishHook?()
                 try await checkRotationRoster(remaining, relay: relay)
+            } catch {
+                pendingPublication = nil                   // never sent: the bytes and the key stayed on the host
+                throw error
             }
-            try await checkRotationRoster(remaining, relay: relay)
-            try await relay.publishMemberList(try memberList(remaining.map { ($0.0.deviceID, $0.1) }, epoch: next, listSeq: max(listSeq, 2)), token: currentRotationSession(relay, fallback: session).token)
-            installEpoch(next)
-            setRoster(remaining)
-        } catch {
-            wks[next] = nil
-            core.keys[next] = nil
-            pendingRetirement = (relay, next)
-            try? await retirePending(fallback: session)
-            throw error
+            try await sendPending(relay: relay, session: currentRotationSession(relay, fallback: s))
         }
-        // A removal during the list actor hop needs a follow-up rotation. Keep this committed
-        // epoch's grants available; the gate stays raised until the filtered roster is published.
+        // A removal during the publication needs a follow-up rotation: the gate stays raised until the filtered roster is published.
         try await checkRotationRoster(remaining, relay: relay)
     }
 

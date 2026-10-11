@@ -22,17 +22,11 @@ enum FixtureCoverage {
         // host-only routes (orch-core); the phone has no client for them, so they stay pending with PR2's other leftovers
         "host_hold.json": .pr2, "host_poll.json": .pr2,
 
-        "card_get.json": .pr3, "card_put.json": .pr3, "card_key.json": .pr3, "card_keys.json": .pr3,
-        "grants.json": .pr3, "members.json": .pr3, "membership.json": .pr3,
-        "device_get.json": .pr3, "device_put.json": .pr3,
-        "revocation_feed.json": .pr3, "revocation_get.json": .pr3, "revocations_post.json": .pr3,
-
-
         "bridge_device_poll.json": .pr5, "bridge_device_post.json": .pr5, "bridge_host_post.json": .pr5
     ]
 
     /// PRs whose files are all replayable now.
-    static let done: Set<PR> = [.pr4]
+    static let done: Set<PR> = [.pr3, .pr4]
 
     /// Per-case overrides of `pending` (case id -> PR), for cases whose enabling PR differs from the rest of their file. None yet.
     static let caseOverrides: [String: PR] = [:]
@@ -41,7 +35,12 @@ enum FixtureCoverage {
     static let replayable: Set<String> = ["session_challenge.json", "session_login.json", "session_logout.json",
                                           "accounts.json", "pair_device_post.json", "pair_host_post.json", "pair_poll.json",
                                           "cert_challenge.json", "cert_rejection.json", "cert_request_get.json",
-                                          "cert_requests_poll.json", "cert_requests_post.json"]
+                                          "cert_requests_poll.json", "cert_requests_post.json",
+                                          // PR3: directory and membership (RelayReplayTests + PR3Replay seeds)
+                                          "card_get.json", "card_put.json", "card_key.json", "card_keys.json",
+                                          "grants.json", "members.json", "membership.json",
+                                          "device_get.json", "device_put.json",
+                                          "revocation_feed.json", "revocation_get.json", "revocations_post.json"]
 
     /// Pinned by the 386a6cb copy: 29 JSON files, 298 cases. Update together with PROVENANCE.md.
     static let expectedFileCount = 29
