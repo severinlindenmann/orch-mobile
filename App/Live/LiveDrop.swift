@@ -41,6 +41,8 @@ final class LiveDrop {
     }
     func cancelUI(clear: Bool) {
         revision += 1; previewURL = nil; expiryTask?.cancel()
+        if pendingDraft != nil { status = "Not sent" }
+        pendingDraft = nil
         if clear { downloads = [:]; objects = [:]; rows = []; failures = []; pendingDraft = nil; stopped = []; confirmed = []; readIDs = []; aliases = [:]; status = nil }
     }
     func report(_ error: any Error) {
@@ -197,19 +199,13 @@ extension LiveDrop {
         let mine = revision
         defer { sending = false }
         do {
-            if draft.attachments.isEmpty {
-                _ = try await service.send(Data(draft.note.utf8), name: "note.txt", mime: "text/plain")
-            } else {
-                var transferFailure: (any Error)?
-                for attachment in draft.attachments {
-                    guard canOperate, mine == revision else { return }
-                    do {
-                        _ = try await service.send(attachment.data, name: attachment.name,
-                                                   transcript: draft.note.isEmpty ? nil : draft.note)
-                    } catch { transferFailure = error }
-                }
-                if let transferFailure { throw transferFailure }
-            }
+            let attachments = draft.attachments.isEmpty
+                ? [DropSendAttachment(id: UUID(), data: Data(draft.note.utf8), name: "note.txt", mime: "text/plain")]
+                : draft.attachments.map { DropSendAttachment(id: $0.id, data: $0.data, name: $0.name, transcript: draft.note.isEmpty ? nil : draft.note) }
+            _ = try await service.sealSend(UUID(), attachments: attachments)
+            pendingDraft = nil
+            guard canOperate, mine == revision else { return }
+            for result in try await service.resumeUploads() { _ = try result.result.get() }
             guard canOperate, mine == revision else { return }
             await refresh()
             guard canOperate, mine == revision else { return }
@@ -217,7 +213,10 @@ extension LiveDrop {
             status = "Sent (confirmed)"
         } catch {
             guard workspace?.usable == true, mine == revision else { return }
+            let unsealed = pendingDraft != nil
+            pendingDraft = nil
             report(error)
+            if unsealed { status = "Not sent" }
             // A durable pending identity is recovered by resumeUploads, never a fresh send.
             do {
                 let updated = try await service.failedUploads()

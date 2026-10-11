@@ -78,3 +78,32 @@ extension DropServiceTests {
         } catch { task.cancel(); await gate.release(); throw error }
     }
 }
+
+extension DropServiceTests {
+    @Test func composeSealsAllOrNothingAndResumesStableIdentities() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let sendID = UUID()
+        let attachments = ["one", "two"].map { DropSendAttachment(id: UUID(), data: Data($0.utf8), name: $0) }
+        let gate = DropGate(), completed = DropCompletion<[DropUploadIdentity]>()
+        await service.setHook { if $0 == "send.sealed:1" { await gate.hit() } }
+        let task = Task {
+            do { await completed.set(.success(try await service.sealSend(sendID, attachments: attachments))) }
+            catch { await completed.set(.failure(error)) }
+        }
+        do {
+            try await gate.wait()
+            #expect(try await phone.container.database().query("SELECT object FROM drop_uploads").isEmpty)
+            await service.suspend(); await gate.release()
+            await #expect(throws: DropError.suspended) { try await completed.value() }
+            #expect(try await phone.container.database().query("SELECT object FROM drop_uploads").isEmpty)
+            try await service.activate(); await service.setHook(nil)
+            let ids = try await service.sealSend(sendID, attachments: attachments)
+            #expect(try await service.list(.sending).isEmpty)
+            #expect(try await service.sealSend(sendID, attachments: attachments) == ids)
+            let resumed = try await service.resumeUploads()
+            #expect(resumed.count == 2)
+            for row in resumed { _ = try row.result.get() }
+            #expect(try await service.confirmedUploads().count == 2)
+        } catch { task.cancel(); await gate.release(); throw error }
+    }
+}

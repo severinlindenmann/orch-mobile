@@ -49,6 +49,17 @@ public struct DropUploadResult: Sendable {
     public let result: Result<DropObject, any Error>
 }
 
+public struct DropSendAttachment: Sendable {
+    public let id: UUID
+    public let data: Data
+    public let name: String
+    public let mime: String
+    public let transcript: String?
+    public init(id: UUID, data: Data, name: String, mime: String = "application/octet-stream", transcript: String? = nil) {
+        self.id = id; self.data = data; self.name = name; self.mime = mime; self.transcript = transcript
+    }
+}
+
 /// Workspace-scoped Drop client. Other-device certificates must be verified by the caller against
 /// the workspace owner before being supplied; membership is checked against a signed member list.
 public actor DropService {
@@ -313,6 +324,43 @@ public actor DropService {
         }
         try requireAvailable()
         return try await sendData(data, name: name, mime: mime, transcript: transcript, expiresMs: expiresMs, document: document, chosenObject: nil, kind: kind)
+    }
+
+    /// Atomically commits a whole compose send. No relay operation occurs during sealing.
+    /// Object identities bind workspace, send UUID and attachment UUID; retries reuse stored ciphertext.
+    public func sealSend(_ sendID: UUID, attachments: [DropSendAttachment]) async throws -> [DropUploadIdentity] {
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.sealSend(sendID, attachments: attachments) }
+        }
+        try await check()
+        guard !attachments.isEmpty, attachments.count <= 5,
+              Set(attachments.map(\.id)).count == attachments.count,
+              attachments.reduce(0, { $0 + $1.data.count }) <= Self.maxPlaintextBytes else { throw DropError.tooLarge }
+        let epoch = try await session.currentEpoch(), wk = try await session.dropKey(epoch)
+        let now = session.cfg.wall.nowMs
+        var sealed: [(String, Data)] = []
+        for attachment in attachments {
+            try await check()
+            let digest = SHA256.hash(data: Data("drop-send:\(card.workspace.hex):\(sendID):\(attachment.id)".utf8))
+            let hex = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+            let object = ID16(hex: hex)!
+            let body = try DropUpload.seal(attachment.data,
+                metadata: DropMetadata(name: attachment.name, mime: attachment.mime, size: Int64(attachment.data.count), transcript: attachment.transcript),
+                object: object, workspace: card.workspace, author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig,
+                wxk: card.wxk, wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: wk, epoch: epoch,
+                now: now, expiry: DropUpload.addMs(now, 604800000))
+            sealed.append((hex, body))
+            try await hook?("send.sealed:\(sealed.count)")
+        }
+        let db = try await session.cfg.container.database()
+        try await check()
+        let batch = sealed
+        try await db.transaction { tx in
+            for (object, body) in batch {
+                try tx.execute("INSERT OR IGNORE INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(object), .blob(body)])
+            }
+        }
+        return batch.map { DropUploadIdentity(object: ID16(hex: $0.0)!, version: 1) }
     }
 
     /// Fresh DEK per version. The exact sealed upload is durable before the first PUT.
