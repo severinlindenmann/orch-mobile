@@ -303,12 +303,12 @@ extension PairHarness {
             let joinStarted = try #require(h.pairingRecord?.joinStartedMs)
             await h.host.holdMemberList(until: joinStarted + offset)
             let end = try await h.drive(steps: 120, until: { $0.isTerminal || $0 == .failed(.joiningTimedOut) })
-            if expectReady { #expect(isReady(end), "list at +\(offset)") }
+            if expectReady { #expect(isReady(end), "list at +\(offset): \(end)") }
             else {
                 #expect(end == .failed(.joiningTimedOut), "list at +\(offset): \(end)")      // the 60 s cap is inclusive; the list came at the same instant
                 await h.coordinator.retryJoin()
                 let after = try await h.drive(steps: 60, until: { $0.isTerminal })
-                #expect(isReady(after))
+                #expect(isReady(after), "after retry: \(after)")
             }
         }
     }

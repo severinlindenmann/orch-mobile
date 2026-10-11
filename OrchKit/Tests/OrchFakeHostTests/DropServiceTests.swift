@@ -43,14 +43,14 @@ extension World {
         #expect(r.status == 201)
         let got = try await w.transport.dropGet(objectID: id, version: 1, part: .blob, session: w.phoneSession)
         #expect(got.status == 200 && got.body.prefix(4) == Drop.magic)
-        let wrong = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions/1", headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(w.phoneSession.token)"], body: body, clientAddress: "test"))
+        let wrong = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions/1", headers: ["authorization": "Bearer \(w.phoneSession.token)"], body: body, clientAddress: "test"))
         #expect(wrong.status != 201)
     }
     @Test func testDropPutRequiresIfMatch428() async throws {
         let w = try await World.drop(), id = ID16.fresh(0x72)
         let body = try await w.dropBody(id: id)
         for value in [nil, "", "01", "-1", "1.0", "18446744073709551616"] as [String?] {
-            var headers = [HostAPI.versionHeader: "0", "authorization": "Bearer \(w.phoneSession.token)"]
+            var headers = ["authorization": "Bearer \(w.phoneSession.token)"]
             headers["if-match"] = value
             let r = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions", headers: headers, body: body, clientAddress: "test"))
             #expect(r.status == 428 && errorCode(r) == "precondition_required")
@@ -178,7 +178,7 @@ extension DropServiceTests {
             let record = DropWrapRecord(object: id, version: 1, targetKind: .wk, target: host.workspace, keyVersion: 1, wrap: Data(repeating: 1, count: 64))
             let signed = try DropClaim.make(wsk: host.wsk, object: id, workspace: host.workspace, wrap: record)
             return try await w.relay.send(WireRequest(method: "POST", target: "/drop/\(id.hex)/claim",
-                headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"], body: canonicalJSON(signed.json), clientAddress: "test"))
+                headers: ["authorization": "Bearer \(session.token)"], body: canonicalJSON(signed.json), clientAddress: "test"))
         }
         async let a = claim(w.host, w.hostSession)
         async let b = claim(other, otherSession)
@@ -241,7 +241,7 @@ extension DropServiceTests {
         let transport = try RoutedRelayTransport(context: w.env.context, origin: w.env.context.origin, sender: adversary, clientAddress: "test")
         let phone = try await w.makePhone(transport: transport), service = try await w.dropService(phone)
         let first = try await service.send(Data("secret".utf8), name: "doc", kind: .document)
-        let query = try canonicalJSON(["host_api": 0, "workspace_id": .string(w.ws.hex), "direction": "sending"])
+        let query = try canonicalJSON(["workspace_id": .string(w.ws.hex), "direction": "sending"])
         let old = try await w.transport.dropList(query, session: w.phoneSession).body
         await adversary.set(blob: true)
         await #expect(throws: (any Error).self) { _ = try await service.download(first) }
@@ -265,7 +265,7 @@ extension DropServiceTests {
         try staging.add(.text("keep until durable")); try staging.commit(note: nil)
         let inbox = ShareInbox(area: area)
         let job = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /v2/drop/")
         await #expect(throws: (any Error).self) { _ = try await service.importShareJob(job, inbox: inbox) }
         #expect(FileManager.default.fileExists(atPath: job.dir.path))
         let restarted = try await w.dropService(phone)
@@ -282,7 +282,7 @@ extension DropServiceTests {
         let token = try await host.publishInitial(relay: w.relay, transport: w.transport, devices: [(w.phone, w.phoneCert, World.all)])
         _ = try await host.pump(relay: w.relay, transport: w.transport, session: token)
         _ = try await host.pump(relay: w.relay, transport: w.transport, session: token)
-        let query = try canonicalJSON(["host_api": 0, "workspace_id": .string(host.workspace.hex), "direction": "received"])
+        let query = try canonicalJSON(["workspace_id": .string(host.workspace.hex), "direction": "received"])
         let entries = try json(await w.transport.dropList(query, session: w.phoneSession))["objects"]!.array!
         #expect(entries.count == 2)
         for entry in entries {
@@ -414,7 +414,7 @@ extension DropServiceTests {
         try staging.add(.text("abandoned")); try staging.commit(note: nil)
         let inbox = ShareInbox(area: area)
         let job = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /v2/drop/")
         await #expect(throws: TransportError.disconnected) { _ = try await service.importShareJob(job, inbox: inbox) }
         phone.clock.advance(milliseconds: 604800001); w.clock.advance(milliseconds: 604800001)
         let outcomes = try await service.resumeUploads()
@@ -460,7 +460,7 @@ extension DropServiceTests {
         let parent = try await service.send(Data("parent".utf8), name: "doc", kind: .document)
         let id = parent.descriptor.object, db = try await phone.container.database()
         // Fail the pre-PUT lookup, leaving a durable version 2 that never reached the relay.
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /v2/drop/")
         await #expect(throws: TransportError.disconnected) {
             _ = try await service.send(Data("discarded".utf8), name: "doc", document: parent)
         }
@@ -533,7 +533,7 @@ extension DropServiceTests {
         let inbox = ShareInbox(area: area)
         let job = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
         let db = try await phone.container.database()
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /v2/drop/")
         await #expect(throws: TransportError.disconnected) { try await service.importShareJob(job, inbox: inbox) }
         let id = try #require(await db.query("SELECT object FROM drop_imports WHERE item=0").first?.text("object").flatMap(ID16.init(hex:)))
         try await service.discardUpload(object: id, version: 1)
@@ -549,7 +549,7 @@ extension DropServiceTests {
         let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
         let phone = try await w.makePhone(), service = try await w.dropService(phone)
         let (inbox, job) = try stagedDrop(w), db = try await phone.container.database()
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /v2/drop/")
         await #expect(throws: TransportError.disconnected) { try await service.importShareJob(job, inbox: inbox) }
         let id = try #require(await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).first?.text("object").flatMap(ID16.init(hex:)))
         let gate = HookGate(), point = "resume.row:\(id.hex)"
@@ -572,7 +572,7 @@ extension DropServiceTests {
         let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
         let phone = try await w.makePhone(), service = try await w.dropService(phone)
         let (inbox, job) = try stagedDrop(w), db = try await phone.container.database()
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /v2/drop/")
         await #expect(throws: TransportError.disconnected) { try await service.importShareJob(job, inbox: inbox) }
         let id = try #require(await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).first?.text("object").flatMap(ID16.init(hex:)))
         if withoutUploadRow {

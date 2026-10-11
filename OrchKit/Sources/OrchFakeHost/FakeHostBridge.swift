@@ -172,8 +172,8 @@ extension FakeHost {
         let body = try RotationAbandon.signed(workspace: workspace, epoch: pending.epoch, signer: wsk)
         let session = currentRotationSession(pending.relay, fallback: fallback)
         let request = try WireRequest(method: "POST",
-            target: "/mobile/host-api/0/workspaces/\(workspace.hex)/rotation-abandon",
-            headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"],
+            target: "\(HostAPI.base)/workspaces/\(workspace.hex)/rotation-abandon",
+            headers: ["authorization": "Bearer \(session.token)"],
             body: canonicalJSON(body), clientAddress: "198.51.100.7")
         _ = try HostAPI.expect(await pending.relay.send(request), status: 200)
         pendingRetirement = nil

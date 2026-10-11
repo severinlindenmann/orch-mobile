@@ -34,8 +34,8 @@ import OrchProtocol
             return ["o": o, "sig": .string(B64U.encode(sig))]
         }
         func send(_ value: JSONValue, token: String? = nil) async throws -> WireReply {
-            try await w.relay.send(WireRequest(method: "POST", target: "/mobile/host-api/0/workspaces/\(w.ws.hex)/rotation-abandon",
-                headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(token ?? w.hostSession.token)"],
+            try await w.relay.send(WireRequest(method: "POST", target: "/v2/workspaces/\(w.ws.hex)/rotation-abandon",
+                headers: ["authorization": "Bearer \(token ?? w.hostSession.token)"],
                 body: canonicalJSON(value), clientAddress: "198.51.100.7"))
         }
         try await w.relay.putGrant(try await w.host.grant(for: w.phone, epoch: 2), token: w.hostSession.token)
@@ -58,7 +58,7 @@ import OrchProtocol
     @Test func lostRetirementAcknowledgementRetriesBeforeAllocation() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
-        let route = "POST /mobile/host-api/0/workspaces/\(w.ws.hex)/rotation-abandon"
+        let route = "POST /v2/workspaces/\(w.ws.hex)/rotation-abandon"
         faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: route)
             .enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: route)
         let calls = Counter()

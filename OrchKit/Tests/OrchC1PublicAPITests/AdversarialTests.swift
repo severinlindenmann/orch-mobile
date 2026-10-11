@@ -166,7 +166,7 @@ private func custody() -> (any DeviceKeyCustody, SecretVault) {
         // Transport: every retained handle fails before anything is sent, and the relay holds nothing.
         await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await retainedTransport.challenge() }
         await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await client.card(workspace: host.workspace, session: opened.session) }
-        await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await retainedRelay.send(WireRequest(method: "POST", target: "/mobile/host-api/0/session/challenge", headers: ["Orch-Host-API": "0"], body: HostAPI.json(), clientAddress: "a")) }
+        await #expect(throws: TransportError.realm(.staleGeneration)) { _ = try await retainedRelay.send(WireRequest(method: "POST", target: "/v2/session/challenge", headers: [:], body: HostAPI.json(), clientAddress: "a")) }
         let sessionsAfter = await retainedRelay.sessionCount()
         #expect(sessionsAfter == 0)
         let hasCert = await retainedRelay.hasCertificate(env.deviceID), listSeq = await retainedRelay.memberListSeq(workspace: host.workspace)
@@ -218,16 +218,16 @@ private func custody() -> (any DeviceKeyCustody, SecretVault) {
 
     @Test func retryAfterIsStrictAndClamped() throws {
         let r = try WireReply(status: 429, headers: ["Retry-After": "-99999999"], body: HostAPI.json(["error": .string("rate_limited")]))
-        #expect(HostAPI.failure(of: r) == .adapter(.rateLimited(retryAfter: nil)))
+        #expect(HostAPI.failure(of: r) == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: nil)))
         let big = try WireReply(status: 429, headers: ["Retry-After": "99999999"], body: HostAPI.json(["error": .string("rate_limited")]))
-        #expect(HostAPI.failure(of: big) == .adapter(.rateLimited(retryAfter: 3600)))
+        #expect(HostAPI.failure(of: big) == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 3600)))
     }
 
     @Test func statusFamilyIsChecked() throws {
         let a = try WireReply(status: 500, body: try canonicalJSON(["error": .string("revoked")]))
         let b = try WireReply(status: 403, body: HostAPI.json(["error": .string("unauthenticated")]))
-        #expect(HostAPI.failure(of: a) == .adapter(.badReply))
-        #expect(HostAPI.failure(of: b) == .adapter(.badReply))
+        #expect(HostAPI.failure(of: a) == .badReply)
+        #expect(HostAPI.failure(of: b) == .badReply)
     }
 
     @Test func sessionDescriptionRedactsTheBearer() async throws {

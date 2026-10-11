@@ -18,14 +18,15 @@ Semantic changes may still be necessary when upstream resolves provisional contr
 Screens receive WorkspaceAPI, DropService and PairingCoordinator; they never receive FakeHost.
 PreviewWorkspaceAPI is for previews only, never Demo or integration tests.
 
-Except for the existing protocol §10.6 Drop PUT and §10.5 claim routes, external routes defined here
-start `/mobile/host-api/0`; each adapter JSON object has `host_api: 0`.
-This is independent of signed protocol objects' `v: 2` and the ORB2 version/suite bytes.
+Except for the existing protocol §10.6 Drop PUT and §10.5 claim routes, relay routes start `/v2`
+(protocol-v2 §19, P3-D1). There is no relay adapter version: relay requests and responses carry neither
+an `Orch-Host-API` header nor a `host_api` field, and JSON field sets are exactly those listed (§19.6).
+Errors are always §14's `{"error": code, ...}` (strict §2.3 JSON); there are no adapter-only errors.
+`Retry-After` is integer delta-seconds only (HTTP dates are ignored).
+The `host_api: 0` field inside bridge-tunnelled HOST views (`/v2/snapshot`, `/v2/tickets/{key}`,
+`/v2/questions/{id}`, `new_ticket`, `decide` data below) is a different thing: those are the host's
+sealed response data, never a relay route, and keep their provisional version field unchanged.
 Never add `host_api` to a certificate, grant, card, pairing meta, decision or §14 refusal.
-Binary requests carry `Orch-Host-API: 0`; adapter JSON carries the version in its body too.
-GET requests carry that header; their JSON responses carry `host_api`. No version negotiation/fallback.
-Unsupported adapter versions return HTTP 400 `{"host_api":0,"error":"unsupported_host_api"}`.
-This error is provisional and must not masquerade as a protocol §14 refusal.
 Strict §2 encodings apply: hex16 ids, canonical b64u bytes, integer milliseconds, no duplicate keys.
 JSON examples use `$name` for typed placeholders, not literal values; listed field sets are exact.
 `Signed<T>` below means the unchanged protocol object, including the card's special outer shape.
@@ -132,22 +133,24 @@ Persist before sending; perform no await inside a store transaction. No partial 
 
 ### Common relay adapter
 
-Let `R = /mobile/host-api/0`. Routes under R are provisional v0, even when bodies reuse v2.
-`POST R/session/challenge` has `{"host_api":0}` and returns
-`{"host_api":0,"challenge":"$b64u32","expires_ms":$ms}`.
-`POST R/session/login` has `{"host_api":0,"challenge":"$b64u32","kind":"device",
+Let `R = /v2` (protocol-v2 §19). Request and response bodies are the exact field sets shown, with no version field.
+`POST R/session/challenge` has `{}` and returns `{"challenge":"$b64u32","expires_ms":$ms}`.
+`POST R/session/login` has `{"challenge":"$b64u32","kind":"device",
 "id":"$device","sig":"$b64u64"}`; workspace actors use `kind:"workspace"`.
-Response: `{"host_api":0,"token":"$opaque","expires_ms":$ms}`. Directory supplies cert/card.
+Response: `{"token":"$opaque","expires_ms":$ms}`. Directory supplies cert/card.
+`POST R/session/logout` (device or workspace token) has `{}` and returns `{}`; it is idempotent and is 200
+for an unknown, expired or already-logged-out token. Session JSON bodies are capped at 16 KiB (413 `too_large`
+before parsing); at most eight live tokens per device (429 `quota_exceeded` with `Retry-After`).
 Signature bytes, own-origin binding, challenge consumption on every attempt, 60-second challenge and
 15-minute session lifetime are exactly §12.2. Session is per relay+realm, authorized per workspace list.
 There is no additional JSON signature or seal; HTTPS protects bearer/token bodies in live transport.
-Use §14 HTTP errors for protocol failures; adapter-only `unauthenticated` is HTTP 401.
+Use §14 HTTP errors for all failures; `unauthenticated` is HTTP 401 (§19.6).
 Confirm route shapes, session scope and credential lookup with P3 ([gap 23](gaps.md)).
 
 Authenticated calls use `Authorization: Bearer <token>`. Tokens stay in app-only custody, not logs/NSE.
-`POST R/workspaces/{ws}/bridge/{rid}` carries raw ORB2 bytes, returns 202 with `{"host_api":0}`.
+`POST R/workspaces/{ws}/bridge/{rid}` carries raw ORB2 bytes, returns 202 with `{}`.
 `GET` on that route polls; optional `after` is the last received chunk index (absent before chunk 0).
-Response: `{"host_api":0,"chunks":[{"id":"$rid","idx":0,"last":true,"stream":false,
+Response: `{"chunks":[{"id":"$rid","idx":0,"last":true,"stream":false,
 "envelope":"$b64uORB2"}]}`. An empty list means no available chunks, not host approval or refusal.
 Poll is non-consuming; retain sealed bodies 60 seconds (§8.9). Validate clear fields against the header.
 Route/header mismatch is 400 `malformed`; bad membership/session is 403 `not_eligible`/401 `unauthenticated`.
@@ -264,7 +267,7 @@ Use the common chunk wrapper and `after` semantics above, no bearer required. No
 The route ws/offer/rid must equal header workspace/stream/rid. Limit envelopes to 64 KiB (§8.9).
 V0 limiter: 60 posts/minute per workspace and 60/minute per client address; 120 GET polls/minute
 per address. These provide at least 3× one honest phone's 5-second cadence, including initial traffic.
-HTTP 429 `{"host_api":0,"error":"rate_limited"}` has `Retry-After: 5`; budgets use injected clock.
+HTTP 429 `{"error":"rate_limited"}` carries integer delta-seconds `Retry-After` (the remaining interval rounded up; the fake's default is 5 and is configurable, clients must never assume 5); budgets use injected clock.
 Send pair_status no faster than every 5 seconds, backing off to 10 seconds in cert_pending and
 20/40/60 seconds on transport failure or 429; honor Retry-After as a minimum. GET once with each
 POST, then at most once per 5 seconds while awaiting its answer; coalesce retries and never create
@@ -288,10 +291,10 @@ No credential_begin/finish, assert or Type operations in native P4; do not claim
 
 ### Grants, member lists, card and CK
 
-`GET R/workspaces/{ws}/grants` returns `{"host_api":0,"grants":[$signedWKGrant]}`.
+`GET R/workspaces/{ws}/grants` returns `{"grants":[$signedWKGrant]}`.
 Optional `epoch=<positive integer>` selects one; default returns all grants eligible for this device.
-`GET R/workspaces/{ws}/members` returns `{"host_api":0,"member_list":$signedMemberList}`.
-`GET R/workspaces/{ws}/card` returns `{"host_api":0,"card":$card}`.
+`GET R/workspaces/{ws}/members` returns `{"member_list":$signedMemberList}`.
+`GET R/workspaces/{ws}/card` returns `{"card":$card}`.
 All require authenticated current membership and non-revocation; recipient comes from the session.
 No foreign-device selector. Missing data is 404 `not_found`, unauthorized is 403 `not_eligible`.
 Protocol signature/shape errors retain §14 codes; these HTTP fetch wrappers have no additional signature.
@@ -300,7 +303,7 @@ Verify signatures, identity binding and monotonic epoch/list/card counters befor
 Confirmed fetch routes and authorization are still required from P3 ([gap 24](gaps.md)).
 
 `GET R/workspaces/{ws}/card-key?card_seq=N` returns exactly
-`{"host_api":0,"workspace_id":"$ws","device_id":"$sessionDevice","card_seq":N,"sealed":"$b64u"}`.
+`{"workspace_id":"$ws","device_id":"$sessionDevice","card_seq":N,"sealed":"$b64u"}`.
 FakeHost creates and uploads this wrap only after a valid device certificate, in §8.3 step 6
 alongside the WK grant, before join completes. No WK grant or CK wrap may exist for an uncertified
 joining device, including during pending/cert_pending or after rejection, R1 alarm or primary expiry.
@@ -320,7 +323,7 @@ Require the verified member list to contain this device_id with scopes exactly e
 list epoch >= approved.epoch (all >= 1), and the installed grant epoch equal to that list epoch.
 A mismatch fails join; no partial workspace install or silent origin change is permitted.
 
-`GET R/devices/{device}/revocation` returns `{"host_api":0,"record":$signedRevocation}`;
+`GET R/devices/{device}/revocation` returns `{"record":$signedRevocation}`;
 absence is 404 `not_found`. This proposed gap-24 route takes no session: the record is a public PK-signed object and a
 revoked device has no session. Decided (owner, 10 October 2026): a revoked device gets no relay session. Login for a revoked
 device answers 403 `revoked` (after its signature verified, so strangers learn nothing), publishing a revocation ends the
@@ -334,15 +337,16 @@ means removed from that workspace: stop sending and offer local wipe, not identi
 ### Push registration
 
 `POST R/push/register` body:
-`{"host_api":0,"workspace_id":"$ws","registration_id":"$hex16","env":"sandbox",
+`{"workspace_id":"$ws","registration_id":"$hex16","env":"sandbox",
 "topic":"io.severin.orch","token":"$b64uAPNsToken"}`.
 `env` is `sandbox|production|demo`; demo token is random synthetic bytes, never an APNs token.
-Response is `{"host_api":0,"registration_id":"$id","registered":true}`.
+Response is `{"registration_id":"$id","registered":true}`.
+TODO(orch-4e): push registration is not in protocol-v2 §19; the FakeRelay no longer stubs it with 501 (it answers 404 `not_found`) until upstream defines the route.
 Authenticated session supplies device_id; register requires current membership and a valid certificate.
 Same registration id/body is idempotent; replacement token uses a new registration_id.
 Store per device/workspace/env/topic, retiring the previous registration for that tuple.
-`POST R/push/unregister` has `{"host_api":0,"workspace_id":"$ws","registration_id":"$id"}`;
-response is `{"host_api":0,"registration_id":"$id","registered":false}`, including if already absent.
+`POST R/push/unregister` has `{"workspace_id":"$ws","registration_id":"$id"}`;
+response is `{"registration_id":"$id","registered":false}`, including if already absent.
 `registration_id: null` in request and response means remove all of this device's registrations in
 that workspace; membership is unchanged. This is the bounded network cleanup used by local Leave.
 Unregister authenticates ownership of the registration and allows a removed but non-revoked device.
@@ -394,11 +398,12 @@ DropService owns typed §10 objects and verified downloads, using RelayTransport
 Use protocol §10.6 `PUT /drop/{id}/versions` unchanged: version is in the descriptor, not the path.
 Only `POST R/drop/list`, `GET R/drop/{id}/versions/{version}/{descriptor|wraps|blob}` and JSON packaging
 are provisional v0. Confirm packaging with P3 ([gap 25](gaps.md)).
-Put JSON: `{"host_api":0,"descriptor":$signedDropObject,"wraps":[$wrap],"blob":"$b64uORD2"}`.
-List request: `{"host_api":0,"workspace_id":"$ws","direction":"received"}` (`received|sending`).
-List reply: `{"host_api":0,"objects":[{"descriptor":$signedDropObject,"wraps":[$wrap]}]}`.
-Get descriptor/wraps replies use `{"host_api":0,"descriptor":$signedDropObject}` / `{"host_api":0,"wraps":[],"claimed_by":null}`;
-blob response is raw ORD2 with version header. Put reply is `{"host_api":0,"version":1}`.
+Put JSON: `{"descriptor":$signedDropObject,"wraps":[$wrap],"blob":"$b64uORD2"}`.
+List request: `{"workspace_id":"$ws","direction":"received"}` (`received|sending`).
+List reply: `{"objects":[{"descriptor":$signedDropObject,"wraps":[$wrap]}]}`.
+Get descriptor/wraps replies use `{"descriptor":$signedDropObject}` / `{"wraps":[],"claimed_by":null}`;
+blob response is raw ORD2 with version header. Put reply is `{"version":1}`.
+TODO(orch-4e): Drop routes are not in protocol-v2 §19 yet. Open question: do they move under `/v2` (the phone and FakeRelay put `list` and `GET versions/...` there now, while `PUT /drop/{id}/versions` and `POST /drop/{id}/claim` keep their §10.6/§10.5 spelling) and what is the final field set.
 Author dk_sig/WSK signs the existing descriptor; fresh DEK seals content/meta; existing §10.3 wraps only.
 No extra signature on wrappers. Verify author authorization, content_hash, dek_commit, chain and latest version.
 Every PUT requires decimal If-Match without leading zeros: missing/malformed is HTTP 428
@@ -409,7 +414,7 @@ Later versions obey §10.6 CAS/parent_hash unchanged. A lost successful PUT foll
 If-Match returns 409; fetch and compare the committed descriptor/blob to reconcile it.
 Authenticated read/write scope, recipients and expiry gate access; bad eligibility is not_eligible.
 Host-only claim uses existing `POST /drop/{id}/claim` (§10.5), never a phone-generated WSK signature.
-Explicit inbox claim uses bridge meta `{"op":"drop_claim","object_id":"$id","version":1}` with empty data and **operate** scope. It returns status 200 and `{"host_api":0}` after the host's WSK-signed §10.5 claim succeeds. Phones never sign claims. Download refuses an unclaimed inbox (`unavailableKey`); wraps read-back includes `claimed_by` (workspace ID or null).
+Explicit inbox claim uses bridge meta `{"op":"drop_claim","object_id":"$id","version":1}` with empty data and **operate** scope. It returns status 200 and `{}` after the host's WSK-signed §10.5 claim succeeds. Phones never sign claims. Download refuses an unclaimed inbox (`unavailableKey`); wraps read-back includes `claimed_by` (workspace ID or null).
 Old objects use exact `drop_rewrap` (§7.5), requiring look scope. It refuses an unclaimed inbox; an already-claimed inbox receives a current-WK wrap through ordinary rewrap publication, preserving claim ownership. No historical WK grant is issued to a new device.
 Send/recovery require signed current membership with operate scope and matching epoch grants. An uncommitted stale-epoch upload is resealed with a fresh DEK only after read-back confirms an empty slot. Recovery returns per-upload outcomes and persists terminal conflicts/rejections; retry/discard are explicit.
 `downloadVerified` exposes authenticated name, MIME, plaintext size and transcript with the plaintext URL through `DropDownload`; keys remain private.

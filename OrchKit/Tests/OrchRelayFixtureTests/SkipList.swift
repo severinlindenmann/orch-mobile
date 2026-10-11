@@ -1,7 +1,8 @@
 /// Which relay HTTP v2 fixture routes the mobile relay adapter can replay (behaviour, not wire shape), and which PR enables the rest.
 ///
-/// PR1 (this one) is test-only plumbing: the adapter still speaks the old wire, so NO case is replayable yet and every case is
-/// pending. Each later PR moves its files from `pending` to `replayable` in the same change that adds the replay test; the
+/// PR1 was test-only plumbing (every case pending). PR2 moves the wire to `/v2` without `host_api` and enables the session
+/// files; host_hold and host_poll are host-only routes (orch-core), which the phone never calls, so they stay pending here.
+/// Each later PR moves its files from `pending` to `replayable` in the same change that adds the replay test; the
 /// coverage test fails if a case falls out of both lists, is in both, or if a listed file no longer exists. The set of
 /// cases can therefore neither shrink silently (a fixture re-copy that drops cases changes `expectedCaseCount`) nor be skipped silently.
 enum FixtureCoverage {
@@ -18,7 +19,7 @@ enum FixtureCoverage {
 
     /// Pending, by fixture file.
     static let pending: [String: PR] = [
-        "session_challenge.json": .pr2, "session_login.json": .pr2, "session_logout.json": .pr2,
+        // host-only routes (orch-core); the phone has no client for them, so they stay pending with PR2's other leftovers
         "host_hold.json": .pr2, "host_poll.json": .pr2,
 
         "card_get.json": .pr3, "card_put.json": .pr3, "card_key.json": .pr3, "card_keys.json": .pr3,
@@ -36,8 +37,8 @@ enum FixtureCoverage {
     /// Per-case overrides of `pending` (case id -> PR), for cases whose enabling PR differs from the rest of their file. None yet.
     static let caseOverrides: [String: PR] = [:]
 
-    /// Fixture files whose cases the adapter replays today (all cases of the file). Empty in PR1.
-    static let replayable: Set<String> = []
+    /// Fixture files whose cases the FakeRelay replays today (all cases of the file; see RelayReplayTests).
+    static let replayable: Set<String> = ["session_challenge.json", "session_login.json", "session_logout.json"]
 
     /// Pinned by the 386a6cb copy: 29 JSON files, 298 cases. Update together with PROVENANCE.md.
     static let expectedFileCount = 29

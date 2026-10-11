@@ -51,7 +51,6 @@ import OrchTestVectors
                 clock.advance(milliseconds: step["now_ms"].i64 - clock.nowMs)
                 var body: [String: JSONValue] = ["challenge": .string(B64U.encode(challenge)), "kind": .string(step["kind"].str),
                                                  "id": .string(step["id"].str), "sig": .string(B64U.encode(step["sig"].hexData))]
-                body["host_api"] = 0
                 let reply = try await sender.t.login(try canonicalJSON(.object(body)))
                 #expect(reply.status == step["expect"]["status"].i64.asInt, "\(c["name"].str)")
                 if let e = step["expect"]["error"].string {
@@ -87,7 +86,7 @@ import OrchTestVectors
         w.clock.advance(milliseconds: 15 * 60_000 - 1)
         _ = try await c.card(workspace: w.ws, session: opened.session)
         w.clock.advance(milliseconds: 1)
-        await #expect(throws: ClientError.adapter(.unauthenticated)) { _ = try await c.card(workspace: w.ws, session: opened.session) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))) { _ = try await c.card(workspace: w.ws, session: opened.session) }
     }
 
     @Test func loginSignsTheRelaysOwnOriginAndKnownIdentitiesOnly() async throws {
@@ -112,7 +111,7 @@ import OrchTestVectors
         #expect(r4.status == 401)
         // Malformed bodies still consume a valid challenge.
         let ch4 = try HostAPI.challenge(try HostAPI.expect(try await w.transport.challenge()))
-        let junk = try canonicalJSON(["host_api": 0, "challenge": .string(B64U.encode(ch4.challenge)), "kind": "device", "id": "nothex", "sig": "x"])
+        let junk = try canonicalJSON(["challenge": .string(B64U.encode(ch4.challenge)), "kind": "device", "id": "nothex", "sig": "x"])
         #expect(try await w.transport.login(junk).status == 400)
         let r5 = try await w.transport.login(HostAPI.loginBody(challenge: ch4.challenge, kind: .device, id: w.phoneID, signature: asDevice))
         #expect(errorCode(r5) == "unknown_challenge")
@@ -124,13 +123,13 @@ import OrchTestVectors
         let w = try await World.make()
         let c = RelayClient(transport: w.transport)
         // The record route is session-less; before any revocation there is nothing to find.
-        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await c.revocation(device: w.phoneID) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.revocation(device: w.phoneID) }
         #expect(await w.relay.sessionCount() == 2)                // the phone's and the host's
         let rec = try await w.primary.revoke(device: w.phoneID)
         try await w.relay.publishRevocation(rec)
         // Publishing the revocation ends the device's sessions at once.
         #expect(await w.relay.sessionCount() == 1)
-        await #expect(throws: ClientError.adapter(.unauthenticated)) { _ = try await c.card(workspace: w.ws, session: w.phoneSession) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))) { _ = try await c.card(workspace: w.ws, session: w.phoneSession) }
         // A fresh login for the revoked device is refused after the signature verifies: 403 revoked, no token.
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) {
             _ = try await c.openDeviceSession(identity: w.env.device, deviceID: w.phoneID)
@@ -147,13 +146,13 @@ import OrchTestVectors
         #expect(p.deviceID == w.phoneID)
         // Raw: no Authorization header is needed, and a junk one is ignored rather than trusted or refused.
         for auth in [nil, "Bearer junk"] as [String?] {
-            var h = ["Orch-Host-API": "0"]; if let auth { h["Authorization"] = auth }
-            let raw = try await w.relay.send(WireRequest(method: "GET", target: "/mobile/host-api/0/devices/\(w.phoneID.hex)/revocation", headers: h, clientAddress: "a"))
+            var h: [String: String] = [:]; if let auth { h["Authorization"] = auth }
+            let raw = try await w.relay.send(WireRequest(method: "GET", target: "/v2/devices/\(w.phoneID.hex)/revocation", headers: h, clientAddress: "a"))
             let keys = Set(try json(raw).keys)
-            #expect(raw.status == 200 && keys == ["host_api", "record"])
+            #expect(raw.status == 200 && keys == ["record"])
         }
         // A device that was not revoked has no record: 404, for the same route.
-        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await c.revocation(device: w.primaryID) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.revocation(device: w.primaryID) }
         // Revocation drops what the device held: its grants, its card-key wrap, its queued requests.
         #expect(await w.relay.grantCount(workspace: w.ws, device: w.phoneID) == 0)
         #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: w.phoneID, cardSeq: 1) == false)

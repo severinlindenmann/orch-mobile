@@ -1,7 +1,7 @@
 import Foundation
 import OrchProtocol
 
-/// The one implementation of `RelayTransport`: it spells every call as an HTTP request (host-api sections 1 and 3) and
+/// The one implementation of `RelayTransport`: it spells every call as an HTTP request (protocol-v2 section 19) and
 /// hands it to a `RequestSender`. A future HTTPS client is a sender; the in-process FakeRelay is another. The realm
 /// context and origin are fixed at construction; every call re-checks them before the sender is touched.
 public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
@@ -24,7 +24,6 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     private func request(_ method: String, _ target: String, body: Data = Data(), contentType: String? = nil,
                          session: RelaySession? = nil, extra: [String: String] = [:]) throws -> WireRequest {
         var h = extra
-        h[HostAPI.versionHeader] = "0"
         if let ct = contentType { h["content-type"] = ct }
         if let s = session { h["authorization"] = "Bearer " + (try Self.checked(s.token)) }
         return try WireRequest(method: method, target: target, headers: h, body: body, clientAddress: clientAddress)
@@ -98,6 +97,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         return try await get("\(R)/workspaces/\(workspaceID.hex)/card-key?card_seq=\(cardSequence)", session: session)
     }
 
+    public func logout(session: RelaySession) async throws -> WireReply { try await json("POST", "/session/logout", HostAPI.json(), session: session) }
+
     public func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/register", body, session: session) }
     public func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/unregister", body, session: session) }
 
@@ -106,7 +107,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     }
 
     public func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
-        // Protocol section 10.6 route, unchanged: not under R.
+        // TODO(orch-4e): Drop routes are not in protocol-v2 section 19 yet; the open question is whether they stay under /v2 or keep
+        // their section 10.6 spelling. Until that is decided this one keeps its un-prefixed path and the others sit under /v2.
         try await send(request("PUT", "/drop/\(objectID.hex)/versions", body: body, contentType: "application/json", session: session,
                                extra: ["if-match": String(ifMatch)]))
     }

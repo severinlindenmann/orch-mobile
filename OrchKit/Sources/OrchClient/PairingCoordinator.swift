@@ -42,6 +42,15 @@ public actor PairingCoordinator {
     private var nextGetMs: Int64 = 0
     private var retryNotBeforeMs: Int64 = 0
     private var failures = 0
+    /// Drops the join's relay session: forgotten at once, and a best-effort logout so it does not count against the device's token quota.
+    private func endJoinSession() async {
+        guard let c = joinSession else { return }
+        joinSession = nil
+        _ = try? await cfg.transport.logout(session: c.session)
+    }
+    /// The join's relay session, reused across join retries until near expiry: the relay allows a device only a few live tokens
+    /// (protocol-v2 section 19.1, 429 `quota_exceeded`), so a retry must never log in again while its token is still good.
+    private var joinSession: (device: ID16, session: RelaySession, expiresMs: Int64)?
     private var streams: [Int: AsyncStream<PairingState>.Continuation] = [:]
     private var nextStreamID = 0
     private var wakers: [Int: AsyncStream<Void>.Continuation] = [:]
@@ -190,6 +199,7 @@ public actor PairingCoordinator {
         token += 1
         let mine = token
         publish(.parsing)
+        await endJoinSession()
         try? await crashPoint("start.reserved")          // test seam, like `resume.row`: the lifecycle is held and nothing else has happened
         do { try checkConfig(); try cfg.context.admit(origin: link.origin) } catch { return fail(violation(error), mine) }
         let ws = link.workspace
@@ -359,6 +369,7 @@ public actor PairingCoordinator {
         lifecycleBusy = true; defer { lifecycleBusy = false }
         token += 1
         await drainInstall()
+        await endJoinSession()
         _ = await eraseAll()
         record = nil
         publish(.cancelled)
@@ -369,6 +380,7 @@ public actor PairingCoordinator {
     public func dismiss() async {
         guard !dead else { return }
         lifecycleBusy = true; defer { lifecycleBusy = false }
+        await endJoinSession()
         if record != nil { token += 1; await drainInstall(); _ = await eraseAll(); record = nil }
         for row in (try? await cfg.index.pairings()) ?? [] where row.terminal != nil {
             if let ws = ID16(hex: row.ws) { _ = await purgeResidue(ws: ws, createdKeys: row.createdKeys, keepRow: false, gate: true) }
@@ -532,8 +544,7 @@ public actor PairingCoordinator {
         failures += 1
         let step = Self.backoffMs[min(failures - 1, Self.backoffMs.count - 1)]
         var wait = step
-        if let reply, case .adapter(.rateLimited(let ra)) = HostAPI.failure(of: reply), let ra { wait = max(wait, Int64(ra) * 1000) }
-        else if let reply, let ra = HostAPI.retryAfter(reply) { wait = max(wait, Int64(ra) * 1000) }
+        if let reply, case .relay(let refusal) = HostAPI.failure(of: reply), let ra = refusal.retryAfter { wait = max(wait, Int64(ra) * 1000) }
         retryNotBeforeMs = nowMs + wait
         refreshState(nowMs)
     }
@@ -774,6 +785,7 @@ public actor PairingCoordinator {
         token += 1
         let t = token
         await drainInstall()
+        await endJoinSession()
         _ = await eraseAll()
         guard t == token else { return current }          // a cancel interleaved: it owns the final state
         record = nil
@@ -1087,9 +1099,15 @@ extension PairingCoordinator {
             try await crashPoint("join.begin")
             guard mine == token else { return }
             let client = RelayClient(transport: cfg.transport)
-            let opened = try await client.openDeviceSession(identity: id, deviceID: r.deviceID)
+            let s: RelaySession
+            if let cached = joinSession, cached.device == r.deviceID, cached.expiresMs - 30_000 > nowMs { s = cached.session }
+            else {
+                let opened = try await client.openDeviceSession(identity: id, deviceID: r.deviceID)
+                guard mine == token else { return }
+                joinSession = (r.deviceID, opened.session, opened.expiresMs)
+                s = opened.session
+            }
             guard mine == token else { return }
-            let s = opened.session
             var grantJSONs = try await client.grants(workspace: r.ws, session: s)
             let listJSON = try await client.memberList(workspace: r.ws, session: s)
             // card, then the wrap of that very sequence; a missing wrap or a card race refetches both and stays joining
@@ -1098,7 +1116,7 @@ extension PairingCoordinator {
             guard let seq = cardJSON.object?["o"]?.object?.u32Field("card_seq") else { throw JoinFailure(reason: "card_shape") }
             let wrap: HostAPI.CardKey
             do { wrap = try await client.cardKey(workspace: r.ws, cardSequence: seq, session: s) }
-            catch ClientError.adapter(.notFound) {
+            catch ClientError.relay(let refusal) where refusal.code == .notFound {
                 cardJSON = try await client.card(workspace: r.ws, session: s)
                 throw JoinPending()
             }
@@ -1138,8 +1156,9 @@ extension PairingCoordinator {
         case let v as RealmViolation: _ = await finish(.failed(.realm(v)), mine)
         case let e as ClientError:
             switch e {
-            case .adapter(.notFound), .adapter(.rateLimited), .adapter(.unauthenticated), .adapter(.quotaExceeded): joinRetry(now)
             case .relay(let rr) where rr.code == .revoked: _ = await finish(.failed(.verification(reason: "revoked")), mine)
+            case .relay(let rr) where rr.code == .unauthenticated: joinSession = nil; joinRetry(now)
+            case .relay(let rr): joinRetry(now, retryAfterS: rr.retryAfter)           // 429/503: wait at least the relay's Retry-After
             default: joinRetry(now)
             }
         default: _ = await finish(.failed(.verification(reason: "install")), mine)
@@ -1152,9 +1171,9 @@ extension PairingCoordinator {
         if now - (r.joinStartedMs ?? now) >= Self.joiningCapMs { throw JoinDeadlineError.timedOut }
     }
 
-    private func joinRetry(_ now: Int64) {
+    private func joinRetry(_ now: Int64, retryAfterS: Int? = nil) {
         failures += 1
-        retryNotBeforeMs = now + 2_000                      // short: the whole join has a 60 s cap
+        retryNotBeforeMs = now + max(2_000, Int64(retryAfterS ?? 0) * 1000)                      // short: the whole join has a 60 s cap
     }
 
     /// The installer. It is the only code that touches the container, the session and the grants of a pairing; `installing` makes
@@ -1230,6 +1249,7 @@ extension PairingCoordinator {
             record = nil
             let joined = JoinedWorkspace(workspace: r.ws, generation: r.generation, name: v.part.name, hosted: v.hosted, scopes: approved.scopes,
                                          epoch: v.epoch, origin: r.origin, session: session, dropCard: v.card)
+            await endJoinSession()
             publish(.ready(JoinedHandle(joined: joined)))
             signalWake()
         } catch {

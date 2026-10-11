@@ -24,7 +24,7 @@ let package = Package(
                 resources: [.copy("vectors_v2.json"), .copy("http_fixtures")]),
         .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
         // Relay HTTP v2 examples (orch-relay tests/http_fixtures): schema, pure-wire checks and the PR2..PR5 skip list.
-        .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchTestVectors"]),
+        .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),
         .target(name: "OrchCustody", dependencies: ["OrchProtocol"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody"]),

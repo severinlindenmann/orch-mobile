@@ -59,7 +59,7 @@ public struct WireReply: Sendable, Equatable {
 /// One request as HTTP carries it. The in-process relay parses the target itself, exactly as a server would.
 public struct WireRequest: Sendable, Equatable, CustomStringConvertible {
     public let method: String
-    /// Path and optional query, e.g. `/mobile/host-api/0/workspaces/<ws>/grants?epoch=2`.
+    /// Path and optional query, e.g. `/v2/workspaces/<ws>/grants?epoch=2`.
     public let target: String
     public let headers: [String: String]
     public let body: Data
@@ -120,9 +120,15 @@ public protocol RelayTransport: Sendable {
     func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply
     /// A revocation record is a public, PK-signed object: this route takes no session (a revoked device has none).
     func revocation(deviceID: ID16) async throws -> WireReply
+    /// Ends a session (`POST /v2/session/logout`). Best effort: callers ignore failure. Transports without the route keep the default.
+    func logout(session: RelaySession) async throws -> WireReply
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply
+}
+
+public extension RelayTransport {
+    func logout(session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
 }
 
 /// Something that carries one request to a relay and brings back its reply (the HTTPS client later, the fake now).

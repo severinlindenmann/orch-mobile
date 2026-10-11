@@ -14,6 +14,8 @@ public struct RelayLimits: Sendable {
     /// Live (unexpired) request mailboxes one device may hold per workspace before the relay answers 429 `quota_exceeded`.
     public var maxLiveMailboxesPerDevice = 128
     public var maxOutstandingChallenges = 1024
+    /// Live bearer tokens one device may hold (section 19.1): the next login is 429 `quota_exceeded` until the earliest expires.
+    public var maxLiveTokensPerDevice = 8
     public var maxDropVersions = 1024
     public var maxDropBytes = 100 << 20
     public init() {}
@@ -203,7 +205,7 @@ public actor FakeRelay: RequestSender {
 
     /// Provisional host-api v0 retirement: authenticated, bounded, and idempotent.
     private func abandonRotation(_ r: WireRequest, workspace: String, query: String?) -> WireReply {
-        guard let session = authenticate(r), session.kind == .workspace else { return adapterError(401, "unauthenticated") }
+        guard let session = authenticate(r), session.kind == .workspace else { return refuse(401, .unauthenticated) }
         guard let ws = ID16(hex: workspace), ws == session.id else { return refuse(403, .otherWorkspace) }
         guard query == nil, var w = workspaces[ws], let card = w.card else { return refuse(400, .malformed) }
         let epoch: UInt32
@@ -274,7 +276,7 @@ public actor FakeRelay: RequestSender {
     }
 
     private func workspaceSession(_ token: String) throws -> ID16 {
-        guard let s = sessions[token], wall.nowMs < s.expiresMs, s.kind == .workspace else { throw ClientError.adapter(.unauthenticated) }
+        guard let s = sessions[token], wall.nowMs < s.expiresMs, s.kind == .workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
         return s.id
     }
 
@@ -314,7 +316,7 @@ public actor FakeRelay: RequestSender {
 
     /// What the host reads for its request: the primary's challenge, if it was posted.
     public func certChallenge(workspace: ID16, requestID: ID16, token: String) throws -> JSONValue? {
-        guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
+        guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
         guard let c = certChallenges[requestID], c.workspace == workspace else { return nil }
         return c.challenge
     }
@@ -325,7 +327,7 @@ public actor FakeRelay: RequestSender {
     }
 
     public func certRequestRejected(workspace: ID16, requestID: ID16, token: String) throws -> Bool {
-        guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
+        guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
         return rejectedCertRequests[requestID] == workspace
     }
 
@@ -365,7 +367,7 @@ public actor FakeRelay: RequestSender {
     /// The host's view of its inbox: requests waiting for it, non-consuming, until their body lifetime ends.
     public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data, arrival: UInt64)] {
         try checkLive()
-        guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
+        guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
         let now = wall.nowMs
         return boxes.filter { $0.key.ws == workspace && $0.key.device != nil && $0.key.offer == nil }
             .flatMap { k, v in live(v, now).requests.map { (device: k.device!, rid: k.rid, envelope: $0.envelope, arrival: $0.arrival) } }
@@ -373,7 +375,7 @@ public actor FakeRelay: RequestSender {
 
     /// Epoch-0 requests of a pairing offer, for the host.
     public func pendingPairRequests(workspace: ID16, offer: ID16, token: String) throws -> [(rid: ID16, envelope: Data, arrival: UInt64)] {
-        guard try workspaceSession(token) == workspace else { throw ClientError.adapter(.unauthenticated) }
+        guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
         let now = wall.nowMs
         return boxes.filter { $0.key.ws == workspace && $0.key.offer == offer }
             .flatMap { k, v in live(v, now).requests.map { (rid: k.rid, envelope: $0.envelope, arrival: $0.arrival) } }
@@ -432,36 +434,34 @@ public actor FakeRelay: RequestSender {
     private func routePath(_ target: String) -> String { String(target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? "") }
 
     private func json(_ status: Int, _ fields: [String: JSONValue] = [:], headers: [String: String] = [:]) -> WireReply {
-        var o = fields; o["host_api"] = .int(0)
         var h = headers; h["content-type"] = "application/json"
+        return try! WireReply(status: status, headers: h, body: (try? canonicalJSON(.object(fields))) ?? Data())
+    }
+    /// Protocol section 14 relay error: `{"error": code}` and nothing else.
+    private func refuse(_ status: Int, _ code: RelayRefusal.Code, headers: [String: String] = [:], extra: [String: JSONValue] = [:]) -> WireReply {
+        var h = headers; h["content-type"] = "application/json"
+        var o = extra; o["error"] = .string(code.rawValue)
         return try! WireReply(status: status, headers: h, body: (try? canonicalJSON(.object(o))) ?? Data())
     }
-    /// Protocol section 14 relay error: `{"error": code}` and nothing else, never a `host_api` field.
-    private func refuse(_ status: Int, _ code: RelayRefusal.Code) -> WireReply {
-        try! WireReply(status: status, headers: ["content-type": "application/json"],
-                       body: (try? canonicalJSON(["error": .string(code.rawValue)])) ?? Data())
-    }
-    private func adapterError(_ status: Int, _ code: String, headers: [String: String] = [:]) -> WireReply {
-        json(status, ["error": .string(code)], headers: headers)
+    /// `Retry-After` is integer delta-seconds, rounded up (section 19.6), never below 1.
+    private func retryAfter(untilMs: Int64, now: Int64) -> [String: String] {
+        ["retry-after": String(max(1, (max(untilMs - now, 0) + 999) / 1000))]
     }
     private func limited(_ now: Int64) -> WireReply {
         rateLimited += 1
-        return adapterError(429, "rate_limited", headers: ["retry-after": String(limits.retryAfterSeconds)])
+        return refuse(429, .rateLimited, headers: ["retry-after": String(max(1, limits.retryAfterSeconds))])
     }
 
     private func dispatch(_ r: WireRequest) async throws -> WireReply {
-        // The version boundary comes first and applies to every route (host-api section 1): no negotiation, no fallback.
-        guard r.header(HostAPI.versionHeader) == "0" else { return adapterError(400, "unsupported_host_api") }
         let (path, query) = split(r.target)
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard parts.first == "" else { return refuse(400, .malformed) }
         let seg = Array(parts.dropFirst())
-        let base = ["mobile", "host-api", "0"]
-        if seg.count >= 3, Array(seg.prefix(3)) == base {
-            return try await route(r, Array(seg.dropFirst(3)), query)
-        }
+        if seg.first == String(HostAPI.base.dropFirst()) { return try await route(r, Array(seg.dropFirst()), query) }
+        // TODO(orch-4e): the Drop PUT/claim routes keep their protocol section 10.6 spelling here and the Drop GET/list routes now sit under
+        // /v2; protocol-v2 section 19 does not list Drop (or push registration) yet. Open question for orch-4e: final Drop paths.
         if seg.first == "drop" { return try dropRoute(r, seg, query, protocolRoute: true) }
-        return adapterError(404, "not_found")
+        return refuse(404, .notFound)
     }
 
     private func split(_ target: String) -> (String, String?) {
@@ -483,9 +483,9 @@ public actor FakeRelay: RequestSender {
 
     private func route(_ r: WireRequest, _ s: [String], _ query: String?) async throws -> WireReply {
         switch (r.method, s.count) {
-        case ("POST", 2) where s[0] == "session" && s[1] == "challenge": return try challenge(r)
-        case ("POST", 2) where s[0] == "session" && s[1] == "login": return try login(r)
-        case ("POST", 2) where s[0] == "push" && ["register", "unregister"].contains(s[1]): return adapterError(501, "not_implemented")
+        case ("POST", 2) where s[0] == "session" && s[1] == "challenge": return try challenge(r, query)
+        case ("POST", 2) where s[0] == "session" && s[1] == "login": return try login(r, query)
+        case ("POST", 2) where s[0] == "session" && s[1] == "logout": return logout(r, query)
         case ("POST", 2) where s[0] == "drop" && s[1] == "list": return try dropRoute(r, s, query)
         case (_, 5) where s[0] == "workspaces" && s[2] == "pair": return try await pairing(r, ws: s[1], offer: s[3], rid: s[4], query)
         case (_, 4) where s[0] == "workspaces" && s[2] == "bridge": return try await bridge(r, ws: s[1], rid: s[3], query)
@@ -496,36 +496,42 @@ public actor FakeRelay: RequestSender {
         case ("GET", 3) where s[0] == "workspaces" && s[2] == "card-key": return try cardKeyReply(r, ws: s[1], query)
         case ("GET", 3) where s[0] == "devices" && s[2] == "revocation": return try revocationReply(r, device: s[1], query)
         case (_, _) where s.first == "drop": return try dropRoute(r, s, query)
-        default: return adapterError(404, "not_found")
+        default: return refuse(404, .notFound)
         }
     }
 
     // MARK: sessions (protocol section 12.2)
+
+    /// JSON cap of the session routes (section 19.1): refused 413 before the body is parsed.
+    static let sessionJSONCap = 16 << 10
 
     private func body(_ r: WireRequest, fields: Set<String>) -> [String: JSONValue]? {
         guard let v = try? StrictJSON.parse(r.body, maxBytes: HostAPI.maxJSONBytes), let o = v.object else { return nil }
         return o
     }
 
-    private func challenge(_ r: WireRequest) throws -> WireReply {
-        guard let o = body(r, fields: []) else { return refuse(400, .malformed) }
-        guard o["host_api"] == .int(0) else { return o["host_api"] == nil ? refuse(400, .malformed) : adapterError(400, "unsupported_host_api") }
-        guard o.count == 1 else { return refuse(400, .malformed) }
+    private func challenge(_ r: WireRequest, _ query: String?) throws -> WireReply {
+        if r.body.count > Self.sessionJSONCap { return refuse(413, .tooLarge) }
+        guard queryItems(query, allowed: []) != nil, let o = body(r, fields: []), o.isEmpty else { return refuse(400, .malformed) }
         let now = wall.nowMs
         challenges = challenges.filter { $0.value > now }
-        if challenges.count >= limits.maxOutstandingChallenges { return limited(now) }
+        if challenges.count >= limits.maxOutstandingChallenges {
+            // the cap frees when the earliest outstanding challenge expires: Retry-After is that remaining time, rounded up
+            rateLimited += 1
+            return refuse(429, .rateLimited, headers: retryAfter(untilMs: challenges.values.min() ?? now, now: now))
+        }
         let c = entropy.bytes(32)
         let expires = now + RelayAuth.challengeMs
         challenges[c] = expires
         return json(200, ["challenge": .string(B64U.encode(c)), "expires_ms": .int(expires)])
     }
 
-    private func login(_ r: WireRequest) throws -> WireReply {
-        guard let o = body(r, fields: []) else { return refuse(400, .malformed) }
-        guard o["host_api"] == .int(0) else { return o["host_api"] == nil ? refuse(400, .malformed) : adapterError(400, "unsupported_host_api") }
+    private func login(_ r: WireRequest, _ query: String?) throws -> WireReply {
+        if r.body.count > Self.sessionJSONCap { return refuse(413, .tooLarge) }
+        guard queryItems(query, allowed: []) != nil, let o = body(r, fields: []) else { return refuse(400, .malformed) }
         let challenge = o["challenge"]?.string.flatMap { B64U.decode($0, length: 32) }
         // The challenge is consumed on every attempt, including one that is malformed in another field.
-        guard Set(o.keys) == ["host_api", "challenge", "kind", "id", "sig"], let challenge, let kind = o["kind"]?.string,
+        guard Set(o.keys) == ["challenge", "kind", "id", "sig"], let challenge, let kind = o["kind"]?.string,
               let id = o["id"]?.string.flatMap({ ID16(hex: $0) }), let sig = o["sig"]?.string.flatMap({ B64U.decode($0, length: 64) }) else {
             if let challenge { challenges[challenge] = nil }
             return refuse(400, .malformed)
@@ -552,6 +558,13 @@ public actor FakeRelay: RequestSender {
             if revoked.contains(id) { return refuse(403, .revoked) }
             do { _ = try DeviceCertificate.verify(certs[id]!, personKey: owners[certInfo[id]!.personID]!, nowMs: now, revoked: []) }
             catch let e as Refusal { let st = Self.relayError(e); if case .relay(let rr) = st { return refuse(rr.status, rr.code) } }
+            // At most eight live tokens per device (section 19.1): a ninth login is refused until the earliest expires. The
+            // challenge is consumed and no existing token is touched.
+            let live = sessions.values.filter { $0.kind == .device && $0.id == id && $0.expiresMs > now }
+            if live.count >= limits.maxLiveTokensPerDevice, let first = live.map(\.expiresMs).min() {
+                rateLimited += 1
+                return refuse(429, .quotaExceeded, headers: retryAfter(untilMs: first, now: now))
+            }
         }
         let token = B64U.encode(entropy.bytes(32))
         let expires = now + limits.sessionLifetimeMs
@@ -559,6 +572,25 @@ public actor FakeRelay: RequestSender {
         sessions = sessions.filter { $0.value.expiresMs > now }
         return json(200, ["token": .string(token), "expires_ms": .int(expires)])
     }
+
+    /// Idempotent: 200 `{}` for a live, expired, unknown or already-logged-out token alike (section 19.6).
+    private func logout(_ r: WireRequest, _ query: String?) -> WireReply {
+        if r.body.count > Self.sessionJSONCap { return refuse(413, .tooLarge) }
+        guard queryItems(query, allowed: []) != nil, let o = body(r, fields: []), o.isEmpty else { return refuse(400, .malformed) }
+        guard let h = r.header("authorization"), h.hasPrefix("Bearer "), h.count > 7 else { return refuse(401, .unauthenticated) }
+        sessions[String(h.dropFirst(7))] = nil
+        return json(200)
+    }
+
+    // MARK: test seeding (package scope: the fixture replay states preconditions the relay would otherwise reach by history)
+
+    package func seedChallenge(_ challenge: Data, expiresMs: Int64) { challenges[challenge] = expiresMs }
+    package func seedSession(token: String, kind: RelayAuth.Kind, id: ID16, expiresMs: Int64) {
+        sessions[token] = Session(kind: kind, id: id, expiresMs: expiresMs)
+    }
+    package func seedRevoked(_ device: ID16) { revoked.insert(device) }
+    package var liveSessionTokens: Set<String> { Set(sessions.keys) }
+    package var outstandingChallenges: Set<Data> { Set(challenges.keys) }
 
     private func authenticate(_ r: WireRequest) -> Session? {
         guard let h = r.header("authorization"), h.hasPrefix("Bearer "), let s = sessions[String(h.dropFirst(7))], wall.nowMs < s.expiresMs else { return nil }
@@ -576,7 +608,7 @@ public actor FakeRelay: RequestSender {
     // MARK: fetch routes
 
     private func grants(_ r: WireRequest, ws: String, _ query: String?) throws -> WireReply {
-        guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
         guard let id = ID16(hex: ws), let q = queryItems(query, allowed: ["epoch"]) else { return refuse(400, .malformed) }
         var epoch: UInt32?
         if let e = q["epoch"] {
@@ -586,32 +618,32 @@ public actor FakeRelay: RequestSender {
         if let denied = memberGate(s, ws: id) { return denied }
         let mine = (workspaces[id]?.grants ?? [:]).filter { $0.key.device == s.id && (epoch == nil || $0.key.epoch == epoch) }
             .sorted { $0.key.epoch < $1.key.epoch }.map(\.value)
-        guard !mine.isEmpty else { return adapterError(404, "not_found") }
+        guard !mine.isEmpty else { return refuse(404, .notFound) }
         return json(200, ["grants": .array(mine)])
     }
 
     private func memberListReply(_ r: WireRequest, ws: String, _ query: String?) throws -> WireReply {
-        guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
         guard let id = ID16(hex: ws), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
         if let denied = memberGate(s, ws: id) { return denied }
-        guard let l = workspaces[id]?.listJSON else { return adapterError(404, "not_found") }
+        guard let l = workspaces[id]?.listJSON else { return refuse(404, .notFound) }
         return json(200, ["member_list": l])
     }
 
     private func cardReply(_ r: WireRequest, ws: String, _ query: String?) throws -> WireReply {
-        guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
         guard let id = ID16(hex: ws), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
         if let denied = memberGate(s, ws: id) { return denied }
-        guard let c = workspaces[id]?.cardJSON else { return adapterError(404, "not_found") }
+        guard let c = workspaces[id]?.cardJSON else { return refuse(404, .notFound) }
         return json(200, ["card": c])
     }
 
     private func cardKeyReply(_ r: WireRequest, ws: String, _ query: String?) throws -> WireReply {
-        guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
         guard let id = ID16(hex: ws), let q = queryItems(query, allowed: ["card_seq"]), let sq = q["card_seq"],
               let seq = HostAPI.parseDecimal(sq), seq >= 1, seq <= UInt64(UInt32.max) else { return refuse(400, .malformed) }
         if let denied = memberGate(s, ws: id) { return denied }
-        guard let sealed = workspaces[id]?.cardKeys[s.id]?[UInt32(seq)] else { return adapterError(404, "not_found") }
+        guard let sealed = workspaces[id]?.cardKeys[s.id]?[UInt32(seq)] else { return refuse(404, .notFound) }
         return json(200, ["workspace_id": .string(id.hex), "device_id": .string(s.id.hex), "card_seq": .int(Int64(seq)),
                           "sealed": .string(B64U.encode(sealed))])
     }
@@ -619,7 +651,7 @@ public actor FakeRelay: RequestSender {
     /// A revocation record is a public, PK-signed object, so the route takes no session: a revoked device has none.
     private func revocationReply(_ r: WireRequest, device: String, _ query: String?) throws -> WireReply {
         guard let d = ID16(hex: device), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
-        guard let rec = revocations[d] else { return adapterError(404, "not_found") }
+        guard let rec = revocations[d] else { return refuse(404, .notFound) }
         return json(200, ["record": rec])
     }
 
@@ -690,7 +722,7 @@ public actor FakeRelay: RequestSender {
         // A fault delay on a POST happens before any authoritative check; from here to the store there is no suspension, so
         // membership, revocation, epoch and quota are decided under the state the write happens in.
         let a: FaultAction = r.method == "POST" ? try await fault(.beforeQueue, "POST bridge") : .none
-        guard let s = authenticate(r) else { return adapterError(401, "unauthenticated") }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
         guard let wsID = ID16(hex: ws), let ridID = ID16(hex: rid) else { return refuse(400, .malformed) }
         switch r.method {
         case "POST":
@@ -718,7 +750,7 @@ public actor FakeRelay: RequestSender {
                 key = BoxKey(ws: wsID, device: s.id, offer: nil, rid: ridID)
                 let now = wall.nowMs
                 let liveBoxes = boxes.filter { $0.key.ws == wsID && $0.key.device == s.id && $0.key.rid != ridID && !live($0.value, now).requests.isEmpty }
-                if liveBoxes.count >= limits.maxLiveMailboxesPerDevice { rateLimited += 1; return adapterError(429, "quota_exceeded", headers: ["retry-after": String(limits.retryAfterSeconds)]) }
+                if liveBoxes.count >= limits.maxLiveMailboxesPerDevice { rateLimited += 1; return refuse(429, .quotaExceeded, headers: ["retry-after": String(limits.retryAfterSeconds)]) }
             }
             store(key, parsed: parsed!, envelope: r.body, response: response)
             if a == .duplicate { store(key, parsed: parsed!, envelope: r.body, response: response) }
@@ -730,7 +762,7 @@ public actor FakeRelay: RequestSender {
             if let denied = memberGate(s, ws: wsID) { return denied }
             let box = live(boxes[BoxKey(ws: wsID, device: s.id, offer: nil, rid: ridID)] ?? Box(), wall.nowMs)
             return try await chunkReply(box.responses, rid: ridID, after: after, route: "GET bridge")
-        default: return adapterError(404, "not_found")
+        default: return refuse(404, .notFound)
         }
     }
 
@@ -746,7 +778,7 @@ public actor FakeRelay: RequestSender {
             let session = authenticate(r)
             // A response is the host's: it needs the workspace session. Everything else is an unauthenticated epoch-0 request.
             let response = session != nil && session!.kind == .workspace
-            if r.header("authorization") != nil && session == nil { return adapterError(401, "unauthenticated") }
+            if r.header("authorization") != nil && session == nil { return refuse(401, .unauthenticated) }
             if !response {
                 guard pairPostsByWS[wsID, default: Window()].hit(now: now, limit: limits.pairPostsPerMinutePerWorkspace),
                       pairPostsByAddress[r.clientAddress, default: Window()].hit(now: now, limit: limits.pairPostsPerMinutePerAddress)
@@ -770,7 +802,7 @@ public actor FakeRelay: RequestSender {
             guard ok else { return refuse(400, .malformed) }
             let box = live(boxes[key] ?? Box(), now)
             return try await chunkReply(box.responses, rid: ridID, after: after, route: "GET pair")
-        default: return adapterError(404, "not_found")
+        default: return refuse(404, .notFound)
         }
     }
 }
@@ -805,16 +837,16 @@ extension FakeRelay {
     private func dropRoute(_ r: WireRequest, _ path: [String], _ query: String?, protocolRoute: Bool = false) throws -> WireReply {
         if r.method == "PUT", demoDropRejections > 0 {
             demoDropRejections -= 1
-            return adapterError(422, "demo_upload_rejected")
+            return refuse(403, .notEligible)      // the Demo control "reject next upload": a refusal in section 14 form
         }
-        guard protocolRoute ? (r.method == "PUT" || r.method == "POST" && path.last == "claim") : (r.method == "GET" || path == ["drop", "list"]) else { return adapterError(404, "not_found") }
-        guard let session = authenticate(r) else { return adapterError(401, "unauthenticated") }
+        guard protocolRoute ? (r.method == "PUT" || r.method == "POST" && path.last == "claim") : (r.method == "GET" || path == ["drop", "list"]) else { return refuse(404, .notFound) }
+        guard let session = authenticate(r) else { return refuse(401, .unauthenticated) }
         guard query == nil else { return refuse(400, .malformed) }
         drops = drops.filter { $0.value.last?.parsed.expiresMs.map { $0 > wall.nowMs } ?? true }
         claims = claims.filter { drops[$0.key] != nil }
         if path == ["drop", "list"], r.method == "POST" {
             guard let o = try? StrictJSON.parse(r.body, maxBytes: 1024).object,
-                  Set(o.keys) == ["host_api", "workspace_id", "direction"], o["host_api"] == 0,
+                  Set(o.keys) == ["workspace_id", "direction"],
                   let ws = o["workspace_id"]?.string.flatMap(ID16.init(hex:)),
                   let direction = o["direction"]?.string, ["received", "sending"].contains(direction) else { return refuse(400, .malformed) }
             guard dropAllowed(session, workspace: ws, write: false) else { return refuse(403, .notEligible) }
@@ -832,7 +864,7 @@ extension FakeRelay {
                 return refuse(428, .preconditionRequired)
             }
             guard let o = try? StrictJSON.parse(r.body, maxBytes: 36 << 20).object,
-                  Set(o.keys) == ["host_api", "descriptor", "wraps", "blob"], o["host_api"] == 0,
+                  Set(o.keys) == ["descriptor", "wraps", "blob"],
                   let signed = o["descriptor"], let raw = signed.object?["o"]?.object,
                   let d = try? DropDescriptor(object: raw), d.object == id, d.spaceKind == "workspace",
                   let wr = o["wraps"]?.array, !wr.isEmpty, wr.count <= 1024,
@@ -847,7 +879,7 @@ extension FakeRelay {
             let reply = DropDocument.checkPut(state: &state, ifMatch: r.header("if-match"), descriptor: d.raw)
             guard reply.status == 201 else { return try WireReply(status: reply.status, body: canonicalJSON(["error": "version_conflict", "current": .int(Int64(reply.current ?? 0))])) }
             let all = drops.values.flatMap { $0 }
-            guard all.count < limits.maxDropVersions, all.reduce(0, { $0 + $1.blob.count }) + blob.count <= limits.maxDropBytes else { return json(429, ["error": "quota_exceeded"]) }
+            guard all.count < limits.maxDropVersions, all.reduce(0, { $0 + $1.blob.count }) + blob.count <= limits.maxDropBytes else { return refuse(429, .quotaExceeded, headers: ["retry-after": String(limits.retryAfterSeconds)]) }
             drops[id, default: []].append(DropVersion(descriptor: signed, parsed: d, wraps: wraps, blob: blob))
             return json(201, ["version": .int(Int64(d.version))])
         }
@@ -866,17 +898,18 @@ extension FakeRelay {
             var fields: [String: JSONValue] = [:]
             if let e = result.error { fields["error"] = .string(e) }
             if let by = result.claimedBy { fields["claimed_by"] = .string(by.hex) }
+            else if result.error == "already_claimed" { fields["claimed_by"] = .null }      // section 14: `claimed_by` is always present
             return result.status == 200 ? json(200, fields) : try WireReply(status: result.status, body: canonicalJSON(.object(fields)))
         }
         guard path.count == 5, path[2] == "versions", r.method == "GET", let n = HostAPI.parseDecimal(path[3]), n > 0,
-              let versions = drops[id], n <= versions.count else { return adapterError(404, "not_found") }
+              let versions = drops[id], n <= versions.count else { return refuse(404, .notFound) }
         let v = versions[Int(n) - 1]
         guard dropVisible(v, session) else { return refuse(403, .notEligible) }
         switch path[4] {
         case "descriptor": return json(200, ["descriptor": v.descriptor])
         case "wraps": return json(200, ["wraps": .array(v.wraps.map(\.json)), "claimed_by": claims[id].map { .string($0.hex) } ?? .null])
-        case "blob": return try WireReply(status: 200, headers: [HostAPI.versionHeader: "0"], body: v.blob)
-        default: return adapterError(404, "not_found")
+        case "blob": return try WireReply(status: 200, headers: [:], body: v.blob)
+        default: return refuse(404, .notFound)
         }
     }
 

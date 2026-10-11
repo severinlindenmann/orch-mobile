@@ -10,7 +10,7 @@ import OrchProtocol
 @Suite struct RetentionTests {
     /// Any request prunes; this one issues no challenge and opens no session.
     func ping(_ w: World) async throws {
-        _ = try await w.relay.send(WireRequest(method: "GET", target: "/mobile/host-api/0/nowhere", headers: ["Orch-Host-API": "0"], clientAddress: "a"))
+        _ = try await w.relay.send(WireRequest(method: "GET", target: "/v2/nowhere", headers: [:], clientAddress: "a"))
     }
 
     @Test func expiredBodiesAndEmptyBoxesAreDroppedNotJustHidden() async throws {
@@ -61,8 +61,8 @@ import OrchProtocol
         for i in 0..<20 {
             let rid = ID16.fresh(UInt8(60 + i)), offer = ID16.fresh(0x70)
             let env = try w.envelope(rid: rid, epoch: 0, stream: offer)
-            _ = try await w.relay.send(WireRequest(method: "POST", target: "/mobile/host-api/0/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)",
-                                                   headers: ["Orch-Host-API": "0"], body: env, clientAddress: "203.0.113.\(i)"))
+            _ = try await w.relay.send(WireRequest(method: "POST", target: "/v2/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)",
+                                                   headers: [:], body: env, clientAddress: "203.0.113.\(i)"))
         }
         #expect(await w.relay.rateWindowCount() >= 20)
         w.clock.advance(milliseconds: 60_001)

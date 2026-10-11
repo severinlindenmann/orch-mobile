@@ -236,9 +236,9 @@ public actor WorkspaceSession {
             try await ensureCurrent()
             try Task.checkCancellation()
             do { return try await body(s) }
-            catch ClientError.adapter(.unauthenticated) where attempt == 0 { relay = nil }
+            catch ClientError.relay(let r) where r.code == .unauthenticated && attempt == 0 { relay = nil }
         }
-        throw ClientError.adapter(.unauthenticated)
+        throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))
     }
 
     private func relaySession() async throws -> RelaySession {
@@ -929,8 +929,8 @@ extension WorkspaceSession {
                     delay = lastRevision == s.revision ? min(delay * 2, 60) : 15
                     lastRevision = s.revision
                     emit(.snapshot(s)); emit(.connection(.online))
-                } catch ClientError.adapter(.rateLimited(let retryAfter)) {
-                    delay = max(min(delay * 2, 60), Int64(retryAfter ?? 0)); emit(.connection(.offline))
+                } catch ClientError.relay(let r) where r.status == 429 || r.status == 503 {
+                    delay = max(min(delay * 2, 60), Int64(r.retryAfter ?? 0)); emit(.connection(.offline))
                 } catch { if Task.isCancelled { return }; delay = min(delay * 2, 60); emit(.connection(.offline)) }
             } else { delay = 60 }
             do { try await cfg.clock.sleep(for: .seconds(delay)) } catch { return }
