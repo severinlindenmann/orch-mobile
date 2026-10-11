@@ -54,6 +54,10 @@ public actor WorkspaceContainer {
             "ALTER TABLE drop_uploads ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
             "CREATE TABLE drop_abandoned (key TEXT PRIMARY KEY)",
         ]),
+        Migration(version: 8, statements: [
+            "ALTER TABLE drop_heads ADD COLUMN file_version INTEGER",
+            "ALTER TABLE drop_heads ADD COLUMN file_expires_ms INTEGER",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
@@ -144,31 +148,75 @@ public actor WorkspaceContainer {
 
 extension WorkspaceContainer {
     public func acceptDropChain(object: String, chain: [Data]) async throws {
+        try StoreLayout.validate(ws: object)
         guard !chain.isEmpty, chain.count <= 1024 else { throw DropStoreError.rollback }
+        let layout = self.layout, ws = self.ws, generation = self.generation
         try await database().transaction { tx in
-            if let previous = try tx.query("SELECT version,hash FROM drop_heads WHERE object=?", [.text(object)]).first {
-                guard let n = previous.int("version"), n > 0, n <= chain.count,
-                      previous.blob("hash") == chain[Int(n) - 1] else { throw DropStoreError.rollback }
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                if let previous = try tx.query("SELECT version,hash FROM drop_heads WHERE object=?", [.text(object)]).first {
+                    guard let n = previous.int("version"), n > 0, n <= chain.count,
+                          previous.blob("hash") == chain[Int(n) - 1] else { throw DropStoreError.rollback }
+                }
+                try tx.execute("INSERT INTO drop_heads(object,version,hash) VALUES(?,?,?) ON CONFLICT(object) DO UPDATE SET version=excluded.version,hash=excluded.hash",
+                               [.text(object), .int(Int64(chain.count)), .blob(chain.last!)])
+                try Self.purgeDownloads(tx, directory: directory, nowMs: nil)
             }
-            try tx.execute("INSERT INTO drop_heads(object,version,hash) VALUES(?,?,?) ON CONFLICT(object) DO UPDATE SET version=excluded.version,hash=excluded.hash",
-                           [.text(object), .int(Int64(chain.count)), .blob(chain.last!)])
         }
     }
-    public func writeDrop(_ data: Data, object: String, version: UInt32) async throws -> URL {
+
+    /// Also removes untracked files from older schemas or interrupted publication.
+    public func purgeExpiredDownloads(nowMs: Int64) async throws {
+        let layout = self.layout, ws = self.ws, generation = self.generation
+        try await database().transaction { tx in
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                try Self.purgeDownloads(tx, directory: directory, nowMs: nowMs)
+            }
+        }
+    }
+
+    public func writeDrop(_ data: Data, object: String, version: UInt32, expiresMs: Int64?,
+                          now: @Sendable @escaping () -> Int64) async throws -> URL {
         try StoreLayout.validate(ws: object)
         try await index.requireNotRemoved(ws: ws, generation: generation)
-        _ = try database()
-        let directory = try layout.filesDir(ws)
-        let url = directory.appendingPathComponent("\(object)-\(version)")
-        // Never wait for a cross-process lock on the cooperative pool. A busy lock refuses this
-        // attempt; holding it through the write prevents publication after a removal tombstone.
-        guard try layout.tombstones.ifNotRemoved(realm: layout.realm, ws: ws, generation: generation, timeout: 0, {
-            try data.write(to: url, options: [.atomic, .completeFileProtection])
-            return true
-        }) == true else { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
-        do { try await index.requireNotRemoved(ws: ws, generation: generation) }
-        catch { try? FileManager.default.removeItem(at: url); throw error }
-        return url
+        let layout = self.layout, ws = self.ws, generation = self.generation
+        return try await database().transaction { tx in
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                guard let head = try tx.query("SELECT version FROM drop_heads WHERE object=?", [.text(object)]).first,
+                      head.int("version") == Int64(version) else { throw DropStoreError.rollback }
+                guard expiresMs.map({ $0 > now() }) ?? true else { throw DropStoreError.expired }
+                // The database transaction serializes publication with head updates and purges, even
+                // across containers. The tombstone lock excludes wipe; atomic replace hides partial bytes.
+                try tx.execute("UPDATE drop_heads SET file_version=?,file_expires_ms=? WHERE object=?",
+                               [.int(Int64(version)), expiresMs.map(SQLValue.int) ?? .null, .text(object)])
+                let url = directory.appendingPathComponent("\(object)-\(version)")
+                try data.write(to: url, options: [.atomic, .completeFileProtection])
+                return url
+            }
+        }
+    }
+
+    private nonisolated static func withDropFiles<T>(layout: StoreLayout, ws: String, generation: Int64,
+                                                     _ body: (URL) throws -> T) throws -> T {
+        // Never wait for a cross-process lock on the cooperative pool.
+        guard let result = try layout.tombstones.ifNotRemoved(realm: layout.realm, ws: ws, generation: generation, timeout: 0, {
+            try body(layout.filesDir(ws))
+        }) else { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
+        return result
+    }
+
+    private nonisolated static func purgeDownloads(_ tx: SQLiteTransaction, directory: URL, nowMs: Int64?) throws {
+        let rows = try tx.query("SELECT object,version,file_version,file_expires_ms FROM drop_heads")
+        var keep = Set<String>()
+        for row in rows {
+            guard let object = row.text("object"), let version = row.int("file_version") else { continue }
+            if version == row.int("version"), nowMs.map({ now in row.int("file_expires_ms").map { $0 > now } ?? true }) ?? true {
+                keep.insert("\(object)-\(version)")
+            } else {
+                try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL WHERE object=?", [.text(object)])
+            }
+        }
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where !keep.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
     }
 }
-public enum DropStoreError: Error, Sendable { case rollback }
+public enum DropStoreError: Error, Sendable { case rollback, expired }
