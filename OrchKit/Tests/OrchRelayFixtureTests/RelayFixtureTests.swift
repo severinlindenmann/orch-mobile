@@ -14,7 +14,7 @@ import OrchTestVectors
         for f in files {
             #expect(f.contract == "orch-relay-http-v2", "\(f.fileName)")
             #expect(f.suite == 2, "\(f.fileName)")
-            #expect(["GET", "POST", "PUT"].contains(f.route.method), "\(f.fileName)")
+            #expect(["GET", "POST", "PUT", "DELETE"].contains(f.route.method), "\(f.fileName)")
             #expect(f.route.path.hasPrefix("/v2/"), "\(f.fileName)")
             #expect(!f.cases.isEmpty && f.cases[0].name == "success", "\(f.fileName)")
             #expect(Set(f.cases.map(\.name)).count == f.cases.count, "\(f.fileName): duplicate case names")
@@ -31,7 +31,7 @@ import OrchTestVectors
                 #expect(hasBody.filter { $0 }.count <= 1 || r["body_recipe"] != nil, "\(id) body kinds")
                 #expect(c.response["status"]?.int != nil, "\(id) status")
                 #expect(c.response["headers"]?.object != nil, "\(id) response headers")
-                if r["body_recipe"] == nil, f.route.method != "GET" { #expect(hasBody.contains(true), "\(id) has a body") }
+                if r["body_recipe"] == nil, f.route.method != "GET", f.route.method != "DELETE" { #expect(hasBody.contains(true), "\(id) has a body") }
             }
         }
     }
@@ -45,7 +45,9 @@ import OrchTestVectors
                 #expect(parts.count == tmpl.count, "\(id) path shape")
                 guard parts.count == tmpl.count else { continue }
                 for (p, t) in zip(parts, tmpl) {
-                    if t.hasPrefix("{") { #expect(Hex.decode(String(p), length: 16) != nil, "\(id) id segment \(p)") }
+                    // 16-byte ids; the F1 hash and page placeholders ({hash}, {source_hash}, {target_hash}, {i}) are not ids
+                    if t.hasPrefix("{"), !t.contains("hash"), t != "{i}" { #expect(Hex.decode(String(p), length: 16) != nil, "\(id) id segment \(p)") }
+                    else if t.hasPrefix("{") { #expect(!p.isEmpty, "\(id) segment \(t)") }
                     else { #expect(p == t, "\(id) literal segment") }
                 }
             }
@@ -73,23 +75,29 @@ import OrchTestVectors
         #expect(bodies > 0 && recipes > 0)
     }
 
-    @Test func fixtureFilesMatchProvenance() throws {
+    /// The relay's own manifest (MANIFEST.json, written by its manifest.py): every copied file's SHA-256 and the aggregate
+    /// (`sha256` of the sorted `name\tsha\n` lines) must match, and the directory holds exactly the manifest's files. The
+    /// vectors file is pinned in PROVENANCE.md, together with the manifest's revision and aggregate.
+    @Test func fixtureFilesMatchTheRelaysManifest() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("OrchTestVectors/PROVENANCE.md")
         let prov = try String(contentsOf: url, encoding: .utf8)
         let vdigest = Hex.encode(SHA256.hash(data: Vectors.data))
         #expect(prov.contains("sha256: `\(vdigest)`"), "vectors_v2.json differs from PROVENANCE.md")
-        let names = try Fixtures.fileNames() + ["README.md"]
-        for name in names {
+        let manifest = try #require(try StrictJSON.parse(try Fixtures.rawData("MANIFEST.json"), maxBytes: .max).object)
+        let files = try #require(manifest["files"]?.object)
+        let names = try Fixtures.allFileNames().filter { $0 != "MANIFEST.json" }
+        #expect(Set(files.keys) == Set(names), "the fixture directory differs from MANIFEST.json")
+        var lines = ""
+        for name in files.keys.sorted() {
             let digest = Hex.encode(SHA256.hash(data: try Fixtures.rawData(name)))
-            #expect(prov.contains("\(name): sha256 `\(digest)`"), "\(name) differs from PROVENANCE.md")
+            #expect(files[name]?.string == digest, "\(name) differs from MANIFEST.json")
+            lines += "\(name)\t\(files[name]?.string ?? "")\n"
         }
-        // reverse: every per-file line in PROVENANCE names an existing fixture file
-        let listed = prov.split(separator: "\n").compactMap { line -> String? in
-            guard line.hasPrefix("- "), let r = line.range(of: ": sha256 `") else { return nil }
-            return String(line[line.index(line.startIndex, offsetBy: 2)..<r.lowerBound])
-        }
-        #expect(Set(listed) == Set(names) && listed.count == names.count, "PROVENANCE file list differs from the fixture directory")
+        let aggregate = Hex.encode(SHA256.hash(data: Data(lines.utf8)))
+        #expect(manifest["aggregate"]?.string == aggregate, "MANIFEST.json aggregate")
+        let revision = try #require(manifest["revision"]?.int)
+        #expect(prov.contains("MANIFEST.json revision \(revision), aggregate `\(aggregate)`"), "PROVENANCE.md names another manifest")
     }
 }
 
@@ -130,6 +138,7 @@ import OrchTestVectors
         let personField = ["device_cert": "person_id", "revocation": "person_id", "cert_challenge": "person_id", "cert_rejection": "person_id",
                            "card": "owner_person_id"]
         let wskKinds: Set<String> = ["member_list", "cert_request", "wk_grant"]
+        let f1Kinds: Set<String> = ["genesis_pin", "workspace_checkpoint"]
         var verified: [String: Int] = [:]
         let okNames: Set<String> = ["success", "exact_retry", "resigned_identical", "first_card_without_session"]
 
@@ -141,6 +150,7 @@ import OrchTestVectors
             else if wskKinds.contains(kind) {
                 if o["workspace_id"]?.string != "705d40abbb8c1c90354a1acaa94c935c" { Issue.record("\(id): unexpected workspace for \(kind)") }
                 key = wskA
+            } else if f1Kinds.contains(kind) { return                // F1 ticket-log objects: host/relay only, the phone has no verifier
             } else { Issue.record("\(id): no expected signer for \(kind)"); return }
             guard let key else { Issue.record("\(id): \(kind) person/owner is not a vector person"); return }
             let ok: Bool
@@ -155,7 +165,7 @@ import OrchTestVectors
             }
         }
         // pinned: a fixture re-copy that changes these counts must be reviewed
-        let expected: [String: Int] = ["card": 3, "cert_challenge": 4, "cert_rejection": 3, "cert_request": 2, "device_cert": 6, "member_list": 3, "revocation": 4, "wk_grant": 5]
+        let expected: [String: Int] = ["card": 3, "cert_challenge": 4, "cert_rejection": 3, "cert_request": 2, "device_cert": 8, "member_list": 3, "revocation": 4, "wk_grant": 5]
         #expect(verified == expected, "\(verified)")
     }
 }
@@ -199,6 +209,18 @@ import OrchTestVectors
         #expect(!FixtureCoverage.pending.values.contains(.pr4))
         #expect(!FixtureCoverage.pending.values.contains(.pr5))
         #expect(FixtureCoverage.pending.filter { $0.value == .pr2 }.keys.sorted() == ["host_hold.json", "host_poll.json"])
+    }
+
+    /// The p3 vector groups: `cases` (replayed by the P3/RidStore/CertQueue suites), `envelope_sizes`, `objects`, and the groups
+    /// pending a later stage (`pendingVectorGroups`). A new group fails here until it is placed.
+    @Test func p3VectorGroupsAreAccountedFor() throws {
+        let root = try StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
+        for suite in ["1", "2"] {
+            let p3 = try #require(root.object?["suites"]?.object?[suite]?.object?["p3"]?.object)
+            let pending = Set(FixtureCoverage.pendingVectorGroups.keys.map { String($0.dropFirst(3)) })
+            #expect(Set(p3.keys) == Set(["cases", "envelope_sizes", "objects"]).union(pending), "suite \(suite): \(p3.keys.sorted())")
+            #expect(p3["restore"]?.array?.count == 34, "suite \(suite) restore")
+        }
     }
 
     /// Every PR still has pending files, or is done (its files all replay).

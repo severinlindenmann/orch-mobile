@@ -90,6 +90,7 @@ struct SettingsScreen: View {
             Picker("Next pairing", selection: Binding(get: { model.pairingScenario }, set: { model.pairingScenario = $0 })) {
                 ForEach(PairingScenario.allCases, id: \.self) { Text($0.title).tag($0) }
             }
+            .accessibilityIdentifier("demo.nextPairing")
             Picker("Next answer ends as", selection: Binding(get: { model.signOutcome }, set: { model.signOutcome = $0 })) {
                 ForEach(SignOutcome.liveCases, id: \.self) { Text($0.title).tag($0) }
             }

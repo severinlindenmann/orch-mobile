@@ -72,6 +72,20 @@ extension FakeHost {
         return .object(body)
     }
 
+    /// orch-29 host liveness: the next rotation goes to `min(EHW + 1, committed + 2^16)`, where EHW is the epoch high-water of
+    /// everything this host ever sealed (committed or burned: `max(epoch, relayEpochFloor)`). When the clamp stops it (EHW + 1 would
+    /// be more than 2^16 above the committed epoch, which an honest relay refuses forever) the host raises `publicationAlarm` and
+    /// throws: the gate stays up and nothing is sealed or sent.
+    func nextRotationEpoch() throws -> UInt32 {
+        let ehw = UInt64(max(epoch, relayEpochFloor))
+        let cap = UInt64(epoch) + UInt64(MemberList.maxEpochStep)
+        guard ehw + 1 <= min(cap, UInt64(UInt32.max)) else {
+            publicationAlarm = .epochGap
+            throw MembershipPublicationError.alarm
+        }
+        return UInt32(ehw + 1)
+    }
+
     /// Refusals in a row that may burn an epoch before the host raises `publicationAlarm` and stops.
     static let maxConsecutiveBurns = 8
 
@@ -258,7 +272,7 @@ extension FakeHost {
             var members = roster.values.filter { $0.keys.deviceID != adding?.0.deviceID }.map { ($0.keys, $0.scopes) }
             if let adding { members.append(adding) }
             // Behind a relay list this host did not publish: a fresh epoch above it (its key is unknown here).
-            let e = relayEpochFloor > epoch ? relayEpochFloor + 1 : epoch
+            let e = relayEpochFloor > epoch ? try nextRotationEpoch() : epoch
             _ = wk(e)
             _ = try preparePublication(roster: members, epoch: e, wraps: wraps)
             try await sendPending(relay: relay, session: session)

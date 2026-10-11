@@ -36,6 +36,8 @@ public enum Refusal: String, Error, Sendable, Equatable {
     /// Local alarm (never on the wire, Q10): two `WSK`-verified member lists at one epoch commit to different `WK`s. One `WK`
     /// per epoch, ever: only a host that equivocates (or a stolen `WSK`) can sign both.
     case wkCommitConflict = "wk_commit_conflict"
+    /// Local (G2b D4): a key for an epoch above the head list's, or before any verified list. Epochs move only on a verified list.
+    case futureEpoch = "future_epoch"
 }
 
 /// Failures of the byte-level primitives (encodings, keys, AEAD).

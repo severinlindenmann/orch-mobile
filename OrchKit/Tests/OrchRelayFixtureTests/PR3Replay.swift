@@ -15,7 +15,7 @@ enum PR3Replay {
     static let membersFiles: Set<String> = ["membership.json", "members.json", "grants.json", "card_keys.json", "card_key.json"]
     static var files: Set<String> { directoryFiles.union(membersFiles) }
 
-    static let v: JSONValue = (try? StrictJSON.parse(Vectors.data, maxBytes: .max))?.object?["suites"]?.object?["2"] ?? .null
+    static let v: JSONValue = (try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64))?.object?["suites"]?.object?["2"] ?? .null
     static func id(_ name: String) -> ID16 { ID16(hex: v.object!["ids"]!.object![name]!.string!)! }
     static var person: ID16 { id("person_alice") }
     static var bob: ID16 { id("person_bob") }
@@ -76,8 +76,7 @@ enum PR3Replay {
 
     /// members_support.load_state: the base seed, then the p3 state and directory (accounts, certificates, revocations, list,
     /// members, grants, wraps, obligations, live receipts, card sequence).
-    /// `receipts` maps a vector body digest to the digest of the body actually sent (PreG2b), so a seeded receipt matches it.
-    static func loadState(_ relay: FakeRelay, state: JSONValue, directory: JSONValue, now: Int64, receipts: [Data: Data] = [:]) async throws {
+    static func loadState(_ relay: FakeRelay, state: JSONValue, directory: JSONValue, now: Int64) async throws {
         try await baseSeed(relay, now: now)
         var accountKeys: [ID16: SigningPublicKey] = [person: try key("person_alice.sig")]
         for (p, pub) in directory.object?["persons"]?.object ?? [:] { accountKeys[ID16(hex: p)!] = try SigningPublicKey(x963: Hex.decode(pub.string!)!) }
@@ -85,7 +84,7 @@ enum PR3Replay {
         let certs = (directory.object?["certs"]?.object ?? [:]).values.map { $0 }
         let revoked = (directory.object?["revoked"]?.array ?? []).map { ID16(hex: $0.string!)! }
         var signedList: JSONValue?
-        if let o = st["list"], o != .null { signedList = try SignedObject.sign(PreG2b.upgrade(o.object!), kind: .memberList, signer: try signer("wsk_a.sig")).json }
+        if let o = st["list"], o != .null { signedList = try SignedObject.sign(o.object!, kind: .memberList, signer: try signer("wsk_a.sig")).json }
         let list = signedList, accounts = accountKeys
         await relay.seed { r in
             r.owners = accounts
@@ -115,8 +114,7 @@ enum PR3Replay {
             }
             for (h, res) in st["publications"]?.object ?? [:] {
                 let ok = res.object!["ok"]!.object!
-                let d = Hex.decode(h)!
-                w.receipts[receipts[d] ?? d] = .init(listSeq: ok["list_seq"]!.int!, epoch: UInt32(ok["epoch"]!.int!), acceptedMs: now)
+                w.receipts[Hex.decode(h)!] = .init(listSeq: ok["list_seq"]!.int!, epoch: UInt32(ok["epoch"]!.int!), acceptedMs: now)
             }
             w.card!.cardSeq = UInt32(st["card_seq"]!.int!)
             r.workspaces[ws] = w
@@ -165,19 +163,22 @@ enum PR3Replay {
                 $0["scopes_max"] = [.string("drop:" + ws.hex)]; $0["expires_ms"] = .int(now + 10_000)
             }
             await relay.seed { r in r.devices[device]!.cert = c }
-        case "rotation_required", "stale_list":
-            var o = body.object!["member_list"]!.object!["o"]!.object!
-            o["list_seq"] = 1; o["epoch"] = 1
-            let list = try SignedObject.sign(PreG2b.upgrade(o), kind: .memberList, signer: try signer("wsk_a.sig")).json
+        case "rotation_required", "stale_list", "bad_epoch", "wk_commit_changed":
+            // members_support.prepare_fixture (491b500): a held list_seq 1; bad_epoch holds epoch 2 above the body's 1, and
+            // wk_commit_changed holds the base publication's epoch-1 list (wk_commit A) under the body's wk_commit B.
+            var o = (scenario == "wk_commit_changed" ? baseBody : body).object!["member_list"]!.object!["o"]!.object!
+            o["list_seq"] = 1; o["epoch"] = scenario == "bad_epoch" ? 2 : 1
+            let list = try SignedObject.sign(o, kind: .memberList, signer: try signer("wsk_a.sig")).json
+            let heldEpoch = UInt32(o["epoch"]!.int!)
             let laptop = id("device_laptop")
             await relay.seed { r in
-                r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.listSeq = 1; r.workspaces[ws]!.epoch = 1
+                r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.listSeq = 1; r.workspaces[ws]!.epoch = heldEpoch
                 if scenario == "rotation_required" { r.workspaces[ws]!.members[laptop] = .init(personID: person, scopes: ["look"]) }
             }
         case "not_for_this_device" where name == "card_keys":
             var o = body.object!["member_list"]!.object!["o"]!.object!
             o["members"] = .array(o["members"]!.array!.filter { $0.object?["device_id"] != .string(device.hex) })
-            let list = try SignedObject.sign(PreG2b.upgrade(o), kind: .memberList, signer: try signer("wsk_a.sig")).json
+            let list = try SignedObject.sign(o, kind: .memberList, signer: try signer("wsk_a.sig")).json
             await relay.seed { r in r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.members[device] = nil }
         case "grant_conflict":
             await relay.seed { r in r.workspaces[ws]!.grants[.init(device: device, epoch: 1)] = .object([:]) }
@@ -194,7 +195,7 @@ enum PR3Replay {
                 }
             }
         case "authorized_current_state", "exact_bytes_already_committed", "malformed", "wrong_suite", "unauthenticated", "not_for_this_device",
-             "bad_epoch", "fenced", "missing_grant", "other_workspace", "too_large", "victim_person_without_member":
+             "fenced", "missing_grant", "other_workspace", "too_large", "victim_person_without_member":
             break
         default:
             return false
@@ -351,25 +352,15 @@ enum PR3Replay {
 
     @Test func membershipStateTransitions() async throws {
         let cases = PR3Replay.p3Cases.filter { $0.object?["op"]?.string == "membership" }
-        #expect(cases.count == 29)
+        #expect(cases.count == 35)
         var accepted = 0, refused = 0
         for c in cases {
             let co = c.object!, name = co["name"]!.string!, args = co["args"]!.object!
             let now = args["now_ms"]!.int!
             let relay = FakeRelay(testingContext: try RealmContext.live(origin: fixtureOrigin), clock: ContinuousClock(), wall: MutableWall(now))
-            // PreG2b: the list gains `wk_commit` (a raw body keeps differing from the canonical one by a space), and a receipt the
-            // state holds for the vector's own body is keyed by the digest of the body actually sent. TODO(G2b): send unchanged.
-            let raw: Data, receipts: [Data: Data]
-            if let text = args["body_raw"]?.string {
-                var up = try canonicalJSON(try PreG2b.upgradeBody(try StrictJSON.parse(Data(text.utf8), maxBytes: .max)))
-                up.insert(UInt8(ascii: " "), at: up.index(after: up.startIndex))
-                raw = up; receipts = [:]
-            } else {
-                raw = try canonicalJSON(try PreG2b.upgradeBody(args["body"]!))
-                receipts = [Data(SHA256.hash(data: try canonicalJSON(args["body"]!))): Data(SHA256.hash(data: raw))]
-            }
-            try await PR3Replay.loadState(relay, state: co["state"]!, directory: args["directory"]!, now: now, receipts: receipts)
+            try await PR3Replay.loadState(relay, state: co["state"]!, directory: args["directory"]!, now: now)
             let before = await Self.snapshot(relay)
+            let raw = try args["body_raw"]?.string.map { Data($0.utf8) } ?? canonicalJSON(args["body"]!)
             let reply = try await relay.send(WireRequest(method: "PUT", target: "/v2/workspaces/\(PR3Replay.ws.hex)/membership",
                 headers: ["Authorization": "Bearer FAKE-workspace", "Orch-Holder": "1", "Content-Type": "application/json"],
                 body: raw, clientAddress: "vector"))
@@ -385,7 +376,7 @@ enum PR3Replay {
                 accepted += 1
                 let want = expect["state"]!.object!
                 let a = after.object!
-                #expect(a["list"] == want["list"].flatMap { $0.object.map { .object(PreG2b.upgrade($0)) } }, "\(name) list")
+                #expect(a["list"] == want["list"], "\(name) list")
                 // the relay's member table is exactly the accepted list's entries
                 var members: [String: JSONValue] = [:]
                 for m in want["list"]?.object?["members"]?.array ?? [] {
@@ -400,11 +391,10 @@ enum PR3Replay {
                 #expect(a["rotation_due"] == want["rotation_due"], "\(name) rotation_due")
                 #expect(a["ever_persons"] == want["ever_persons"], "\(name) ever_persons")
                 #expect(a["ever_devices"] == want["ever_devices"], "\(name) ever_devices")
-                let wantReceipts = Set(want["publications"]!.object!.keys.map { k in receipts[Hex.decode(k)!].map(Hex.encode) ?? k })
-                #expect(Set(a["publications"]!.object!.keys) == wantReceipts, "\(name) publications")
+                #expect(Set(a["publications"]!.object!.keys) == Set(want["publications"]!.object!.keys), "\(name) publications")
                 #expect(a["card_seq"] == want["card_seq"], "\(name) card_seq")
             }
         }
-        #expect(accepted + refused == 29 && accepted > 0 && refused > 0)
+        #expect(accepted + refused == 35 && accepted > 0 && refused > 0)
     }
 }

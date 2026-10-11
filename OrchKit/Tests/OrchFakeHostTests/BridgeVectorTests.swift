@@ -24,7 +24,7 @@ let pairingCaseNames = [
     "pair_status_rejected", "pair_status_without_pairing",
 ]
 
-func bridgeVectors() -> J { J(try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]["bridge"] }
+func bridgeVectors() -> J { J(try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]["bridge"] }
 
 func keyFromHex(_ s: String) -> SymmetricKey { SymmetricKey(data: Hex.decode(s)!) }
 

@@ -17,6 +17,7 @@ struct ShareFixtureScreen: View {
             Section("Share sample items with the installed extension") {
                 Button("Share file, text and link") { present(file: true, text: true, url: true) }.accessibilityIdentifier("share.fixture.mixed")
                 Button("Share a file") { present(file: true, text: false, url: false) }.accessibilityIdentifier("share.fixture.file")
+                Button("Share an image") { present(file: false, text: false, url: false, image: true) }.accessibilityIdentifier("share.fixture.image")
                 Button("Share text") { present(file: false, text: true, url: false) }.accessibilityIdentifier("share.fixture.text")
                 Button("Share a link") { present(file: false, text: false, url: true) }.accessibilityIdentifier("share.fixture.url")
             }
@@ -31,8 +32,15 @@ struct ShareFixtureScreen: View {
         .navigationTitle("Share fixture")
     }
 
-    private func present(file: Bool, text: Bool, url: Bool) {
+    private func present(file: Bool, text: Bool, url: Bool, image: Bool = false) {
         var items: [Any] = []
+        if image {
+            // A bare UIImage registers only public.image (what Photos hands over): no file URL, no text.
+            let size = CGSize(width: 32, height: 32)
+            items.append(UIGraphicsImageRenderer(size: size).image { ctx in
+                UIColor.systemOrange.setFill(); ctx.fill(CGRect(origin: .zero, size: size))
+            })
+        }
         if file {
             let u = FileManager.default.temporaryDirectory.appendingPathComponent("orch-share-fixture.txt")
             try? Data("fixture file contents".utf8).write(to: u)

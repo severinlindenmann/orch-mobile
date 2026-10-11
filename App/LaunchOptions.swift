@@ -15,7 +15,7 @@ struct LaunchOptions: Equatable, Sendable {
     let seedShareQuarantine: Bool
     /// DEBUG-only: no automatic share import on activation, so a test can observe the extension-written job first.
     let holdShareImport: Bool
-    /// DEBUG-only: offer Demo workspaces to the share extension (they are never offered otherwise).
+    /// Obsolete: Demo workspaces are always offered to the share extension now (TestFlight runs Demo). Kept so old test arguments still parse.
     let shareDemoTargets: Bool
     /// DEBUG-only `--ui-preview`: the in-memory PreviewWorld fake instead of the real Demo stack (fallback for layout work).
     let uiPreview: Bool

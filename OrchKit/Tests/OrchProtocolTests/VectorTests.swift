@@ -72,6 +72,7 @@ import Testing
             "h_sas_cert": Label.hSASCert,
             "h_dek_commit": Label.hDEKCommit,
             "h_card_key_commit": Label.hCardKeyCommit,
+            "h_wk_commit": Label.hWKCommit,
             "h_drop_parent": Label.hDropParent,
             "h_ws_envelope": Label.hWSEnvelope,
             "h_question": Label.hQuestion,
@@ -83,9 +84,10 @@ import Testing
         // logs, checkpoints or gate hashes (host/relay side, docs/gaps.md #25), so OrchProtocol has no `Label.*` for them.
         let knownNotUsedByThePhone: Set<String> = [
             "sig_ticket_event", "sig_ws_event", "sig_host_event", "sig_checkpoint",
-            "h_section", "h_value", "h_gate", "h_policy", "h_people", "h_question_id", "h_event", "h_grant_secret"
+            "h_section", "h_value", "h_gate", "h_policy", "h_people", "h_question_id", "h_event", "h_grant_secret",
+            "h_checkpoint", "sig_genesis_pin", "h_log_acc"
         ]
-        #expect(knownNotUsedByThePhone.count == 12)
+        #expect(knownNotUsedByThePhone.count == 15)
         #expect(knownNotUsedByThePhone.isDisjoint(with: Set(mine.keys)))
         #expect(Set(l.keys) == Set(mine.keys).union(knownNotUsedByThePhone))
         for (k, v) in l where !knownNotUsedByThePhone.contains(k) { #expect(mine[k] == v.str, "\(k)") }
@@ -453,16 +455,17 @@ import Testing
     /// file gains a group, and pins the case counts the gates assert.
     @Test func everyGroupIsAccountedFor() {
         let run: Set<String> = ["keys", "ids", "sign", "hkdf", "salted_aead", "seal", "seal_open", "label_sealed", "certs", "revocations",
-                                "card", "wk_grants", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop"]
+                                "card", "wk_grants", "wk_commit", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop"]
         let partial: Set<String> = ["bridge"]                       // seal, device_cases and sas run; host_cases, pair_answers, links deferred
-        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish", "p3"]  // p3: relay state machine; its membership cases replay in OrchRelayFixtureTests.P3MembershipVectorTests, the rest with PR4/PR5
+        // member_list_snapshots run through WorkspaceSession in OrchFakeHostTests.SnapshotVectorTests; checkpoints are F1 (host/relay)
+        let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish", "p3", "member_list_snapshots", "checkpoints"]  // p3: relay state machine; its membership cases replay in OrchRelayFixtureTests.P3MembershipVectorTests, the rest with PR4/PR5
         let meta: Set<String> = ["suite", "name"]
         let all = Set(s2.object!.keys)
         #expect(all == run.union(partial).union(deferred).union(meta), "unaccounted: \(all.subtracting(run).subtracting(partial).subtracting(deferred).subtracting(meta))")
         let b = s2["bridge"].object!
         #expect(b["seal"]?.array?.count == 1 && b["device_cases"]?.array?.count == 11 && b["host_cases"]?.array?.count == 47
                 && b["pair_answers"]?.array?.count == 20 && b["links"]?.array?.count == 6)
-        #expect(s2["card"]["cases"].items.count == 19 && s2["card"]["hosted_marker"].items.count == 4 && s2["member_lists"].items.count == 14
+        #expect(s2["card"]["cases"].items.count == 19 && s2["card"]["hosted_marker"].items.count == 4 && s2["member_lists"].items.count == 34
                 && s2["wk_grants"]["cases"].items.count == 3 && s2["cert_request"]["cases"].items.count == 10
                 && s2["cert_request"]["open_cases"].items.count == 5 && s2["relay_auth"]["cases"].items.count == 6)
         let d = s2["drop"]
