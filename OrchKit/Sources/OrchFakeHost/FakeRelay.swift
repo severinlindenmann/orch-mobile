@@ -97,6 +97,10 @@ public actor FakeRelay: RequestSender {
     /// Device bridge mailboxes: the replay record of each `(workspace, device, rid)` (P3-D8/D9/D22), with its live bodies.
     struct RidKey: Hashable { let ws: ID16; let device: ID16; let rid: ID16 }
     var rids: [RidKey: RelayRidRecord] = [:]
+    /// Pairing answers by (ws, offer, rid) and index: the full-envelope digest, kept 900 s from the first answer, so a re-post is a
+    /// stored replay (identical, never stored again: P3-D27) or a `chunk_conflict` (other bytes), even after the body expired.
+    private struct PairAnswer { let digest: Data; let keepUntilMs: Int64 }
+    private var pairAnswers: [BoxKey: [UInt64: PairAnswer]] = [:]
     /// Per workspace: the last delivery position handed out (`n`) and the host's acknowledged cursor (P3-D10).
     private var positions: [ID16: UInt64] = [:]
     private var cursors: [ID16: UInt64] = [:]
@@ -108,10 +112,12 @@ public actor FakeRelay: RequestSender {
     /// Tests only: a relay that answers the next new device request with 409 `stale_epoch` after running `then` (e.g. holding the
     /// reply while time passes). With `deliver` it LIES (orch-29 Q14): it queued the request anyway, and later accepts other bytes for
     /// that rid as a new record (an honest relay answers `rid_conflict`). Without it, nothing was queued.
-    private var lieNext: (epoch: UInt32, deliver: Bool, then: @Sendable () async throws -> Void)?
+    private var lieNext: (epoch: UInt32, deliver: Bool, forgets: Bool, then: @Sendable () async throws -> Void)?
     private var lyingRids: Set<RidKey> = []
-    package func lieWithStaleEpochOnNextRequest(epoch: UInt32, deliver: Bool = true, then: @escaping @Sendable () async throws -> Void) {
-        lieNext = (epoch, deliver, then)
+    /// `forgets: false`: it keeps the queued record, so other bytes for the rid are its own 409 `rid_conflict`.
+    package func lieWithStaleEpochOnNextRequest(epoch: UInt32, deliver: Bool = true, forgets: Bool = true,
+                                                then: @escaping @Sendable () async throws -> Void) {
+        lieNext = (epoch, deliver, forgets, then)
     }
     package func ridKeys(workspace: ID16) -> Set<ID16> { Set(rids.keys.filter { $0.ws == workspace }.map(\.rid)) }
     private var pairPostsByWS: [ID16: Window] = [:]
@@ -158,6 +164,7 @@ public actor FakeRelay: RequestSender {
         challenges = [:]; sessions = [:]; owners = [:]; devices = [:]; revocationRows = [:]; recoveryReceipts = [:]
         rateWindows = [:]
         drops = [:]; claims = [:]; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
+        pairAnswers = [:]
         certRecords = [:]; accounts = [:]; invites = [:]; pairPostsGlobal = Window(); livePolls = [:]; livePollsGlobal = 0
         seededCards = [:]; seededDevices = [:]
         rids = [:]; positions = [:]; cursors = [:]; seededMembers = [:]; hostPosts = [:]; devicePosts = [:]; lyingRids = []
@@ -419,6 +426,10 @@ public actor FakeRelay: RequestSender {
         hostPosts = hostPosts.filter { $0.value.isActive(now) }
         devicePosts = devicePosts.filter { $0.value.isActive(now) }
         pairPostsByWS = pairPostsByWS.filter { $0.value.isActive(now) }
+        pairAnswers = pairAnswers.compactMapValues { m in
+            let live = m.filter { now < $0.value.keepUntilMs }
+            return live.isEmpty ? nil : live
+        }
         pairPostsByAddress = pairPostsByAddress.filter { $0.value.isActive(now) }
         pairPollsByAddress = pairPollsByAddress.filter { $0.value.isActive(now) }
         rateWindows = rateWindows.filter { $0.value.endMs > now }
@@ -954,7 +965,7 @@ public actor FakeRelay: RequestSender {
                 if lie.deliver {
                     let reply = devicePost(r, s, ws: wsID, rid: ridID, duplicate: false)
                     guard reply.status == 202 else { return reply }
-                    lyingRids.insert(RidKey(ws: wsID, device: s.id, rid: ridID))
+                    if lie.forgets { lyingRids.insert(RidKey(ws: wsID, device: s.id, rid: ridID)) }
                 }
                 try await lie.then()
                 return refuse(409, .staleEpoch, extra: ["epoch": .int(Int64(lie.epoch))])
@@ -1107,6 +1118,11 @@ public actor FakeRelay: RequestSender {
                 guard let session else { return refuse(401, .unauthenticated) }
                 guard session.kind == .workspace, session.id == wsID else { return refuse(403, .notEligible) }
                 if let f = fence(r, ws: wsID) { return f }
+                // Before any charge (orch-relay d3816ea `restorable`): pairing answers are never stored again. An identical re-post is
+                // a stored replay, other bytes for an answered index a conflict, whether or not the body has expired.
+                if let p = try? Bridge.Parts(envelope: r.body), let seen = pairAnswers[key]?[p.header.seq], now < seen.keepUntilMs {
+                    return seen.digest == RidStore.digest(r.body) ? json(202) : refuse(409, .chunkConflict)
+                }
             }
             guard pairPostsGlobal.hit(now: now, limit: limits.pairPostsPerMinuteGlobal) else { return limited(now) }
             if !response {
@@ -1121,6 +1137,7 @@ public actor FakeRelay: RequestSender {
             let h = parsed!.header
             guard h.workspace == wsID, h.rid == ridID, h.stream == offerID, h.epoch == 0 else { return refuse(400, .malformed) }
             guard cardKeys(wsID) != nil else { return refuse(401, .unknownWorkspace) }
+            if response { pairAnswers[key, default: [:]][h.seq] = PairAnswer(digest: RidStore.digest(r.body), keepUntilMs: now + RidStore.restoreWindowMs) }
             store(key, parsed: parsed!, envelope: r.body, response: response)
             if a == .duplicate {
                 store(key, parsed: parsed!, envelope: r.body, response: response)
