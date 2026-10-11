@@ -13,6 +13,15 @@ enum Fmt {
     static func bytes(_ n: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)
     }
+    /// "6 days left", "2 h left", "Expired". Short, for chips.
+    static func timeLeft(_ date: Date, now: Date = Date()) -> (text: String, urgent: Bool) {
+        let seconds = date.timeIntervalSince(now)
+        if seconds <= 0 { return ("Expired", true) }
+        let hours = Int((seconds / 3600).rounded(.up))
+        if hours < 24 { return ("\(max(hours, 1)) h left", true) }
+        let days = Int((seconds / 86400).rounded(.down))
+        return (days == 1 ? "1 day left" : "\(days) days left", false)
+    }
     static func plural(_ n: Int, _ one: String, _ many: String) -> String { n == 1 ? "1 \(one)" : "\(n) \(many)" }
 }
 
@@ -104,7 +113,7 @@ struct WorkspaceHeader: View {
 
     private var nameRow: some View {
         HStack(spacing: OS.s2) {
-            WorkspaceRail(color: color).frame(height: 22).clipShape(Capsule())
+            Image(systemName: "laptopcomputer").foregroundStyle(OC.textMuted).accessibilityHidden(true)
             Text(verbatim: SafeText.inline(name, limit: 40)).font(OF.wsName).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -134,5 +143,46 @@ struct EmptyState: View {
         .frame(maxWidth: .infinity)
         .padding(OS.s6)
         .accessibilityElement(children: .combine)
+    }
+}
+
+
+/// Wraps chips onto further lines instead of truncating them (Dynamic Type safe).
+struct FlowLayout: Layout {
+    var spacing: CGFloat = OS.s2
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? .infinity, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(width: bounds.width, subviews: subviews)
+        for (index, origin) in result.origins.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> (origins: [CGPoint], size: CGSize) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
+        for sub in subviews {
+            let size = sub.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            if x > 0, x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            maxX = max(maxX, x - spacing)
+        }
+        return (origins, CGSize(width: maxX, height: y + rowHeight))
+    }
+}
+
+/// Small caps-style section caption used above grouped cards.
+struct SectionCaption: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(verbatim: text).font(.footnote.weight(.semibold)).foregroundStyle(OC.textFaint)
+            .textCase(.uppercase).accessibilityAddTraits(.isHeader)
     }
 }

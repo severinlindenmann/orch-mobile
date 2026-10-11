@@ -27,6 +27,8 @@ struct QuestionScreen: View {
                 }
                 if let q = ws.question(id: questionID) {
                     Text(verbatim: "\(q.displayTicket) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
+                        .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
+                        .background(OC.surface2, in: Capsule())
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
@@ -139,7 +141,7 @@ struct SignSheet: View {
         VStack(spacing: 0) {
             switch model.load {
             case .loading:
-                ProgressView("Reading the question…").frame(maxHeight: .infinity)
+                ProgressView("Reading the question…").frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("sign.loading")
             case .failed(let message):
                 VStack(spacing: OS.s4) {
@@ -148,15 +150,18 @@ struct SignSheet: View {
                         .buttonStyle(.orchProminent).accessibilityIdentifier("sign.retryLoad")
                     Button("Close", role: .cancel, action: onClose)
                 }
-                .padding(OS.s4).frame(maxHeight: .infinity)
+                .padding(OS.s4).frame(maxWidth: .infinity, maxHeight: .infinity)
             case .loaded:
                 if let review = model.review { content(review) }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(OC.bg)
         .transaction { $0.animation = nil }          // V5: security surface never animates
         .interactiveDismissDisabled(model.phase == .sending)
         .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(26)
         .task { await model.loadReview() }
     }
 
@@ -170,18 +175,21 @@ struct SignSheet: View {
                                     hostedBy: review.hostedBy, clientHosted: review.clientHosted)
                     if review.isDemo { DemoChip() }
                 }
-                Text("You are signing").font(OF.section)
-                VStack(alignment: .leading, spacing: OS.s2) {
-                    Text(verbatim: "Question \(SafeText.inline(review.ticket, limit: 24))").font(OF.meta).foregroundStyle(OC.textMuted)
+                Text("You are signing").font(.title2.weight(.bold)).accessibilityAddTraits(.isHeader)
+                VStack(alignment: .leading, spacing: OS.s1) {
+                    Text(verbatim: "Question \(SafeText.inline(review.ticket, limit: 24))").font(OF.meta).foregroundStyle(OC.textFaint)
                     SafeTextView(review.text).accessibilityIdentifier("sign.text")
                 }
-                .padding(OS.s4)
-                .background(OC.surface2, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(OS.s3)
+                .background(OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 VStack(alignment: .leading, spacing: OS.s1) {
-                    Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text("Your answer").font(OF.meta).foregroundStyle(OC.textFaint)
                     SafeTextView(review.optionLabel, strictLabel: true).accessibilityIdentifier("sign.answer")
                 }
-                .padding(OS.s4).orchCard()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(OS.s3)
+                .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 if review.hasUnsafeContent {
                     Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
@@ -191,9 +199,21 @@ struct SignSheet: View {
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text(verbatim: "\(Fmt.plural(lineCount(review.text), "line", "lines")) · \(review.text.count) characters · hash \(review.contentHash.prefix(4))·\(review.contentHash.dropFirst(4).prefix(4))")
                         .font(OF.meta).foregroundStyle(OC.textMuted)
+                    fingerprint(review.contentHash)
                     Text("The text ends with").font(OF.meta).foregroundStyle(OC.textMuted)
-                    Text(SafeText.attributed(tail(review.text))).clipped().accessibilityIdentifier("sign.tail")
+                    Text(SafeText.attributed(tail(review.text), style: .exact)).clipped().accessibilityIdentifier("sign.tail")
                 }
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: OS.s2) {
+                        Text("Question").font(OF.meta).foregroundStyle(OC.textMuted)
+                        Text(SafeText.attributed(review.text, style: .exact)).frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
+                        Text(SafeText.attributed(review.optionLabel, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.top, OS.s2)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("sign.exactText")
+                } label: { Text("Exact text (monospace)").font(OF.section) }
                 SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID,
                               optionID: review.optionID, contentHash: review.contentHash)
                 if typeSize.isAccessibilitySize { footer(review) }
@@ -219,6 +239,25 @@ struct SignSheet: View {
         }
     }
 
+    /// The content hash prefix in four-character groups so two fingerprints can be compared at a glance.
+    private func fingerprint(_ hash: String) -> some View {
+        let groups = stride(from: 0, to: min(hash.count, 16), by: 4).map { i -> String in
+            let start = hash.index(hash.startIndex, offsetBy: i)
+            let end = hash.index(start, offsetBy: min(4, min(hash.count, 16) - i))
+            return String(hash[start..<end])
+        }
+        return FlowLayout(spacing: OS.s2) {
+            ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                Text(verbatim: group).font(.footnote.monospaced().weight(.medium))
+                    .padding(.horizontal, OS.s2).padding(.vertical, 3)
+                    .background(OC.surface2, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "Fingerprint " + groups.joined(separator: ", ")))
+        .accessibilityIdentifier("sign.fingerprint")
+    }
+
     private func tail(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed.count > 40 ? "…" : "") + trimmed.suffix(40)
@@ -235,9 +274,10 @@ struct SignSheet: View {
             case .ready:
                 if let refusal = review.optionsRefusal {
                     stateView("exclamationmark.octagon", OC.danger, "Can't be checked here", refusal.message, id: "sign.refused")
-                    Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
+                    Button(role: .cancel, action: onClose) { Text("Cancel").frame(maxWidth: .infinity, minHeight: 44) }
+                        .foregroundStyle(OC.brand).accessibilityIdentifier("sign.cancel")
                 } else {
-                    Button { Task { await model.sign() } } label: { Text("Sign and send") }
+                    Button { Task { await model.sign() } } label: { Label("Sign and send", systemImage: "signature") }
                         .buttonStyle(.orchProminent)
                         .disabled(armedRevision != review.revision)
                         .accessibilityIdentifier("sign.confirm")
@@ -246,7 +286,8 @@ struct SignSheet: View {
                         Text(atEndRevision == review.revision ? "Hold on…" : "Scroll to the end to continue")
                             .font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("sign.hint")
                     }
-                    Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
+                    Button(role: .cancel, action: onClose) { Text("Cancel").frame(maxWidth: .infinity, minHeight: 44) }
+                        .foregroundStyle(OC.brand).accessibilityIdentifier("sign.cancel")
                 }
             case .rereading:
                 ProgressView("Reading the question again…").accessibilityIdentifier("sign.rereading")

@@ -21,7 +21,7 @@ struct SettingsScreen: View {
                 ForEach(model.workspaces) { ws in
                     NavigationLink(value: Route.workspaceSettings(ws.id, confirmLeave: false)) {
                         HStack {
-                            WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
+                            Image(systemName: "laptopcomputer").foregroundStyle(OC.textMuted)
                             Text(verbatim: ws.displayName)
                         }
                     }
@@ -90,6 +90,8 @@ struct WorkspaceSettingsScreen: View {
     @State private var confirm: Bool
     @State private var report: LeaveReport?
     @State private var simulateOffline = false
+    @ScaledMetric(relativeTo: .body) private var checkBox = 22.0
+    @Environment(\.routeSelector) private var routeSelector
 
     init(services: any AppServices, workspaceID: String, confirmLeave: Bool, path: Binding<[Route]>) {
         self.services = services
@@ -126,12 +128,12 @@ struct WorkspaceSettingsScreen: View {
                 }
                 if let report, report.incomplete {
                     Section {
-                        Label("Removal incomplete. This workspace is still on this iPhone. Try again.", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(OC.warn).accessibilityIdentifier("settings.leave.incomplete")
+                        removalIncomplete(ws.displayName)
+                            .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
                     }
                 }
                 Section {
-                    Button("Remove from this iPhone", role: .destructive) { confirm = true }
+                    Button(report?.incomplete == true ? "Retry removal" : "Remove from this iPhone", role: .destructive) { confirm = true }
                         .accessibilityIdentifier("settings.leave")
                 } footer: {
                     Text("Removing a workspace only affects this iPhone. To cut off a lost device, revoke it on your primary.")
@@ -142,7 +144,7 @@ struct WorkspaceSettingsScreen: View {
                         .accessibilityIdentifier("settings.leave.done")
                     Text(verbatim: serverText(report)).font(OF.body)
                         .accessibilityIdentifier("settings.leave.server")
-                    Button("Done") { path = [] }.accessibilityIdentifier("settings.leave.close")
+                    Button("Done") { path = []; routeSelector?.goHome() }.accessibilityIdentifier("settings.leave.close")
                 }
             } else {
                 Text("This workspace is no longer on this iPhone.")
@@ -159,6 +161,44 @@ struct WorkspaceSettingsScreen: View {
         } message: {
             Text("Its questions, files and keys are deleted from this iPhone now, even if you are offline. Stopping notifications on the server is tried afterwards and may stay pending. Your other devices keep access and nothing on your Mac changes.")
         }
+    }
+
+    /// Problem, what is already safe, and the single next step on one card. The checklist says how far removal got.
+    private func removalIncomplete(_ name: String) -> some View {
+        VStack(alignment: .leading, spacing: OS.s3) {
+            VStack(alignment: .leading, spacing: OS.s2) {
+                Label("Removal incomplete", systemImage: "exclamationmark.triangle.fill")
+                    .font(OF.section).foregroundStyle(OC.danger)
+                Text("Removal incomplete. This workspace is still on this iPhone. Try again.")
+                    .font(OF.body).foregroundStyle(OC.text)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(OS.s4)
+            .background(OC.soft(OC.danger), in: RoundedRectangle(cornerRadius: OR.card, style: .continuous))
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("settings.leave.incomplete")
+            VStack(alignment: .leading, spacing: 0) {
+                checklistRow("Removal started on this iPhone", icon: "checkmark", color: OC.ok)
+                Divider()
+                checklistRow(name + " is still on this iPhone", icon: "xmark", color: OC.danger)
+                Divider()
+                checklistRow("Try again to finish removing it", icon: "clock", color: OC.textFaint)
+            }
+            .padding(.horizontal, OS.s4)
+            .orchCard()
+        }
+        .padding(.vertical, OS.s2)
+    }
+
+    private func checklistRow(_ text: String, icon: String, color: Color) -> some View {
+        HStack(spacing: OS.s3) {
+            Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color)
+                .frame(width: checkBox, height: checkBox).background(OC.soft(color), in: Circle()).accessibilityHidden(true)
+            Text(verbatim: text).font(OF.body)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, OS.s3)
+        .accessibilityElement(children: .combine)
     }
 
     private func serverText(_ r: LeaveReport) -> String {

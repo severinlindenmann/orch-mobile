@@ -9,9 +9,11 @@ struct DropScreen: View {
     let services: any AppServices
     @State private var direction: DropDirection = .received
     @State private var composing: Bool
+    private let startComposing: Bool
 
     init(services: any AppServices, startComposing: Bool = false) {
         self.services = services
+        self.startComposing = startComposing
         _composing = State(initialValue: startComposing)
     }
 
@@ -29,7 +31,6 @@ struct DropScreen: View {
                 .listRowBackground(Color.clear)
             }
             Section {
-                if let status = model.dropStatus { Text(verbatim: status).accessibilityIdentifier("drop.status") }
                 ForEach(model.workspaces.filter { $0.lifecycle != .live }) { ws in
                     Text(verbatim: "\(ws.displayName): unavailable")
                 }
@@ -50,8 +51,10 @@ struct DropScreen: View {
             }
             if direction == .sending, let live = services as? LiveServices {
                 if live.shareStatus != nil {
-                    Button("Retry share import") { live.onRetryShared?() }.accessibilityIdentifier("drop.share.retry")
-                    Button("Stop sending share jobs") { live.onStopShared?() }.accessibilityIdentifier("drop.share.stop")
+                    Button { live.onRetryShared?() } label: { Text("Retry share import") }
+                        .buttonStyle(.orchSoftBrand).accessibilityIdentifier("drop.share.retry")
+                    Button { live.onStopShared?() } label: { Text("Stop sending share jobs") }
+                        .buttonStyle(.orchSoftDanger).accessibilityIdentifier("drop.share.stop")
                 }
                 ForEach(live.live, id: \.info.id) { ws in
                     if let drop = ws.drop {
@@ -59,14 +62,17 @@ struct DropScreen: View {
                             Section("Failed upload") {
                                 Text(verbatim: ws.info.displayName)
                                 Text(verbatim: failure.reason)
-                                Button("Retry") { Task { await drop.resolve(failure, retry: true) } }
+                                Button { Task { await drop.resolve(failure, retry: true) } } label: { Text("Retry") }
+                                    .buttonStyle(.orchSoftBrand)
                                     .disabled(!drop.canOperate).accessibilityIdentifier("drop.retry")
-                                Button("Stop sending") { Task { await drop.resolve(failure, retry: false) } }
+                                Button { Task { await drop.resolve(failure, retry: false) } } label: { Text("Stop sending") }
+                                    .buttonStyle(.orchSoftDanger)
                                     .disabled(!drop.canOperate).accessibilityIdentifier("drop.stop")
                                 Text("Already-committed relay content may remain.")
                             }
                         }
-                        Button("Resume pending uploads") { Task { await drop.foreground() } }
+                        Button { Task { await drop.foreground() } } label: { Text("Resume pending uploads") }
+                            .buttonStyle(.orchSoft)
                             .disabled(!drop.canOperate).accessibilityIdentifier("drop.resume")
                     }
                 }
@@ -89,6 +95,20 @@ struct DropScreen: View {
 
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(OC.bg)
+        // Pinned above the list so the current transfer status is always on screen (rows taller than before would otherwise
+        // scroll it out of the lazy list).
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let status = model.dropStatus {
+                Text(verbatim: status).font(OF.meta).foregroundStyle(OC.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, OS.s4).padding(.vertical, OS.s2)
+                    .background(OC.surface2)
+                    .accessibilityIdentifier("drop.status")
+            }
+        }
+        .onChange(of: startComposing) { _, request in if request { composing = true } }
         .task { await model.refreshDrop() }
         .refreshable { await model.refreshDrop() }
         .navigationTitle("Drop")
@@ -103,21 +123,48 @@ struct DropScreen: View {
 }
 
 struct DropRow: View {
+    @ScaledMetric(relativeTo: .body) private var iconBox = 36.0
     let item: DropItem
     let workspaces: [WorkspaceInfo]
 
+    private var icon: String {
+        switch item.kind {
+        case .file: item.direction == .sending ? "arrow.up.doc" : "doc"
+        case .note: "note.text"
+        case .url: "link"
+        }
+    }
+
     var body: some View {
         let ws = workspaces.first { $0.id == item.workspaceID }
-        HStack(spacing: OS.s3) {
-            WorkspaceRail(color: ws?.color ?? OC.lineStrong).frame(height: 40).clipShape(Capsule())
+        HStack(alignment: .top, spacing: OS.s3) {
+            Image(systemName: icon).foregroundStyle(OC.textMuted)
+                .frame(width: iconBox, height: iconBox)
+                .background(OC.surface2, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: OS.s1) {
                 HStack {
-                    if item.unread { Circle().fill(OC.youMark).frame(width: 8, height: 8).accessibilityLabel("Unread") }
-                    Text(verbatim: item.displayName).lineLimit(1)
+                    if item.unread { Circle().fill(OC.brand).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                    Text(verbatim: item.displayName).font(OF.section).lineLimit(2)
                     if item.blocked { Image(systemName: "exclamationmark.shield.fill").foregroundStyle(OC.danger).accessibilityLabel("Verification alarm") }
                 }
-                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · \(item.hasSignedExpiry ? "expires " + Fmt.relative(item.expires) : "no signed expiry")" : "\(ws?.displayName ?? "") · Metadata not verified")
+                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
                     .font(OF.meta).foregroundStyle(OC.textMuted)
+                FlowLayout(spacing: OS.s2) {
+                    if item.verified {
+                        StatusChip("Verified", systemImage: "checkmark.shield", color: OC.ok)
+                        if item.hasSignedExpiry {
+                            let left = Fmt.timeLeft(item.expires)
+                            Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
+                            if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn) }
+                            else { Text(verbatim: left.text).font(OF.meta).foregroundStyle(OC.textFaint) }
+                        } else {
+                            Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)
+                        }
+                    } else {
+                        StatusChip("Metadata not verified", systemImage: "exclamationmark.triangle", color: OC.danger)
+                    }
+                }
                 if item.quarantineJob != nil {
                     Label("Destination removed. Choose another destination.", systemImage: "exclamationmark.triangle")
                         .font(OF.meta).foregroundStyle(OC.warn)
@@ -162,7 +209,7 @@ struct DropItemScreen: View {
                         ForEach(model.workspaces.filter { model.canSend(to: $0.id) }) { ws in
                             Button { model.redirectQuarantined(id: item.id, to: ws.id) } label: {
                                 HStack {
-                                    WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
+                                    Image(systemName: "laptopcomputer").foregroundStyle(OC.textMuted)
                                     Text(verbatim: ws.displayName).foregroundStyle(OC.text)
                                 }
                             }
@@ -242,7 +289,7 @@ struct DropComposeSheet: View {
                     ForEach(model.workspaces.filter { model.canSend(to: $0.id) }) { ws in
                         Button { destination = ws.id } label: {
                             HStack {
-                                WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
+                                Image(systemName: "laptopcomputer").foregroundStyle(OC.textMuted)
                                 Text(verbatim: ws.displayName).foregroundStyle(OC.text)
                                 if ws.isHosted { Image(systemName: "building.2").foregroundStyle(OC.hosted)
                                     .accessibilityLabel("Client hosted") }

@@ -30,7 +30,7 @@ public struct CodeDisplay: View {
         .background(OC.surface, in: RoundedRectangle(cornerRadius: OR.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: OR.card, style: .continuous)
-                .strokeBorder(frame == .primary ? OC.info : OC.lineStrong, lineWidth: frame == .primary ? 3 : 1)
+                .strokeBorder(frame == .primary ? OC.info : OC.brand, lineWidth: frame == .primary ? 3 : 2)
         )
         .transaction { $0.animation = nil }
         .accessibilityElement(children: .ignore)
@@ -55,7 +55,7 @@ public struct StatusChip: View {
     }
 }
 
-/// Client-hosted marker. It has no dismiss affordance by design (D-6).
+/// Client-hosted marker: the addon-orange chip (icon plus words). It has no dismiss affordance by design (D-6).
 public struct HostedMarker: View {
     private let name: String?
     public init(hostedBy name: String?) { self.name = name }
@@ -64,9 +64,9 @@ public struct HostedMarker: View {
             icon: { Image(systemName: "building.2") }
             .font(OF.meta)
             .foregroundStyle(OC.hosted)
-            .padding(OS.s2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(OC.soft(OC.hosted), in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
+            .padding(.horizontal, OS.s3).padding(.vertical, OS.s1 + 1)
+            .background(OC.soft(OC.hosted), in: Capsule())
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -92,7 +92,9 @@ public struct DemoStripe: View {
 public struct CardBackground: ViewModifier {
     public init() {}
     public func body(content: Content) -> some View {
-        content.background(OC.surface, in: RoundedRectangle(cornerRadius: OR.card, style: .continuous))
+        content
+            .background(OC.surface, in: RoundedRectangle(cornerRadius: OR.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: OR.card, style: .continuous).strokeBorder(OC.line, lineWidth: 1))
     }
 }
 
@@ -128,7 +130,7 @@ public struct SignedDetails: View {
     }
 }
 
-/// Prominent action with explicit on-colour text (contrast), used instead of `.borderedProminent`.
+/// Prominent action with explicit on-colour text (contrast), used instead of `.borderedProminent`. 48 pt tall, full width.
 public struct OrchProminentButtonStyle: ButtonStyle {
     private let tint: Color?
     private let foreground: Color?
@@ -139,15 +141,45 @@ public struct OrchProminentButtonStyle: ButtonStyle {
             .font(.body.weight(.semibold))
             .foregroundStyle(foreground ?? OC.onBrand)
             .padding(.vertical, OS.s3).padding(.horizontal, OS.s4)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 48)
             .background((tint ?? OC.brand).opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.35),
-                        in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+    }
+}
+
+/// Soft secondary action: tinted fill, 44 pt minimum, used for "Stop sending", "They are different", "Remind me later".
+public struct OrchSoftButtonStyle: ButtonStyle {
+    public enum Kind: Sendable { case neutral, danger, brand }
+    private let kind: Kind
+    @Environment(\.isEnabled) private var enabled
+    public init(_ kind: Kind = .neutral) { self.kind = kind }
+    public func makeBody(configuration: Configuration) -> some View {
+        let (fg, bg): (Color, Color) = switch kind {
+        case .neutral: (OC.text, OC.surface2)
+        case .danger: (OC.danger, OC.soft(OC.danger))
+        case .brand: (OC.brand, OC.soft(OC.brand))
+        }
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(fg)
+            .padding(.vertical, OS.s3).padding(.horizontal, OS.s4)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(bg, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.45)
+            .contentShape(Rectangle())
     }
 }
 
 public extension ButtonStyle where Self == OrchProminentButtonStyle {
     static var orchProminent: OrchProminentButtonStyle { OrchProminentButtonStyle() }
     static var orchDanger: OrchProminentButtonStyle { OrchProminentButtonStyle(tint: OC.danger, foreground: OC.onDanger) }
+}
+
+public extension ButtonStyle where Self == OrchSoftButtonStyle {
+    static var orchSoft: OrchSoftButtonStyle { OrchSoftButtonStyle(.neutral) }
+    static var orchSoftDanger: OrchSoftButtonStyle { OrchSoftButtonStyle(.danger) }
+    static var orchSoftBrand: OrchSoftButtonStyle { OrchSoftButtonStyle(.brand) }
 }
 
 /// Answer option: outlined card so host text keeps normal text contrast.
@@ -158,9 +190,10 @@ public struct OrchOptionButtonStyle: ButtonStyle {
         configuration.label
             .padding(OS.s4)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(OC.surface, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: OR.control, style: .continuous)
-                .strokeBorder(OC.brand, lineWidth: 2))
+            .frame(minHeight: 48)
+            .background(OC.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(OC.lineStrong, lineWidth: 1.5))
             .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.5)
     }
 }

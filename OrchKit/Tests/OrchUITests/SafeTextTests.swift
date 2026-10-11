@@ -2,6 +2,10 @@ import Testing
 @testable import OrchUI
 
 @Suite struct SafeTextTests {
+    @MainActor @Test func markersStayUnbrokenInProportionalText() {
+        let a = SafeText.attributed("a\u{200B}b")
+        #expect(String(a.characters).contains("⟨U+200B⟩"))
+    }
     @Test func bidiControlsMarked() {
         #expect(SafeText.markers(in: "a\u{202E}b\u{202C}") == ["⟨U+202E⟩", "⟨U+202C⟩"])
         #expect(SafeText.markers(in: "x\u{2066}y\u{2069}") == ["⟨U+2066⟩", "⟨U+2069⟩"])
