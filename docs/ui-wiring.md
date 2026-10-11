@@ -54,3 +54,11 @@ before calling newTicket; retain that record until a verified result is saved.
 After a lost response or restart call newTicket with that same saved submission:
 it resends the pending envelope or reconciles with an idempotent fresh envelope,
 removing the prior attempt. Returned fields must match the saved UTF-8 bytes.
+
+## Status in the app (feat/ui-wiring)
+
+Live in Demo: pairing (PairingCoordinator), Home/Workspace/Questions/Tickets (BridgeWorkspaceAPI snapshots and events), signing
+(QuestionReview + decide), pending/uncertain decisions and reconcile, new tickets (one persisted creationID per exact draft),
+Leave (LocalWipe), Reset/Leave Demo (DemoSetup.reset), Demo push (PushSimulator), share destinations/import (ShareBridge via ShareWorld).
+Simulated: Drop (no Drop service yet; labelled in the UI), terminal. Demo authority keys are in memory only (P3), so a Demo realm
+left by an earlier launch is wiped at boot rather than resumed. Release ignores every debug flag (scripts/check-release-flags.sh).
