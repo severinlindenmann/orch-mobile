@@ -1,5 +1,6 @@
 import XCTest
 import os
+import OrchPush
 @testable import Orch
 
 final class BoundedOSCallTests: XCTestCase {
@@ -37,5 +38,26 @@ final class BoundedOSCallTests: XCTestCase {
         XCTAssertEqual(SystemDemoNotifications.owed(d), ["*"])
         SystemDemoNotifications.setOwed(nil, false, defaults: d)
         XCTAssertTrue(SystemDemoNotifications.owed(d).isEmpty)
+    }
+}
+
+final class DemoNotificationGateTests: XCTestCase {
+    actor Log { var events: [String] = []; func add(_ e: String) { events.append(e) } }
+    struct Backend: DemoNotificationBackend {
+        let log: Log
+        func schedule(_ presentation: PushPresentation, identifier: String) async { await log.add("schedule") }
+        func removeDelivered(identifiers: [String]) async {}
+        func purge(workspace: String?) async { try? await Task.sleep(nanoseconds: 300_000_000); await log.add("purge") }
+    }
+
+    /// The boot purge removes demo/ and sim/ by prefix, so the new runtime must not schedule until it is done.
+    func testSchedulingWaitsForBootPurgeSoItIsNeverPurged() async {
+        let log = Log()
+        let n = DemoNotifications(backend: Backend(log: log))
+        let purge = Task.detached { await Backend(log: log).purge(workspace: nil) }
+        await n.hold(until: purge)
+        await n.schedule(PushPresentation.generic, identifier: "i", workspace: "w")
+        let events = await log.events
+        XCTAssertEqual(events, ["purge", "schedule"])
     }
 }

@@ -84,7 +84,6 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     func boot() async {
         guard !ready else { return }
-        Task.detached { await SystemDemoNotifications().retryOwedPurges() }
         let defaults = UserDefaults.standard
         // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("orch.ticket.draft.") { defaults.removeObject(forKey: key) }
@@ -101,6 +100,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
         if options.demoSeed, isDemo { await seedDemoWorkspaces() }
+        // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
+        if !isDemo { Task.detached { await SystemDemoNotifications().retryOwedPurges() } }
         ready = true
     }
 

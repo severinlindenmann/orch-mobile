@@ -90,7 +90,10 @@ struct SystemDemoNotifications: DemoNotificationBackend {
 
     static let owedKey = "orch.demo.notificationPurgeOwed"
     static func owed(_ defaults: UserDefaults = .standard) -> Set<String> { Set(defaults.stringArray(forKey: owedKey) ?? []) }
+    /// Serialises the read-modify-write: the boot purge and retryOwedPurges can run concurrently.
+    private static let owedLock = NSLock()
     static func setOwed(_ workspace: String?, _ owed: Bool, defaults: UserDefaults = .standard) {
+        owedLock.lock(); defer { owedLock.unlock() }
         var all = Self.owed(defaults)
         let key = workspace ?? "*"
         if owed { all.insert(key) } else {
@@ -111,6 +114,8 @@ actor DemoNotifications {
     private let backend: any DemoNotificationBackend
     private var closed: Set<String> = []
     private var retired = false
+    /// Boot-time stale purge: scheduling by the NEW runtime waits for it (the purge removes demo/ and sim/ by prefix).
+    private var gate: Task<Void, Never>?
     private var tasks: [UUID: (String, Task<Void, Never>)] = [:]
     private let onDrain: @Sendable () async -> Void
     init(backend: any DemoNotificationBackend = SystemDemoNotifications(),
@@ -118,7 +123,11 @@ actor DemoNotifications {
         self.backend = backend; self.onDrain = onDrain
     }
 
+    /// Schedules issued before `task` finishes wait for it. The task is bounded (one shared purge deadline).
+    func hold(until task: Task<Void, Never>) { gate = task }
+
     func schedule(_ presentation: PushPresentation, identifier: String, workspace: String) async {
+        if let gate { await gate.value }
         guard !retired, !closed.contains(workspace) else { return }
         let key = UUID()
         let task = Task { await backend.schedule(presentation, identifier: "demo/\(workspace)/\(identifier)") }
