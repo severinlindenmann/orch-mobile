@@ -322,15 +322,36 @@ extension PairHarness {
         let offer = try await h.rig.newOffer()
         _ = await h.coordinator.start(link: try h.link(offer))
         let runner = Task { await h.coordinator.run() }
-        for _ in 0..<40 { await Task.yield() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        var lastState = await h.coordinator.state
+        var lastRequests = await h.relay.requestsReceived
+        var unchangedSince = ContinuousClock.now
+        var unchangedYields = 0
         var ended = false
-        for _ in 0..<20 {
-            h.clock.advance(milliseconds: 5_000)
-            for _ in 0..<30 { await Task.yield() }
-            if (await h.coordinator.state).isTerminal { ended = true; break }
+        while ContinuousClock.now < deadline {
+            let state = await h.coordinator.state
+            let requests = await h.relay.requestsReceived
+            if state.isTerminal { ended = true; break }
+            guard h.clock.nowMs < 1_790_000_000_000 + 100_000 else { break }
+            if state != lastState || requests != lastRequests {
+                lastState = state; lastRequests = requests
+                unchangedSince = .now; unchangedYields = 0
+            }
+            // A sleeper is sufficient, but not necessary: run() can be awaiting storage/relay
+            // work with no registered sleep. Allow that work time to progress before ticking.
+            let stalled = unchangedYields >= 1_000 && unchangedSince.duration(to: .now) >= .milliseconds(100)
+            if h.clock.sleeperCount > 0 || stalled {
+                h.clock.advance(milliseconds: 5_000)
+                unchangedSince = .now; unchangedYields = 0
+            }
+            await Task.yield()
+            unchangedYields += 1
         }
-        #expect(ended)
+        let finalState = await h.coordinator.state
+        let finalRequests = await h.relay.requestsReceived
+        #expect(ended, "run() did not terminate within 60 s of real time or the 100 s simulated safety cap: state=\(finalState), elapsedMs=\(h.clock.nowMs - 1_790_000_000_000), requests=\(finalRequests), sleepers=\(h.clock.sleeperCount)")
         #expect(await h.coordinator.state == .failed(.linkUsed) && h.clock.nowMs <= 1_790_000_000_000 + 70_000)
+        if !ended { runner.cancel() }
         await runner.value
         #expect(h.vaultItems.isEmpty)
     }
