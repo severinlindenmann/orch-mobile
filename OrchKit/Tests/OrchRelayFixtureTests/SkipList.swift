@@ -21,12 +21,10 @@ enum FixtureCoverage {
     static let pending: [String: PR] = [
         // host-only routes (orch-core); the phone has no client for them, so they stay pending with PR2's other leftovers
         "host_hold.json": .pr2, "host_poll.json": .pr2,
-
-        "bridge_device_poll.json": .pr5, "bridge_device_post.json": .pr5, "bridge_host_post.json": .pr5
     ]
 
     /// PRs whose files are all replayable now.
-    static let done: Set<PR> = [.pr3, .pr4]
+    static let done: Set<PR> = [.pr3, .pr4, .pr5]
 
     /// Per-case overrides of `pending` (case id -> PR), for cases whose enabling PR differs from the rest of their file. None yet.
     static let caseOverrides: [String: PR] = [:]
@@ -40,7 +38,9 @@ enum FixtureCoverage {
                                           "card_get.json", "card_put.json", "card_key.json", "card_keys.json",
                                           "grants.json", "members.json", "membership.json",
                                           "device_get.json", "device_put.json",
-                                          "revocation_feed.json", "revocation_get.json", "revocations_post.json"]
+                                          "revocation_feed.json", "revocation_get.json", "revocations_post.json",
+                                          // PR5: bridge (RelayReplayTests bridge seeds)
+                                          "bridge_device_post.json", "bridge_device_poll.json", "bridge_host_post.json"]
 
     /// Pinned by the 386a6cb copy: 29 JSON files, 298 cases. Update together with PROVENANCE.md.
     static let expectedFileCount = 29
