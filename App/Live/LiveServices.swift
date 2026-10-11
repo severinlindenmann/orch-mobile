@@ -215,6 +215,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             scopes: Mapping.scopes(j.scopes), connection: .online, primaryLabel: "Demo Mac", notificationsOn: true)
         let ws = LiveWorkspace(workspaceID: j.workspace, generation: j.generation, api: BridgeWorkspaceAPI(session: j.session), info: info)
         ws.services = self
+        ws.downloadContainer = j.downloadContainer
         ws.draftURL = runtime?.draftURL(workspace: j.workspace)
         if let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
@@ -264,11 +265,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             guard active, self.active else { return }
             // Local retention is independent of relay authorization and Drop alarms.
             for ws in workspaces where ws.info.lifecycle != .removed {
-                await ws.drop?.foreground()
+                do { try await ws.downloadContainer?.purgeExpiredDownloads(nowMs: ws.drop?.alarm == true ? .max : (self.runtime?.clock.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000))) }
+                catch { ws.drop?.status = "Local cleanup needs retry" }
             }
             for ws in workspaces where self.canUse(ws.info.id) {
                 ws.start()
                 self.refreshTasks[ws.info.id] = Task { [weak self] in
+                    await ws.drop?.foreground()
                     await ws.api.refreshViews()
                     guard !Task.isCancelled, let self, self.canUse(ws.info.id) else { return }
                     await self.refreshPending(reconcile: true)
@@ -415,7 +418,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     func send(_ draft: DropDraft) {
         guard canUse(draft.workspaceID), let drop = live.first(where: { $0.info.id == draft.workspaceID })?.drop else { return }
-        Task { await drop.send(draft) }
+        drop.startSend(draft)
     }
 
     func refreshDrop() async {

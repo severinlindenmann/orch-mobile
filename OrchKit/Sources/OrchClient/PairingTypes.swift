@@ -77,6 +77,7 @@ public struct JoinedWorkspace: Sendable {
     public let origin: String
     public let session: WorkspaceSession
     package let dropCard: VerifiedCard
+    public var downloadContainer: WorkspaceContainer { session.cfg.container }
     public func makeDropService() throws -> DropService { try DropService(session: session, card: dropCard) }
 }
 

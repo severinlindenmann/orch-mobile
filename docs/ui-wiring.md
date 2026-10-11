@@ -107,9 +107,10 @@ version after discard; the discarded sealed body remains blocked.
 The app now owns an observable `LiveDrop` beside each `LiveWorkspace`. Pairing retains
 its verified card behind `JoinedWorkspace.makeDropService()`; screens receive no
 signing material or FakeHost. Lists carry verified descriptors, while at most three
-visible-row downloads at a time supply names, plaintext sizes, MIME and transcript.
+visible-row metadata verifications at a time supply names, plaintext sizes, MIME and transcript.
+`metadataVerified` verifies the author/chain, unwraps and checks the DEK commitment, and opens metadata; it never fetches a blob or writes a file.
 Unverified rows are neutral. Metadata is cached by generation/object/version and
-is not re-downloaded on ordinary refresh. Demo fixture aliases are presentation
+is not re-fetched on ordinary refresh. Demo fixture aliases are presentation
 mappings to actual objects; Laptop Sending is seeded through the public service.
 
 `canUse`, generation ownership and operation revisions guard actions and publication.
@@ -117,7 +118,7 @@ Background dismisses previews and suspends service work. Service lifecycle epoch
 and invalidate the service before wipe; failed removal remains unavailable. Busy
 locks preserve rows and show “Busy lock: try again”. Unknown removal and unavailable
 keys fail closed without asserting removal. Cryptographic/integrity and client/store
-rollback errors latch an alarm, clear displayed plaintext and block the service.
+rollback errors outside individual list rows latch an alarm, clear displayed plaintext, invalidate the service, and purge all workspace downloads. Share import errors pass through the generation-checked handler before ShareBridge receives them. Bad list rows get an alarm badge and latch a workspace warning while good rows remain usable.
 
 Open uses the service's atomic Complete-protected object/version file directly.
 `DropDownload.deadlineMs` comes from the persisted download transaction and is the
@@ -126,16 +127,16 @@ the Demo clock and dismisses on expiry, lock, quarantine or a newer version. Emp
 files have an explicit state; URL payloads stay literal text. QuickLook extensionless
 file handling and its own caches still need a device spike; no unmanaged copy is made.
 
-Compose keeps picked file/photo bytes; document reads happen inside security-scoped
-access. Limits use actual byte counts. Note-only sends are UTF-8 and attached notes
-are metadata transcripts. `confirmedUploads` exposes durable read-back success; a listed descriptor alone is never displayed as confirmed. Failed and pending uploads
+Compose keeps picked file/photo bytes only in memory; document reads happen inside security-scoped
+access. Photo import tasks are owned and cancelled on dismissal, background, Leave/reset or destination loss; late results check cancellation and lifecycle before publication. Limits use actual byte counts. Note-only sends are UTF-8 and attached notes
+are metadata transcripts. Each send uses one UUID with stable attachment UUIDs. `sealSend` commits every ciphertext upload row atomically before any network side effect; interruption before sealing completes stores nothing and shows “Not sent”. Pending draft bytes are cleared on background. `confirmedUploads` exposes durable read-back success; a listed descriptor alone is never displayed as confirmed. Failed and pending uploads
 retain their durable identities for Retry/Stop or foreground recovery. Inbox Claim is
 explicit and operate-only; unavailable keys never imply that an item is unclaimed.
 
-Foreground activation is serialized, then each usable workspace purges, resumes all
+Foreground activation is serialized, then every non-removed workspace purges local files directly through WorkspaceContainer, even when Drop is unauthorized or invalidated. Usable workspaces then resume all
 pending uploads, inspects results and reloads failures independently. Share recovery
 awaits foreground work. ShareBridge awaits `importShareJob`; the service owns durable
-completion and plaintext cleanup. Failed jobs stay available for explicit Retry/Stop
+completion and plaintext cleanup. Destructive preview import/stop implementations exist only on PreviewWorld, never as ShareWorld defaults. Failed jobs stay available for explicit Retry/Stop
 and startup recovery. Only live operate-capable destinations are published; temporary
 quarantine/scope loss neither journals removal nor redirects staged jobs.
 
@@ -145,3 +146,11 @@ unstructured upload and interrupted cleanup boundaries. Bounded Drop and Share U
 tests assert verified content, file/text sends, Claim permissions, Retry/Stop and
 confirmation plus cleanup. The app never wires `DropService.setHook`. Demo restart
 still wipes its realm; durable restart coverage remains in OrchKit integration tests.
+
+Upload/import coalescing is lifecycle-epoch-aware and dictionary cleanup checks operation identity.
+Invalidation cancels and drains tracked operations for at most one second; late work remains fenced by
+its original epoch and tombstone checks. Authentication rechecks availability after session acquisition
+and before relay side effects. Test gates release late arrivals and deadline failures end the test path;
+completion is bounded as well. `DropLifecycleRegressionTests` covers cancelled-epoch resume, session
+suspension, atomic multi-attachment sealing and metadata-only reads. QuickLook Share/Save suppression
+remains a blocker before real data, recorded in `gaps.md`; no export change is included here.

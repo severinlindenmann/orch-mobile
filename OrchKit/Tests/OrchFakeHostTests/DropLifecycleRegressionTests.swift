@@ -25,11 +25,12 @@ actor DropGate {
 actor DropCompletion<T: Sendable> {
     var result: Result<T, any Error>?
     func set(_ result: Result<T, any Error>) { self.result = result }
-    func value() async throws -> T {
+    func value() async throws -> T { try await waitResult().get() }
+    func waitResult() async throws -> Result<T, any Error> {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while result == nil && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         guard let result else { throw DropGate.Deadline() }
-        return try result.get()
+        return result
     }
 }
 
@@ -58,7 +59,8 @@ extension DropServiceTests {
             do { #expect(try await resumed.value() == 1) }
             catch { task.cancel(); throw error }
             await gate.release()
-            await #expect(throws: (any Error).self) { try await completed.value() }
+            let outcome = try await completed.waitResult()
+            #expect(throws: (any Error).self) { try outcome.get() }
         } catch { old.cancel(); await gate.release(); throw error }
     }
 
@@ -74,7 +76,8 @@ extension DropServiceTests {
             try await gate.wait()
             await service.suspend(); try await service.activate()
             await gate.release()
-            await #expect(throws: DropError.suspended) { try await completed.value() }
+            let outcome = try await completed.waitResult()
+            #expect(throws: DropError.suspended) { try outcome.get() }
         } catch { task.cancel(); await gate.release(); throw error }
     }
 }
@@ -94,7 +97,8 @@ extension DropServiceTests {
             try await gate.wait()
             #expect(try await phone.container.database().query("SELECT object FROM drop_uploads").isEmpty)
             await service.suspend(); await gate.release()
-            await #expect(throws: DropError.suspended) { try await completed.value() }
+            let outcome = try await completed.waitResult()
+            #expect(throws: DropError.suspended) { try outcome.get() }
             #expect(try await phone.container.database().query("SELECT object FROM drop_uploads").isEmpty)
             try await service.activate(); await service.setHook(nil)
             let ids = try await service.sealSend(sendID, attachments: attachments)

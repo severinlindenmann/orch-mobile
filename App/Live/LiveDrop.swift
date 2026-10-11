@@ -21,6 +21,8 @@ final class LiveDrop {
     private(set) var sending = false
     var canOperate: Bool { usable && workspace?.info.scopes.contains(.operate) == true }
     @ObservationIgnored var beforePublication: (() async -> Void)?
+    @ObservationIgnored private var sendTask: Task<Void, Never>?
+    private var notSent = false
     private var pendingDraft: DropDraft?
     var stopped: Set<String> = []
     var readIDs: Set<String> = []
@@ -43,8 +45,8 @@ final class LiveDrop {
         self.service = service; self.workspace = workspace
     }
     func cancelUI(clear: Bool) {
-        revision += 1; previewURL = nil; expiryTask?.cancel()
-        if pendingDraft != nil { status = "Not sent" }
+        revision += 1; previewURL = nil; expiryTask?.cancel(); sendTask?.cancel()
+        if pendingDraft != nil { notSent = true; status = "Not sent" }
         pendingDraft = nil
         if clear { metadata = [:]; downloads = [:]; objects = [:]; rows = []; failures = []; pendingDraft = nil; stopped = []; confirmed = []; readIDs = []; aliases = [:]; status = nil }
     }
@@ -107,7 +109,7 @@ extension LiveDrop {
                 warning = true; downloads = [:]; metadata = [:]; previewURL = nil
                 try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max)
             }
-            status = warning ? "Verification warning: blocked items" : nil
+            status = warning ? "Verification warning: blocked items" : (notSent ? "Not sent" : nil)
         } catch { if mine == revision && workspace?.usable == true { report(error) } }
     }
 
@@ -229,10 +231,18 @@ extension LiveDrop {
  }
 
 extension LiveDrop {
+    func startSend(_ draft: DropDraft) {
+        guard sendTask == nil, !sending else { return }
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+            await self.send(draft)
+            self.sendTask = nil
+        }
+    }
     func send(_ draft: DropDraft) async {
         guard canOperate, !sending, draft.attachments.count <= DropLimits.maxAttachments,
               draft.attachments.reduce(0, { $0 + $1.data.count }) <= DropLimits.maxBytes else { return }
-        sending = true; pendingDraft = draft; status = "Sending…"
+        sending = true; notSent = false; pendingDraft = draft; status = "Sending…"
         let mine = revision
         defer { sending = false }
         do {
@@ -241,6 +251,10 @@ extension LiveDrop {
                 : draft.attachments.map { DropSendAttachment(id: $0.id, data: $0.data, name: $0.name, transcript: draft.note.isEmpty ? nil : draft.note) }
             _ = try await service.sealSend(UUID(), attachments: attachments)
             pendingDraft = nil
+            if workspace?.info.lifecycle != .removed {
+                notSent = false
+                if status == "Not sent" { status = "Sending…" }
+            }
             guard canOperate, mine == revision else { return }
             for result in try await service.resumeUploads() { _ = try result.result.get() }
             guard canOperate, mine == revision else { return }
@@ -253,7 +267,7 @@ extension LiveDrop {
             let unsealed = pendingDraft != nil
             pendingDraft = nil
             report(error)
-            if unsealed { status = "Not sent" }
+            if unsealed { notSent = true; status = "Not sent" }
             // A durable pending identity is recovered by resumeUploads, never a fresh send.
             do {
                 let updated = try await service.failedUploads()
