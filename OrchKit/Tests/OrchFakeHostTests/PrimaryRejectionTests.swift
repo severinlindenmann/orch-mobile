@@ -2,6 +2,8 @@ import CryptoKit
 import Foundation
 import Testing
 import OrchClient
+import OrchCustody
+import OrchStore
 import OrchFakeHost
 import OrchProtocol
 @testable import OrchClient
@@ -234,5 +236,49 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
         for _ in 0..<200 where t.logoutsStarted == 0 { await Task.yield() }
         #expect(t.logoutsStarted == 1)
         task.cancel()
+    }
+}
+
+/// Regression tests of the PairingCoordinator binding audit (PR4).
+@Suite struct PairingBindingAuditTests {
+    @Test func anUnparsablePinnedChallengeNeverLetsACertificateThrough() async throws {
+        // before: `if let ch = r.challenge?.object?["o"]?.object` skipped the certificate <-> challenge binding when the pinned
+        // challenge could not be parsed; now that is a substitution alarm
+        let h = try await PairHarness.make(.firstTime)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        _ = try await h.drive(until: isComparingPrimary)
+        await h.coordinator.damagePinnedChallengeForTest(.string("damaged"))
+        try await h.primaryApproves()
+        let s = try await h.drive(until: { $0.isTerminal || $0 == .joining })
+        guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
+        #expect(a.kind == .pinSubstitution)
+    }
+
+    @Test func aStoredCertificateOfAnotherThanThePinnedOwnerIsNeverPresented() async throws {
+        // before: admission's `other_person` (thrown before any signature check) was mapped to "valid", so an unverified stored
+        // certificate could be sent with a link that pins its stated owner; now it is never presented, and a forged one is corrupt
+        let live = try RealmContext.live(origin: "https://relay.example.org", pinnedOwner: SoftwareSigner().publicKey)
+        let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend())
+        let custody = DefaultCustody.make(vault: vault)
+        let index = try await WorkspaceIndex(layout: tempLayout(realm: "live"))
+        let clock = TestClock()
+        let relay = FakeRelay(testingContext: live, clock: clock, wall: clock)
+        let transport = try RoutedRelayTransport(context: live, origin: live.origin, sender: relay, clientAddress: "x")
+        let c = PairingCoordinator(PairingConfig(context: live, transport: transport, index: index, vault: vault, custody: custody, clock: clock,
+                                                 wall: clock, deviceLabel: "Phone"))
+        let id = try live.deviceIdentity(custody: custody, createIfMissing: true)
+        let owner = SoftwareSigner(), keys = DemoKeys(id.publicKeys)
+        func cert(_ signer: SoftwareSigner) throws -> JSONValue {
+            try SignedObject.sign([
+                "v": 2, "suite": 2, "kind": "device_cert", "device_id": .string(keys.deviceID.hex), "person_id": .string(Identifiers.personID(owner.publicKey).hex),
+                "dk_sig_pub": .string(B64U.encode(keys.sig.x963)), "dk_kx_pub": .string(B64U.encode(keys.kx.x963)),
+                "label_sealed": .string(B64U.encode(Data(repeating: 1, count: 40))), "created_ms": .int(clock.nowMs), "expires_ms": .null,
+                "scopes_max": ["look"]], kind: .deviceCert, signer: signer).json
+        }
+        try await c.storeCertificate(try cert(owner), owner: owner.publicKey)
+        #expect(await c.storedCertificateIsPresentable() == false)
+        try await c.storeCertificate(try cert(SoftwareSigner()), owner: owner.publicKey)        // not signed by the stated owner
+        #expect(await c.storedCertificateIsPresentable() == nil)
     }
 }

@@ -662,7 +662,9 @@ public actor PairingCoordinator {
             guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
             if let pinned = r.pkPub, pinned != pk.x963 { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
             // when a challenge was shown, the certificate must be for exactly the keys (and person) it named
-            if let ch = r.challenge?.object?["o"]?.object {
+            if let pinned = r.challenge {
+                // a pinned challenge that no longer parses cannot bind the certificate: fail closed, never skip the check
+                guard let ch = pinned.object?["o"]?.object else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
                 guard ch.b64uField("dk_sig_pub") == certificate.signingKey.x963, ch.b64uField("dk_kx_pub") == certificate.agreementKey.x963,
                       ch.idField("person_id") == certificate.personID, ch.idField("device_id") == certificate.deviceID
                 else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
@@ -945,7 +947,12 @@ public actor PairingCoordinator {
             return .present(owner: pk, cert: cert, valid: false)
         } catch let r as RealmViolation { return .violation(r)
         } catch Refusal.otherPerson {
-            return .present(owner: pk, cert: cert, valid: true)     // the pinned owner differs: the link check below decides
+            // The context pins another owner, so admission refused before verifying anything: this certificate is unverified
+            // and is never presented (fail closed). The owner binding stays for the link check, only if it is at least authentic
+            // under the stored owner and names this device's keys.
+            guard let dc = try? DeviceCertificate.verify(cert, personKey: pk, nowMs: nowMs), dc.signingKey == id.publicKeys.sig,
+                  dc.agreementKey == id.publicKeys.kx else { return .corrupt }
+            return .present(owner: pk, cert: cert, valid: false)
         } catch { return .corrupt }
     }
 
@@ -958,6 +965,14 @@ public actor PairingCoordinator {
         guard dc.signingKey == id.publicKeys.sig, dc.agreementKey == id.publicKeys.kx else { throw Refusal.certInvalid }
         try storeCertificate(cert, owner: owner)
     }
+
+    /// Tests only: whether the stored certificate would be presented (`nil` when there is none or it is unusable).
+    package func storedCertificateIsPresentable() -> Bool? {
+        if case .present(_, _, let valid) = storedCertificate() { return valid }
+        return nil
+    }
+    /// Tests only: a damaged pinned challenge in the live record (as a corrupted store would leave it).
+    package func damagePinnedChallengeForTest(_ v: JSONValue) { record?.challenge = v }
 
     func storeCertificate(_ cert: JSONValue, owner: SigningPublicKey) throws {
         let data = try canonicalJSON(["cert": cert, "pk_pub": .string(B64U.encode(owner.x963))])
