@@ -32,8 +32,12 @@ struct SystemDemoNotifications: DemoNotificationBackend {
         let center = UNUserNotificationCenter.current()
         // Removal has no completion handler. Observe that the requests are gone before
         // enumerating delivered notifications, including any that fired during removal.
+        // Bounded: if the OS never reports them gone, Leave/reset must still finish (delivered purge below runs anyway).
         var remaining = pending
-        while !remaining.isEmpty {
+        var attempts = 0
+        while !remaining.isEmpty, attempts < 10 {
+            if attempts > 0 { try? await Task.sleep(nanoseconds: 50_000_000) }
+            attempts += 1
             center.removePendingNotificationRequests(withIdentifiers: remaining)
             remaining = await withCheckedContinuation { continuation in
                 center.getPendingNotificationRequests { values in
