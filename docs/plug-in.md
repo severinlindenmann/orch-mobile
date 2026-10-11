@@ -119,12 +119,13 @@ Expire ciphertext by receipt time, never by last read; remove empty mailboxes an
 Challenge cap 1024 is global in the fake; real P3 needs per-address fairness and dummy-key signature
 verification for unknown identities. These are explicit Slice 1 gaps, not guarantees of the fake.
 
-Host publication routes are **open questions**, not additional invented mobile endpoints.
-`FakeRelay.publishCertificate/publishCard/publishRevocation/putGrant/putCardKeyWrap/publishMemberList`
-are internal stand-ins for §12.1/publishing. P3 must expose equivalent authenticated operations.
-Likewise `pendingRequests` and pairing inbox access used by FakeHost need a real host delivery adapter.
-Keep authority checks at write time: host session, current card, valid same-owner device certificate,
-non-revocation and epoch. Grant/wrap publication must not require membership that is published later.
+Host publication uses protocol-v2 §19.1/§19.2: `PUT /v2/devices/{device}`, `POST /v2/revocations` (PK-authorized, no session),
+`PUT /v2/workspaces/{ws}/card` (first card session-less, then W(g)), and **one atomic** `PUT /v2/workspaces/{ws}/membership`
+`{member_list, grants, card_key_wraps?}` → `{list_seq, epoch}` (W(g), `Orch-Holder`), plus `PUT card-keys` for later wraps.
+The FakeRelay serves these routes (and `publishCertificate/publishCard/publishRevocation` as in-process stand-ins); the hold route
+and `pendingRequests`/pairing inbox access are still fake internals (host-only, orch-core).
+Write-time authority: host session and holder, current card, each member's certificate valid now and owned by the card owner or a
+listed person, non-revocation, adjacent epoch. Grants and wraps are judged against the list in the same body; nothing is staged.
 
 ## C. Host obligations
 
@@ -206,7 +207,7 @@ Source: host API §§3,5–6; Slice 2b `PairingCoordinator.swift`, `FakeHostPair
   The `rejected` answer's `pk_pub` + `rejection` are an orch-mobile addition pending orch-relay adoption (gaps Q4).
   A real host must not stall on a relay `rejection` that does not verify: ignore it and keep checking the
   challenge and both certificate sources (the request's and the directory's), as FakeHost does.
-- Publish valid own-key certificate → current WK grant → CK wrap → member list → approved.
+- Publish valid own-key certificate → one membership publication (list, every member's current WK grant, the CK wrap) → approved.
   No grant/CK wrap for an uncertified device. Re-check pending version around every suspension;
   rejection during publication wins, and removing an already-published member requires rotation.
 - Phone verifies pinned PK delegation/WSK/card/origin, CK target and commitment, own member scopes
@@ -219,8 +220,9 @@ Source: host API §§3,5–6; Slice 2b `PairingCoordinator.swift`, `FakeHostPair
 ### Rotation, revocation and local removal
 
 Sources: host API §3; Slice 1/2a gaps; `FakeRelay.swift`, branch `FakeHostBridge.swift`.
-Upload remaining members' new grants before the new signed list; advance the host epoch coherently.
-A grant ahead of its list is stored but not used by the phone until verified epoch confirmation.
+Publish the new signed list and every remaining member's new grant in one membership publication (P3-D7):
+persist `WK_{e+1}` and the exact body first, resend those bytes after a lost reply, never reseal; epochs never skip.
+A grant ahead of its list (no longer served by a v2 relay) would still not be used before verified epoch confirmation.
 Member removal rotates; clean removed mailboxes/grants/subscriptions. Failed rotation blocks data
 sealing and is retried. Revalidate upload authorization atomically at the final write.
 PK revocation ends all device sessions and removes grants, CK wraps, queued requests and push registrations.
@@ -353,7 +355,7 @@ Internal fake inspectors/fault hooks need real test-server equivalents; assert d
 | LimitsFaultsTests.swift | `faultDropAfterCommitKeepsTheRequestAndRetryIsIdempotent`; `pollFaultsDuplicateReorderCorruptAndDrop` | lost replies and hostile delivery |
 | Slice 2a SessionTests.swift | `testLostResponseReplaysStoredEnvelope`; `testExpiredOrUnknownRidReconcilesByQuestion`; `testStaleEpochFetchesGrantsAndResendsAsNewRequest`; `testStaleTimestampAdoptsOffsetOnceAndRetries` | stored replay, uncertain result, epoch and offset recovery; question reconciliation itself still needs a host-view e2e |
 | Slice 2a Hardening2a.swift | `S1_resendAfterHostRecordExpiredIsNotReRun`; `resendGateUsesMonotonicTimeWhenTheWallClockWasSetBack`; `hostSaidUnknownIsDurableUncertain` | no silent re-sign after unsafe resend window |
-| Slice 2a Hardening2a.swift | `S3_revocationOpRotatesBeforeAnythingNewIsSealed`; `handlerFinishingDuringPublicationGetsNoData`; `failedPublicationKeepsRotationRequiredAndRetries`; `S4_preGrantForNextEpochDoesNotStrandThePhone` | durable rotation gate, no old-epoch data leak |
+| Slice 2a Hardening2a.swift | `S3_revocationOpRotatesBeforeAnythingNewIsSealed`; `handlerFinishingDuringPublicationGetsNoData`; `failedPublicationKeepsRotationRequiredAndRetries`; `S4_nextEpochArrivesWithItsList` | durable rotation gate, no old-epoch data leak |
 | Slice 2b PairingFlowTests.swift | `testPairingScenarioMatrix`; `testNoGrantOrCardWrapBeforeValidCertificate`; `testR1AlarmHidesBothCodes`; `testEchoWrongKeyAlarmBeforeSAS`; `testPairingPinsAndMonotonicChains` | real queues/approval without weakening pins or human gates |
 | Slice 2b JoinVerificationTests.swift | `testCardWrongCKRejected`; `testCardOriginMatchesLink`; `testJoinRequiresOwnMemberScopesAndEpoch`; `testJoinCommitsOneWorkspaceAndEveryPieceOrNone` | verified identity and atomic join |
 
