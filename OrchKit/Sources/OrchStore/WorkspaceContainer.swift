@@ -61,6 +61,9 @@ public actor WorkspaceContainer {
         Migration(version: 9, statements: [
             "CREATE TABLE drop_completed_jobs (job TEXT PRIMARY KEY)",
         ]),
+        Migration(version: 10, statements: [
+            "ALTER TABLE drop_heads ADD COLUMN downloaded_at INTEGER",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
@@ -186,11 +189,12 @@ extension WorkspaceContainer {
             try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
                 guard let head = try tx.query("SELECT version FROM drop_heads WHERE object=?", [.text(object)]).first,
                       head.int("version") == Int64(version) else { throw DropStoreError.rollback }
-                guard expiresMs.map({ $0 > now() }) ?? true else { throw DropStoreError.expired }
+                let downloadedAt = now()
+                guard expiresMs.map({ $0 > downloadedAt }) ?? true else { throw DropStoreError.expired }
                 // The database transaction serializes publication with head updates and purges, even
                 // across containers. The tombstone lock excludes wipe; atomic replace hides partial bytes.
-                try tx.execute("UPDATE drop_heads SET file_version=?,file_expires_ms=? WHERE object=?",
-                               [.int(Int64(version)), expiresMs.map(SQLValue.int) ?? .null, .text(object)])
+                try tx.execute("UPDATE drop_heads SET file_version=?,file_expires_ms=?,downloaded_at=? WHERE object=?",
+                               [.int(Int64(version)), expiresMs.map(SQLValue.int) ?? .null, .int(downloadedAt), .text(object)])
                 let url = directory.appendingPathComponent("\(object)-\(version)")
                 try data.write(to: url, options: [.atomic, .completeFileProtection])
                 return url
@@ -208,14 +212,21 @@ extension WorkspaceContainer {
     }
 
     private nonisolated static func purgeDownloads(_ tx: SQLiteTransaction, directory: URL, nowMs: Int64?) throws {
-        let rows = try tx.query("SELECT object,version,file_version,file_expires_ms FROM drop_heads")
+        let rows = try tx.query("SELECT object,version,file_version,file_expires_ms,downloaded_at FROM drop_heads")
         var keep = Set<String>()
         for row in rows {
             guard let object = row.text("object"), let version = row.int("file_version") else { continue }
-            if version == row.int("version"), nowMs.map({ now in row.int("file_expires_ms").map { $0 > now } ?? true }) ?? true {
+            // Unknown download times from older schemas cannot safely extend local retention.
+            let localExpiry = row.int("downloaded_at").map { downloadedAt in
+                let (expiry, overflow) = downloadedAt.addingReportingOverflow(604800000)
+                return overflow ? Int64.max : expiry
+            }
+            let effectiveExpiry = localExpiry.map { min($0, row.int("file_expires_ms") ?? Int64.max) }
+            if version == row.int("version"), let effectiveExpiry,
+               nowMs.map({ effectiveExpiry > $0 }) ?? true {
                 keep.insert("\(object)-\(version)")
             } else {
-                try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL WHERE object=?", [.text(object)])
+                try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL,downloaded_at=NULL WHERE object=?", [.text(object)])
             }
         }
         for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
