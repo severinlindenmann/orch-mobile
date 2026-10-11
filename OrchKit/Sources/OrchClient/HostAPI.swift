@@ -172,6 +172,8 @@ public struct RelayRefusal: Error, Equatable, Sendable {
         case otherWorkspace = "other_workspace", wskChanged = "wsk_changed", delegationChanged = "delegation_changed"
         case staleCard = "stale_card", wxkChangedWithoutVersion = "wxk_changed_without_version", badWxkVersion = "bad_wxk_version"
         case staleList = "stale_list", badEpoch = "bad_epoch", rotationRequired = "rotation_required", missingGrant = "missing_grant"
+        /// Q10: a list at the relay's current epoch with another `wk_commit` (409; relay G2b).
+        case wkCommitChanged = "wk_commit_changed"
         case alreadyClaimed = "already_claimed", versionConflict = "version_conflict"
         case accountExists = "account_exists", certConflict = "cert_conflict", grantConflict = "grant_conflict"
         case wrapConflict = "wrap_conflict", ridConflict = "rid_conflict", retryExhausted = "retry_exhausted"
@@ -210,7 +212,7 @@ public struct RelayRefusal: Error, Equatable, Sendable {
         case .revoked, .otherPerson, .scopeExceeded, .notEligible, .notForThisDevice: [403]
         case .notFound: [404]
         case .otherWorkspace, .wskChanged, .delegationChanged, .staleCard, .wxkChangedWithoutVersion, .badWxkVersion, .staleList,
-             .badEpoch, .rotationRequired, .missingGrant, .alreadyClaimed, .versionConflict, .accountExists, .certConflict,
+             .badEpoch, .rotationRequired, .missingGrant, .wkCommitChanged, .alreadyClaimed, .versionConflict, .accountExists, .certConflict,
              .grantConflict, .wrapConflict, .ridConflict, .retryExhausted, .chunkConflict, .staleEpoch, .holderConflict, .fenced,
              .requestOpen, .replayed, .alreadySigned: [409]
         case .preconditionRequired: [428]

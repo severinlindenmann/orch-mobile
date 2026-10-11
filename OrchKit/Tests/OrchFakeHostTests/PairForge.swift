@@ -85,7 +85,10 @@ final class PairForge: @unchecked Sendable {
             guard let op = meta.object?["op"]?.string, let reply = try await script(op) else { continue }
             let env = try answer(reply, to: parts.header, refusal: reply.object?["refusal"] != nil)
             let target = "\(HostAPI.base)/workspaces/\(h.host.workspace.hex)/pair/\(link.offer.hex)/\(item.rid.hex)"
-            let req = try WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token], body: env, clientAddress: "forge")
+            // a host answer is a W(g) write: under the host's holder generation (P3-D10; fenced without one)
+            let gen = try await h.host.holderGeneration(relay: h.relay, session: session)
+            let req = try WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen)],
+                                      body: env, clientAddress: "forge")
             _ = try await h.relay.send(req)
         }
         return seen

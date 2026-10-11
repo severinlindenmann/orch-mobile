@@ -6,7 +6,8 @@ import OrchProtocol
 @testable import OrchFakeHost
 
 /// Rotation through atomic membership publication (P3-D7, section 19.7): the host persists the key and the exact bytes before the
-/// first send, resends only those bytes while the outcome is open, and discards them (and the uncommitted key) only on a refusal.
+/// first send, resends only those bytes while the outcome is open, and discards them only on a refusal. Q10: a refused epoch is
+/// burned (its key retained, never activated, never resealed); the next publication goes above it.
 @Suite struct RotationPublicationTests {
     private func key(_ w: World, _ e: UInt32) async -> Data { await w.host.wkFor(e).withUnsafeBytes { Data($0) } }
 
@@ -75,7 +76,8 @@ import OrchProtocol
     }
 
     /// A newer list the host did not send: acceptance cannot be established, so it is surfaced (once), never assumed; the host then
-    /// publishes a fresh sequence and epoch above the relay's list (section 19.7) instead of failing forever.
+    /// publishes a fresh sequence and epoch above the relay's list (section 19.7) instead of failing forever. Q10: the epoch of the
+    /// bytes that may have left (2) is burned, so the fresh publication is epoch 3.
     @Test func staleListWithAnotherListIsAConflict() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
@@ -94,13 +96,14 @@ import OrchProtocol
         #expect(await w.host.epoch == 1)
         try await rotationRetry(w, milliseconds: 200) { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         #expect(await w.host.rotationRequired == false)
-        #expect(await w.host.epoch == 2)
+        #expect(await w.host.epoch == 3)
         #expect(await w.relay.memberListSeq(workspace: w.ws) == 3)
         #expect(await w.host.relayEpochFloor == 0)               // cleared by the commit
     }
 
     /// A relay that answers `stale_list` and then serves one of the host's own older WSK-signed lists (here: list_seq 1 claiming
-    /// epoch 9) cannot push the host's next epoch up: only a list above the host's committed list_seq sets the floor.
+    /// epoch 9) cannot push the host's next epoch up: only a list above every list_seq the host used sets the floor. The floors are
+    /// the host's own burned publication (list_seq 2, epoch 2), Q10.
     @Test func replayedOwnOlderListDoesNotRaiseTheEpochFloor() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
@@ -114,8 +117,8 @@ import OrchProtocol
         await #expect(throws: MembershipPublicationError.conflict) {
             try await rotationRetry(w) { try await w.host.rotate(remaining: [(w.phone, ["look", "decide"])], relay: w.relay, session: w.hostSession) }
         }
-        #expect(await w.host.relayEpochFloor == 0)
-        #expect(await w.host.listSeq == 1)
+        #expect(await w.host.relayEpochFloor == 2)
+        #expect(await w.host.listSeq == 2)
     }
 
     /// C4: the host fails after persisting the body but before sending it. Those bytes never left: the slot is dropped, the
@@ -161,8 +164,9 @@ import OrchProtocol
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
     }
 
-    /// I3: the relay refused the publication (a member was revoked while it was delayed). Nothing was committed and the relay saw
-    /// the sealed grants, so the key is discarded: the retry publishes the same epoch (epochs never skip) under a fresh key.
+    /// I3 + Q10: the relay refused the publication (a member was revoked while it was delayed). Nothing was committed and the relay
+    /// saw the sealed grants, so that epoch is burned: its key is retained but never activated or resealed, and the retry publishes
+    /// the next epoch under a fresh key.
     @Test func refusedPublicationNeverActivatesItsKey() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
@@ -180,12 +184,15 @@ import OrchProtocol
         #expect(await w.relay.memberListEpoch(workspace: w.ws) == 1)
         await w.host.setPublishHook(nil)
         _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
-        #expect(await w.host.epoch == 2)
+        #expect(await w.host.epoch == 3)
         #expect(await w.host.rotationRequired == false)
         let refused = try #require(await seen.value)
-        #expect(await key(w, 2) != refused)
-        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 2) == false)
-        let grants = try await RelayClient(transport: w.transport).grants(workspace: w.ws, epoch: 2, session: w.phoneSession)
+        #expect(await key(w, 2) == refused)                       // retained, never resealed
+        #expect(await key(w, 3) != refused)
+        #expect(await w.relay.memberListEpoch(workspace: w.ws) == 3)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 2) == false)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
+        let grants = try await RelayClient(transport: w.transport).grants(workspace: w.ws, epoch: 3, session: w.phoneSession)
         let opened = try WKGrant.open(try #require(grants.first), wsk: w.host.wskPublic, workspace: w.ws, device: w.phoneID, deviceKey: w.env.device.kx)
         #expect(opened.wk.withUnsafeBytes { Data($0) } != refused)
     }

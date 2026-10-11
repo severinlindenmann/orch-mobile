@@ -90,8 +90,8 @@ import OrchProtocol
         let rig = HostRig()
         let resp = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
         faults.enqueue(.delay(.seconds(3)), at: .beforeQueue, routePrefix: "POST bridge")
-        let (t, s, ws) = (w.transport, w.hostSession, w.ws)
-        let post = Task { try await t.bridgePost(resp, route: BridgeRoute(workspaceID: ws, requestID: rid), session: s) }
+        let (host, relay, s) = (w.host, w.relay, w.hostSession)
+        let post = Task { try await host.postBridgeChunk(resp, rid: rid, relay: relay, session: s) }
         guard await waitForSleepers(w, 1) else { post.cancel(); return }
         // The phone is revoked while the host's response is in flight (the revoked device is still in the last list).
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID))

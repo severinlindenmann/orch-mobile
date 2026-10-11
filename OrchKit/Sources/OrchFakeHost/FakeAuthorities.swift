@@ -125,6 +125,8 @@ public actor FakeHost {
     var dropSeedUploaded = 0
     var viewState: HostViewState?
     var lastArrival: UInt64 = 0
+    /// The last request position this host completed (its acknowledged cursor, P3-D10).
+    var completedArrival: UInt64 = 0
     /// Adversarial tests: sign responses with another key (a member device, not the host).
     package var responseSigner: SoftwareSigner?
     var roster: [ID16: (keys: DemoKeys, scopes: [String])] = [:]
@@ -149,6 +151,9 @@ public actor FakeHost {
     var publicationLocked = false
     /// The epoch of a relay list this host did not publish (section 19.7): the next publication goes above it.
     var relayEpochFloor: UInt32 = 0
+    /// Q10 liveness: refusals in a row that burned an epoch, and the alarm that stops publishing (`MembershipPublicationAlarm`).
+    var consecutiveBurns = 0
+    public internal(set) var publicationAlarm: MembershipPublicationAlarm?
     var publicationWaiters: [CheckedContinuation<Void, Never>] = []
     /// Set BEFORE any rotation suspends (or a revocation removes a member), cleared only after grants, list and epoch install. While set,
     /// no data is sealed; the next pump retries the publication.
@@ -159,6 +164,8 @@ public actor FakeHost {
     var streamOpen: [ID16: (device: ID16, epoch: UInt32, next: UInt64)] = [:]
     /// Streams a rotation already ended; their handlers' late answers are discarded.
     var streamEnded: Set<ID16> = []
+    /// Host chunks the relay refused and this host tolerated (rid, code): tests assert where they happen.
+    package var relayRefusedChunks: [(rid: ID16, code: RelayRefusal.Code)] = []
     /// Chunks the host must post that no request is waiting on (rotation ending open streams).
     var outbox: [(rid: ID16, chunk: Data)] = []
 
@@ -251,9 +258,15 @@ public actor FakeHost {
     }
 
     /// A WSK-signed member list (section 7.2, P3-D6). Every member names its person: the owner's unless `personOf` says otherwise;
-    /// `persons` lists the other persons the list authorizes (sorted, unique).
+    /// `persons` lists the other persons the list authorizes (sorted, unique). `wk_commit` commits this host's `WK_e` (Q10; created
+    /// here if the epoch has none yet); `wkCommit` overrides it (adversarial tests only).
     public func memberList(_ members: [(device: ID16, scopes: [String])], epoch e: UInt32, listSeq seq: Int64, persons: [ID16] = [],
                            personOf: [ID16: ID16] = [:]) throws -> JSONValue {
+        try memberList(members, epoch: e, listSeq: seq, persons: persons, personOf: personOf, wkCommit: nil)
+    }
+
+    package func memberList(_ members: [(device: ID16, scopes: [String])], epoch e: UInt32, listSeq seq: Int64, persons: [ID16] = [],
+                            personOf: [ID16: ID16] = [:], wkCommit: Data?) throws -> JSONValue {
         try capability.generation.check()
         let sorted = members.sorted { $0.device.hex < $1.device.hex }
         let entries: [JSONValue] = sorted.map {
@@ -262,7 +275,8 @@ public actor FakeHost {
         }
         return try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(workspace.hex), "epoch": .int(Int64(e)), "list_seq": .int(seq),
-            "issued_ms": .int(wall.nowMs), "persons": .array(Set(persons).map(\.hex).sorted().map { .string($0) }), "members": .array(entries)],
+            "issued_ms": .int(wall.nowMs), "persons": .array(Set(persons).map(\.hex).sorted().map { .string($0) }), "members": .array(entries),
+            "wk_commit": .string(B64U.encode(wkCommit ?? WKCommit.compute(workspace: workspace, epoch: e, wk: wk(e))))],
                                      kind: .memberList, signer: wsk).json
     }
 

@@ -1126,6 +1126,9 @@ extension PairingCoordinator {
         }
         guard let top = grants.map(\.epoch).max() else { throw JoinFailure(reason: "grant") }
         guard top == list.epoch else { if top < list.epoch { throw JoinPending() }; throw JoinFailure(reason: "grant_epoch") }
+        // Q10: the device will seal under the list epoch's key, so that key must be the one the list commits (never a fallback)
+        guard grants.contains(where: { $0.epoch == list.epoch && list.commits($0.wk) }) else { throw JoinFailure(reason: "grant_commit") }
+        grants.removeAll { $0.epoch == list.epoch && !list.commits($0.wk) }
         return VerifiedJoin(card: card, cardJSON: cardJSON, part: part, hosted: Card.hostedMarker(card: card, sealedPart: part), list: list,
                             listJSON: listJSON, grants: grants, epoch: top)
     }
@@ -1271,6 +1274,8 @@ extension PairingCoordinator {
             let wcfg = WorkspaceSessionConfig(context: cfg.context, workspace: r.ws, generation: r.generation, identity: id, wsk: wsk, container: c,
                                               vault: vault, transport: cfg.transport, clock: cfg.clock, wall: cfg.wall, entropy: cfg.entropy)
             let session = try await WorkspaceSession(wcfg)
+            // the verified list becomes the device's head (rollback protection, Q10 `wk_commit`) before any key is kept
+            _ = try await session.acceptMemberList(v.listJSON)
             for g in v.grants.sorted(by: { $0.epoch < $1.epoch }) {
                 try await session.install(g)
                 try await crashPoint("install.grant")

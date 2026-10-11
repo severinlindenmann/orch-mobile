@@ -77,11 +77,12 @@ import OrchProtocol
         // A device session cannot post a response (direction 2), even for itself.
         let denied = try await w.transport.bridgePost(try w.envelope(direction: .toDevice, rid: rid, seq: 0, flags: [.last]), route: route, session: w.phoneSession)
         #expect(denied.status == 400)
+        #expect(try await w.postRequest(rid: rid).status == 202)          // P3-D22: a response needs a known rid
         var ids: [UInt64] = []
         for (n, seq) in [UInt64(0), 1, UInt64(UInt32.max) + 2, UInt64(maxSafeInt)].enumerated() {
             let last = n == 3
             let e = try w.envelope(direction: .toDevice, rid: rid, seq: seq, flags: last ? [.last] : [], signer: hostSigner)
-            let r = try await w.transport.bridgePost(e, route: route, session: w.hostSession)
+            let r = try await w.host.postBridgeChunk(e, rid: route.requestID, relay: w.relay, session: w.hostSession)
             #expect(r.status == 202)
             ids.append(seq)
         }
@@ -129,8 +130,9 @@ import OrchProtocol
         let rid = ID16.fresh(0x42)
         let route = BridgeRoute(workspaceID: w.ws, requestID: rid)
         let idx = UInt64(UInt32.max) + 1
+        #expect(try await w.postRequest(rid: rid).status == 202)
         let e = try w.envelope(direction: .toDevice, rid: rid, seq: idx, flags: [.last], signer: SoftwareSigner())
-        #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(e, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         let reply = try await w.transport.bridgePoll(route: route, after: UInt64(UInt32.max), session: w.phoneSession)
         #expect(String(decoding: reply.body, as: UTF8.self).contains("\"idx\":4294967296"))
         #expect(try chunkList(reply).map(\.idx) == [idx])
@@ -234,8 +236,14 @@ import OrchProtocol
         // The exact same body again is the committed result; other bytes for that list_seq are stale_list.
         #expect(try await w.host.sendMembership(committed, relay: relay, session: w.hostSession) == (2, 1))
         await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .staleList))) { try await w.publish(roster2, epoch: 1, listSeq: 2) }
-        // A skipped epoch, a removal without the bump: refused with the specific code.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 3, listSeq: 3) }
+        // An epoch more than 2^16 ahead (Q10), a removal without the bump, another WK at the current epoch: refused with the specific code.
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 65_538, listSeq: 3) }
+        var otherKey = try await w.host.membershipBody(roster: roster2, epoch: 1, listSeq: 3).object!
+        otherKey["member_list"] = try await w.host.memberList(roster2.map { ($0.0.deviceID, $0.1) }, epoch: 1, listSeq: 3,
+                                                              wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .wkCommitChanged))) {
+            try await w.host.sendMembership(.object(otherKey), relay: relay, session: w.hostSession)
+        }
         await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .rotationRequired))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 1, listSeq: 3) }
         // A grant at another epoch than the list's: not_for_this_device. Other bytes for a committed (device, epoch): grant_conflict.
         var wrongEpoch = try await w.host.membershipBody(roster: [(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 3).object!

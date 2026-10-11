@@ -167,7 +167,8 @@ import OrchTestVectors
         let (w, p, api, id, pending, envelope) = try await lostDecision()
         let db = try await p.container.database()
         let charges = try await db.query("SELECT COUNT(*) AS n FROM bridge_charges").first?.int("n") ?? 0
-        w.clock.advance(milliseconds: 61_000); p.clock.advance(milliseconds: 61_000)
+        // Inside the stored answer's 60 s lifetime (P3-D22 never resurrects an expired chunk): the same rid reads it.
+        w.clock.advance(milliseconds: 30_000); p.clock.advance(milliseconds: 30_000)
         #expect(try await w.serve(p) { try await p.session.reconcileDecision(id) } == .accepted)
         #expect(try await db.query("SELECT COUNT(*) AS n FROM bridge_charges").first?.int("n") == charges + 1)
         #expect(await w.host.coreState().rids[pending.rid]?.digest == (try Bridge.Parts(envelope: envelope)).digest)
@@ -177,6 +178,7 @@ import OrchTestVectors
         for expired in [false, true] {
             let (w, p, api, id, pending, envelope) = try await lostDecision(apply: false)
             await w.host.forgetOutcome(rid: pending.rid)
+            await w.relay.forgetResponses(workspace: w.ws, device: w.phoneID, rid: pending.rid)     // the answer never reached the relay
             let captured = DecisionCapture()
             await w.host.setHandler { req in
                 if req.meta.object?["op"] == "decision" {
@@ -213,6 +215,7 @@ import OrchTestVectors
         // Open-state reconciliation after an uncommitted/lost request, under a newly published epoch.
         await w.host.reopenQuestionsForTest()
         await w.host.forgetOutcome(rid: pending.rid)
+        await w.relay.forgetResponses(workspace: w.ws, device: w.phoneID, rid: pending.rid)
         try await w.host.rotate(remaining: await w.host.rosterEntries(), relay: w.relay, session: w.hostSession)
         w.clock.advance(milliseconds: 61_000); p.clock.advance(milliseconds: 61_000)
         // Remove the fault wrapper so a newly applied decision can return normally.
@@ -231,7 +234,10 @@ import OrchTestVectors
         let replacement = try #require(await captured.attempt)
         #expect(replacement.rid != pending.rid && replacement.seq > pending.seq)
         #expect(await captured.operation == before)
-        #expect(await w.host.coreState().rids.values.contains { if case .refusal(.staleEpoch) = $0.outcome { true } else { false } })
+        // The replacement's first rid (still at epoch 1) was refused by the RELAY's unsigned stale_epoch hint (P3-D8) and never
+        // reached the host; the phone moved to epoch 2 only through the signed list and grants, then re-sealed the same operation.
+        #expect(replacement.epoch == 2)
+        #expect(await !w.host.coreState().rids.values.contains { if case .refusal(.staleEpoch) = $0.outcome { true } else { false } })
     }
     @Test func testQuestionChangedRequiresReview() async throws {
         let (w, p, api, s) = try await setup()

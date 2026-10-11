@@ -52,8 +52,10 @@ final class LiveDrop {
         if error is CancellationError || (error as? DropError) == .suspended { return }
         switch error {
         case SQLiteError.busy, TombstoneError.lockFailed: status = "Busy lock: try again"
+        case _ where WorkspaceKeyAlarm(error: error) != nil:
+            alarm = true; status = LiveWorkspace.keyAlarmMessage; workspace?.noteKeyAlarm(error)
         case DropError.rollback, DropError.integrity, DropError.malformed, DropStoreError.rollback, Refusal.badSignature, Refusal.malformed, Refusal.conflictingSnapshot,
-             Refusal.staleList, Refusal.staleCard, SessionError.pairAgain, SessionError.grantConflict, SessionError.badResponse, is DropDocument.Fork, is CryptoFailure, is CryptoKitError:
+             Refusal.rotationRequired, Refusal.staleList, Refusal.staleCard, SessionError.pairAgain, SessionError.grantConflict, SessionError.badResponse, is DropDocument.Fork, is CryptoFailure, is CryptoKitError:
             alarm = true; status = "Verification alarm"; metadata = [:]; downloads = [:]; previewURL = nil
             for index in rows.indices { rows[index].name = "Blocked item"; rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil; rows[index].verified = false }
             alarmCleanup = Task {

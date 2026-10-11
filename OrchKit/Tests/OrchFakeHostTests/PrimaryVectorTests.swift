@@ -48,8 +48,10 @@ extension J { var isNull: Bool { v.isNull } }
         /// The host's `POST /v2/persons/{person}/cert-requests`; the relay may refuse it (the primary then refuses it as well).
         func enqueue(_ r: JSONValue) async throws {
             let session = try await host.openSession(transport: h.env.transport)
+            let gen = try await host.holderGeneration(relay: h.relay, session: session)          // W(g): under the holder generation
             _ = try await h.relay.send(WireRequest(method: "POST", target: "/v2/persons/\(primary.personID.hex)/cert-requests",
-                                                   headers: ["authorization": "Bearer " + session.token, "content-type": "application/json"],
+                                                   headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen),
+                                                             "content-type": "application/json"],
                                                    body: canonicalJSON(.object(["request": r])), clientAddress: "host"))
         }
     }

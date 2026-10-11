@@ -146,12 +146,36 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         let stored = try await s.storedEnvelope(rid: rid)!
         #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
         #expect(counter.value == 1)
-        w.clock.advance(milliseconds: 61_000); phone.clock.advance(milliseconds: 61_000)          // the sealed bodies are gone
+        // Within the answer's 60 s body lifetime: the same rid, re-sent byte for byte, reads the stored answer (P3-D9/D22).
+        w.clock.advance(milliseconds: 30_000); phone.clock.advance(milliseconds: 30_000)
         let r = try await w.serve(phone) { try await s.resend(rid: rid) }
         #expect(r.status == 200 && r.data == Data("done".utf8))
         #expect(counter.value == 1)                                                             // replayed, not run again
         #expect(try await s.storedEnvelope(rid: rid) == nil)
         #expect(stored.count > Bridge.overhead)
+    }
+
+    @Test func anExpiredAnswerIsNotResurrectedAndNothingIsReSigned() async throws {
+        // Protocol-v2 section 19.6 / P3-D22: once the host's answer chunk expired (60 s) the relay keeps only its digest; the host's
+        // byte-identical replay for a requeued copy is a no-op. The device keeps polling the same rid and never mints a new one.
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        let counter = Counter()
+        await w.host.setHandler({ _ in counter.bump(); return .response(status: 200, headers: [:], data: Data("done".utf8)) })
+        let phone = try await w.makePhone()
+        let s = phone.session
+        faults.enqueue(.disconnect, at: .pollDelivery)
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: httpGet) }
+        let p = try await s.pendingRequests()[0]
+        #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
+        w.clock.advance(milliseconds: 61_000); phone.clock.advance(milliseconds: 61_000)
+        let seq = try await s.nextSeq()
+        await #expect(throws: SessionError.noResponse(rid: p.rid)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
+        let seqAfter = try await s.nextSeq()
+        #expect(counter.value == 1 && seqAfter == seq)
+        #expect(try await s.pendingRequests().map(\.rid) == [p.rid])                          // still the same rid, still pending
+        let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: p.rid))
+        #expect(record.requeues == 1 && record.chunks[0]?.envelope == nil)
     }
 
     @Test func testExpiredOrUnknownRidReconcilesByQuestion() async throws {
@@ -167,6 +191,7 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         let p = try await s.pendingRequests()[0]
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         await w.host.forgetOutcome(rid: p.rid)
+        await w.relay.forgetResponses(workspace: w.ws, device: w.phoneID, rid: p.rid)        // the answer never reached the relay
         w.clock.advance(milliseconds: 61_000); phone.clock.advance(milliseconds: 61_000)
         await #expect(throws: SessionError.uncertain(logical: p.logical)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
         #expect(try await s.pendingRequests().isEmpty)
@@ -194,10 +219,10 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         #expect(r.status == 200)
         #expect(try await s.currentEpoch() == 2)
         let hc = await w.host.coreState()
-        // seq 1 ran, seq 2 was refused stale_epoch (consumed), seq 3 ran at epoch 2 with a new rid.
-        #expect(hc.seq[w.phoneID]!.high == 3 && hc.rids.count == 3)
-        let outcomes = hc.rids.values.map(\.outcome)
-        #expect(outcomes.contains(.refusal(.staleEpoch(epoch: 2))))
+        // seq 1 ran. seq 2 (a NEW rid at epoch 1) was refused by the relay with its unsigned stale_epoch hint (P3-D8) and never
+        // reached the host; the phone refetched the SIGNED list and grants, and seq 3 ran at epoch 2 under a new rid.
+        #expect(hc.seq[w.phoneID]!.high == 3 && hc.rids.count == 2)
+        #expect(!hc.rids.values.map(\.outcome).contains(.refusal(.staleEpoch(epoch: 2))))
         #expect(try await s.pendingRequests().isEmpty)
         // The new epoch is the one it seals under from now on.
         let r3 = try await w.serve(phone) { try await s.exchange(meta: httpGet) }
@@ -337,8 +362,8 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         let ids = try w.vault.ids().filter { $0.ws == w.ws.hex }
         #expect(ids.map(\.purpose) == ["wk.1"] && ids.allSatisfy { $0.realm == .demo })
         #expect(try await phone.container.epochHighWater() == 1)
-        // A different key for an installed epoch is a conflict, never a replacement.
-        await #expect(throws: SessionError.grantConflict) { try await phone.session.install(epoch: 1, key: SymmetricKey(size: .bits256)) }
+        // A different key for an installed epoch is refused (the held list commits the installed one), never a replacement.
+        await #expect(throws: SessionError.wkCommitMismatch(1)) { try await phone.session.install(epoch: 1, key: SymmetricKey(size: .bits256)) }
     }
 }
 

@@ -49,8 +49,14 @@ import OrchProtocol
         let answer = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
         let posted = try await w.transport.pairingPost(answer, route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid))
         #expect(posted.status == 401 && errorCode(posted) == "unauthenticated")      // still no bearer: pairingPost sends none
-        let bearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
+        // W(g): a host answer without the holder generation is fenced (orch-29 Q9), with it accepted
+        let unheld = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
                                                         headers: ["Authorization": "Bearer " + w.hostSession.token], body: answer, clientAddress: "h"))
+        #expect(unheld.status == 409 && errorCode(unheld) == "fenced")
+        let gen = try await w.host.holderGeneration(relay: w.relay, session: w.hostSession)
+        let bearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
+                                                        headers: ["Authorization": "Bearer " + w.hostSession.token, "Orch-Holder": String(gen)],
+                                                        body: answer, clientAddress: "h"))
         #expect(bearer.status == 202)
         let polled = try chunkList(try await w.transport.pairingPoll(route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid), after: nil))
         #expect(polled.count == 1 && polled[0].idx == 0 && polled[0].last && polled[0].envelope == answer)
@@ -123,8 +129,11 @@ import OrchProtocol
     @Test func mailboxQuotaPerDeviceCountsLiveMailboxesOnly() async throws {
         var l = RelayLimits(); l.maxLiveMailboxesPerDevice = 3
         let w = try await World.make(limits: l)
+        var sent: [UInt8: Data] = [:]          // a re-send is the stored envelope, byte for byte (other bytes are rid_conflict)
         func post(_ n: UInt8) async throws -> WireReply {
-            try await w.transport.bridgePost(try w.envelope(rid: ID16.fresh(n), seq: UInt64(n)), route: BridgeRoute(workspaceID: w.ws, requestID: ID16.fresh(n)), session: w.phoneSession)
+            let e = try sent[n] ?? w.envelope(rid: ID16.fresh(n), seq: UInt64(n))
+            sent[n] = e
+            return try await w.transport.bridgePost(e, route: BridgeRoute(workspaceID: w.ws, requestID: ID16.fresh(n)), session: w.phoneSession)
         }
         for n in 1...3 { #expect(try await post(UInt8(n)).status == 202) }
         let over = try await post(4)
@@ -200,9 +209,10 @@ import OrchProtocol
         let route = BridgeRoute(workspaceID: w.ws, requestID: rid)
         let rig = HostRig()
         var sent: [Data] = []
+        #expect(try await w.postRequest(rid: rid).status == 202)
         for seq in 0..<3 {
             let e = try w.sealedResponse(rig: rig, rid: rid, seq: UInt64(seq), flags: seq == 2 ? [.last] : [])
-            #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)
+            #expect(try await w.host.postBridgeChunk(e, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
             sent.append(e)
         }
         func poll() async throws -> [HostAPI.Chunk] { try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession)) }

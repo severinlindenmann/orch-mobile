@@ -173,8 +173,8 @@ import OrchTestVectors
         for f in FixtureSchemaTests.files {
             for c in f.cases {
                 let id = caseID(f, c)
-                if FixtureCoverage.replayable.contains(f.fileName) { supportedIDs.insert(id) }
-                else if FixtureCoverage.caseOverrides[id] != nil || FixtureCoverage.pending[f.fileName] != nil { pendingIDs.insert(id) }
+                if FixtureCoverage.caseOverrides[id] != nil || FixtureCoverage.pending[f.fileName] != nil { pendingIDs.insert(id) }
+                else if FixtureCoverage.replayable.contains(f.fileName) { supportedIDs.insert(id) }
             }
         }
         #expect(Set(FixtureCoverage.caseOverrides.keys).isSubset(of: Self.allIDs), "stale case override")
@@ -183,7 +183,8 @@ import OrchTestVectors
         #expect(pendingIDs.count + supportedIDs.count == FixtureCoverage.expectedCaseCount)
     }
 
-    /// PR2 enables the three session files, PR3 the twelve directory and membership files, PR4 the nine pairing/primary files.
+    /// PR2 enables the three session files, PR3 the twelve directory and membership files, PR4 the nine pairing/primary files,
+    /// PR5 the three bridge files.
     /// A PR that enables more must edit this set with the skip list.
     @Test func replayableSetMatchesPRStage() {
         #expect(FixtureCoverage.replayable == ["session_challenge.json", "session_login.json", "session_logout.json",
@@ -192,16 +193,19 @@ import OrchTestVectors
                                                "revocation_get.json", "revocations_post.json",
                                                "accounts.json", "pair_device_post.json", "pair_host_post.json", "pair_poll.json",
                                                "cert_challenge.json", "cert_rejection.json", "cert_request_get.json",
-                                               "cert_requests_poll.json", "cert_requests_post.json"])
+                                               "cert_requests_poll.json", "cert_requests_post.json",
+                                               "bridge_device_post.json", "bridge_device_poll.json", "bridge_host_post.json"])
         #expect(!FixtureCoverage.pending.values.contains(.pr3))
         #expect(!FixtureCoverage.pending.values.contains(.pr4))
+        #expect(!FixtureCoverage.pending.values.contains(.pr5))
         #expect(FixtureCoverage.pending.filter { $0.value == .pr2 }.keys.sorted() == ["host_hold.json", "host_poll.json"])
     }
 
     /// Every PR still has pending files, or is done (its files all replay).
     @Test func everyPRHasWork() {
         for pr in FixtureCoverage.PR.allCases {
-            #expect(FixtureCoverage.pending.values.contains(pr) != FixtureCoverage.done.contains(pr), "\(pr.rawValue)")
+            let open = FixtureCoverage.pending.values.contains(pr) || FixtureCoverage.caseOverrides.values.contains(pr)
+            #expect(open != FixtureCoverage.done.contains(pr), "\(pr.rawValue)")
         }
     }
 }

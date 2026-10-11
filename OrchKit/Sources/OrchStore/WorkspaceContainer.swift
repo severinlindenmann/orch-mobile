@@ -68,6 +68,18 @@ public actor WorkspaceContainer {
         Migration(version: 11, statements: [
             "CREATE TABLE member_list_head (id INTEGER PRIMARY KEY CHECK (id = 1), list_seq INTEGER NOT NULL, epoch INTEGER NOT NULL, digest BLOB NOT NULL)",
         ]),
+        // Q10 (one WK per epoch, ever): the `wk_commit` of every epoch this device accepted a verified list at. It decides which
+        // WK the epoch has: the device seals only under a key the head list commits, and reads check a held commitment.
+        Migration(version: 12, statements: [
+            "CREATE TABLE wk_commits (epoch INTEGER PRIMARY KEY, wk_commit BLOB NOT NULL)",
+            // The head list's member devices (sorted lower-case hex, comma-separated), so a later list at the same epoch that drops
+            // one is refused on the phone too (`rotation_required`). NULL for a head recorded before this migration.
+            "ALTER TABLE member_list_head ADD COLUMN members TEXT",
+            // The pre-Q10 head has no wk_commit and its digest is over a list without one: the host's re-issued list under the same
+            // list_seq would be a permanent `conflicting_snapshot`. Drop it; the next verified list is accepted as a first list (its
+            // epoch still may not fall below the confirmed epoch), and the send path fetches it at once (`sealingKeyRecovering`).
+            "DELETE FROM member_list_head",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
@@ -144,18 +156,43 @@ public actor WorkspaceContainer {
 
     /// Records a verified member list's head (`list_seq`, epoch, `H(cj(o))`) if it does not roll back the last one (P3-D6): an
     /// older `list_seq` is `rollback`, other content under the same `list_seq` is `conflict`, a falling epoch is `epochFell`. The
-    /// identical list again is accepted. Check and write are one transaction.
-    public func acceptMemberListHead(listSeq: Int64, epoch: Int64, digest: Data) async throws {
-        try await database().transaction { tx in
-            if let row = try tx.query("SELECT list_seq, epoch, digest FROM member_list_head WHERE id=1").first,
+    /// identical list again is accepted. First of all (Q10), a list whose `wk_commit` differs from one already held for its epoch
+    /// is `wkCommitConflict`, whatever its sequence: the alarm is recorded durably (the first epoch it was seen at) and nothing
+    /// else is written. An accepted list's commitment is kept for its epoch. Check and write are one transaction.
+    /// `members` are the list's device ids (hex): a later `list_seq` at the head's epoch that drops one of the head's devices is
+    /// `rotationRequired` (a removal needs a new epoch, section 7.2).
+    public func acceptMemberListHead(listSeq: Int64, epoch: Int64, digest: Data, wkCommit: Data, members: [String]) async throws {
+        let memberText = members.sorted().joined(separator: ",")
+        let conflict: Bool = try await database().transaction { tx in
+            if let held = try tx.query("SELECT wk_commit FROM wk_commits WHERE epoch=?", [.int(epoch)]).first?.blob("wk_commit"), held != wkCommit {
+                try tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('wk_commit_conflict', ?)", [.int(epoch)])
+                return true
+            }
+            if let row = try tx.query("SELECT list_seq, epoch, digest, members FROM member_list_head WHERE id=1").first,
                let seq = row.int("list_seq"), let e = row.int("epoch"), let d = row.blob("digest") {
                 if listSeq < seq { throw MemberListHeadError.rollback }
-                if listSeq == seq { if d != digest { throw MemberListHeadError.conflict }; return }
-                if epoch < e { throw MemberListHeadError.epochFell }
+                if listSeq == seq, d != digest { throw MemberListHeadError.conflict }
+                if listSeq > seq, epoch < e { throw MemberListHeadError.epochFell }
+                if listSeq > seq, epoch == e, let held = row.text("members"), !held.isEmpty,
+                   !Set(held.split(separator: ",").map(String.init)).isSubset(of: Set(members)) { throw MemberListHeadError.rotationRequired }
             }
-            try tx.execute("INSERT INTO member_list_head(id, list_seq, epoch, digest) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET list_seq=excluded.list_seq, epoch=excluded.epoch, digest=excluded.digest",
-                           [.int(listSeq), .int(epoch), .blob(digest)])
+            try tx.execute("INSERT OR IGNORE INTO wk_commits(epoch, wk_commit) VALUES(?,?)", [.int(epoch), .blob(wkCommit)])
+            try tx.execute("INSERT INTO member_list_head(id, list_seq, epoch, digest, members) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET list_seq=excluded.list_seq, epoch=excluded.epoch, digest=excluded.digest, members=excluded.members",
+                           [.int(listSeq), .int(epoch), .blob(digest), .text(memberText)])
+            return false
         }
+        if conflict { throw MemberListHeadError.wkCommitConflict }
+    }
+
+    /// The `wk_commit` of a verified list this device accepted at `epoch`, if any.
+    public func wkCommit(epoch: Int64) async throws -> Data? {
+        try await database().query("SELECT wk_commit FROM wk_commits WHERE epoch=?", [.int(epoch)]).first?.blob("wk_commit")
+    }
+
+    /// The local alarm `wk_commit_conflict` (Q10): the first epoch at which two verified lists committed to different keys. Durable;
+    /// while it is set the device seals nothing.
+    public func wkCommitConflictEpoch() async throws -> Int64? {
+        try await database().query("SELECT value FROM meta WHERE key='wk_commit_conflict'").first?.int("value")
     }
 
     public func memberListHead() async throws -> (listSeq: Int64, epoch: Int64)? {
@@ -273,4 +310,4 @@ extension WorkspaceContainer {
 public enum DropStoreError: Error, Sendable { case rollback, expired }
 
 /// A member list that would roll back the one this device last accepted (P3-D6).
-public enum MemberListHeadError: Error, Equatable, Sendable { case rollback, conflict, epochFell }
+public enum MemberListHeadError: Error, Equatable, Sendable { case rollback, conflict, epochFell, rotationRequired, wkCommitConflict }
