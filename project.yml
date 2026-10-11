@@ -31,6 +31,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: orch
+        # Export compliance (owner decision 2026-10-11, decisions.md T4): all crypto goes through Apple CryptoKit.
+        ITSAppUsesNonExemptEncryption: false
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OrchAppIdentifierPrefix: $(AppIdentifierPrefix)

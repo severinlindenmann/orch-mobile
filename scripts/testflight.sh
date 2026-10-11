@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Archive + export (+ upload) orch mobile to TestFlight (internal testing only).
-#   scripts/testflight.sh [--dry-run] [--upload] [--add-internal] [--attach-existing <version>]
+#   scripts/testflight.sh [--dry-run] [--upload] [--add-internal] [--attach-existing <version>] [--set-compliance <version>]
 # Default is --dry-run: archive and export a local .ipa, no upload.
 # --add-internal: after upload, wait for processing and add the build to the
 # internal beta group "Owner" (created if missing). Implies --upload.
 # --attach-existing <version>: no build; attach the already-processed ASC build with
 # that version to the internal group "Owner".
+# --set-compliance <version>: no build; mark that already-uploaded ASC build as not using
+# non-exempt encryption (usesNonExemptEncryption=false, decisions.md T4). Builds made from
+# a binary with ITSAppUsesNonExemptEncryption=false need no call; this is for older builds.
 # Env: BUILD_NUMBER overrides the generated build number.
 set -euo pipefail
 
@@ -22,7 +25,8 @@ while [ $# -gt 0 ]; do a=$1; shift; case "$a" in
   --upload) MODE=upload ;;
   --add-internal) MODE=upload; ADD_INTERNAL=1 ;;
   --attach-existing) MODE=attach; ATTACH_VERSION=${1:-}; [ -n "$ATTACH_VERSION" ] || { echo "--attach-existing needs a version" >&2; exit 2; }; shift ;;
-  -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+  --set-compliance) MODE=compliance; ATTACH_VERSION=${1:-}; [ -n "$ATTACH_VERSION" ] || { echo "--set-compliance needs a version" >&2; exit 2; }; shift ;;
+  -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
   *) echo "unknown flag: $a" >&2; exit 2 ;;
 esac; done
 
@@ -60,7 +64,7 @@ body() { sed '$d'; }
 code() { tail -1; }
 attach_build() { # build-id: add to internal group "Owner" (create if missing)
   local BUILD_ID=$1 R GROUP_ID
-  R=$(api GET "/v1/apps/$APP_ID/betaGroups?filter%5Bname%5D=$GROUP_NAME&limit=50")
+  R=$(api GET "/v1/apps/$APP_ID/betaGroups?limit=200")  # this endpoint rejects filter[name]; select by name below
   [ "$(echo "$R" | code)" = 200 ] || die "betaGroups query failed"
   GROUP_ID=$(echo "$R" | body | jq -r --arg n "$GROUP_NAME" '[.data[]|select(.attributes.name==$n and .attributes.isInternalGroup==true)][0].id // empty')
   if [ -z "$GROUP_ID" ]; then
@@ -86,6 +90,17 @@ ver_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1
 # components numerically, so it increases per upload.
 BUILD=${BUILD_NUMBER:-$(date -u +%y%m%d).$((10#$(date -u +%H%M%S)))}
 [[ "$BUILD" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || die "invalid BUILD_NUMBER '$BUILD'"
+if [ "$MODE" = compliance ]; then
+  R=$(api GET "/v1/builds?filter%5Bapp%5D=$APP_ID&filter%5Bversion%5D=$ATTACH_VERSION&limit=1")
+  [ "$(echo "$R" | code)" = 200 ] || die "builds query failed: HTTP $(echo "$R" | code)"
+  CID=$(echo "$R" | body | jq -r '.data[0].id // empty')
+  [ -n "$CID" ] || die "no build with version $ATTACH_VERSION"
+  say "build $ATTACH_VERSION: usesNonExemptEncryption was $(echo "$R" | body | jq -r '.data[0].attributes.usesNonExemptEncryption')"
+  R=$(api PATCH "/v1/builds/$CID" "$(jq -nc --arg b "$CID" '{data:{type:"builds",id:$b,attributes:{usesNonExemptEncryption:false}}}')")
+  [ "$(echo "$R" | code)" = 200 ] || { echo "$R" | body | jq -r '.errors[]?.detail' | tee -a "$LOG"; die "compliance PATCH failed: HTTP $(echo "$R" | code)"; }
+  say "build $ATTACH_VERSION: usesNonExemptEncryption=$(echo "$R" | body | jq -r .data.attributes.usesNonExemptEncryption)"
+  exit 0
+fi
 if [ "$MODE" = attach ]; then
   R=$(api GET "/v1/builds?filter%5Bapp%5D=$APP_ID&filter%5Bversion%5D=$ATTACH_VERSION&limit=1")
   [ "$(echo "$R" | code)" = 200 ] || die "builds query failed: HTTP $(echo "$R" | code)"
