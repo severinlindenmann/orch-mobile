@@ -540,6 +540,8 @@ public actor FakeRelay: RequestSender {
     public func createInvite(_ code: String, ttlMs: Int64 = 7 * 24 * 3600 * 1000) {
         invites[Data(SHA256.hash(data: Data(code.utf8)))] = saturatingAdd(wall.nowMs, ttlMs)
     }
+    /// Tests: reads the relay's tables inside the actor.
+    package func inspect<T: Sendable>(_ body: @Sendable (isolated FakeRelay) -> T) -> T { body(self) }
     package var liveSessionTokens: Set<String> { Set(sessions.keys) }
     package var outstandingChallenges: Set<Data> { Set(challenges.keys) }
 
