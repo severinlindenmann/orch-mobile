@@ -111,6 +111,22 @@ struct FlockFileSafetyTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: real.path).isEmpty)
     }
 
+    @Test(arguments: ["hardlink", "fifo"], [false, true])
+    func unsafeLocksHaveDistinctDiagnostic(kind: String, tombstone: Bool) throws {
+        let root = coordTmp()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lock = root.appendingPathComponent(tombstone ? "tombstones.lock" : "lock")
+        if kind == "hardlink" {
+            let victim = root.appendingPathComponent("victim")
+            try Data().write(to: victim)
+            try FileManager.default.linkItem(at: victim, to: lock)
+        } else { #expect(mkfifo(lock.path, 0o600) == 0) }
+        #expect(throws: CoordinationFiles.FileError.unsafeLock) {
+            if tombstone { _ = try TombstoneCoordination(directories: [root]).records() }
+            else { _ = try CoordinationFiles.withFlock(lock.path) { Issue.record("unsafe body ran") } }
+        }
+    }
+
     @Test(arguments: ["hardlink", "symlink", "fifo"])
     func unsafeLockIsRefused(kind: String) throws {
         let root = coordTmp()
