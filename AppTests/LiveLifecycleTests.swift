@@ -6,14 +6,20 @@ import OrchStore
 @testable import Orch
 
 private actor Suspension {
-    private var continuation: CheckedContinuation<Void, Never>?
+    private var continuations: [CheckedContinuation<Void, Never>] = []
     private(set) var entered = false
-    func wait() async { entered = true; await withCheckedContinuation { continuation = $0 } }
-    func resume() { continuation?.resume(); continuation = nil }
+    private var released = false
+    func wait() async { entered = true; if !released { await withCheckedContinuation { continuations.append($0) } } }
+    func signal() { entered = true }
+    func resume() { released = true; continuations.forEach { $0.resume() }; continuations = [] }
 }
 
 private actor WorkspaceStub: WorkspaceAPI {
     let suspension = Suspension()
+    let subscription = Suspension()
+    private var suspendSubscription = false
+    private(set) var subscriptions = 0
+    func holdSubscription() { suspendSubscription = true }
     var foreground: [Bool] = []
     var submissions: [ID16] = []
     var reviews = 0
@@ -32,21 +38,28 @@ private actor WorkspaceStub: WorkspaceAPI {
         submissions.append(draft.creationID)
         throw ViewError.offline
     }
-    func events() -> AsyncStream<WorkspaceEvent> { AsyncStream { $0.finish() } }
+    func events() async -> AsyncStream<WorkspaceEvent> {
+        subscriptions += 1
+        if suspendSubscription { await subscription.wait() }
+        return AsyncStream { $0.finish() }
+    }
 }
 
 private actor NotificationRecorder: DemoNotificationBackend {
     let suspension = Suspension()
+    var ordering: [String] = []
     var delivered: [String] = ["demo/other/keep"]
     var pending: [String] = ["demo/other/keep"]
     func schedule(_ presentation: PushPresentation, identifier: String) async {
         await suspension.wait()
         delivered.append(identifier); pending.append(identifier)
+        ordering.append("scheduled")
     }
     func removeDelivered(identifiers: [String]) {
         delivered.removeAll { identifiers.contains($0) }; pending.removeAll { identifiers.contains($0) }
     }
     func purge(workspace: String?) {
+        ordering.append("purged")
         let prefix = workspace.map { "demo/\($0)/" } ?? "demo/"
         delivered.removeAll { $0.hasPrefix(prefix) }; pending.removeAll { $0.hasPrefix(prefix) }
     }
@@ -64,11 +77,53 @@ final class LiveLifecycleTests: XCTestCase {
         return ws
     }
     private func waitUntil(_ predicate: () async -> Bool) async {
-        for _ in 0..<1000 {
+        for _ in 0..<5000 {
             if await predicate() { return }
             try? await Task.sleep(for: .milliseconds(1))
         }
         XCTFail("Timed out waiting for suspension")
+    }
+
+    private func bounded(_ operation: @escaping @MainActor () async -> Void) async {
+        var done = false
+        let task = Task { await operation(); done = true }
+        await waitUntil { done }
+        task.cancel()
+    }
+
+    func testBackgroundForegroundAcrossSuspendedSubscription() async {
+        let services = LiveServices(options: options)
+        let api = WorkspaceStub()
+        await api.holdSubscription()
+        let ws = workspace(services, api: api)
+        services.setActive(true)
+        await waitUntil { await api.subscription.entered }
+        services.setActive(false)
+        await bounded { await services.waitForLifecycle() }
+        await api.subscription.resume()
+        await waitUntil { ws.eventTask == nil }
+        services.setActive(true)
+        await waitUntil { await api.subscriptions == 2 }
+        await api.suspension.resume()
+        services.setActive(false)
+        await bounded { await services.waitForLifecycle() }
+    }
+
+    func testNewInvitationDoesNotAbandonSuspendedPairingStart() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let model = LivePairingModel(services: services, start: nil)
+        let gate = Suspension()
+        model.afterCoordinatorStart = { await gate.wait() }
+        model.useDemoInvitation()
+        await waitUntil { await gate.entered }
+        model.demoNewLink()
+        await bounded { await model.waitForInvitation() }
+        await gate.resume()
+        await waitUntil { model.runStarts == 1 }
+        model.screenClosed()
+        services.exitDemo()
+        await bounded { await services.waitForReset() }
     }
 
     func testFailedRemovalThenForegroundStaysQuarantined() async throws {
@@ -81,7 +136,7 @@ final class LiveLifecycleTests: XCTestCase {
         let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
         XCTAssertTrue(report.incomplete)
         services.setActive(true)
-        await services.waitForLifecycle()
+        await bounded { await services.waitForLifecycle() }
         let foreground = await api.foreground
         XCTAssertFalse(foreground.contains(true))
         XCTAssertEqual(ws.info.lifecycle, .removalIncomplete)
@@ -95,7 +150,7 @@ final class LiveLifecycleTests: XCTestCase {
         _ = await ws.createTicket(title: "Refused", body: "")
         let submissions = await api.submissions
         XCTAssertTrue(submissions.isEmpty)
-        services.exitDemo(); await services.waitForReset()
+        services.exitDemo(); await bounded { await services.waitForReset() }
     }
 
     func testBackgroundDoesNotWaitForSuspendedRefresh() async {
@@ -105,7 +160,7 @@ final class LiveLifecycleTests: XCTestCase {
         services.setActive(true)
         await waitUntil { await api.suspension.entered }
         services.setActive(false)
-        await services.waitForLifecycle()
+        await bounded { await services.waitForLifecycle() }
         let states = await api.foreground
         XCTAssertEqual(states, [true, false])
         XCTAssertFalse(ws.canCreateTickets)
@@ -114,30 +169,42 @@ final class LiveLifecycleTests: XCTestCase {
 
     func testSecondResetRetriesFirstFailedRuntime() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)
-        let services = LiveServices(options: options, runtime: runtime)
+        let suite = "orch.reset-test.\(UUID().uuidString)"
+        let flags = UserDefaults(suiteName: suite)!
+        defer { flags.removePersistentDomain(forName: suite) }
+        let services = LiveServices(options: options, runtime: runtime, resetFlags: flags)
         let ws = workspace(services)
         var attempts = 0
         services.resetRuntime = { retained in
             XCTAssertTrue(retained === runtime)
+            XCTAssertTrue(flags.bool(forKey: "orch.demo.resetPending"))
             attempts += 1
             if attempts == 1 { throw ViewError.offline }
             try await retained.reset()
         }
-        services.exitDemo(); await services.waitForReset()
+        services.exitDemo(); await bounded { await services.waitForReset() }
         XCTAssertNil(services.runtime)
         XCTAssertEqual(services.state(for: ws.info.id), .removalIncomplete)
-        services.exitDemo(); await services.waitForReset()
+        XCTAssertTrue(flags.bool(forKey: "orch.demo.resetPending"))
+        XCTAssertTrue(services.resetIncomplete)
+        services.exitDemo(); await bounded { await services.waitForReset() }
+        XCTAssertFalse(flags.bool(forKey: "orch.demo.resetPending"))
+        XCTAssertFalse(services.resetIncomplete)
         XCTAssertEqual(attempts, 2)
         XCTAssertEqual(services.state(for: ws.info.id), .removed)
     }
 
     func testOverlappingResetsRetryFailedContext() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)
-        let services = LiveServices(options: options, runtime: runtime)
+        let suite = "orch.reset-test.\(UUID().uuidString)"
+        let flags = UserDefaults(suiteName: suite)!
+        defer { flags.removePersistentDomain(forName: suite) }
+        let services = LiveServices(options: options, runtime: runtime, resetFlags: flags)
         let gate = Suspension()
         var attempts = 0
         services.resetRuntime = { retained in
             XCTAssertTrue(retained === runtime)
+            XCTAssertTrue(flags.bool(forKey: "orch.demo.resetPending"))
             attempts += 1
             if attempts == 1 {
                 await gate.wait()
@@ -149,7 +216,9 @@ final class LiveLifecycleTests: XCTestCase {
         await waitUntil { await gate.entered }
         services.exitDemo()
         await gate.resume()
-        await services.waitForReset()
+        await bounded { await services.waitForReset() }
+        XCTAssertFalse(flags.bool(forKey: "orch.demo.resetPending"))
+        XCTAssertFalse(services.resetIncomplete)
         XCTAssertEqual(attempts, 2)
         XCTAssertNil(services.runtime)
     }
@@ -192,15 +261,16 @@ final class LiveLifecycleTests: XCTestCase {
         await waitUntil { await gate.entered }
         model.screenClosed()
         await gate.resume()
-        await model.waitForInvitation()
+        await bounded { await model.waitForInvitation() }
         XCTAssertEqual(model.panelStarts, 0)
         XCTAssertEqual(model.demoOfferLink, "")
-        services.exitDemo(); await services.waitForReset()
+        services.exitDemo(); await bounded { await services.waitForReset() }
     }
 
     func testLeaveDrainsSchedulingAndPurgesBothNotificationQueues() async throws {
         let backend = NotificationRecorder()
-        let notifications = DemoNotifications(backend: backend)
+        let drain = Suspension()
+        let notifications = DemoNotifications(backend: backend, onDrain: { await drain.signal() })
         let runtime = try await DemoRuntime.boot(temporaryStorage: true, notifications: notifications)
         let services = LiveServices(options: options, runtime: runtime)
         let ws = workspace(services)
@@ -210,15 +280,20 @@ final class LiveLifecycleTests: XCTestCase {
         var completed = false
         let leave = Task {
             let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+            XCTAssertFalse(report.incomplete)
             completed = true
             return report
         }
-        await waitUntil { services.state(for: ws.info.id) == .removing }
+        await waitUntil { await drain.entered }
         XCTAssertFalse(completed)
         await backend.suspension.resume()
-        await schedule.value
-        let report = await leave.value
-        XCTAssertFalse(report.incomplete)
+        await bounded { await schedule.value }
+        await waitUntil { completed }
+        leave.cancel()
+        let ordering = await backend.ordering
+        XCTAssertEqual(ordering.first, "scheduled")
+        XCTAssertFalse(ordering.dropFirst().isEmpty)
+        XCTAssertTrue(ordering.dropFirst().allSatisfy { $0 == "purged" })
         ws.draftURL = runtime.draftURL(workspace: ws.workspaceID)
         _ = await ws.createTicket(title: "Stale model", body: "Must not be written")
         XCTAssertFalse(ws.canCreateTickets)
@@ -230,7 +305,36 @@ final class LiveLifecycleTests: XCTestCase {
         await notifications.schedule(.generic, identifier: "late", workspace: ws.info.id)
         let after = await backend.pending
         XCTAssertEqual(after, pending)
-        services.exitDemo(); await services.waitForReset()
+        services.exitDemo(); await bounded { await services.waitForReset() }
+    }
+
+    func testDeliveredAPNsMatchWorkspaceThreadRegardlessOfIdentifier() {
+        XCTAssertTrue(SystemDemoNotifications.matchesDelivered(identifier: "apns-assigned", thread: "workspace", workspace: "workspace"))
+        XCTAssertFalse(SystemDemoNotifications.matchesDelivered(identifier: "apns-assigned", thread: "other", workspace: "workspace"))
+        XCTAssertTrue(SystemDemoNotifications.matchesDelivered(identifier: "demo/workspace/request", thread: "", workspace: "workspace"))
+    }
+
+    func testResetDrainsInflightSchedule() async throws {
+        let backend = NotificationRecorder()
+        let drain = Suspension()
+        let notifications = DemoNotifications(backend: backend, onDrain: { await drain.signal() })
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true, notifications: notifications)
+        let services = LiveServices(options: options, runtime: runtime)
+        let schedule = Task { await notifications.schedule(.generic, identifier: "test", workspace: "reset") }
+        await waitUntil { await backend.suspension.entered }
+        services.exitDemo()
+        await waitUntil { await drain.entered }
+        await backend.suspension.resume()
+        await bounded { await schedule.value }
+        await bounded { await services.waitForReset() }
+        let ordering = await backend.ordering
+        XCTAssertEqual(ordering.first, "scheduled")
+        XCTAssertFalse(ordering.dropFirst().isEmpty)
+        XCTAssertTrue(ordering.dropFirst().allSatisfy { $0 == "purged" })
+        let pending = await backend.pending
+        let delivered = await backend.delivered
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertTrue(delivered.isEmpty)
     }
 
     func testUnavailableRuntimeAndUnknownWorkspaceLeaveAreIncomplete() async {

@@ -20,7 +20,8 @@ final class LiveWorkspace: WorkspaceModel {
     private(set) var allTickets: [Ticket] = []
     private(set) var loaded = false
     @ObservationIgnored weak var services: LiveServices?
-    @ObservationIgnored private var eventTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
+    @ObservationIgnored private var eventRevision = 0
     @ObservationIgnored private var offlineSince: Date?
 
     init(workspaceID: ID16, generation: Int64, api: any WorkspaceAPI, info: WorkspaceInfo) {
@@ -31,8 +32,11 @@ final class LiveWorkspace: WorkspaceModel {
 
     func start() {
         guard usable, eventTask == nil else { return }
+        eventRevision += 1
+        let revision = eventRevision
         eventTask = Task { [weak self] in
             guard let self else { return }
+            defer { if self.eventRevision == revision { self.eventTask = nil } }
             // Subscribe first so the replayed cached snapshot and later events are not missed.
             let stream = await self.api.events()
             guard self.usable, !Task.isCancelled else { return }
@@ -47,6 +51,7 @@ final class LiveWorkspace: WorkspaceModel {
 
     /// Ends this generation's consumers; the models of a removed workspace are discarded by the caller.
     func stop() async {
+        eventRevision += 1
         eventTask?.cancel(); eventTask = nil
         await api.setForeground(false)
     }

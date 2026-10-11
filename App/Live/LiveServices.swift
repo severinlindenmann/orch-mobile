@@ -42,6 +42,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private(set) var active = true
     @ObservationIgnored private var refreshTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var failedReset: DemoRuntime?
+    private(set) var resetIncomplete = false
+    @ObservationIgnored private let resetFlags: UserDefaults
     @ObservationIgnored private var resetRevision = 0
     // Injection points exercise failure boundaries without weakening the runtime availability check.
     @ObservationIgnored var wipeWorkspace: (DemoRuntime, LiveWorkspace) async throws -> Void = { runtime, ws in
@@ -65,7 +67,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
 
-    init(options: LaunchOptions, runtime: DemoRuntime? = nil) {
+    init(options: LaunchOptions, runtime: DemoRuntime? = nil, resetFlags: UserDefaults? = nil) {
+        self.resetFlags = resetFlags ?? (options.uiTesting
+            ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
         self.options = options; self.runtime = runtime; self.isDemo = runtime != nil
     }
 
@@ -76,9 +80,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let defaults = UserDefaults.standard
         // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("orch.ticket.draft.") { defaults.removeObject(forKey: key) }
-        if !options.uiTesting, defaults.bool(forKey: Keys.resetPending) {
+        if !options.uiTesting, resetFlags.bool(forKey: Keys.resetPending) {
             // A Demo reset was interrupted: finish it first, whether or not Demo was entered.
-            if (try? await DemoRuntime.finishInterruptedReset()) != nil { defaults.set(false, forKey: Keys.resetPending) }
+            if (try? await DemoRuntime.finishInterruptedReset()) != nil { resetFlags.set(false, forKey: Keys.resetPending) }
         }
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
@@ -518,7 +522,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
         demoLockRelease?.cancel()
-        if !options.uiTesting { UserDefaults.standard.set(true, forKey: Keys.resetPending) }
+        resetFlags.set(true, forKey: Keys.resetPending)
         isDemo = false
         deviceLabel = thenDemo ? deviceLabel : "iPhone"
         if !options.uiTesting { UserDefaults.standard.set(false, forKey: Keys.demo) }
@@ -534,9 +538,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 else if !self.options.uiTesting { try await DemoRuntime.finishInterruptedReset() }
                 self.failedReset = nil
                 for id in self.lifecycle.keys { self.transition(id, to: .removed) }
-                if !self.options.uiTesting { UserDefaults.standard.set(false, forKey: Keys.resetPending) }
+                self.resetFlags.set(false, forKey: Keys.resetPending)
+                self.resetIncomplete = false
                 if thenDemo, revision == self.resetRevision { await self.startDemoAfterReset() }
             } catch {
+                self.resetIncomplete = true
                 for id in self.lifecycle.keys { self.transition(id, to: .removalIncomplete) }
             }
         }

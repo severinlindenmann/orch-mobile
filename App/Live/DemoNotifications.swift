@@ -14,10 +14,13 @@ struct SystemDemoNotifications: DemoNotificationBackend {
     func removeDelivered(identifiers: [String]) async {
         await UNUserNotificationScheduler().removeDelivered(identifiers: identifiers)
     }
+    static func matchesDelivered(identifier: String, thread: String, workspace: String?) -> Bool {
+        if let workspace { return thread == workspace || identifier.hasPrefix("demo/\(workspace)/") }
+        return identifier.hasPrefix("demo/") || identifier.hasPrefix("sim/")
+    }
     func purge(workspace: String?) async {
         let prefix = workspace.map { "demo/\($0)/" } ?? "demo/"
-        // Read pending first: a request that fires during enumeration is then covered
-        // by either snapshot. Remove the union from both queues to cover that transition.
+        // Stop pending delivery before taking the delivered snapshot.
         let pending: [String] = await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getPendingNotificationRequests { values in
                 continuation.resume(returning: values.filter {
@@ -26,18 +29,28 @@ struct SystemDemoNotifications: DemoNotificationBackend {
                 }.map(\.identifier))
             }
         }
+        let center = UNUserNotificationCenter.current()
+        // Removal has no completion handler. Observe that the requests are gone before
+        // enumerating delivered notifications, including any that fired during removal.
+        var remaining = pending
+        while !remaining.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: remaining)
+            remaining = await withCheckedContinuation { continuation in
+                center.getPendingNotificationRequests { values in
+                    continuation.resume(returning: values.map(\.identifier).filter { pending.contains($0) })
+                }
+            }
+        }
         let delivered: [String] = await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getDeliveredNotifications { values in
                 continuation.resume(returning: values.filter {
-                    $0.request.identifier.hasPrefix(prefix) ||
-                    ($0.request.identifier.hasPrefix("sim/") && (workspace == nil || $0.request.content.threadIdentifier == workspace))
+                    Self.matchesDelivered(identifier: $0.request.identifier,
+                                          thread: $0.request.content.threadIdentifier, workspace: workspace)
                 }.map { $0.request.identifier })
             }
         }
-        let center = UNUserNotificationCenter.current()
         let identifiers = Array(Set(delivered + pending))
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
-        center.removePendingNotificationRequests(withIdentifiers: identifiers)
     }
 }
 
@@ -47,7 +60,11 @@ actor DemoNotifications {
     private var closed: Set<String> = []
     private var retired = false
     private var tasks: [UUID: (String, Task<Void, Never>)] = [:]
-    init(backend: any DemoNotificationBackend = SystemDemoNotifications()) { self.backend = backend }
+    private let onDrain: @Sendable () async -> Void
+    init(backend: any DemoNotificationBackend = SystemDemoNotifications(),
+         onDrain: @escaping @Sendable () async -> Void = {}) {
+        self.backend = backend; self.onDrain = onDrain
+    }
 
     func schedule(_ presentation: PushPresentation, identifier: String, workspace: String) async {
         guard !retired, !closed.contains(workspace) else { return }
@@ -63,7 +80,10 @@ actor DemoNotifications {
     func purge(workspace: String? = nil) async {
         if let workspace { closed.insert(workspace) } else { retired = true }
         let pending = tasks.values.filter { workspace == nil || $0.0 == workspace }.map { $0.1 }
-        for task in pending { await task.value }
+        for task in pending {
+            await onDrain()
+            await task.value
+        }
         await backend.purge(workspace: workspace)
     }
 }

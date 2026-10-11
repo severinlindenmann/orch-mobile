@@ -201,3 +201,5 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
   signs. A failed preflight leaves no signed decision row. The host still performs CAS
   after the last read to handle a concurrent answer or content edit. Both preflight
   and resealing preserve the reviewed bytes; neither updates an answer silently.
+
+- Before live/relay push ships, the notification service extension must check the workspace tombstone file before presenting anything. Push material for a `removalIncomplete` workspace survives until wipe phase 3 (`purgeSecrets`); possession of that material alone must not permit notification presentation.

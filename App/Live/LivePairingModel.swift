@@ -24,11 +24,14 @@ final class LivePairingModel: PairingFlowModel {
     @ObservationIgnored private var stateTask: Task<Void, Never>?
     @ObservationIgnored private var invitationTask: Task<Void, Never>?
     @ObservationIgnored private var beginTask: Task<Void, Never>?
+    @ObservationIgnored var afterCoordinatorStart: (() async -> Void)?
+    @ObservationIgnored private(set) var runStarts = 0
     @ObservationIgnored var beforeInvitation: (() async -> Void)?
     @ObservationIgnored private(set) var panelStarts = 0
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var panelTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var invitationRevision = 0
     @ObservationIgnored private var rejectedBy: PairingRefusal = .rejectedOnHost
     @ObservationIgnored private var joinedReported = false
     /// Counts every state the stream delivered: a sampled state read before a newer streamed one is dropped.
@@ -49,6 +52,7 @@ final class LivePairingModel: PairingFlowModel {
     }
 
     func useDemoInvitation() {
+        invitationRevision += 1
         generation += 1
         let mine = generation
         state = .connecting
@@ -66,13 +70,13 @@ final class LivePairingModel: PairingFlowModel {
     /// The host panel's "new pairing link": what the Remote tab on the Mac would show.
     func demoNewLink() {
         invitationTask?.cancel()
-        generation += 1
-        let mine = generation
+        invitationRevision += 1
+        let mine = invitationRevision
         invitationTask = Task {
-            guard let runtime = await services.demoRuntime(), mine == generation, !Task.isCancelled else { return }
+            guard let runtime = await services.demoRuntime(), mine == invitationRevision, !Task.isCancelled else { return }
             await beforeInvitation?()
             if let invitation = try? await runtime.createInvitation(scenario: services.pairingScenario) {
-                guard mine == generation, !Task.isCancelled else { return }
+                guard mine == invitationRevision, !Task.isCancelled else { return }
                 demoOfferLink = invitation.link
                 entry = invitation.entry
                 startPanelRefresh()
@@ -83,6 +87,7 @@ final class LivePairingModel: PairingFlowModel {
     func waitForInvitation() async { await invitationTask?.value }
 
     private func begin(link: PairingLink) {
+        invitationRevision += 1
         generation += 1
         let mine = generation
         state = .connecting
@@ -106,10 +111,12 @@ final class LivePairingModel: PairingFlowModel {
                 }
             }
             let first = await coordinator.start(link: link)
+            await afterCoordinatorStart?()
             guard mine == generation else { return }
             apply(first, runtime: runtime)
             if entry?.answers == false { runtime.fastForward(seconds: 61) }     // the link-used scenario: nobody ever answers
             runTask?.cancel()
+            runStarts += 1
             runTask = Task { await coordinator.run() }
         }
     }
@@ -121,6 +128,7 @@ final class LivePairingModel: PairingFlowModel {
     }
 
     func cancel() {
+        invitationRevision += 1
         generation += 1
         invitationTask?.cancel(); beginTask?.cancel()
         // After a join the pairing is over: Cancel/Close must never reach the joined workspace through the coordinator.

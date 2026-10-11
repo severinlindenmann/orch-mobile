@@ -40,6 +40,19 @@ struct HomeScreen: View {
                     HomeContent(services: services, path: $path)
                 }
             }
+            .safeAreaInset(edge: .top) {
+                if let live = services as? LiveServices, live.resetIncomplete {
+                    VStack(spacing: 4) {
+                        Text("Reset incomplete — will finish on next launch")
+                        Button("Try again") { live.resetThisiPhone() }
+                    }
+                    .font(.footnote)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(OC.bg)
+                    .accessibilityIdentifier("home.resetIncomplete")
+                }
+            }
             .background(OC.bg)
             .navigationTitle("orch")
             .toolbar {
