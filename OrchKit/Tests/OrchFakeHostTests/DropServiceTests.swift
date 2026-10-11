@@ -451,6 +451,42 @@ extension DropServiceTests {
         #expect(try await service.failedUploads().isEmpty)
     }
 
+    @Test(arguments: [false, true])
+    func discardedDocumentBodyStaysBlockedButFreshVersionCanSend(restoreDiscardedBody: Bool) async throws {
+        let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
+        let phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let parent = try await service.send(Data("parent".utf8), name: "doc", kind: .document)
+        let id = parent.descriptor.object, db = try await phone.container.database()
+        // Fail the pre-PUT lookup, leaving a durable version 2 that never reached the relay.
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        await #expect(throws: TransportError.disconnected) {
+            _ = try await service.send(Data("discarded".utf8), name: "doc", document: parent)
+        }
+        let body = try #require(await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=2", [.text(id.hex)]).first?.blob("body"))
+        try await service.discardUpload(object: id, version: 2)
+        let restarted = try await w.dropService(phone)
+        #expect(try await restarted.resumeUploads().isEmpty)
+        await #expect(throws: DropError.abandoned) { try await restarted.retryUpload(object: id, version: 2) }
+        if restoreDiscardedBody {
+            // Even a stale durable body restored after restart must never be resealed or sent.
+            try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,2,?,0)", [.text(id.hex), .blob(body)])
+            try await w.host.rotate(remaining: [(w.phone, World.all)], relay: w.relay, session: w.hostSession)
+            let results = try await restarted.resumeUploads()
+            #expect(results.count == 1)
+            #expect(throws: DropError.abandoned) { try results[0].result.get() }
+            await #expect(throws: DropError.abandoned) { try await restarted.retryUpload(object: id, version: 2) }
+            #expect(try await w.transport.dropGet(objectID: id, version: 2, part: .descriptor, session: w.phoneSession).status == 404)
+            #expect(try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=2", [.text(id.hex)]).first?.blob("body") == body)
+        } else {
+            let refreshed = try #require(await restarted.list(.sending).first)
+            #expect(refreshed.descriptor.version == 1)
+            let fresh = try await restarted.send(Data("fresh".utf8), name: "doc", document: refreshed)
+            #expect(fresh.descriptor.object == id && fresh.descriptor.version == 2)
+            #expect(try Data(contentsOf: await restarted.download(fresh)) == Data("fresh".utf8))
+            #expect(try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=2", [.text(id.hex)]).first?.blob("body") != body)
+        }
+    }
+
     @Test func discardAdmissionBlocksSnapshotRecoveryAndRetry() async throws {
         let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
         let db = try await phone.container.database(), id = ID16.fresh(0x66)
@@ -465,6 +501,7 @@ extension DropServiceTests {
         await gate.release(point)
         await gate.waitArrived("upload.requested:\(id.hex)")
         let retry = Task { try await service.retryUpload(object: id, version: 1) }
+        await gate.waitArrived("upload.coalesced:\(id.hex)")
         await gate.release("discard.upload.admitted")
         try await discard.value
         let results = try await recovery.value
@@ -483,6 +520,56 @@ extension DropServiceTests {
         try staging.add(.text("abandoned content")); try staging.commit(note: nil)
         let inbox = ShareInbox(area: area)
         return (inbox, try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first))
+    }
+
+    @Test func g1DiscardedImportRefusesRetryAndSnapshotRecovery() async throws {
+        let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
+        let phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let (inbox, job) = try stagedDrop(w), db = try await phone.container.database()
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        await #expect(throws: TransportError.disconnected) { try await service.importShareJob(job, inbox: inbox) }
+        let id = try #require(await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).first?.text("object").flatMap(ID16.init(hex:)))
+        let gate = HookGate(), point = "resume.row:\(id.hex)"
+        await gate.hold(point)
+        await service.setHook { await gate.hit($0) }
+        let recovery = Task { try await service.resumeUploads() }
+        await gate.waitArrived(point)
+        try await service.discardUpload(object: id, version: 1)
+        await #expect(throws: DropError.abandoned) { try await service.importShareJob(job, inbox: inbox) }
+        await gate.release(point)
+        let results = try await recovery.value
+        #expect(results.count == 1)
+        #expect(throws: DropError.abandoned) { try results[0].result.get() }
+        #expect(try await db.query("SELECT object FROM drop_uploads").isEmpty)
+        #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .descriptor, session: w.phoneSession).status == 404)
+    }
+
+    @Test(arguments: [false, true])
+    func g1DiscardedImportStaysAbandonedAfterRestart(withoutUploadRow: Bool) async throws {
+        let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
+        let phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let (inbox, job) = try stagedDrop(w), db = try await phone.container.database()
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        await #expect(throws: TransportError.disconnected) { try await service.importShareJob(job, inbox: inbox) }
+        let id = try #require(await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).first?.text("object").flatMap(ID16.init(hex:)))
+        if withoutUploadRow {
+            // The item mapping can be durable even when sealing has not persisted an upload.
+            try await db.execute("DELETE FROM drop_uploads WHERE object=?", [.text(id.hex)])
+        }
+        try await service.discardUpload(object: id, version: 1)
+        let restartedPhone = try await w.makePhone(), restarted = try await w.dropService(restartedPhone)
+        let restartedInbox = ShareInbox(area: ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot))
+        let reclaimed = try #require(restartedInbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)], includeClaimed: true).claimed.first)
+        #expect(reclaimed.manifest.jobID == job.manifest.jobID)
+        await #expect(throws: DropError.abandoned) { try await restarted.importShareJob(reclaimed, inbox: restartedInbox) }
+        #expect(try await restarted.resumeUploads().isEmpty)
+        // Recovery must also reject a newly sealed body for the same persisted item identity.
+        try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(id.hex), .blob(try await w.dropBody(id: id))])
+        let results = try await restarted.resumeUploads()
+        #expect(results.count == 1)
+        #expect(throws: DropError.abandoned) { try results[0].result.get() }
+        #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .descriptor, session: w.phoneSession).status == 404)
+        #expect(FileManager.default.fileExists(atPath: reclaimed.dir.path))
     }
 
     @Test func shareDiscardAdmissionBlocksImport() async throws {
