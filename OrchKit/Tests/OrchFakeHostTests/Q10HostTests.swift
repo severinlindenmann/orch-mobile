@@ -128,15 +128,40 @@ import OrchProtocol
         #expect(await w.relay.requestsReceived - sent <= 1)                 // at most the host's own inbox read; no publication
     }
 
-    /// `bad_epoch` from the relay's 2^16 step cap never burns; when the host's next epoch is that far above the relay's, it alarms.
+    /// `bad_epoch` from the relay's 2^16 step cap burns the epoch like any refusal; when the host's next epoch is that far above the
+    /// relay's, it alarms and stops instead of running away.
     @Test func anEpochGapOfTwoToTheSixteenAlarmsInsteadOfBurning() async throws {
         let w = try await World.make()
         await w.host.setRelayEpochFloorForTests(1 + MemberList.maxEpochStep)
         await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) {
             try await w.host.rotate(remaining: w.baseRoster, relay: w.relay, session: w.hostSession)
         }
-        #expect(await w.host.relayEpochFloor == 1 + MemberList.maxEpochStep)   // not raised: nothing burned
+        #expect(await w.host.relayEpochFloor == 2 + MemberList.maxEpochStep)   // the refused epoch is burned
         #expect(await w.host.publicationAlarm == .epochGap)
+    }
+
+    /// Security regression (#48 delta): a relay answers `bad_epoch` to a rotation whose roster still names device Y, so it saw Y's
+    /// grant of that epoch's WK. Y is then removed. The retry must not reuse that epoch or key: it goes to a new epoch under a new
+    /// WK, so Y's key cannot open anything sealed after its removal.
+    @Test func aBadEpochRefusalBurnsTheEpochSoARemovedDeviceCannotReadTheRetry() async throws {
+        let w = try await World.make()
+        let y = try await newDevice(w)
+        try await w.host.publishMembership(roster: w.baseRoster + [(y, ["look"])], epoch: 1, wraps: [], relay: w.relay, session: w.hostSession)
+        // the hostile relay claims a higher epoch for one attempt, so it answers bad_epoch after seeing the body (and Y's grant)
+        let ws = w.ws
+        await w.relay.seed { r in r.workspaces[ws]!.epoch = 5 }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) {
+            try await w.host.rotate(remaining: w.baseRoster + [(y, ["look"])], relay: w.relay, session: w.hostSession)
+        }
+        let seenByY = await w.host.wkFor(2).withUnsafeBytes { Data($0) }       // sealed to Y in the refused body
+        await w.relay.seed { r in r.workspaces[ws]!.epoch = 1 }
+        #expect(await w.host.relayEpochFloor == 2)
+        // Y leaves; the retry publishes without it
+        _ = try await rotationRetry(w) { try await w.host.rotate(remaining: w.baseRoster, relay: w.relay, session: w.hostSession) }
+        #expect(await w.host.epoch == 3)
+        #expect(await w.relay.memberListEpoch(workspace: w.ws) == 3)
+        #expect(await w.host.wkFor(3).withUnsafeBytes { Data($0) } != seenByY)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: y.deviceID, epoch: 3) == false)
     }
 }
 

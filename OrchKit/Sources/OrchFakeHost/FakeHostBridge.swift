@@ -54,7 +54,8 @@ extension FakeHost {
     /// I1: No data is sealed while the gate is up, except the revocation reply (empty refusals are allowed).
     /// I2: Clear the gate only after one publication (list and every grant, atomically) committed and installEpoch ran for one consistent roster.
     /// I3: Bytes that may have left the host are resent identically, never resealed; a publication the relay refused burns its epoch
-    ///     (Q10, one WK per epoch, ever): the key is retained but never activated or resealed, and the next rotation goes to floor + 1.
+    ///     (Q10, one WK per epoch, ever; `bad_epoch` included): the key is retained but never activated or resealed, and the next
+    ///     rotation goes to floor + 1.
     /// I4: The final roster excludes every queued removal and every relay/host revocation.
     /// I5: One task serializes requests; same-roster requests on the same relay join using current credentials.
     /// I6: Failures retain the gate and pending work; pump retries it.

@@ -148,7 +148,7 @@ extension FakeHost {
         throw failure
     }
 
-    /// After `bad_epoch` (never a burn): read the relay's signed list. A newer list than any this host used sets the floors (as in
+    /// After `bad_epoch` (burned like any refusal, not counted): read the relay's signed list. A newer list than any this host used sets the floors (as in
     /// reconciliation); if the next epoch would still be `2^16` or more above the relay's, no publication can ever pass: alarm.
     private func checkEpochGap(relay: FakeRelay, session: RelaySession) async {
         guard let raw = try? await relayMemberList(relay: relay, session: session), let other = try? MemberList.verify(raw, wsk: wskPublic) else { return }
@@ -210,17 +210,18 @@ extension FakeHost {
     /// one is burned, never resealed. Its key stays as a retained, never-activated key (it answers a section 8.5 `stale_epoch` to a
     /// phone that sealed under it), the next publication's `list_seq` and epoch go above this one's (`listSeq` floor `p.listSeq`, epoch
     /// floor `p.epoch`, so a rotation goes to `floor + 1`), and nothing sealed to the refused roster is ever activated. Two limits keep
-    /// a deterministic refusal from burning epochs forever: `bad_epoch` (the relay's step cap) never burns (the epoch was never
-    /// usable; its retained key is reused, never resealed), and after `maxConsecutiveBurns` refusals the host raises
-    /// `publicationAlarm` and stops. A refused body at the CURRENT epoch that carried grants of the current `WK` to a device that is
+    /// a deterministic refusal from burning epochs forever: every definite refusal burns, `bad_epoch` included (the relay saw
+    /// the grants: a later roster at that epoch would reuse a key a removed device holds), but `bad_epoch` is not counted toward
+    /// `maxConsecutiveBurns` (its runaway is stopped by the 2^16 gap check instead); after `maxConsecutiveBurns` counted refusals
+    /// the host raises `publicationAlarm` and stops. A refused body at the CURRENT epoch that carried grants of the current `WK` to a device that is
     /// not a committed member (whatever the code) raises the gate: the next pump rotates, so that key is never used again.
     private func discardRefused(_ p: PendingPublication, code: RelayRefusal.Code?) {
         pendingPublication = nil
         listSeq = max(listSeq, p.listSeq)
-        if p.epoch > epoch, code != .badEpoch {
+        if p.epoch > epoch {
             if let k = wks[p.epoch] { core.keys[p.epoch] = k }
             relayEpochFloor = max(relayEpochFloor, p.epoch)
-            consecutiveBurns += 1
+            if code != .badEpoch { consecutiveBurns += 1 }
             if consecutiveBurns >= Self.maxConsecutiveBurns { publicationAlarm = .burnLimit }
         } else if p.epoch == epoch, p.roster.contains(where: { roster[$0.0.deviceID] == nil }) {
             rotationRequired = true
