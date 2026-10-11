@@ -31,8 +31,7 @@ public struct ReplayStore: Sendable {
 
     /// Stable across state purges. Legacy state/<realm>/<ws>/replay.lock is no longer used.
     func lockURL(workspace: ID16) -> URL {
-        pushDir.appendingPathComponent("locks", isDirectory: true).appendingPathComponent(realm, isDirectory: true)
-            .appendingPathComponent("\(workspace.hex).lock")
+        CoordinationFiles.replayLockURL(pushDir: pushDir, realm: realm, workspace: workspace.hex)
     }
 
     func fileURL(workspace: ID16, generation: Int64) -> URL {

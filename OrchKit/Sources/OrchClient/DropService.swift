@@ -170,6 +170,7 @@ public actor DropService {
     }
 
     public func list(_ direction: Direction = .received) async throws -> [DropObject] {
+        try await purgeExpiredDownloads()
         let members = try await membership(), s = try await auth()
         let query: JSONValue = ["host_api": 0, "workspace_id": .string(card.workspace.hex), "direction": .string(direction.rawValue)]
         let o = try parse(await session.cfg.transport.dropList(canonicalJSON(query), session: s), fields: ["objects"])
@@ -186,7 +187,8 @@ public actor DropService {
     }
 
     /// Imports only this generation's claimed destination. The SQLite item mapping survives crashes;
-    /// plaintext is deleted only after every item's durable upload has been confirmed by read-back.
+    /// plaintext is deleted after every non-abandoned item is confirmed by read-back and job completion is durable.
+    /// Completed jobs retry cleanup only and return no new objects; deletion failures are reported to the caller.
     public func importShareJob(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
         guard job.manifest.realm == session.cfg.context.realm.rawValue, job.manifest.ws == card.workspace.hex,
               job.manifest.generation == session.generation else { throw DropError.unauthorized }
@@ -207,17 +209,29 @@ public actor DropService {
         guard job.manifest.realm.utf8.elementsEqual(session.cfg.context.realm.rawValue.utf8),
               job.manifest.ws.utf8.elementsEqual(card.workspace.hex.utf8), job.manifest.generation == session.generation else { throw DropError.unauthorized }
         let db = try await session.cfg.container.database()
+        if try await !db.query("SELECT job FROM drop_completed_jobs WHERE job=?", [.text(job.manifest.jobID)]).isEmpty {
+            try await inbox.cleanupCompleted(job, afterRemovingItem: hook)
+            return []
+        }
         var result: [DropObject] = []
         for (i, item) in job.manifest.items.enumerated() {
             let fresh = session.cfg.entropy.id16()
             try await db.execute("INSERT OR IGNORE INTO drop_imports(job,item,object) VALUES(?,?,?)", [.text(job.manifest.jobID), .int(Int64(i)), .text(fresh.hex)])
             guard let id = try await db.query("SELECT object FROM drop_imports WHERE job=? AND item=?", [.text(job.manifest.jobID), .int(Int64(i))]).first?.text("object").flatMap(ID16.init(hex:)) else { throw DropError.malformed }
+            if try await !db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.importAbandonmentKey(id))]).isEmpty { continue }
+            do {
             let data = try inbox.contents(of: item, in: job)
             result.append(try await sendData(data, name: item.name, mime: item.kind == .url ? "text/uri-list" : (item.kind == .text ? "text/plain" : "application/octet-stream"),
                 transcript: job.manifest.note, expiresMs: nil, document: nil, chosenObject: id))
+            } catch DropError.abandoned {
+                guard try await !db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.importAbandonmentKey(id))]).isEmpty else { throw DropError.abandoned }
+            }
         }
         try await check()
-        inbox.complete(job)
+        try await db.transaction { tx in
+            try tx.execute("INSERT OR IGNORE INTO drop_completed_jobs(job) VALUES(?)", [.text(job.manifest.jobID)])
+        }
+        try await inbox.cleanupCompleted(job, afterRemovingItem: hook)
         return result
     }
 
@@ -438,7 +452,14 @@ public actor DropService {
         try await downloadVerified(object).url
     }
 
+    /// Call on app foreground; no network access is needed to remove expired local plaintext.
+    public func purgeExpiredDownloads() async throws {
+        try await check()
+        try await session.cfg.container.purgeExpiredDownloads(nowMs: session.cfg.wall.nowMs)
+    }
+
     public func downloadVerified(_ object: DropObject) async throws -> DropDownload {
+        try await purgeExpiredDownloads()
         let members = try await membership()
         let current = try await verified(object.signed, wraps: object.wraps.map(\.json), members: members)
         let d = current.descriptor
@@ -467,7 +488,10 @@ public actor DropService {
         let plaintext = try DropBlob.decrypt(dek: dek, object: d.object, version: d.version, blob: blob.body, maxBytes: 26 << 20)
         guard metadata.size == plaintext.count, plaintext.count <= Self.maxPlaintextBytes else { throw DropError.integrity }
         try await check()
-        return DropDownload(url: try await session.cfg.container.writeDrop(plaintext, object: d.object.hex, version: d.version), metadata: metadata)
+        try await hook?("download.publish")
+        let wall = session.cfg.wall
+        return DropDownload(url: try await session.cfg.container.writeDrop(plaintext, object: d.object.hex, version: d.version,
+            expiresMs: d.expiresMs, now: { wall.nowMs }), metadata: metadata)
     }
     private func openKey(_ wraps: [DropWrapRecord], descriptor d: DropDescriptor) async throws -> SymmetricKey? {
         for w in wraps {

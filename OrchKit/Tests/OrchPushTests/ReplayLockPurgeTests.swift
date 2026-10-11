@@ -1,4 +1,5 @@
 import Foundation
+import OrchCoordination
 import OrchProtocol
 import OrchPushFixtures
 import OrchStore
@@ -46,7 +47,10 @@ struct ReplayLockPurgeTests {
         var before = stat()
         #expect(stat(store.lockURL(workspace: ws).path, &before) == 0)
         if cleanupPass {
-            try await LocalWipe(index: index).cleanupPass(ws: ws.hex)
+            await #expect(throws: CoordinationFiles.FileError.io("replay lock busy")) {
+                try await LocalWipe(index: index).cleanupPass(ws: ws.hex)
+            }
+            #expect(FileManager.default.fileExists(atPath: store.stateDir(workspace: ws).path))
         } else {
             // The debug push harness removes this same directory.
             try FileManager.default.removeItem(at: store.stateDir(workspace: ws))
@@ -66,6 +70,10 @@ struct ReplayLockPurgeTests {
         release.signal()
         await waitForSignal(finished)
         holderFinished = true
+        if cleanupPass {
+            try await LocalWipe(index: index).cleanupPass(ws: ws.hex)
+            #expect(!FileManager.default.fileExists(atPath: store.stateDir(workspace: ws).path))
+        }
         let next = PushProcessor.WorkspaceReplay().recordingForTest("after-purge", nowMs)
         try second.transact(workspace: ws, generation: 2, nowMs: nowMs, lockTimeout: 0) { _ in ((), next) }
         #expect(try second.load(workspace: ws, generation: 2) == next)

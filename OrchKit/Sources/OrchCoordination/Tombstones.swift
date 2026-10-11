@@ -178,6 +178,7 @@ public struct TombstoneCoordination: Sendable {
         let fd = openCoordinationLock(lockName, relativeTo: directory)
         guard fd >= 0 else { throw TombstoneError.lockFailed(errno) }
         defer { close(fd) }
+        try CoordinationFiles.requireSafeLock(fd)
         try TombstoneFS.regular(fd)
         let op = exclusive ? LOCK_EX : LOCK_SH
         if let deadline {

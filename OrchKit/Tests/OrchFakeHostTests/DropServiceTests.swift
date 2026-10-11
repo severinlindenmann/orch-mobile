@@ -522,6 +522,27 @@ extension DropServiceTests {
         return (inbox, try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first))
     }
 
+    @Test func abandonedItemDoesNotStrandRemainingImport() async throws {
+        let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
+        let phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let area = ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot)
+        let staging = try StagingSession(area: area, target: ShareTarget(realm: "demo", ws: w.ws.hex, name: "Laptop", hue: 0, generation: 1))
+        try staging.add(.text("skip")); try staging.add(.text("send")); try staging.commit(note: nil)
+        let inbox = ShareInbox(area: area)
+        let job = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
+        let db = try await phone.container.database()
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        await #expect(throws: TransportError.disconnected) { try await service.importShareJob(job, inbox: inbox) }
+        let id = try #require(await db.query("SELECT object FROM drop_imports WHERE item=0").first?.text("object").flatMap(ID16.init(hex:)))
+        try await service.discardUpload(object: id, version: 1)
+        let result = try await service.importShareJob(job, inbox: inbox)
+        #expect(result.count == 1)
+        #expect(try await db.query("SELECT object FROM drop_uploads WHERE done=1").count == 1)
+        #expect(try await db.query("SELECT object FROM drop_uploads WHERE object=?", [.text(id.hex)]).isEmpty)
+        #expect(throws: (any Error).self) { try inbox.contents(of: job.manifest.items[1], in: job) }
+        #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .descriptor, session: w.phoneSession).status == 404)
+    }
+
     @Test func g1DiscardedImportRefusesRetryAndSnapshotRecovery() async throws {
         let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
         let phone = try await w.makePhone(), service = try await w.dropService(phone)
@@ -535,7 +556,7 @@ extension DropServiceTests {
         let recovery = Task { try await service.resumeUploads() }
         await gate.waitArrived(point)
         try await service.discardUpload(object: id, version: 1)
-        await #expect(throws: DropError.abandoned) { try await service.importShareJob(job, inbox: inbox) }
+         #expect(try await service.importShareJob(job, inbox: inbox).isEmpty)
         await gate.release(point)
         let results = try await recovery.value
         #expect(results.count == 1)
@@ -561,7 +582,7 @@ extension DropServiceTests {
         let restartedInbox = ShareInbox(area: ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot))
         let reclaimed = try #require(restartedInbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)], includeClaimed: true).claimed.first)
         #expect(reclaimed.manifest.jobID == job.manifest.jobID)
-        await #expect(throws: DropError.abandoned) { try await restarted.importShareJob(reclaimed, inbox: restartedInbox) }
+        #expect(try await restarted.importShareJob(reclaimed, inbox: restartedInbox).isEmpty)
         #expect(try await restarted.resumeUploads().isEmpty)
         // Recovery must also reject a newly sealed body for the same persisted item identity.
         try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(id.hex), .blob(try await w.dropBody(id: id))])
@@ -569,7 +590,7 @@ extension DropServiceTests {
         #expect(results.count == 1)
         #expect(throws: DropError.abandoned) { try results[0].result.get() }
         #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .descriptor, session: w.phoneSession).status == 404)
-        #expect(FileManager.default.fileExists(atPath: reclaimed.dir.path))
+        #expect(!FileManager.default.fileExists(atPath: reclaimed.dir.path))
     }
 
     @Test func shareDiscardAdmissionBlocksImport() async throws {
@@ -620,5 +641,57 @@ extension DropServiceTests {
         try await restarted.discardShareJob(job, inbox: inbox)
         #expect(!FileManager.default.fileExists(atPath: job.dir.path))
         #expect(try await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)]).isEmpty)
+    }
+}
+
+extension DropServiceTests {
+    @Test(arguments: [false, true])
+    func completedShareJobRetriesOnlyCleanupAfterRestart(deletionFailure: Bool) async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let area = ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot)
+        let staging = try StagingSession(area: area, target: ShareTarget(realm: "demo", ws: w.ws.hex, name: "Laptop", hue: 0, generation: 1))
+        try staging.add(.text("first")); try staging.add(.text("second")); try staging.commit(note: nil)
+        let inbox = ShareInbox(area: area)
+        let live: Set<LiveDestination> = [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]
+        let job = try #require(inbox.claim(live: live).claimed.first)
+        let gate = HookGate(), point = "import.cleanup.removed:\(job.manifest.items[0].file)"
+        await gate.hold(point)
+        await service.setHook { name in
+            await gate.hit(name)
+            if name == point && !deletionFailure { throw PairingCrash() }
+        }
+        // A real remover failure after both items: no dependence on permissions or timing.
+        let obstruction = job.dir.appendingPathComponent("zz-deep")
+        if deletionFailure {
+            let deep = (0..<65).reduce(obstruction) { url, _ in url.appendingPathComponent("d") }
+            try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        }
+        let importing = Task { try await service.importShareJob(job, inbox: inbox) }
+        await gate.waitArrived(point)
+        let db = try await phone.container.database()
+        #expect(try await db.query("SELECT job FROM drop_completed_jobs WHERE job=?", [.text(job.manifest.jobID)]).count == 1)
+        #expect(try await db.query("SELECT object FROM drop_uploads WHERE done=1").count == 2)
+        #expect(!FileManager.default.fileExists(atPath: job.dir.appendingPathComponent(job.manifest.items[0].file).path))
+        #expect(FileManager.default.fileExists(atPath: job.dir.appendingPathComponent(job.manifest.items[1].file).path))
+        let bodies = try await db.query("SELECT body FROM drop_uploads ORDER BY object").compactMap { $0.blob("body") }
+        await gate.release(point)
+        await #expect(throws: (any Error).self) { try await importing.value }
+        await phone.container.suspend()
+        let restartedPhone = try await w.makePhone(), restarted = try await w.dropService(restartedPhone)
+        let restartedInbox = ShareInbox(area: area)
+        let reclaimed = try #require(restartedInbox.claim(live: live, includeClaimed: true).claimed.first)
+        if deletionFailure {
+            await #expect(throws: (any Error).self) { try await restarted.importShareJob(reclaimed, inbox: restartedInbox) }
+            try FileManager.default.removeItem(at: obstruction)
+        }
+        #expect(try await restarted.importShareJob(reclaimed, inbox: restartedInbox).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: job.dir.path))
+        #expect(restartedInbox.claim(live: live).claimed.isEmpty)
+        // A stale handle is also cleanup-only, even after its directory has disappeared.
+        #expect(try await restarted.importShareJob(job, inbox: restartedInbox).isEmpty)
+        let reopenedDB = try await restartedPhone.container.database()
+        #expect(try await reopenedDB.query("SELECT body FROM drop_uploads ORDER BY object").compactMap { $0.blob("body") } == bodies)
+        #expect(try await reopenedDB.query("SELECT object FROM drop_uploads WHERE done=1").count == 2)
+        #expect(try await restarted.list(.sending).count == 2)
     }
 }

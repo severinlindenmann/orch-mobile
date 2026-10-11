@@ -27,7 +27,20 @@ func openCoordinationLock(_ path: String, relativeTo directory: Int32 = AT_FDCWD
 /// crash-safe atomic writes and flock helpers. Decision A11: this module (with the tombstone coordination files) is what
 /// an extension links to honour removal; `OrchNotify` and the share extension must not need OrchStore for that.
 public enum CoordinationFiles {
-    public enum FileError: Error, Equatable, Sendable { case io(String) }
+    public enum FileError: Error, Equatable, Sendable { case io(String), unsafeLock }
+
+    /// Shared by single-file and tombstone locks so unsafe entries have a distinct diagnostic.
+    static func requireSafeLock(_ fd: Int32) throws {
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { throw FileError.io("lock stat \(errno)") }
+        guard (st.st_mode & S_IFMT) == S_IFREG, st.st_nlink == 1 else { throw FileError.unsafeLock }
+    }
+
+    /// Stable replay lock shared by the push writer and workspace wipe.
+    public static func replayLockURL(pushDir: URL, realm: String, workspace: String) -> URL {
+        pushDir.appendingPathComponent("locks", isDirectory: true).appendingPathComponent(realm, isDirectory: true)
+            .appendingPathComponent("\(workspace).lock")
+    }
 
     /// Temp file in the same directory, optional fsync, rename over the target, directory fsync.
     /// `durable: false` skips both fsyncs (best-effort writes on a deadline, such as the expiry marker).
@@ -78,10 +91,7 @@ public enum CoordinationFiles {
         let fd = openCoordinationLock(url.lastPathComponent, relativeTo: directory)
         guard fd >= 0 else { throw FileError.io("lock open \(errno)") }
         defer { close(fd) }
-        var st = stat()
-        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_nlink == 1 else {
-            throw FileError.io("lock must be a single-link regular file")
-        }
+        try requireSafeLock(fd)
         let base = exclusive ? LOCK_EX : LOCK_SH
         if let timeout, blocking {
             let deadline = Date().addingTimeInterval(timeout)
