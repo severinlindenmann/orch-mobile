@@ -30,7 +30,8 @@ final class ShareBridge {
 
     let inbox: ShareInbox
     private let world: any ShareWorld
-    /// Demo workspaces are never offered to the extension unless a DEBUG UI test asks for it.
+    /// Demo workspaces are offered (the extension labels the realm) only while Demo is the active realm; claims are realm-checked, so a
+    /// Demo-realm job is never imported by a live app. Pass false to withhold them.
     private let publishDemo: Bool
     /// Published destinations by preview workspace id (also the live set used to claim).
     private var published: [String: ShareTarget] = [:]
@@ -45,7 +46,7 @@ final class ShareBridge {
     func waitForRefresh() async { await task?.value }
     private(set) var lastPurge: (removed: Int, failed: Int) = (0, 0)
 
-    init(area: ShareArea, world: any ShareWorld, publishDemo: Bool = false) {
+    init(area: ShareArea, world: any ShareWorld, publishDemo: Bool = true) {
         inbox = ShareInbox(area: area)
         self.world = world
         self.publishDemo = publishDemo
@@ -56,7 +57,7 @@ final class ShareBridge {
     }
 
     /// nil when the App Group container is unavailable (unit tests, unsigned builds): sharing is simply off.
-    static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = false) -> ShareBridge? {
+    static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = true) -> ShareBridge? {
         guard let root = root ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return nil }
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }
@@ -112,11 +113,17 @@ final class ShareBridge {
             }
         }
         // Include the persisted index so a process restart cannot lose an unpublished removal.
-        let previous = Array(published.values) + ((try? ShareTargetIndex.load(from: area)) ?? [])
+        let persisted = (try? ShareTargetIndex.load(from: area)) ?? []
+        let previous = Array(published.values) + persisted
         do {
-            for old in Set(previous) where !world.workspaces.contains(where: {
-                (world.shareIdentity(of: $0.id)?.ws ?? Self.wsHex($0.id)) == old.ws && old.realm == realm
-            }) {
+            for old in Set(previous) {
+                if old.realm == realm {
+                    guard !world.workspaces.contains(where: { (world.shareIdentity(of: $0.id)?.ws ?? Self.wsHex($0.id)) == old.ws }) else { continue }
+                } else {
+                    // The OTHER realm's entries: a live app retires stale Demo targets (Demo storage is wiped each boot), but Demo
+                    // must never tombstone live targets (that would burn their generation and kill the destination for good).
+                    guard !world.isDemo, old.realm == "demo" else { continue }
+                }
                 try inbox.recordRemoval(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation))
             }
             try inbox.replayRemovals()
@@ -124,7 +131,9 @@ final class ShareBridge {
         tracked = nextTracked
         published = next
         listed = Set(next.keys)
-        try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] }, to: area)
+        // While Demo is active the persisted LIVE destinations stay visible (the extension labels Demo ones); imports are realm-checked.
+        let kept = world.isDemo ? persisted.filter { $0.realm == "live" } : []
+        try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] } + kept, to: area)
         lastPurge = inbox.purgeTombstoned()
     }
 

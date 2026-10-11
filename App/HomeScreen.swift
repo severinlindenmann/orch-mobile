@@ -19,7 +19,7 @@ struct HomeScreen: View {
         let initial = parsed ?? InitialRouteParser.parse(options.initialRoute, services: services)
         self.services = services
         self.options = options
-        _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0, publishDemo: options.shareDemoTargets) })
+        _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0) })
         _path = State(initialValue: initial.path)
         _forceWelcome = State(initialValue: initial.forceWelcome)
         _pairing = State(initialValue: initial.presentPairing
