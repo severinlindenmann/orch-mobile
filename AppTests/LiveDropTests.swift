@@ -7,12 +7,31 @@ import OrchCoordination
 
 @MainActor
 final class LiveDropTests: XCTestCase {
+    private struct Deadline: Error {}
+    private final class PublicationGate {
+        var entered = false
+        var released = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        func hit() async {
+            entered = true
+            guard !released else { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func release() { released = true; let pending = waiters; waiters = []; pending.forEach { $0.resume() } }
+    }
+    private func bounded(_ complete: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while !complete() && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        guard complete() else { throw Deadline() }
+    }
+
     private func fixture() async throws -> (LiveServices, LiveDrop) {
         let services = LiveServices(options: .parse(arguments: ["--ui-testing", "--demo", "--demo-seed"], debug: true))
         await services.boot()
         let drop = try XCTUnwrap(services.live.first { $0.info.scopes.contains(.operate) }?.drop)
         let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while drop.loading && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        guard !drop.loading else { throw Deadline() }
         await drop.refresh()
         XCTAssertFalse(drop.rows.isEmpty)
         return (services, drop)
@@ -70,20 +89,21 @@ final class LiveDropTests: XCTestCase {
     func testLatePublicationCannotSurviveLeaveOrReset() async throws {
         for reset in [false, true] {
             let (services, drop) = try await fixture()
-            var entered = false
-            var resume: CheckedContinuation<Void, Never>?
-            drop.beforePublication = {
-                entered = true
-                await withCheckedContinuation { resume = $0 }
+            let gate = PublicationGate()
+            drop.beforePublication = { await gate.hit() }
+            var finished = false
+            let read = Task { await drop.refresh(); finished = true }
+            do {
+                try await bounded { gate.entered }
+                if reset { services.resetThisiPhone(); await services.waitForReset() }
+                else { _ = await services.leave(workspaceID: drop.workspace!.info.id, simulateOffline: false) }
+                gate.release()
+                try await bounded { finished }
+            } catch {
+                gate.release(); read.cancel(); drop.beforePublication = nil
+                throw error
             }
-            let read = Task { await drop.refresh() }
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
-            while !entered && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-            XCTAssertTrue(entered)
-            if reset { services.resetThisiPhone(); await services.waitForReset() }
-            else { _ = await services.leave(workspaceID: drop.workspace!.info.id, simulateOffline: false) }
-            resume?.resume()
-            await read.value
+            drop.beforePublication = nil
             XCTAssertTrue(drop.rows.isEmpty)
             XCTAssertTrue(drop.downloads.isEmpty)
             XCTAssertNil(drop.previewURL)

@@ -210,6 +210,10 @@ struct DropComposeSheet: View {
     let preset: String?
     let onSent: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var photoTask: Task<Void, Never>?
+    @State private var importRevision = 0
+    @State private var visible = false
     @State private var destination: String?
     @State private var attachments: [DropAttachment] = []
     @State private var note = ""
@@ -223,7 +227,8 @@ struct DropComposeSheet: View {
     }
 
     private var total: Int { attachments.reduce(0) { $0 + $1.bytes } }
-    private var canSend: Bool { model.workspaces.contains { $0.id == destination && model.canSend(to: $0.id) } && (!attachments.isEmpty || !note.isEmpty) }
+    private var destinationAvailable: Bool { model.workspaces.contains { $0.id == destination && model.canSend(to: $0.id) } }
+    private var canSend: Bool { destinationAvailable && (!attachments.isEmpty || !note.isEmpty) }
 
     var body: some View {
         NavigationStack {
@@ -293,7 +298,7 @@ struct DropComposeSheet: View {
                 }
             }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                guard case .success(let urls) = result else { return }
+                guard visible, scenePhase == .active, destinationAvailable, case .success(let urls) = result else { return }
                 for url in urls {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -306,18 +311,32 @@ struct DropComposeSheet: View {
                 }
             }
             .onChange(of: photos) { _, items in
-                let picked = items
+                guard !items.isEmpty else { return }
+                photoTask?.cancel(); importRevision += 1
+                let mine = importRevision
                 photos = []
-                Task {
-                    for (i, item) in picked.enumerated() {
-                        // Real size from the picked data; nothing is invented.
-                        guard let data = try? await item.loadTransferable(type: Data.self) else { error = "Could not read this photo."; continue }
+                photoTask = Task { @MainActor in
+                    for (i, item) in items.enumerated() {
+                        guard !Task.isCancelled, visible, scenePhase == .active, destinationAvailable, mine == importRevision else { return }
+                        let data = try? await item.loadTransferable(type: Data.self)
+                        guard !Task.isCancelled, visible, scenePhase == .active, destinationAvailable, mine == importRevision else { return }
+                        guard let data else { error = "Could not read this photo."; continue }
                         add(DropAttachment(id: UUID(), name: "Photo \(attachments.count + i + 1)", bytes: data.count, data: data))
                     }
+                    if mine == importRevision { photoTask = nil }
                 }
             }
         }
         .tint(OC.brand)
+        .onAppear { visible = true }
+        .onDisappear { visible = false; cancelImports() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { cancelImports() } }
+        .onChange(of: destinationAvailable) { _, available in if !available { cancelImports() } }
+    }
+
+    private func cancelImports() {
+        importRevision += 1; photoTask?.cancel(); photoTask = nil
+        photos = []; attachments = []; note = ""; importing = false
     }
 
     private func add(_ a: DropAttachment) {
