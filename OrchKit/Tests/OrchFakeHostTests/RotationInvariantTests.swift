@@ -111,8 +111,9 @@ import OrchProtocol
         #expect(list.members.map(\.deviceID) == [w.phoneID])
     }
 
-    /// The publication is refused at the relay (a member revoked while it was delayed there), then the phone is removed too: the
-    /// same epoch is published again under a fresh key for the remaining roster, and no removed device holds its grant.
+    /// The publication is refused at the relay (a member revoked while it was delayed there), then the phone is removed too: Q10
+    /// burns the refused epoch, the next one is published under a fresh key for the remaining roster, and no removed device holds
+    /// its grant.
     @Test(arguments: ["host", "relay"])
     func refusedPublicationThenRemoval(revokeAt: String) async throws {
         let faults = ScriptedFaults()
@@ -132,7 +133,7 @@ import OrchProtocol
         else { try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID)) }
         _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         let final = await w.host.epoch
-        #expect(final == 2)
+        #expect(final == 3)                                   // Q10: the refused epoch 2 is burned
         #expect(await w.host.wkFor(final).withUnsafeBytes { Data($0) } != refusedKey)
         #expect(await w.host.coreState().members.isEmpty)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: final) == false)

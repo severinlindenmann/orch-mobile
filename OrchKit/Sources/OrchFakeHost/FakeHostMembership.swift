@@ -14,12 +14,15 @@ public enum MembershipPublicationError: Error, Equatable, Sendable {
 
 extension FakeHost {
     struct PendingPublication: Sendable {
-        /// `cj(body)`: the exact HTTP body, resent byte for byte.
-        let raw: Data
+        /// `cj(body)`: the exact HTTP body, resent byte for byte (replaced only after a refusal proved it was not committed).
+        var raw: Data
         let memberList: JSONValue
         let listSeq: Int64
         let epoch: UInt32
         let roster: [(DemoKeys, [String])]
+        /// The devices the body wraps `CK` to, and the card sequence of those wraps (nil: no wraps).
+        var wraps: [DemoKeys] = []
+        var wrapSeq: UInt32?
         /// Set (durably, in a real host) immediately before the first send. Until then the bytes never left the host.
         var sent = false
     }
@@ -63,7 +66,8 @@ extension FakeHost {
     func preparePublication(roster: [(DemoKeys, [String])], epoch e: UInt32, wraps: [DemoKeys]) throws -> PendingPublication {
         let body = try membershipBody(roster: roster, epoch: e, listSeq: listSeq + 1, wraps: wraps)
         guard let list = body.object?["member_list"] else { throw Refusal.malformed }
-        let p = PendingPublication(raw: try canonicalJSON(body), memberList: list, listSeq: listSeq + 1, epoch: e, roster: roster)
+        let p = PendingPublication(raw: try canonicalJSON(body), memberList: list, listSeq: listSeq + 1, epoch: e, roster: roster,
+                                   wraps: wraps, wrapSeq: wraps.isEmpty ? nil : max(cardSeq, 1))
         pendingPublication = p
         return p
     }
@@ -119,8 +123,35 @@ extension FakeHost {
         guard case .relay(let r) = failure else { throw failure }
         if Self.undecided.contains(r.code) { throw failure }
         if r.code == .staleList { return try await reconcile(p, relay: relay, session: session) }
-        discardRefused(p)
+        // Q10: only the wraps were wrong. The same signed list and grants go again with fixed wraps; no epoch is burned.
+        if r.code == .staleCard || r.code == .wrapConflict, let fixed = try rewrapped(p, code: r.code) {
+            pendingPublication = fixed
+            return try await sendPending(relay: relay, session: session)
+        }
+        discardRefused(p, code: r.code)
         throw failure
+    }
+
+    /// The refused publication with the same `member_list` and grants and fixed card-key wraps: re-wrapped at this host's card
+    /// sequence after `stale_card` when that moved on, otherwise without wraps (the relay keeps the wraps it holds; `wrap_conflict`
+    /// says it holds other bytes for one of them). Nil when there is nothing to fix.
+    private func rewrapped(_ p: PendingPublication, code: RelayRefusal.Code) throws -> PendingPublication? {
+        guard let old = p.wrapSeq, var body = try StrictJSON.parse(p.raw, maxBytes: .max).object else { return nil }
+        var q = p
+        q.sent = false
+        let seq = max(cardSeq, 1)
+        if code == .staleCard, seq != old {
+            let items: [JSONValue] = try p.wraps.sorted { $0.deviceID.hex < $1.deviceID.hex }.map {
+                ["device_id": .string($0.deviceID.hex), "sealed": .string(try persistedWrap(for: $0, cardSeq: seq))]
+            }
+            body["card_key_wraps"] = ["card_seq": .int(Int64(seq)), "wraps": .array(items)]
+            q.wrapSeq = seq
+        } else {
+            body["card_key_wraps"] = nil
+            q.wraps = []; q.wrapSeq = nil
+        }
+        q.raw = try canonicalJSON(.object(body))
+        return q
     }
 
     /// Section 19.7: after a lost response the relay may hold exactly this list (its receipt expired): compare the signed lists.
@@ -129,9 +160,9 @@ extension FakeHost {
     private func reconcile(_ p: PendingPublication, relay: FakeRelay, session: RelaySession) async throws -> PendingPublication {
         let current = try await relayMemberList(relay: relay, session: session)
         if current == p.memberList { installCommitted(p); return p }
-        discardRefused(p)
-        // Only a list above this host's committed list_seq can be newer: a relay replaying one of this host's own earlier (refused,
-        // still WSK-signed) lists must not push the next epoch up, or an honest relay would refuse the skip (bad_epoch) forever.
+        discardRefused(p, code: nil)
+        // Only a list above every list_seq this host used can be newer: a relay replaying one of this host's own earlier refused (still
+        // WSK-signed) lists cannot push the floors up, because `discardRefused` already raised them past it (Q10).
         if let other = try? MemberList.verify(current, wsk: wskPublic), other.listSeq > listSeq {
             listSeq = other.listSeq
             relayEpochFloor = max(relayEpochFloor, other.epoch)
@@ -149,14 +180,21 @@ extension FakeHost {
         setRoster(p.roster.filter { !rotationRemoved.contains($0.0.deviceID) && !core.revoked.contains($0.0.deviceID) })
     }
 
-    /// The relay saw these bytes and refused them. A key it saw sealed to the roster of a refused rotation is never activated: a device
-    /// removed meanwhile could obtain the uncommitted grant from the relay. The next publication seals a fresh `WK` under that epoch.
-    private func discardRefused(_ p: PendingPublication) {
+    /// The relay saw these bytes and refused them (or holds another list). Q10, one `WK` per epoch, ever: an epoch above the current
+    /// one is burned, never resealed. Its key stays as a retained, never-activated key (it answers a section 8.5 `stale_epoch` to a
+    /// phone that sealed under it), the next publication's `list_seq` and epoch go above this one's (`listSeq` floor `p.listSeq`, epoch
+    /// floor `p.epoch`, so a rotation goes to `floor + 1`), and nothing sealed to the refused roster is ever activated. A refusal of
+    /// an addition at the current epoch because a member's certificate is revoked or invalid means grants of the current `WK` went out
+    /// to it: the gate goes up and the next pump rotates.
+    private func discardRefused(_ p: PendingPublication, code: RelayRefusal.Code?) {
         pendingPublication = nil
-        guard p.epoch > epoch else { return }
-        wks[p.epoch] = nil
-        core.keys[p.epoch] = nil
-        sealedGrants = sealedGrants.filter { $0.key.epoch != p.epoch }
+        listSeq = max(listSeq, p.listSeq)
+        if p.epoch > epoch {
+            if let k = wks[p.epoch] { core.keys[p.epoch] = k }
+            relayEpochFloor = max(relayEpochFloor, p.epoch)
+        } else if p.epoch == epoch, let code, [.revoked, .certInvalid, .certExpired].contains(code) {
+            rotationRequired = true
+        }
     }
 
     /// An earlier publication that may have left the host is settled first: resent byte for byte (committed or refused). One that
