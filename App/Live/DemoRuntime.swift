@@ -97,7 +97,8 @@ final class DemoRuntime {
         #endif
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: try layout(temporary: false), custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
-        await SystemDemoNotifications().purge(workspace: nil)
+        // Detached: a wedged notification daemon must never delay Home (an unanswered purge is recorded as owed and retried).
+        Task.detached { await SystemDemoNotifications().purge(workspace: nil) }
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
     }
 
@@ -116,7 +117,8 @@ final class DemoRuntime {
         let layout = try layout(temporary: temporaryStorage)
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
-        await SystemDemoNotifications().purge(workspace: nil)
+        // Detached: a wedged notification daemon must never delay Home (an unanswered purge is recorded as owed and retried).
+        Task.detached { await SystemDemoNotifications().purge(workspace: nil) }
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
         let faults = ScriptedFaults()
         let env = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: faults)

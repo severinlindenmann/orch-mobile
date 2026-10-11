@@ -84,6 +84,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     func boot() async {
         guard !ready else { return }
+        Task.detached { await SystemDemoNotifications().retryOwedPurges() }
         let defaults = UserDefaults.standard
         // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("orch.ticket.draft.") { defaults.removeObject(forKey: key) }
