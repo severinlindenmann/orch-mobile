@@ -66,6 +66,7 @@ extension PairHarness {
         return try await drive(until: { $0.isTerminal || $0 == .failed(.joiningTimedOut) })
     }
 
+    /// The workspace's vault items. The realm's attempt memory (`pairing.attempts`, G3b) is not workspace-scoped and outlives a pairing by design.
     var vaultItems: [SecretID] { ((try? vault.ids()) ?? []).filter { $0.realm == .demo && $0.ws == host.workspace.hex } }
 }
 
@@ -130,7 +131,7 @@ extension PairHarness {
             switch plan.outcome {
             case .ready: #expect(isReady(final), "\(name): \(final)")
             case .rejected: #expect(final == .rejected, "\(name): \(final)")
-            case .denied: #expect(final == .denied, "\(name): \(final)")
+            case .denied: #expect(final == .denied(owner: h.primary.personID), "\(name): \(final)")
             case .expired(let e): #expect(final == .expired(e), "\(name): \(final)")
             case .alarm(let k): #expect({ if case .alarm(let a) = final { return a.kind == k }; return false }(), "\(name): \(final)")
             case .failed(let f): #expect(final == .failed(f), "\(name): \(final)")
@@ -221,7 +222,7 @@ extension PairHarness {
             let p = try #require(await h.primary.openPrompts().first)
             try await h.primary.reject(request: p.requestID, relay: h.relay)
             // the primary's PK-signed rejection reaches the phone through the host and verifies: denied, not a host rejection
-            #expect(try await h.drive(until: { $0.isTerminal }) == .denied)
+            #expect(try await h.drive(until: { $0.isTerminal }) == .denied(owner: h.primary.personID))
             #expect(await h.nothingFor(h.phoneID))
             #expect(await h.primary.ledgerSnapshot().signed.isEmpty)
             await #expect(throws: PrimaryError.self) { _ = try await h.primary.approve(request: p.requestID, confirmedComparison: true, relay: h.relay) }
@@ -420,7 +421,8 @@ extension PairHarness {
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: f.pending(nonce: f.nonceA) } },
             Case(name: "challenge substitution", kind: .pinSubstitution) { f, n, op in
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: try await f.certPending(challenge: f.challenge(nonce: f.nonceB)) } },
-            Case(name: "challenge request id substitution", kind: .pinSubstitution) { f, n, op in
+            // G3b step 6: a challenge of another request after one was accepted is dropped (not_for_this_pairing), no alarm
+            Case(name: "challenge request id substitution", kind: nil) { f, n, op in
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: try await f.certPending(challenge: f.challenge(nonce: f.nonceA, request: .random())) } },
             Case(name: "challenge expiry changed", kind: .pinSubstitution) { f, n, op in
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: try await f.certPending(challenge: f.challenge(nonce: f.nonceA, expiresDelta: 1000)) } },
@@ -443,6 +445,10 @@ extension PairHarness {
                 h.clock.advance(milliseconds: 1000)
                 final = await h.coordinator.state
                 if final.isTerminal { break }
+            }
+            if c.kind == nil {
+                guard case .comparingPrimary = final else { Issue.record("\(c.name): \(final)"); continue }
+                continue
             }
             guard case .alarm(let a) = final else { Issue.record("\(c.name): \(final)"); continue }
             #expect(a.kind == c.kind, "\(c.name): \(a.kind)")
@@ -633,10 +639,9 @@ extension PairHarness {
         _ = try await g.startToHostCode()
         try await g.hostApproves()
         _ = try await g.drive(until: isComparingPrimary)
-        let before = g.env.device.publicKeys
+        // an uncertified phone drew fresh keys for this attempt (G3b): they are this pairing's, and nothing else uses them
         await g.coordinator.cancel()
-        #expect(await g.coordinator.state == .cancelled && g.vaultItems.isEmpty && g.custody.status(realm: .demo) == .present)
-        #expect(g.env.device.publicKeys == before)
+        #expect(await g.coordinator.state == .cancelled && g.vaultItems.isEmpty && g.custody.status(realm: .demo) == .missing)
         // cancel cannot un-use the offer or retract: the host keeps its record; the primary can still be asked to reject
         #expect(await g.host.pairingState(of: g.phoneID) == "cert_pending")
         // no code survives anywhere in the coordinator

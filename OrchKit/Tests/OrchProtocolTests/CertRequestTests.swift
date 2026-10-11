@@ -99,21 +99,26 @@ import Testing
         // the phone's check
         let phoneSig = s2["keys"]["phone.sig"]["pub"].sigPub, phoneKx = s2["keys"]["phone.kx"]["pub"].kxPub
         let ws = s2["ids"]["workspace_a"].id, dev = s2["ids"]["device_phone"].id
-        let ok = try CertChallenge.check(cr["challenge"], pk: pk.publicKey, workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx, nowMs: 1_790_000_000_000)
+        let chO = cr["challenge"]["o"]
+        func ctx(workspace: ID16, device: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey) -> PairingAttemptContext {
+            PairingAttemptContext(workspace: workspace, offer: chO["offer_id"].id, device: device, dkSig: dkSig, dkKx: dkKx, attempt: chO["attempt"].str,
+                                  earlierAttempts: [], acceptedRequestID: nil)
+        }
+        let ok = try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 1_790_000_000_000)
         #expect(ok.certCode == cr["cert_code"].str)
         // the R1 attack: a challenge that names another key raises the alarm
         let attack = CertChallengeDrop.notMyKey
-        #expect(throws: attack) { try CertChallenge.check(cr["attack_challenge"], pk: pk.publicKey, workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx, nowMs: 1_790_000_000_000) }
+        #expect(throws: attack) { try CertChallenge.check(cr["attack_challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 1_790_000_000_000) }
         #expect(attack.raisesAlarm && !CertChallengeDrop.challengeExpired.raisesAlarm)
-        #expect(throws: CertChallengeDrop.challengeExpired) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx, nowMs: 1_790_000_600_000) }
-        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(cr["challenge"], pk: SoftwareSigner().publicKey, workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx, nowMs: 0) }
-        #expect(throws: CertChallengeDrop.notForThisWorkspace) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, workspace: .random(), device: dev, dkSig: phoneSig, dkKx: phoneKx, nowMs: 0) }
-        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, workspace: ws, device: .random(), dkSig: phoneSig, dkKx: phoneKx, nowMs: 0) }
-        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, workspace: ws, device: dev, dkSig: s2["keys"]["laptop.sig"]["pub"].sigPub, dkKx: phoneKx, nowMs: 0) }
+        #expect(throws: CertChallengeDrop.challengeExpired) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 1_790_000_600_000) }
+        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(cr["challenge"], pk: SoftwareSigner().publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
+        #expect(throws: CertChallengeDrop.notForThisWorkspace) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: .random(), device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
+        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: .random(), dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
+        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: s2["keys"]["laptop.sig"]["pub"].sigPub, dkKx: phoneKx), nowMs: 0) }
         // a challenge signed under another kind's label, or with an extra field, is not a challenge
         var extra = cr["challenge"]["o"].object!; extra["x"] = 1
         let resigned = try SignedObject.sign(extra, kind: .certChallenge, signer: pk)
-        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(resigned.json, pk: pk.publicKey, workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx, nowMs: 0) }
+        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(resigned.json, pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
         // the certificate: exactly the keys of the stored challenge, once
         let want = cr["signed_cert"]["ok"]["o"]
         let cert = try ledger.signCertificate(requestID: accepted.requestID, labelSealed: want["label_sealed"].b64Data, createdMs: want["created_ms"].i64,
@@ -153,13 +158,13 @@ import Testing
         let sealed = try Card.sealPart(.init(name: "n", description: "d", capabilities: [], hostedBy: nil), ck: ck, workspace: ws, cardSeq: 1)
         let card = try Card.verify(Card.make(delegation: deleg, workspace: ws, wxk: wxk.publicKey, wxkVersion: 1, owner: person, relayURL: "https://r.example", cardSeq: 1, issuedMs: 1, sealed: sealed, ck: ck, wsk: wsk), ownerKey: owner.publicKey)
         let dkSig = SoftwareSigner(), dkKx = SoftwareKeyAgreer()
-        let inner = CertRequestInner(deviceID: Identifiers.deviceID(dkSig.publicKey), dkSig: dkSig.publicKey, dkKx: dkKx.publicKey, label: "iPhone", scopesMax: ["look", "decide"], offerID: .random())
+        let inner = CertRequestInner(deviceID: Identifiers.deviceID(dkSig.publicKey), dkSig: dkSig.publicKey, dkKx: dkKx.publicKey, label: "iPhone", scopesMax: ["look", "decide"], offerID: .random(), attempt: String(repeating: "b", count: 32))
         let req = try CertRequest.make(wsk: wsk, requestID: .random(), workspace: ws, person: person, primary: me, primaryKey: primaryKx.publicKey, inner: inner, createdMs: 1_000)
         var ledger = PrimaryLedger()
         let a = try CertRequest.openAsPrimary(req.json, card: card, myPerson: person, me: me, myKey: primaryKx, ledger: &ledger, nowMs: 2_000)
         #expect(a.inner == inner && !a.clientHostedWarning)
         // the host cannot make the primary open a request for a key that does not derive the device id
-        let bad = CertRequestInner(deviceID: .random(), dkSig: dkSig.publicKey, dkKx: dkKx.publicKey, label: "x", scopesMax: ["look"], offerID: .random())
+        let bad = CertRequestInner(deviceID: .random(), dkSig: dkSig.publicKey, dkKx: dkKx.publicKey, label: "x", scopesMax: ["look"], offerID: .random(), attempt: String(repeating: "b", count: 32))
         let badReq = try CertRequest.make(wsk: wsk, requestID: .random(), workspace: ws, person: person, primary: me, primaryKey: primaryKx.publicKey, inner: bad, createdMs: 1_000)
         var l2 = PrimaryLedger()
         #expect(throws: Refusal.malformed) { try CertRequest.openAsPrimary(badReq.json, card: card, myPerson: person, me: me, myKey: primaryKx, ledger: &l2, nowMs: 2_000) }

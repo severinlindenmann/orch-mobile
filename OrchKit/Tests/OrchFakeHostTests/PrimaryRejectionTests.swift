@@ -22,60 +22,79 @@ import OrchProtocol
         return h
     }
 
+    /// A rejection of this pairing's attempt (by default the real one) signed by `signer`, with any binding field replaced.
+    static func rejection(_ h: PairHarness, requestID: ID16? = nil, workspace: ID16? = nil, person: ID16? = nil, signer: SoftwareSigner? = nil,
+                          offer: ID16? = nil, attempt: String? = nil, device: ID16? = nil, dkHash: Data? = nil, expiresMs: Int64? = nil) async throws -> JSONValue {
+        let b = try #require(await h.host.pairingBinding(of: h.phoneID))
+        let known = await h.host.pairingRequestID(of: h.phoneID)
+        let rid = requestID ?? known ?? .random()
+        let stored = await h.relay.certRecord(rid)?.expiresMs
+        let exp = expiresMs ?? stored ?? h.clock.nowMs + CertRequest.lifetimeMs
+        return try CertRejection.sign(requestID: rid, workspace: workspace ?? h.host.workspace, person: person ?? h.primary.personID,
+                                      offer: offer ?? b.offer, attempt: attempt ?? b.attempt, device: device ?? h.phoneID, dkHash: dkHash ?? b.dkHash,
+                                      expiresMs: exp, primary: signer ?? h.primary.pkSigner).json
+    }
+
     @Test func aVerifiedPrimaryRejectionEndsAsDenied() async throws {
         let h = try await Self.toComparingPrimary()
         let p = try #require(await h.primary.openPrompts().first)
         try await h.primary.reject(request: p.requestID, relay: h.relay)
         #expect(await h.relay.certRequestState(p.requestID) == "rejected")
-        #expect(try await h.drive(until: { $0.isTerminal }) == .denied)
+        #expect(try await h.drive(until: { $0.isTerminal }) == .denied(owner: h.primary.personID))
         #expect(await h.host.pairingState(of: h.phoneID) == "rejected")
         #expect(await h.nothingFor(h.phoneID))
     }
 
-    @Test func aRejectionNotSignedByThePinnedPKIsNeverBelieved() async throws {
-        // a compromised host claims "the primary said no" with a rejection signed by a key of its own, once under the real pk_pub
-        // (signature fails) and once with its own pk_pub (pin fails): the phone drops the answer and keeps waiting, then expires
+    @Test func aRejectionNotSignedByThePinnedPKIsNeverAttributed() async throws {
+        // a compromised host claims "the owner said no" with a rejection signed by a key of its own, once under the real pk_pub
+        // (rejection_signature) and once with its own pk_pub (pk_pin): an unattributed refusal, never "Denied by the owner", no alarm
         for ownPK in [false, true] {
             let h = try await Self.toComparingPrimary()
-            let rid = try #require(await h.host.pairingRequestID(of: h.phoneID))
             let attacker = SoftwareSigner()
-            let person = ownPK ? Identifiers.personID(attacker.publicKey) : h.primary.personID
-            let forged = try CertRejection.sign(requestID: rid, workspace: h.host.workspace, person: person, primary: attacker)
-            await h.host.forceRelayedRejection(device: h.phoneID, rejection: forged.json)
-            let s = try await h.drive(steps: 30, until: { $0.isTerminal })
-            #expect(!s.isTerminal, "ownPK \(ownPK): \(s)")
-            #expect(try await h.drive(steps: 1200, until: { $0.isTerminal }) == .expired(.certification), "ownPK \(ownPK)")
+            let forged = try await Self.rejection(h, person: ownPK ? Identifiers.personID(attacker.publicKey) : nil, signer: attacker)
+            await h.host.forceRelayedRejection(device: h.phoneID, rejection: forged)
+            #expect(try await h.drive(until: { $0.isTerminal }) == .rejected, "ownPK \(ownPK)")
         }
     }
 
-    @Test func aRejectionOfAnotherWorkspaceIsDropped() async throws {
+    @Test func aRejectionOfAnotherWorkspaceIsUnattributed() async throws {
         let h = try await Self.toComparingPrimary()
-        let rid = try #require(await h.host.pairingRequestID(of: h.phoneID))
-        let other = try CertRejection.sign(requestID: rid, workspace: .random(), person: h.primary.personID, primary: h.primary.pkSigner)
-        await h.host.forceRelayedRejection(device: h.phoneID, rejection: other.json)
-        #expect(!(try await h.drive(steps: 30, until: { $0.isTerminal })).isTerminal)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: try await Self.rejection(h, workspace: .random()))
+        #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
     }
 
-    @Test func aGenuineRejectionOfAnotherRequestRaisesTheAlarm() async throws {
-        // PK-signed, this workspace, but not the request whose challenge the phone showed: a replayed old rejection
+    @Test func aRejectionOfAnotherRequestAfterTheChallengeIsUnattributed() async throws {
+        // PK-signed, this attempt, but not the request whose challenge the phone accepted (step 6): unattributed, no alarm
         let h = try await Self.toComparingPrimary()
-        let stale = try CertRejection.sign(requestID: .random(), workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
-        await h.host.forceRelayedRejection(device: h.phoneID, rejection: stale.json)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: try await Self.rejection(h, requestID: .random()))
+        #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
+    }
+
+    @Test func aRejectionOfAnotherAttemptOrOfferIsUnattributed() async throws {
+        for c in 0..<2 {
+            let h = try await Self.toComparingPrimary()
+            let r = c == 0 ? try await Self.rejection(h, attempt: String(repeating: "f", count: 32)) : try await Self.rejection(h, offer: .random())
+            await h.host.forceRelayedRejection(device: h.phoneID, rejection: r)
+            #expect(try await h.drive(until: { $0.isTerminal }) == .rejected, "case \(c)")
+        }
+    }
+
+    @Test func aRejectionForAForeignDeviceRaisesTheAlarm() async throws {
+        let h = try await Self.toComparingPrimary()
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: try await Self.rejection(h, device: .random()))
         let s = try await h.drive(until: { $0.isTerminal })
         guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
-        #expect(a.kind == .pinSubstitution)
+        #expect(a.kind == .foreignRejection)
     }
 
-    @Test func aRejectionWithoutAPinnedChallengeIsNotAttributedToThePrimary() async throws {
-        // audit fix: before any challenge reached the phone a genuine PK-signed rejection cannot be bound to this attempt (it may
-        // be a replay of an older request of the workspace), so the phone ends on the host's "rejected", never "denied"
+    @Test func aRejectionOfThisAttemptBeforeAnyChallengeIsDeniedByTheOwner() async throws {
+        // G3b: the attempt nonce and fresh keys bind the rejection to this attempt even before a challenge was seen (open -> rejected)
         let h = try await PairHarness.make(.primaryOffline)
         _ = try await h.startToHostCode()
         try await h.hostApproves()
         _ = try await h.drive(until: { if case .waitingPrimary = $0 { return true }; return false })
-        let old = try CertRejection.sign(requestID: .random(), workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
-        await h.host.forceRelayedRejection(device: h.phoneID, rejection: old.json)
-        #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: try await Self.rejection(h))
+        #expect(try await h.drive(until: { $0.isTerminal }) == .denied(owner: h.primary.personID))
     }
 
     @Test func theHostsOwnRejectionStaysARejection() async throws {
@@ -108,16 +127,16 @@ import OrchProtocol
             try await client.submitCertChallenge(try CertChallenge.sign(other, primary: SoftwareSigner()).json, requestID: p.requestID, session: session)
         }
         // the rejection, then its re-signed twin (lost reply), both 200; the state does not move again
-        let rej = try CertRejection.sign(requestID: p.requestID, workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
-        try await client.submitCertRejection(rej.json, requestID: p.requestID, session: session)
-        let again = try CertRejection.sign(requestID: p.requestID, workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
-        try await client.submitCertRejection(again.json, requestID: p.requestID, session: session)
-        #expect(await h.relay.certRecord(p.requestID)?.rejection == rej.json)
+        let rej = try await Self.rejection(h, requestID: p.requestID)
+        try await client.submitCertRejection(rej, requestID: p.requestID, session: session)
+        let again = try await Self.rejection(h, requestID: p.requestID)
+        try await client.submitCertRejection(again, requestID: p.requestID, session: session)
+        #expect(await h.relay.certRecord(p.requestID)?.rejection == rej)
         #expect(await h.relay.certRequestState(p.requestID) == "rejected")
         // no rejection without the primary's device session
         let hostSession = try await h.host.openSession(transport: h.env.transport)
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
-            try await client.submitCertRejection(rej.json, requestID: p.requestID, session: hostSession)
+            try await client.submitCertRejection(rej, requestID: p.requestID, session: hostSession)
         }
     }
 
@@ -288,10 +307,8 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
 @Suite(.timeLimit(.minutes(1))) struct PairingReviewFollowUpTests {
     @Test func aDeniedAnswerWithoutAPinnedSasNonceIsARegression() async throws {
         let h = try await PrimaryRejectionTests.toComparingPrimary()
-        let rid = try #require(await h.host.pairingRequestID(of: h.phoneID))
         await h.coordinator.clearSasNonceForTest()
-        let rej = try CertRejection.sign(requestID: rid, workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
-        await h.host.forceRelayedRejection(device: h.phoneID, rejection: rej.json)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: try await PrimaryRejectionTests.rejection(h))
         let s = try await h.drive(until: { $0.isTerminal })
         guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
         #expect(a.kind == .regression)
@@ -299,10 +316,8 @@ final class HangingLogoutTransport: RelayTransport, @unchecked Sendable {
 
     @Test func anUnparsablePinnedChallengeOnDeniedRaisesTheAlarm() async throws {
         let h = try await PrimaryRejectionTests.toComparingPrimary()
-        let rid = try #require(await h.host.pairingRequestID(of: h.phoneID))
         await h.coordinator.damagePinnedChallengeForTest(.string("damaged"))
-        let rej = try CertRejection.sign(requestID: rid, workspace: h.host.workspace, person: h.primary.personID, primary: h.primary.pkSigner)
-        await h.host.forceRelayedRejection(device: h.phoneID, rejection: rej.json)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: try await PrimaryRejectionTests.rejection(h))
         let s = try await h.drive(until: { $0.isTerminal })
         guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
         #expect(a.kind == .pinSubstitution)

@@ -57,6 +57,10 @@ extension FakeHost {
         transition(device, to: "rejected")
     }
     package func pairingRequestID(of device: ID16) -> ID16? { core.pendingPairs[device]?.requestID }
+    /// Tests: the attempt binding of a device's pairing (offer, attempt nonce, dk_hash of its keys).
+    package func pairingBinding(of device: ID16) -> (offer: ID16, attempt: String, dkHash: Data)? {
+        core.pendingPairs[device].map { ($0.offer, $0.attempt, Identifiers.dkHash(sig: $0.dkSig, kx: $0.dkKx)) }
+    }
 
     // MARK: offers
 
@@ -153,7 +157,8 @@ extension FakeHost {
         // R1 (adversarial scenario): the compromised host asks for a certificate for a key of its own.
         let attacker = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         let k = r1Attack ? attacker : DemoKeys(sig: p.dkSig, kx: p.dkKx)
-        let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: p.label, scopesMax: p.scopesMax ?? p.scopes ?? ["look", "decide"], offerID: p.offer)
+        let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: p.label, scopesMax: p.scopesMax ?? p.scopes ?? ["look", "decide"], offerID: p.offer,
+                                     attempt: p.attempt)
         let req = try CertRequest.make(wsk: wsk, requestID: requestID, workspace: workspace, person: primary.personID, primary: primary.deviceID,
                                        primaryKey: primary.deviceKeys.kx, inner: inner, createdMs: now)
         let session = try await currentSession(transport: transport)
@@ -218,6 +223,10 @@ extension FakeHost {
         }
         core.approvedEpochOverride = hostile.approvedEpoch
         core.pendingPairs[device]?.state = "approved"
+        // the join anchor: the list that adds this device. A held list (a Demo scenario) is not accepted yet, so the phone stays
+        // below the anchor and retries until it is published.
+        core.pendingPairs[device]?.listSeq = heldList != nil ? listSeq + 1 : listSeq
+        core.pendingPairs[device]?.cardSeq = Int64(max(cardSeq, 1))
         core.pendingPairs[device]?.scopes = scopes
         lastPairingError = nil
     }
@@ -280,6 +289,8 @@ extension FakeHost {
                 // A rejection that does not verify is ignored and the request is checked as if it had none (challenge, certificate):
                 // an unauthenticated relay field must never stall a pairing.
                 if let r = try? CertRejection.verify(rej, pk: primary.publicKey), r.requestID == rid, r.workspace == workspace,
+                   r.offer == p.offer, r.attempt.utf8.elementsEqual(p.attempt.utf8), r.device == device,
+                   r.dkHash == Identifiers.dkHash(sig: p.dkSig, kx: p.dkKx),
                    r.person == primary.personID {
                     core.pendingPairs[device]?.rejection = rej
                     transition(device, to: "rejected")
