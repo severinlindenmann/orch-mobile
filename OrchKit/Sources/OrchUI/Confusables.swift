@@ -2,19 +2,24 @@ import Foundation
 
 /// Look-alike detection for host text on signing surfaces, after Unicode TS #39 (security mechanisms).
 ///
-/// **Partial by design.** No ICU or confusables.txt is bundled: `prototype` is a compact hand-picked subset of
-/// confusables.txt covering the scripts that imitate Latin best (Cyrillic, Greek, Armenian, Cherokee, Lisu, a few
-/// Latin-extended letters) plus look-alike punctuation; NFKD covers full-width, mathematical and other
-/// compatibility forms. Two consequences are deliberate and fail closed:
-/// - option sets whose skeletons collide are refused, even where the full table would not collide;
-/// - any letter outside Latin in a word that also has Latin letters is marked, whether or not it is in the table.
+/// **Partial.** No ICU or confusables.txt is bundled: `prototype` is a compact hand-picked subset of confusables.txt
+/// (Cyrillic, Greek, Armenian, Cherokee, Lisu, Coptic, Hebrew, a few Latin-extended and CJK letters, look-alike punctuation);
+/// NFKD covers full-width, mathematical and other compatibility forms. The table misses most of confusables.txt, so it is
+/// never the only line of defence:
+/// - option labels (what the user taps and signs) fail closed on an allowlist instead (`SafeText.optionRefusal`):
+///   plain ASCII only, or all labels in one non-Latin, left-to-right script none of whose words imitates Latin;
+/// - option sets whose skeletons collide are refused as well;
+/// - question prose is informational and must stay readable, so it is marked, not refused: the heuristics in `flags`
+///   can miss look-alikes the table does not know (they are best effort, not fail closed).
 enum Confusables {
     enum Script: Hashable {
-        case latin, greek, cyrillic, armenian, cherokee, lisu, cjk, other
+        case latin, smallCapital, greek, coptic, cyrillic, armenian, cherokee, lisu, cjk, other
 
         var name: String {
             switch self {
             case .latin: "Latin"
+            case .smallCapital: "small capital"
+            case .coptic: "Coptic"
             case .greek: "Greek"
             case .cyrillic: "Cyrillic"
             case .armenian: "Armenian"
@@ -34,10 +39,12 @@ enum Confusables {
         }
         let v = s.value
         switch v {
-        case 0x41...0x5A, 0x61...0x7A, 0xAA, 0xBA, 0xC0...0x24F, 0x250...0x2AF, 0x1D00...0x1DBF, 0x1E00...0x1EFF,
+        case 0x250...0x2AF, 0x1D00...0x1D2B: return .smallCapital   // IPA and small capitals: Latin, but imitate it
+        case 0x41...0x5A, 0x61...0x7A, 0xAA, 0xBA, 0xC0...0x24F, 0x1D2C...0x1DBF, 0x1E00...0x1EFF,
              0x2C60...0x2C7F, 0xA720...0xA7FF, 0xAB30...0xAB6F, 0xFB00...0xFB06, 0xFF21...0xFF3A, 0xFF41...0xFF5A:
             return .latin
         case 0x2B0...0x2FF: return nil                     // spacing modifier letters: handled as punctuation/compat
+        case 0x2C80...0x2CFF: return .coptic
         case 0x370...0x3FF, 0x1F00...0x1FFF: return .greek
         case 0x400...0x52F, 0x1C80...0x1C8F, 0x2DE0...0x2DFF, 0xA640...0xA69F: return .cyrillic
         case 0x530...0x58F, 0xFB13...0xFB17: return .armenian
@@ -58,10 +65,10 @@ enum Confusables {
         }
         // Cyrillic
         add("АВЕКМНОРСТХЅІЈԚԜҮӀԌЗЬ", "ABEKMHOPCTXSIJQWYlG3b")
-        add("аеорсухѕіјһԁԛԝӏүҽ", "aeopcyxsijhdqwlye")
+        add("аеорсухѕіјһԁԛԝӏүҽк", "aeopcyxsijhdqwlyek")
         // Greek
         add("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧϹͿϒ", "ABEZHIKMNOPTYXCJY")
-        add("οανιρυγϲϳ", "oavipuycj")
+        add("οανιρυγϲϳκ", "oavipuycjk")
         // Armenian
         add("ՕՍՏԼ", "OUSL")
         add("օսցհոզ", "oughnq")
@@ -75,6 +82,16 @@ enum Confusables {
         // Punctuation and symbols
         add("\u{201A}\u{037E}\u{0387}\u{0589}\u{05C3}\u{2236}\u{A789}\u{02F8}\u{2024}\u{2044}\u{2215}\u{2216}\u{2223}\u{05C0}\u{2212}\u{2010}\u{2011}\u{2012}\u{02D7}\u{02BC}\u{2032}\u{A78C}\u{02C8}\u{02B9}", ",;.:::::.//\\ll-----'''''")
         m[0x2033] = "\""
+        // Coptic
+        add("\u{2C80}\u{2C82}\u{2C8E}\u{2C92}\u{2C94}\u{2C98}\u{2C9A}\u{2C9E}\u{2CA2}\u{2CA4}\u{2CA6}\u{2CA8}\u{2CAC}",
+            "ABHIKMNOPCTYX")
+        add("\u{2C9F}\u{2CA3}\u{2CA5}", "opc")
+        // Hebrew, CJK
+        add("\u{05D5}\u{05DF}\u{05E1}", "llo")
+        add("\u{3163}\u{1175}\u{30CE}\u{30CB}\u{4E00}\u{30ED}\u{53E3}\u{30FC}", "ll/=-OO-")
+        // Dashes and quotes (skeleton only; prose keeps them unmarked)
+        for v: UInt32 in [0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0xFE58, 0xFE63, 0x2043] { m[v] = "-" }
+        m[0x2018] = "'"; m[0x2019] = "'"; m[0x201C] = "\""; m[0x201D] = "\""
         return m
     }()
 
@@ -118,49 +135,163 @@ enum Confusables {
         return nil
     }
 
-    /// Scalar offset → marker for every scalar a reader could take for something else.
+    /// Scripts that imitate Latin; a word in one of them next to Latin, or one that reads as Latin, is marked.
+    private static let imitating: Set<Script> = [.smallCapital, .greek, .coptic, .cyrillic, .armenian, .cherokee, .lisu]
+    /// Never used for prose a user of this app writes: always marked.
+    private static let alwaysMarked: Set<Script> = [.smallCapital, .coptic, .cherokee, .lisu]
+    /// CJK letters that look like Latin letters or punctuation (ㅣ ノ ニ 一 ロ 口 ー).
+    private static let cjkLookalikes: Set<UInt32> = [0x3163, 0x1175, 0x30CE, 0x30CB, 0x4E00, 0x30ED, 0x53E3, 0x30FC]
+
+    static func isRightToLeft(_ s: Unicode.Scalar) -> Bool {
+        switch s.value {
+        case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF: return true
+        default: return false
+        }
+    }
+
+    private struct Word {
+        let range: Range<Int>
+        let line: Int
+        var letters: [(Int, Script)] = []
+        var scripts: Set<Script> { Set(letters.map(\.1)) }
+        var isLatin: Bool { scripts.contains(.latin) }
+        var hasASCIIDigit = false
+        var hasRTL = false
+    }
+
+    /// At least half the letters have a Latin prototype ("Ассерт", "οκ", "ןן"): the word can be read as Latin.
+    private static func readsAsLatin(_ w: Word, _ scalars: [Unicode.Scalar]) -> Bool {
+        guard !w.letters.isEmpty else { return false }
+        let mapped = w.letters.filter { prototype[scalars[$0.0].value] != nil }.count
+        return mapped * 2 >= w.letters.count
+    }
+
+    /// Scalar offset → marker for every scalar a reader could take for something else (prose rules).
     static func flags(_ scalars: [Unicode.Scalar]) -> [Int: String] {
         var out: [Int: String] = [:]
+        var words: [Word] = []
+        var line = 0
         var i = 0
         while i < scalars.count {
-            guard isWordScalar(scalars[i]) else {
-                if let m = alwaysFlag(scalars[i]) { out[i] = m }
+            let s = scalars[i]
+            guard isWordScalar(s) else {
+                if let m = alwaysFlag(s) { out[i] = m }
+                if s.value == 0x0A || s.value == 0x0D || s.value == 0x2028 || s.value == 0x2029 { line += 1 }
                 i += 1
                 continue
             }
             var j = i
             while j < scalars.count, isWordScalar(scalars[j]) { j += 1 }
-            flagWord(scalars, i..<j, into: &out)
+            var w = Word(range: i..<j, line: line)
+            for k in i..<j {
+                if let m = alwaysFlag(scalars[k]) { out[k] = m; continue }
+                if (0x30...0x39).contains(scalars[k].value) { w.hasASCIIDigit = true }
+                if let sc = script(scalars[k]) {
+                    w.letters.append((k, sc))
+                    if isRightToLeft(scalars[k]) { w.hasRTL = true }
+                }
+            }
+            words.append(w)
             i = j
+        }
+        for (n, w) in words.enumerated() where !w.letters.isEmpty {
+            let lineWords = words.filter { $0.line == w.line }
+            let lineHasLatin = lineWords.contains(where: \.isLatin)
+            // Scripts with at least one single-script word that does not read as Latin: real prose in that script.
+            let native = Set(lineWords.compactMap { x -> Script? in
+                guard x.scripts.count == 1, let sc = x.scripts.first, sc != .latin, sc != .cjk, !readsAsLatin(x, scalars) else { return nil }
+                return sc
+            })
+            let neighbours = [n - 1, n + 1].filter { words.indices.contains($0) && words[$0].line == w.line }.map { words[$0] }
+            let nextToLatin = neighbours.contains(where: \.isLatin)
+            let scripts = w.scripts
+            let hasImitating = !scripts.isDisjoint(with: imitating)
+            func mark(_ k: Int, _ sc: Script) { if out[k] == nil { out[k] = markerLabel(sc.name, scalars[k]) } }
+            if scripts.count > 1 {
+                // Mixed word: Latin dominates if present, everything else is marked. A CJK letter is exempt only in a word with
+                // no Latin-imitating letters and only if it does not itself look like Latin; adding one never suppresses marking.
+                for (k, sc) in w.letters where sc != .latin {
+                    if sc == .cjk {
+                        let lookalike = cjkLookalikes.contains(scalars[k].value) && (scripts.contains(.latin) || nextToLatin)
+                        if !hasImitating && !lookalike { continue }
+                    }
+                    mark(k, sc)
+                }
+            } else if let sc = scripts.first {
+                switch sc {
+                case .latin:
+                    for (k, _) in w.letters where scalars[k].value > 0x7F && prototype[scalars[k].value] != nil {
+                        out[k] = markerLabel("look-alike", scalars[k])
+                    }
+                case .cjk:
+                    if nextToLatin { for (k, _) in w.letters where cjkLookalikes.contains(scalars[k].value) { mark(k, sc) } }
+                case _ where alwaysMarked.contains(sc):
+                    for (k, _) in w.letters { mark(k, sc) }
+                default:
+                    let reads = readsAsLatin(w, scalars)
+                    if (imitating.contains(sc) && nextToLatin) || (reads && (lineHasLatin || !native.contains(sc))) {
+                        for (k, _) in w.letters { mark(k, sc) }
+                    }
+                }
+            }
+            // Right-to-left letters next to Latin or digits reorder them ("ש 10 20" shows as "20 10 ש").
+            if w.hasRTL, lineHasLatin || lineWords.contains(where: \.hasASCIIDigit),
+               let first = w.letters.first(where: { isRightToLeft(scalars[$0.0]) }), out[first.0] == nil {
+                out[first.0] = markerLabel("right-to-left", scalars[first.0])
+            }
         }
         return out
     }
 
-    private static func flagWord(_ scalars: [Unicode.Scalar], _ range: Range<Int>, into out: inout [Int: String]) {
-        var letters: [(Int, Script)] = []
-        for k in range {
-            if let m = alwaysFlag(scalars[k]) { out[k] = m; continue }
-            if let sc = script(scalars[k]) { letters.append((k, sc)) }
+    // MARK: Option labels (fail closed)
+
+    /// The only scalars an option label may contain unless the set qualifies for `isSingleScriptSet`.
+    static func isPlainLabelScalar(_ s: Unicode.Scalar) -> Bool {
+        isASCIIAlnum(s) || " .,:;!?'\"()-/&+%#_".unicodeScalars.contains(s)
+    }
+
+    /// Strict marking for option labels: every scalar outside the allowlist gets a marker.
+    static func strictFlags(_ scalars: [Unicode.Scalar]) -> [Int: String] {
+        var out: [Int: String] = [:]
+        for (k, s) in scalars.enumerated() where !isPlainLabelScalar(s) {
+            if let sc = script(s) { out[k] = markerLabel(sc == .other ? "letter" : sc.name, s) }
+            else if s.properties.generalCategory == .decimalNumber { out[k] = markerLabel("digit", s) }
+            else { out[k] = markerLabel("character", s) }
         }
-        guard !letters.isEmpty else { return }
-        let scripts = Set(letters.map(\.1))
-        let nonCJK = scripts.subtracting([.cjk])
-        let mixed = nonCJK.count > 1 || (scripts.contains(.cjk) && !nonCJK.isEmpty && !nonCJK.contains(.latin))
-        if mixed {
-            // Mixed-script word ("аpprove", "orch-аpp" is two words but "аpp" alone is caught below): mark the intruders.
-            let dominant: Script = scripts.contains(.latin) ? .latin : letters[0].1
-            for (k, sc) in letters where sc != dominant && sc != .cjk {
-                out[k] = markerLabel(sc.name, scalars[k])
+        return out
+    }
+
+    /// Localisation exception: every label uses ASCII digits/space/punctuation plus letters (and combining marks) of exactly one
+    /// non-Latin, non-imitating-only, left-to-right script, and no word of any label reads as Latin through the table.
+    static func isSingleScriptSet(_ labels: [String]) -> Bool {
+        var only: Script?
+        for label in labels {
+            let scalars = Array(label.unicodeScalars)
+            var word: [Unicode.Scalar] = []
+            func wordReadsAsLatin() -> Bool {
+                let letters = word.filter { script($0) != nil }
+                return !letters.isEmpty && letters.allSatisfy { prototype[$0.value] != nil }
             }
-        } else if !scripts.contains(.latin), !scripts.contains(.cjk),
-                  letters.allSatisfy({ prototype[scalars[$0.0].value] != nil }) {
-            // Whole-word look-alike: every letter of a non-Latin word imitates Latin ("аррӏе").
-            for (k, sc) in letters { out[k] = markerLabel(sc.name, scalars[k]) }
-        } else {
-            for (k, sc) in letters where sc == .latin && scalars[k].value > 0x7F && prototype[scalars[k].value] != nil {
-                out[k] = markerLabel("look-alike", scalars[k])
+            for s in scalars + [" "] {
+                if isPlainLabelScalar(s) {
+                    if isASCIIAlnum(s), !(0x30...0x39).contains(s.value) { return false }   // ASCII letter: not single-script
+                    if wordReadsAsLatin() { return false }
+                    word = []
+                    continue
+                }
+                switch s.properties.generalCategory {
+                case .nonspacingMark, .spacingMark:
+                    guard !word.isEmpty else { return false }
+                    word.append(s)
+                default:
+                    guard let sc = script(s), sc != .latin, !alwaysMarked.contains(sc), !isRightToLeft(s) else { return false }
+                    if let only, only != sc { return false }
+                    only = sc
+                    word.append(s)
+                }
             }
         }
+        return only != nil
     }
 
     /// UTS #39 skeleton of plain text: NFKD, map each scalar to its prototype, fold the ASCII look-alikes

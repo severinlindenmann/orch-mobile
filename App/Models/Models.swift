@@ -180,10 +180,12 @@ struct ReviewValue: Hashable, Sendable {
     var isDemo = false
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
-    var optionsAmbiguous: Bool { SafeText.hasAmbiguousOptions(options.map(\.label)) }
+    /// Non-nil: the sheet refuses to sign (look-alike answers, or answers outside the plain-label allowlist).
+    var optionsRefusal: SafeText.OptionRefusal? { SafeText.optionRefusal(options.map(\.label)) }
+    var strictLabels: Bool { SafeText.strictOptionLabels(options.map(\.label)) }
     var hasUnsafeContent: Bool {
-        SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label) }
-            || SafeText.hasUnsafe(workspaceName) || hostedBy.map(SafeText.hasUnsafe) == true
+        SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label, strictLabel: strictLabels) }
+            || SafeText.hasUnsafe(workspaceName) || hostedBy.map { SafeText.hasUnsafe($0) } == true
     }
 }
 

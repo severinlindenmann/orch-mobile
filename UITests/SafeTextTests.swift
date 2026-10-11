@@ -55,12 +55,10 @@ final class SafeTextTests: XCTestCase {
         }
         let option = app.buttons["question.option.ok2"]
         XCTAssertTrue(option.label.contains("⟨U+200B⟩"), option.label)
-        option.tap()
-        XCTAssertTrue(app.el("sign.answer").waitForExistence(timeout: 5))
-        XCTAssertTrue(app.el("sign.answer").label.contains("⟨U+200B⟩"))
-        XCTAssertTrue(app.el("sign.unsafeNotice").exists)
-        app.el("sign.details").tap()
-        XCTAssertTrue(app.staticTexts["ok2"].waitForExistence(timeout: 3), "answer id under Signed details")
+        // An invisible character in an answer is outside the plain-label allowlist: marked, and never signable.
+        XCTAssertTrue(app.el("question.nonStandard").exists)
+        XCTAssertFalse(option.isEnabled)
+        XCTAssertFalse(app.buttons["question.option.ok"].isEnabled)
     }
 
     @MainActor

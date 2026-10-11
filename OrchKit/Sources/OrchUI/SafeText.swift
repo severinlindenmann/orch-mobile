@@ -52,13 +52,15 @@ public enum SafeText {
     }
 
     /// `lookalikes == false` leaves out the look-alike markers (only `skeleton` does, which maps look-alikes instead).
-    public static func pieces(_ input: String, lookalikes: Bool = true) -> [Piece] {
+    /// `strictLabel == true` (option labels, see `optionRefusal`) marks every scalar outside the plain-label allowlist.
+    public static func pieces(_ input: String, lookalikes: Bool = true, strictLabel: Bool = false) -> [Piece] {
         var result: [Piece] = []
         var buffer = String.UnicodeScalarView()
         func flush() {
             if !buffer.isEmpty { result.append(.text(String(buffer))); buffer = .init() }
         }
-        let flags = lookalikes ? Confusables.flags(Array(input.unicodeScalars)) : [:]
+        let scalars = Array(input.unicodeScalars)
+        let flags = !lookalikes ? [:] : strictLabel ? Confusables.strictFlags(scalars) : Confusables.flags(scalars)
         var index = 0
         var previous: Unicode.Scalar?
         for character in input {
@@ -96,11 +98,11 @@ public enum SafeText {
         !marker.hasPrefix("⟨U+") && !marker.hasSuffix(" marks⟩")
     }
 
-    public static func markers(in input: String) -> [String] {
-        pieces(input).compactMap { if case .marker(let m) = $0 { return m } else { return nil } }
+    public static func markers(in input: String, strictLabel: Bool = false) -> [String] {
+        pieces(input, strictLabel: strictLabel).compactMap { if case .marker(let m) = $0 { return m } else { return nil } }
     }
 
-    public static func hasUnsafe(_ input: String) -> Bool { !markers(in: input).isEmpty }
+    public static func hasUnsafe(_ input: String, strictLabel: Bool = false) -> Bool { !markers(in: input, strictLabel: strictLabel).isEmpty }
 
     /// Single-line variant for host-supplied metadata: markers become text, newlines spaces, length is capped.
     public static func inline(_ input: String, limit: Int = 80) -> String {
@@ -153,15 +155,46 @@ public enum SafeText {
         return Set(skeletons).count != skeletons.count || skeletons.contains { $0.isEmpty }
     }
 
+    public enum OptionRefusal: Equatable, Sendable {
+        /// Two answers read the same.
+        case ambiguous
+        /// An answer contains characters outside the plain-label allowlist.
+        case nonStandard
+
+        public var message: String {
+            switch self {
+            case .ambiguous: "Two answers look the same on this iPhone. Answer on your Mac."
+            case .nonStandard: "This question's answers contain non-standard characters, so orch won't sign them. Ask the agent to use plain text."
+            }
+        }
+    }
+
+    /// Option labels are what the user taps and signs, so they fail closed: plain ASCII letters, digits, space and
+    /// `.,:;!?'"()-/&+%#_` only, unless every label is in one non-Latin left-to-right script (`localisedOptions`).
+    public static func optionRefusal(_ labels: [String]) -> OptionRefusal? {
+        if hasAmbiguousOptions(labels) { return .ambiguous }
+        if strictOptionLabels(labels), labels.contains(where: { $0.unicodeScalars.contains { !Confusables.isPlainLabelScalar($0) } }) {
+            return .nonStandard
+        }
+        return nil
+    }
+
+    /// The localisation exception (conservative UTS #39 single-script check): all labels in exactly one non-Latin,
+    /// left-to-right script, nothing mixed in, and no word that reads as Latin ("ок", "Ναι" do not qualify).
+    public static func localisedOptions(_ labels: [String]) -> Bool { Confusables.isSingleScriptSet(labels) }
+
+    /// Whether the labels of this set are rendered with strict markers (everything but the localisation exception).
+    public static func strictOptionLabels(_ labels: [String]) -> Bool { !localisedOptions(labels) }
+
     public enum Style: Sendable { case signing, prose }
 
     @MainActor
-    public static func attributed(_ input: String, style: Style = .signing) -> AttributedString {
+    public static func attributed(_ input: String, style: Style = .signing, strictLabel: Bool = false) -> AttributedString {
         let font: Font = style == .signing ? OF.machine : OF.body
         var out = AttributedString()
         // FSI ... PDI keeps an unterminated bidi override from reordering the rest of the screen.
         out += AttributedString("\u{2068}")
-        for piece in pieces(input) {
+        for piece in pieces(input, strictLabel: strictLabel) {
             switch piece {
             case .text(let s):
                 var part = AttributedString(s)
@@ -180,8 +213,8 @@ public enum SafeText {
         return out
     }
 
-    public static func spoken(_ input: String) -> String {
-        pieces(input).map {
+    public static func spoken(_ input: String, strictLabel: Bool = false) -> String {
+        pieces(input, strictLabel: strictLabel).map {
             switch $0 {
             case .text(let s): return s
             case .marker(let m): return (isLookalikeMarker(m) ? " look-alike character " : " unsafe character ") + m + " "
@@ -194,14 +227,18 @@ public enum SafeText {
 public struct SafeTextView: View {
     private let text: String
     private let style: SafeText.Style
-    public init(_ text: String, style: SafeText.Style = .signing) { self.text = text; self.style = style }
+    private let strictLabel: Bool
+    /// `strictLabel`: an option label rendered under `SafeText.strictOptionLabels` (every non-plain scalar marked).
+    public init(_ text: String, style: SafeText.Style = .signing, strictLabel: Bool = false) {
+        self.text = text; self.style = style; self.strictLabel = strictLabel
+    }
 
     public var body: some View {
-        Text(SafeText.attributed(text, style: style))
+        Text(SafeText.attributed(text, style: style, strictLabel: strictLabel))
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .clipped()
             .textSelection(.disabled)
-            .accessibilityLabel(SafeText.spoken(text))
+            .accessibilityLabel(SafeText.spoken(text, strictLabel: strictLabel))
     }
 }

@@ -74,7 +74,7 @@ struct QuestionScreen: View {
                 icon: { Image(systemName: "checkmark.circle.fill") }
                 .font(OF.body).foregroundStyle(OC.ok)
             if let label = r.answerLabel(in: q.options) {
-                SafeTextView(label)
+                SafeTextView(label, strictLabel: SafeText.strictOptionLabels(q.options.map(\.label)))
             } else {
                 Text(verbatim: Resolution.unknownAnswer).font(OF.meta).foregroundStyle(OC.textMuted)
                     .accessibilityIdentifier("question.resolution.unknownAnswer")
@@ -87,13 +87,15 @@ struct QuestionScreen: View {
     @ViewBuilder
     private func answers(_ q: Question, _ info: WorkspaceInfo) -> some View {
         let pending = services.home.pendingDecisions.first { $0.questionID == q.id }
-        let ambiguous = SafeText.hasAmbiguousOptions(q.options.map(\.label))
+        let labels = q.options.map(\.label)
+        let refusal = SafeText.optionRefusal(labels)
+        let strict = SafeText.strictOptionLabels(labels)
         let block = info.answerBlock
         if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
         if pending != nil {
             VStack(alignment: .leading, spacing: OS.s2) {
                 Text("You submitted").font(OF.meta).foregroundStyle(OC.textMuted)
-                SafeTextView(pending?.optionLabel ?? "").accessibilityIdentifier("question.pending.answer")
+                SafeTextView(pending?.optionLabel ?? "", strictLabel: strict).accessibilityIdentifier("question.pending.answer")
                 Button { startSigning(pending?.optionID ?? "") } label: {
                     Label("Checking whether your answer was received", systemImage: "clock.arrow.circlepath")
                 }
@@ -102,16 +104,17 @@ struct QuestionScreen: View {
         } else {
             Text("Choose an answer").font(OF.section)
             ForEach(q.options) { option in
-                Button { startSigning(option.id) } label: { SafeTextView(option.label) }
+                Button { startSigning(option.id) } label: { SafeTextView(option.label, strictLabel: strict) }
                     .buttonStyle(OrchOptionButtonStyle())
-                    .disabled(block != nil || ambiguous)
+                    .disabled(block != nil || refusal != nil)
                     .accessibilityIdentifier("question.option.\(option.id)")
                     .accessibilityHint("Opens a review before you sign")
             }
             if let block { Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted) }
-            if ambiguous {
-                Label("Two answers look the same on this iPhone. Answer on your Mac.", systemImage: "exclamationmark.triangle.fill")
-                    .font(OF.meta).foregroundStyle(OC.warn).accessibilityIdentifier("question.ambiguous")
+            if let refusal {
+                Label { Text(verbatim: refusal.message) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+                    .font(OF.meta).foregroundStyle(OC.warn)
+                    .accessibilityIdentifier(refusal == .ambiguous ? "question.ambiguous" : "question.nonStandard")
             }
         }
     }
@@ -177,7 +180,7 @@ struct SignSheet: View {
                 .background(OC.surface2, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
-                    SafeTextView(review.optionLabel).accessibilityIdentifier("sign.answer")
+                    SafeTextView(review.optionLabel, strictLabel: review.strictLabels).accessibilityIdentifier("sign.answer")
                 }
                 .padding(OS.s4).orchCard()
                 if review.hasUnsafeContent {
@@ -231,9 +234,8 @@ struct SignSheet: View {
         VStack(spacing: OS.s3) {
             switch model.phase {
             case .ready:
-                if review.optionsAmbiguous {
-                    stateView("exclamationmark.octagon", OC.danger, "Can't be checked here",
-                              "Two answers look the same on this iPhone. Answer on your Mac.", id: "sign.refused")
+                if let refusal = review.optionsRefusal {
+                    stateView("exclamationmark.octagon", OC.danger, "Can't be checked here", refusal.message, id: "sign.refused")
                     Button("Cancel", role: .cancel, action: onClose).accessibilityIdentifier("sign.cancel")
                 } else {
                     Button { Task { await model.sign() } } label: { Text("Sign and send") }

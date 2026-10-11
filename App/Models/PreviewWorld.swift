@@ -394,7 +394,7 @@ final class PreviewReviewModel: QuestionReviewModel {
     }
 
     func sign() async {
-        guard phase == .ready, let session, let review, !review.optionsAmbiguous else { return }
+        guard phase == .ready, let session, let review, review.optionsRefusal == nil else { return }
         phase = .sending
         let mine = token
         let decisionID = "d-\(session.question.id)"
