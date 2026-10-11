@@ -65,7 +65,7 @@ final class LiveReviewModel: QuestionReviewModel {
     }
 
     func sign() async {
-        guard workspace.usable, phase == .ready, let issued, let review, !review.optionsAmbiguous else { return }
+        guard workspace.usable, phase == .ready, let issued, let review, review.optionsRefusal == nil else { return }
         phase = .sending
         self.issued = nil              // one review, one signature: it is consumed by this call
         services.recordSubmission(review)

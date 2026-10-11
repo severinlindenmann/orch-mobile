@@ -3,6 +3,8 @@ import SwiftUI
 /// Plain-text rendering for host-provided text (U7). Nothing is rewritten: unsafe scalars stay in the
 /// text and are followed by a visible marker such as ⟨U+202E⟩. The marker delimiters U+27E8/U+27E9 are
 /// themselves marked when they occur in host text, so a literal "⟨U+202E⟩" can never imitate a marker.
+/// Look-alikes (see `Confusables`) are kept too and followed by a marker naming them, e.g. "а⟨Cyrillic U+0430⟩pprove",
+/// "Ａ⟨look-alike U+FF21⟩", "١⟨digit U+0661⟩": markers are text, so they show in any font (proportional or monospace).
 public enum SafeText {
     public enum Piece: Equatable, Sendable {
         case text(String)
@@ -49,26 +51,38 @@ public enum SafeText {
         }
     }
 
-    public static func pieces(_ input: String) -> [Piece] {
+    /// `lookalikes == false` leaves out the look-alike markers (only `skeleton` does, which maps look-alikes instead).
+    /// `strictLabel == true` (option labels, see `optionRefusal`) marks every scalar outside the plain-label allowlist.
+    public static func pieces(_ input: String, lookalikes: Bool = true, strictLabel: Bool = false) -> [Piece] {
         var result: [Piece] = []
         var buffer = String.UnicodeScalarView()
         func flush() {
             if !buffer.isEmpty { result.append(.text(String(buffer))); buffer = .init() }
         }
+        let scalars = Array(input.unicodeScalars)
+        let flags = !lookalikes ? [:] : strictLabel ? Confusables.strictFlags(scalars) : Confusables.flags(scalars)
+        var index = 0
         var previous: Unicode.Scalar?
         for character in input {
             let scalars = Array(character.unicodeScalars)
             let marks = scalars.filter(isMark).count
             let zalgo = marks > 3
+            var after: [String] = []                  // look-alike markers follow the whole character, marks included
             for scalar in scalars {
+                defer { index += 1 }
                 if zalgo && isMark(scalar) { continue }
                 if isUnsafe(scalar, after: previous) {
                     flush()
                     result.append(.marker(markerLabel(for: scalar)))
                 } else {
                     buffer.append(scalar)
+                    if let m = flags[index] { after.append(m) }
                 }
                 previous = scalar
+            }
+            if !after.isEmpty {
+                flush()
+                result += after.map(Piece.marker)
             }
             if zalgo {
                 flush()
@@ -79,11 +93,16 @@ public enum SafeText {
         return result
     }
 
-    public static func markers(in input: String) -> [String] {
-        pieces(input).compactMap { if case .marker(let m) = $0 { return m } else { return nil } }
+    /// Look-alike markers name a script or "look-alike"/"digit"; unsafe markers are "⟨U+…⟩" or "⟨n marks⟩".
+    public static func isLookalikeMarker(_ marker: String) -> Bool {
+        !marker.hasPrefix("⟨U+") && !marker.hasSuffix(" marks⟩")
     }
 
-    public static func hasUnsafe(_ input: String) -> Bool { !markers(in: input).isEmpty }
+    public static func markers(in input: String, strictLabel: Bool = false) -> [String] {
+        pieces(input, strictLabel: strictLabel).compactMap { if case .marker(let m) = $0 { return m } else { return nil } }
+    }
+
+    public static func hasUnsafe(_ input: String, strictLabel: Bool = false) -> Bool { !markers(in: input, strictLabel: strictLabel).isEmpty }
 
     /// Single-line variant for host-supplied metadata: markers become text, newlines spaces, length is capped.
     public static func inline(_ input: String, limit: Int = 80) -> String {
@@ -116,19 +135,18 @@ public enum SafeText {
         return out
     }
 
-    private static let confusables: [Character: Character] = {
-        var m: [Character: Character] = [:]
-        let pairs: [(String, String)] = [
-            ("АВЕКМНОРСТХаеорсухі", "ABEKMHOPCTXaeopcuxi"),     // Cyrillic
-            ("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧο", "ABEZHIKMNOPTYXo"),           // Greek
-        ]
-        for (from, to) in pairs { for (f, t) in zip(from, to) { m[f] = t } }
-        return m
-    }()
-
-    /// Reduces common Cyrillic/Greek look-alikes to Latin so "Approve" and "Аpprove" collide.
+    /// UTS #39-style skeleton (partial table, see `Confusables`): NFKD, Cyrillic/Greek/Armenian/Cherokee/Lisu and
+    /// punctuation look-alikes mapped to Latin, I/1/| → l, 0 → O, m → rn, whitespace runs collapsed and trimmed.
+    /// Unsafe-character markers stay in, so "Approve" and "Approve⟨U+200B⟩" remain different (the marker is visible).
     public static func skeleton(_ input: String) -> String {
-        String(inline(input, limit: 400).trimmingCharacters(in: .whitespaces).map { confusables[$0] ?? $0 })
+        var out = ""
+        for piece in pieces(input, lookalikes: false) {
+            switch piece {
+            case .text(let t): out += Confusables.skeleton(t)
+            case .marker(let m): out += m
+            }
+        }
+        return out.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     /// Two answers whose skeletons are equal cannot be told apart by the reader: refuse.
@@ -137,15 +155,47 @@ public enum SafeText {
         return Set(skeletons).count != skeletons.count || skeletons.contains { $0.isEmpty }
     }
 
+    public enum OptionRefusal: Equatable, Sendable {
+        /// Two answers read the same.
+        case ambiguous
+        /// An answer contains characters outside the plain-label allowlist.
+        case nonStandard
+
+        public var message: String {
+            switch self {
+            case .ambiguous: "Two answers look the same on this iPhone. Answer on your Mac."
+            case .nonStandard:
+                "This question's answers contain non-standard characters, so orch won't sign them here. Answer on your Mac, or ask the agent to use plain text."
+            }
+        }
+
+        /// Accessibility identifier of the notice on the question screen (the sign sheet uses "sign.refused" for both).
+        public var questionIdentifier: String {
+            switch self {
+            case .ambiguous: "question.ambiguous"
+            case .nonStandard: "question.nonStandard"
+            }
+        }
+    }
+
+    /// Option labels are what the user taps and signs, so they fail closed. Checked on the exact signed strings, per
+    /// Unicode scalar, without normalisation: printable ASCII and precomposed Latin-1 letters only (`Confusables.isPlainLabelScalar`);
+    /// localised answer sets are refused for now (gaps.md). Labels are always rendered with `strictLabel: true`.
+    public static func optionRefusal(_ labels: [String]) -> OptionRefusal? {
+        if hasAmbiguousOptions(labels) { return .ambiguous }
+        if labels.contains(where: { $0.unicodeScalars.contains { !Confusables.isPlainLabelScalar($0) } }) { return .nonStandard }
+        return nil
+    }
+
     public enum Style: Sendable { case signing, prose }
 
     @MainActor
-    public static func attributed(_ input: String, style: Style = .signing) -> AttributedString {
+    public static func attributed(_ input: String, style: Style = .signing, strictLabel: Bool = false) -> AttributedString {
         let font: Font = style == .signing ? OF.machine : OF.body
         var out = AttributedString()
         // FSI ... PDI keeps an unterminated bidi override from reordering the rest of the screen.
         out += AttributedString("\u{2068}")
-        for piece in pieces(input) {
+        for piece in pieces(input, strictLabel: strictLabel) {
             switch piece {
             case .text(let s):
                 var part = AttributedString(s)
@@ -164,11 +214,11 @@ public enum SafeText {
         return out
     }
 
-    public static func spoken(_ input: String) -> String {
-        pieces(input).map {
+    public static func spoken(_ input: String, strictLabel: Bool = false) -> String {
+        pieces(input, strictLabel: strictLabel).map {
             switch $0 {
             case .text(let s): return s
-            case .marker(let m): return " unsafe character " + m + " "
+            case .marker(let m): return (isLookalikeMarker(m) ? " look-alike character " : " unsafe character ") + m + " "
             }
         }.joined()
     }
@@ -178,14 +228,18 @@ public enum SafeText {
 public struct SafeTextView: View {
     private let text: String
     private let style: SafeText.Style
-    public init(_ text: String, style: SafeText.Style = .signing) { self.text = text; self.style = style }
+    private let strictLabel: Bool
+    /// `strictLabel`: an option label (every scalar outside the option-label allowlist marked).
+    public init(_ text: String, style: SafeText.Style = .signing, strictLabel: Bool = false) {
+        self.text = text; self.style = style; self.strictLabel = strictLabel
+    }
 
     public var body: some View {
-        Text(SafeText.attributed(text, style: style))
+        Text(SafeText.attributed(text, style: style, strictLabel: strictLabel))
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .clipped()
             .textSelection(.disabled)
-            .accessibilityLabel(SafeText.spoken(text))
+            .accessibilityLabel(SafeText.spoken(text, strictLabel: strictLabel))
     }
 }
