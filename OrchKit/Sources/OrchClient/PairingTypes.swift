@@ -76,6 +76,8 @@ public struct JoinedWorkspace: Sendable {
     public let epoch: UInt32
     public let origin: String
     public let session: WorkspaceSession
+    package let dropCard: VerifiedCard
+    public func makeDropService() throws -> DropService { try DropService(session: session, card: dropCard) }
 }
 
 /// One state per U5 screen. Codes appear only in `comparingHost` and `comparingPrimary`, never together.

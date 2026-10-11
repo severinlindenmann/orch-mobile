@@ -7,6 +7,7 @@ import OrchProtocol
 /// only this display model; the session behind `BridgeWorkspaceAPI` is never reachable from here (host-api section 1).
 @MainActor @Observable
 final class LiveWorkspace: WorkspaceModel {
+    var drop: LiveDrop?
     let workspaceID: ID16
     let generation: Int64
     @ObservationIgnored let api: any WorkspaceAPI

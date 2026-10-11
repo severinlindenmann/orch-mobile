@@ -1229,7 +1229,7 @@ extension PairingCoordinator {
             token += 1
             record = nil
             let joined = JoinedWorkspace(workspace: r.ws, generation: r.generation, name: v.part.name, hosted: v.hosted, scopes: approved.scopes,
-                                         epoch: v.epoch, origin: r.origin, session: session)
+                                         epoch: v.epoch, origin: r.origin, session: session, dropCard: v.card)
             publish(.ready(JoinedHandle(joined: joined)))
             signalWake()
         } catch {

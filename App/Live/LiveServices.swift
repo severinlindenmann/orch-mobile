@@ -65,6 +65,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func waitForReset() async { await resetTask?.value }
 
     private func transition(_ id: String, to state: WorkspaceLifecycle) {
+        if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
         lifecycle[id] = state
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
@@ -211,6 +212,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let ws = LiveWorkspace(workspaceID: j.workspace, generation: j.generation, api: BridgeWorkspaceAPI(session: j.session), info: info)
         ws.services = self
         ws.draftURL = runtime?.draftURL(workspace: j.workspace)
+        if let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
         if let kind { dropItems += DemoContent.drop(kind, workspaceID: info.id, now: Date()) }
         ws.start()
@@ -230,6 +232,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
+        if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
         refreshTasks = [:]
         if !active { reconcileTasks.values.forEach { $0.cancel() } }
@@ -239,6 +242,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             await previous?.value
             guard let self else { return }
             for ws in workspaces {
+                if let drop = ws.drop {
+                    if active && self.canUse(ws.info.id) { try? await drop.service.activate() }
+                    else { await drop.service.suspend() }
+                }
                 await ws.api.setForeground(active && self.canUse(ws.info.id))
             }
             guard active, self.active else { return }
@@ -483,6 +490,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             return LeaveReport(workspaceName: ws.info.name, server: .pendingOffline, incomplete: true)
         }
         transition(workspaceID, to: .removing)
+        await ws.drop?.service.invalidate()
         let name = ws.info.name
         // The share outbox journals the removal first; a failed journal keeps the workspace in place.
         guard beforeWorkspaceRemoval?(workspaceID) != false else {
@@ -540,7 +548,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             guard let self else { return }
             if let booted = await pendingBoot?.value { self.failedReset = booted }
             await self.waitForLifecycle()
-            for ws in workspaces { await ws.stop() }
+            for ws in workspaces { await ws.drop?.service.invalidate(); await ws.stop() }
             do {
                 if let pending = self.failedReset { try await self.resetRuntime(pending) }
                 else if !self.options.uiTesting { try await self.finishInterruptedReset() }
