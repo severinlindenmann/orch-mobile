@@ -159,10 +159,10 @@ public struct TombstoneCoordination: Sendable {
     private static func withLocks<T>(_ dirs: ArraySlice<URL>, exclusive: Bool, create: Bool, deadline: Date? = nil,
                                      fds: [URL: Int32] = [:], _ body: ([URL: Int32]) throws -> T) throws -> T {
         guard let dir = dirs.first else { return try body(fds) }
-        var directory = open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var directory = retryOnInterrupt({ open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) })
         if directory < 0, errno == ENOENT, create {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            directory = open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            directory = retryOnInterrupt({ open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) })
         }
         guard directory >= 0 else {
             if errno == ENOENT && !create {
@@ -175,20 +175,20 @@ public struct TombstoneCoordination: Sendable {
         guard fstat(directory, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
             throw TombstoneError.io("not a directory")
         }
-        let fd = openat(directory, lockName, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        let fd = openCoordinationLock(lockName, relativeTo: directory)
         guard fd >= 0 else { throw TombstoneError.lockFailed(errno) }
         defer { close(fd) }
         try TombstoneFS.regular(fd)
         let op = exclusive ? LOCK_EX : LOCK_SH
         if let deadline {
-            while flock(fd, op | LOCK_NB) != 0 {
+            while retryOnInterrupt({ flock(fd, op | LOCK_NB) }) != 0 {
                 guard errno == EWOULDBLOCK, Date() < deadline else { throw TombstoneError.lockFailed(errno) }
                 usleep(5_000)
             }
         } else {
-            guard flock(fd, op) == 0 else { throw TombstoneError.lockFailed(errno) }
+            guard retryOnInterrupt({ flock(fd, op) }) == 0 else { throw TombstoneError.lockFailed(errno) }
         }
-        defer { flock(fd, LOCK_UN) }
+        defer { _ = retryOnInterrupt({ flock(fd, LOCK_UN) }) }
         var held = fds; held[dir] = directory
         return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, fds: held, body)
     }

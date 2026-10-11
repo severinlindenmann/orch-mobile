@@ -11,7 +11,7 @@ enum TombstoneFS {
     }
 
     static func read(_ dir: Int32, _ name: String) throws -> Data? {
-        let fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        let fd = retryOnInterrupt({ openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) })
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
             throw TombstoneError.io("open: \(errno)")
@@ -31,7 +31,7 @@ enum TombstoneFS {
     static func write(_ data: Data, dir: Int32, name: String) throws {
         guard data.count <= cap else { throw TombstoneError.io("file exceeds size cap") }
         let tmp = ".\(name).tmp-\(UUID().uuidString)"
-        let fd = openat(dir, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        let fd = retryOnInterrupt({ openat(dir, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600) })
         guard fd >= 0 else { throw TombstoneError.io("create: \(errno)") }
         defer { close(fd); unlinkat(dir, tmp, 0) }
         try regular(fd)
@@ -48,8 +48,8 @@ enum TombstoneFS {
                 offset += n
             }
         }
-        guard fsync(fd) == 0 else { throw TombstoneError.io("fsync: \(errno)") }
+        guard retryOnInterrupt({ fsync(fd) }) == 0 else { throw TombstoneError.io("fsync: \(errno)") }
         guard renameat(dir, tmp, dir, name) == 0 else { throw TombstoneError.io("rename: \(errno)") }
-        guard fsync(dir) == 0 else { throw TombstoneError.io("directory fsync: \(errno)") }
+        guard retryOnInterrupt({ fsync(dir) }) == 0 else { throw TombstoneError.io("directory fsync: \(errno)") }
     }
 }

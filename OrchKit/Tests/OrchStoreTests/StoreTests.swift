@@ -286,15 +286,52 @@ struct WipeTests {
     }
 
     @Test func concurrentReadersAndWriterOfCoordinationFile() async throws {
-        let l = try makeLayout(tempDir())
-        let t = l.tombstones
-        await withTaskGroup(of: Void.self) { g in
-            for i in 0..<20 {
-                g.addTask { try? t.write(TombstoneRecord(realm: "live", ws: A, generation: Int64(i))) }
-                g.addTask { _ = t.isRemovedFailClosed(realm: "live", ws: A, generation: 5) }
-            }
+        let base = tempDir()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let l = try makeLayout(base)
+        try await exerciseCoordination(l.tombstoneDirectories, count: 20)
+    }
+
+    @Test func concurrentCoordinationStress() async throws {
+        // Fresh directories race first creation of tombstones.lock: Darwin can return ENOENT
+        // for concurrent O_CREAT | O_NOFOLLOW opens. Precreating the lock hides that bug.
+        for _ in 0..<200 {
+            let base = tempDir()
+            defer { try? FileManager.default.removeItem(at: base) }
+            let dirs = (0..<3).map { base.appendingPathComponent("group\($0)/coordination") }
+            try await exerciseCoordination(dirs, count: 20)
         }
-        #expect(t.isRemovedFailClosed(realm: "live", ws: A, generation: 19))
-        #expect(try t.records().count == 20)
+    }
+
+    private func exerciseCoordination(_ directories: [URL], count: Int) async throws {
+        let t = TombstoneCoordination(directories: directories)
+        let errors = await withTaskGroup(of: String?.self, returning: [String].self) { g in
+            for i in 0..<count {
+                g.addTask {
+                    do {
+                        let writer = TombstoneCoordination(directories: i.isMultiple(of: 2) ? directories : directories.reversed())
+                        try writer.write(TombstoneRecord(realm: "live", ws: A, generation: Int64(i)))
+                        return nil
+                    } catch { return "writer \(i): \(error)" }
+                }
+                g.addTask {
+                    do {
+                        _ = try t.records()
+                        _ = t.isRemovedFailClosed(realm: "live", ws: A, generation: 5)
+                        return nil
+                    } catch { return "reader \(i): \(error)" }
+                }
+            }
+            var errors: [String] = []
+            for await error in g { if let error { errors.append(error) } }
+            return errors
+        }
+        #expect(errors.isEmpty, "coordination errors: \(errors)")
+        #expect(t.isRemovedFailClosed(realm: "live", ws: A, generation: Int64(count - 1)))
+        let expected = Set((0..<count).map { TombstoneRecord(realm: "live", ws: A, generation: Int64($0)) })
+        // Check each copy: records() unions copies and could conceal a missing write in one group.
+        for dir in directories {
+            #expect(Set(try TombstoneCoordination(directories: [dir]).records()) == expected)
+        }
     }
 }
