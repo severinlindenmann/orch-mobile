@@ -159,6 +159,12 @@ public actor FakeHost {
     public internal(set) var hostIsPrimary = false
     /// Adversarial: the cert request names the host's own keys instead of the phone's (R1).
     public internal(set) var r1Attack = false
+    /// Demo knob: the host asks the primary for a certificate even when the phone presented one (and never falls back to the phone's
+    /// directory certificate), so the primary's phase (its code, its absence, its expiry) can be shown on an iPhone that is already one
+    /// of the owner's devices. Safe: the certificate still comes only from the primary, for exactly the phone's keys.
+    public internal(set) var asksPrimaryAlways = false
+    /// Whether the host enters `cert_pending` regardless of a presented certificate (an R1 host always does: it wants its own key).
+    var bypassesPresentedCertificate: Bool { r1Attack || asksPrimaryAlways }
     /// Adversarial: `pending` echoes a foreign key.
     public internal(set) var echoWrongKey: EchoedKey?
     public enum EchoedKey: Sendable { case signing, exchange }

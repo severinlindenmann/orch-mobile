@@ -274,6 +274,73 @@ extension PairHarness {
         await log.stop()
     }
 
+    /// R1 on an iPhone that already holds the owner's certificate (paired with another workspace before, D-1), as on a Demo phone after
+    /// its first pairing. The compromised host ignores the presented certificate and asks the primary to certify a key of its own: the
+    /// phone must still end on the R1 alarm with no primary code, and nothing may be added for it. Regression for iPhone checklist 9b,
+    /// where the Demo's "R1 attack" silently joined because the fake host honoured the presented certificate.
+    @Test(arguments: [false, true]) func testR1AttackOnAlreadyCertifiedPhoneRaisesAlarm(inDirectory: Bool) async throws {
+        let h = try await PairHarness.make(.r1Attack)
+        let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
+        let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
+        try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
+        #expect(await h.coordinator.storedCertificateIsPresentable() == true)
+        // after an earlier join the certificate is also public in the directory
+        if inDirectory { try await h.relay.publishCertificate(cert) }
+        let log = StateLog(); await log.attach(h.coordinator)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        let final = try await h.drive(until: { $0.isTerminal })
+        await log.settled(h.coordinator); await log.stop()
+        guard case .alarm(let alarm) = final else { Issue.record("R1 on a certified phone ended \(final), not the alarm"); return }
+        #expect(alarm.kind == .r1Challenge)
+        #expect(await !log.showedPrimaryCode)
+        #expect(await !log.states.contains(where: isReady))
+        #expect(await h.noKeyMaterial(for: h.phoneID))
+        #expect(try await h.env.index.workspaces().isEmpty)
+        let prompt = try #require(await h.primary.openPrompts().first)
+        #expect(prompt.deviceID != h.phoneID)
+        #expect(await h.host.pairingState(of: h.phoneID) != "approved")
+    }
+
+    /// iPhone checklist 10b on an already certified phone: with the Demo's `asksPrimaryAlways`, the host asks the primary even though
+    /// the phone presented its certificate; the primary is offline, so the phone waits for it and the attempt expires without a join.
+    /// An honest host without the knob joins at once (the protocol's step 6), which is what the Demo silently did before.
+    @Test(arguments: [false, true]) func testPrimaryOfflineOnAlreadyCertifiedPhone(asksPrimary: Bool) async throws {
+        let h = try await PairHarness.make(.primaryOffline)
+        let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
+        let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
+        try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
+        try await h.relay.publishCertificate(cert)
+        await h.host.setAsksPrimaryAlways(asksPrimary)
+        await h.rig.setPrimaryOnline(false)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        if asksPrimary {
+            #expect(isWaitingPrimary(try await h.drive(until: { isWaitingPrimary($0) || $0.isTerminal })))
+            #expect(try await h.drive(steps: 800, until: { $0.isTerminal }) == .expired(.certification))
+            #expect(try await h.env.index.workspaces().isEmpty)
+            #expect(await h.host.pairingState(of: h.phoneID) == "expired")
+            #expect(await h.relay.grantCount(workspace: h.host.workspace, device: h.phoneID) == 0)
+        } else {
+            #expect(isReady(try await h.drive(until: { $0.isTerminal })))
+        }
+    }
+
+    /// With `asksPrimaryAlways` and the primary online, a certified phone still goes through the primary's code and joins.
+    @Test func testAsksPrimaryAlwaysShowsThePrimaryCodeOnACertifiedPhone() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
+        let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
+        try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
+        try await h.relay.publishCertificate(cert)
+        await h.host.setAsksPrimaryAlways(true)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        #expect(isComparingPrimary(try await h.drive(until: { isComparingPrimary($0) || $0.isTerminal })))
+        try await h.primaryApproves()
+        #expect(isReady(try await h.drive(until: { $0.isTerminal })))
+    }
+
     @Test func testEchoWrongKeyAlarmBeforeSAS() async throws {
         for wrong in [FakeHost.EchoedKey.signing, .exchange] {
             let h = try await PairHarness.make(.echoWrongKey)

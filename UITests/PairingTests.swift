@@ -101,6 +101,66 @@ final class PairingTests: XCTestCase {
         XCTAssertFalse(app.el("pair.certCode").exists)
     }
 
+    /// iPhone checklist 9b, the owner's exact steps on a phone that already paired (seeded Laptop and Client VM, so it holds the owner's
+    /// certificate): Settings -> Demo controls -> Next pairing = "R1 attack" -> + -> "Use Demo invitation" -> Demo host compare/approve.
+    /// The compromised host must not be able to add the workspace: the phone waits for the primary, then raises the R1 alarm.
+    @MainActor
+    func testR1AttackAfterEarlierPairingsRaisesAlarmAndAddsNothing() {
+        let app = launch()
+        pairFromHomeAfterChoosing("R1 attack", app)
+        approveOnDemoHost(app)
+        XCTAssertFalse(app.el("pair.ready").waitForExistence(timeout: 15), "an R1 host must never complete the join")
+        openRequestOnDemoPrimary(app)
+        XCTAssertTrue(app.el("pair.alarm").waitForExistence(timeout: Self.slow))
+        XCTAssertTrue(app.staticTexts["Stop: someone else is trying to pair"].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Reject on Demo Mac'")).firstMatch.exists)
+        XCTAssertFalse(app.el("pair.sas").exists)
+        XCTAssertFalse(app.el("pair.certCode").exists)
+        XCTAssertFalse(app.el("pair.ready").exists)
+        // Back on Home: the two earlier workspaces only; nothing was added by the attack.
+        app.buttons["pair.alarm.close"].tap()
+        XCTAssertTrue(app.workspaceCard("Laptop").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.workspaceCard("Client VM").exists)
+        XCTAssertFalse(app.workspaceCard("Demo Lab").waitForExistence(timeout: 5))
+    }
+
+    /// iPhone checklist 10b on a phone that already paired: "Primary offline" must still wait for the primary after the host approves
+    /// (never join at once) and expire without adding the workspace.
+    @MainActor
+    func testPrimaryOfflineAfterEarlierPairingsWaitsThenExpires() {
+        let app = launch()
+        pairFromHomeAfterChoosing("Primary offline", app)
+        approveOnDemoHost(app)
+        XCTAssertTrue(app.el("pair.openPrimary").waitForExistence(timeout: Self.slow), "the phone waits for the primary")
+        XCTAssertFalse(app.el("pair.ready").exists)
+        app.buttons["demo.primaryPanel.show"].tap()
+        app.buttons["demo.primaryPanel.elapse"].tap()
+        XCTAssertTrue(app.el("pair.expired").waitForExistence(timeout: Self.slow))
+        XCTAssertFalse(app.el("pair.ready").exists)
+        app.buttons["pair.close"].tap()
+        XCTAssertTrue(app.workspaceCard("Laptop").waitForExistence(timeout: 10))
+        XCTAssertFalse(app.workspaceCard("Demo Lab").waitForExistence(timeout: 5))
+    }
+
+    /// The owner's path on a seeded (already paired) phone: Settings -> Demo controls -> Next pairing -> back -> + -> "Use Demo invitation".
+    @MainActor
+    private func pairFromHomeAfterChoosing(_ scenario: String, _ app: XCUIApplication) {
+        XCTAssertTrue(app.workspaceCard("Laptop").waitForExistence(timeout: Self.slow * 2))
+        XCTAssertTrue(app.workspaceCard("Client VM").waitForExistence(timeout: Self.slow))
+        app.buttons["home.settings"].tap()
+        let picker = app.buttons["demo.nextPairing"]
+        XCTAssertTrue(app.reveal(picker, timeout: 30))
+        picker.tap()
+        let option = app.buttons[scenario]
+        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        option.tap()
+        XCTAssertTrue(picker.label.contains(scenario), picker.label)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["home.add"].waitForExistence(timeout: 10))
+        app.buttons["home.add"].tap()
+        startDemoInvitation(app)
+    }
+
     @MainActor
     func testWrongKeyAlarmHidesBothCodes() {
         let app = launch("pair/wrongKey", seed: false)
