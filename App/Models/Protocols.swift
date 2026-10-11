@@ -60,6 +60,8 @@ protocol QuestionReviewModel: AnyObject, Observable {
     func reread() async
     /// After a lost response: reconcile first, never re-sign a changed answer.
     func checkWhetherReceived() async
+    /// After delivery ended (`needsRetry`): the person's explicit "Send again" of the same signed answer.
+    func sendAgain() async
     /// Terminal: lock/background/content change. A fresh model (fresh review) is required afterwards.
     func invalidate()
     /// Issues a fresh review (new revision): the old one and its arming are never reused.
