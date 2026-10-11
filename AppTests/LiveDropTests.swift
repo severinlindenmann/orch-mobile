@@ -8,7 +8,7 @@ import OrchCoordination
 @MainActor
 final class LiveDropTests: XCTestCase {
     private struct Deadline: Error {}
-    private final class PublicationGate {
+    @MainActor private final class PublicationGate {
         var entered = false
         var released = false
         var waiters: [CheckedContinuation<Void, Never>] = []

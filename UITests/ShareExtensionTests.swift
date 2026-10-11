@@ -95,6 +95,8 @@ final class ShareExtensionTests: XCTestCase {
         app.buttons["share.fixture.drop"].tap()
         XCTAssertTrue(app.segmentedControls["drop.direction"].waitForExistence(timeout: 90)); app.segmentedControls["drop.direction"].buttons["Sending"].tap()
         app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.share-' AND label CONTAINS 'Sent (confirmed)'")).firstMatch.tap()
+        guard app.buttons["drop.open"].waitForExistence(timeout: 10) else { XCTFail("Missing Open"); return }
+        app.buttons["drop.open"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["drop.item.text"].waitForExistence(timeout: 5))
     }
 

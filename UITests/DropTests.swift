@@ -55,11 +55,15 @@ extension DropTests {
         XCTAssertFalse(app.buttons["drop.open"].isEnabled)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.el("drop.item.d-note").tap()
+        guard app.buttons["drop.open"].waitForExistence(timeout: 10) else { XCTFail("Missing Open"); return }
+        app.buttons["drop.open"].tap()
         XCTAssertTrue(app.el("drop.item.text").waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.el("drop.item.d-url").tap()
+        guard app.buttons["drop.open"].waitForExistence(timeout: 10) else { XCTFail("Missing Open"); return }
+        app.buttons["drop.open"].tap()
         XCTAssertTrue(app.el("drop.item.text").waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["drop.open"].isEnabled)
+        XCTAssertFalse(app.buttons["Done"].exists) // No QuickLook/browser for literal URLs.
     }
 
     @MainActor

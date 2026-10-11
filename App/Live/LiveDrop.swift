@@ -212,7 +212,8 @@ extension LiveDrop {
             guard usable, mine == revision, file.deadlineMs > nowMs else { return }
             downloads[id] = file; metadata[id] = file.metadata
             if let index = rows.firstIndex(where: { $0.id == id }) { rows[index] = row(object, direction: rows[index].direction) }
-            guard file.metadata.size > 0, file.metadata.mime != "text/uri-list" else { return }
+            let kind = rows.first(where: { $0.id == id })?.kind
+            guard file.metadata.size > 0, kind != .note, kind != .url else { return }
             previewURL = file.url
             expiryTask?.cancel()
             expiryTask = Task { [weak self] in
