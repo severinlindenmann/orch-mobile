@@ -217,7 +217,7 @@ extension FakeHost {
     package func takeOutbox() -> [(rid: ID16, chunk: Data)] { let o = outbox; outbox = []; return o }
 
     /// Simulates a host that ran a request and lost the record of its answer: a re-send gets `already_done(unknown)`.
-    package func forgetOutcome(rid: ID16) { core.rids[rid]?.outcome = nil }
+    package func forgetOutcome(rid: ID16) { core.rids[rid]?.outcome = nil; sentAnswers = sentAnswers.filter { $0.key.rid != rid } }
 
     package func setResponseSigner(_ s: SoftwareSigner?) { responseSigner = s }
 
@@ -234,7 +234,11 @@ extension FakeHost {
         let now = wall.nowMs
         switch core.check(envelope, mailbox: mailbox, nowMs: now) {
         case .drop: return []
-        case .refuse(let r, let h): return (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
+        case .refuse(let r, let h):
+            // A copy of a request whose handler is still running: no interim `already_done(unknown)` (it would take index 0 from
+            // the real answer, orch-29 Q11). Silence; the real answer follows.
+            if case .alreadyDone(status: "unknown") = r, running.contains(h.rid) { return [] }
+            return (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
         case .replay(let chunks, let h):
             if rotationRequired {
                 return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
@@ -249,7 +253,9 @@ extension FakeHost {
                 streamOpen[h.rid] = nil
                 return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
             }
+            running.insert(h.rid)
             let reply = await run(a)
+            running.remove(h.rid)
             // A non-stream handler may finish while grants are suspended, with epoch and membership still unchanged.
             // Refuse immediately; streams wait for their terminal stale_epoch chunk and revocation waits for its own rotation.
             if rotationRequired && !isRevocation && !h.flagSet.contains(.stream) {
@@ -388,7 +394,15 @@ extension FakeHost {
         var handled = 0
         for item in inbox {
             lastArrival = max(lastArrival, item.arrival)          // claimed: a concurrent pass never runs it twice
-            let chunks = await process(envelope: item.envelope, mailbox: item.rid)
+            var chunks = await process(envelope: item.envelope, mailbox: item.rid)
+            // Q11 (orch-29): the exact response-envelope bytes are kept BEFORE the first POST and only those are ever re-posted, so
+            // the relay can store an expired answer again (P3-D27) and never sees other bytes for an index.
+            let now = wall.nowMs
+            sentAnswers = sentAnswers.filter { now - $0.value.atMs < core.limits.ridRetentionMs }
+            // Keyed by the request's exact bytes too: another envelope under the same rid (a same-rid re-seal) gets its own answer.
+            let answerKey = SentKey(rid: item.rid, request: RidStore.digest(item.envelope))
+            if let kept = sentAnswers[answerKey] { chunks = kept.chunks }
+            else if !chunks.isEmpty { sentAnswers[answerKey] = (chunks, now) }
             for c in chunks {
                 let r = try await postBridgeChunk(c, rid: item.rid, relay: relay, session: session)
                 guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
