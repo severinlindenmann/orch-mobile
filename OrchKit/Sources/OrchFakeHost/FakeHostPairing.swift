@@ -49,6 +49,13 @@ extension FakeHost {
     }
     public func setR1Attack(_ v: Bool) { r1Attack = v }
     public func setEchoWrongKey(_ k: EchoedKey?) { echoWrongKey = k }
+    /// Adversarial knob (tests only): a compromised host ends a pairing claiming the primary said no, relaying `rejection` as it is,
+    /// without the verification `progressCertPending` does. The phone must believe it only if it verifies under the pinned `PK`.
+    package func forceRelayedRejection(device: ID16, rejection: JSONValue) {
+        core.pendingPairs[device]?.rejection = rejection
+        transition(device, to: "rejected")
+    }
+    package func pairingRequestID(of device: ID16) -> ID16? { core.pendingPairs[device]?.requestID }
 
     // MARK: offers
 
@@ -148,7 +155,11 @@ extension FakeHost {
         let session = try await currentSession(transport: transport)
         await stage("cert_request.post")
         try still(device, v)
-        try await relay.postCertRequest(req.json, token: session.token)
+        // `POST /v2/persons/{person}/cert-requests` with the workspace session (W(g)); 200 also for an identical resend
+        let post = try WireRequest(method: "POST", target: "\(HostAPI.base)/persons/\(primary.personID.hex)/cert-requests",
+                                   headers: ["authorization": "Bearer " + session.token, "content-type": "application/json"],
+                                   body: canonicalJSON(.object(["request": req.json])), clientAddress: "host")
+        _ = try HostAPI.expect(try await relay.send(post))
         // a rejection that landed during the post wins; the posted request is not retracted (the primary may still challenge it, but the
         // host never completes a join for a pairing that is not pending)
         try still(device, v)
@@ -258,22 +269,48 @@ extension FakeHost {
             guard let p = core.pendingPairs[device], p.state == "cert_pending", let since = p.certPendingSince, let rid = p.requestID else { continue }
             let v = p.version
             if now >= since + HostBridgeCore.certPendingLifeMs { transition(device, to: "expired"); continue }
-            let rejected = try await relay.certRequestRejected(workspace: workspace, requestID: rid, token: token)
+            // `GET /v2/cert-requests/{id}`: the queue's state, the primary's challenge, its certificate or its rejection
+            let view = try await certRequestView(relay: relay, requestID: rid, token: token)
             guard core.pendingPairs[device]?.version == v else { continue }
-            if rejected { transition(device, to: "rejected"); continue }
-            if p.challenge == nil, let ch = try await relay.certChallenge(workspace: workspace, requestID: rid, token: token) {
-                guard core.pendingPairs[device]?.version == v else { continue }
+            if let rej = view?.rejection {
+                // only a rejection that verifies under the owner's PK for exactly this request ends the pairing as the primary's
+                // "no"; anything else is ignored (the pairing keeps waiting and expires on its own)
+                // A rejection that does not verify is ignored and the request is checked as if it had none (challenge, certificate):
+                // an unauthenticated relay field must never stall a pairing.
+                if let r = try? CertRejection.verify(rej, pk: primary.publicKey), r.requestID == rid, r.workspace == workspace,
+                   r.person == primary.personID {
+                    core.pendingPairs[device]?.rejection = rej
+                    transition(device, to: "rejected")
+                    continue
+                }
+            }
+            if p.challenge == nil, let ch = view?.challenge {
                 core.pendingPairs[device]?.challenge = ch          // relayed unchanged in the next cert_pending answer
             }
-            // the directory: has the primary certified exactly this device?
-            let found = await relay.certificate(device: device)
+            // the request's certificate, or the directory's: has the primary certified exactly this device?
+            // Both sources are tried: one that does not verify (or names other keys) never hides a good one in the other.
+            let directory = await relay.certificate(device: device)
             guard core.pendingPairs[device]?.version == v else { continue }
-            if let cert = found, (try? DeviceCertificate.verify(cert, personKey: primary.publicKey, nowMs: now, revoked: core.revoked))
-                .map({ $0.signingKey == p.dkSig && $0.agreementKey == p.dkKx }) == true {
+            let good = [view?.cert, directory].compactMap { $0 }.first { cert in
+                (try? DeviceCertificate.verify(cert, personKey: primary.publicKey, nowMs: now, revoked: core.revoked))
+                    .map({ $0.signingKey == p.dkSig && $0.agreementKey == p.dkKx }) == true
+            }
+            if let cert = good {
                 core.pendingPairs[device]?.cert = cert
                 do { try await completeJoin(device: device, relay: relay, transport: transport) } catch { lastPairingError = "\(error)" }
             }
         }
+    }
+
+    /// `GET /v2/cert-requests/{id}` with the workspace session; nil when the relay no longer holds the request.
+    private func certRequestView(relay: FakeRelay, requestID: ID16, token: String) async throws -> (challenge: JSONValue?, cert: JSONValue?, rejection: JSONValue?)? {
+        let get = try WireRequest(method: "GET", target: "\(HostAPI.base)/cert-requests/\(requestID.hex)", headers: ["authorization": "Bearer " + token],
+                                  body: Data(), clientAddress: "host")
+        let reply = try await relay.send(get)
+        if reply.status == 404 { return nil }
+        let o = try HostAPI.object(try HostAPI.expect(reply))
+        func field(_ k: String) -> JSONValue? { o[k].flatMap { $0.isNull ? nil : $0 } }
+        return (field("challenge"), field("cert"), field("rejection"))
     }
 
     /// Seals an epoch-0 answer: under the offer's `K_pair`, header `stream` = the offer, `LAST` (+ `REFUSAL`), signed by `WSK`.

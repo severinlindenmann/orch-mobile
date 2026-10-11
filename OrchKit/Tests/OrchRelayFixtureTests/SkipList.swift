@@ -27,18 +27,21 @@ enum FixtureCoverage {
         "device_get.json": .pr3, "device_put.json": .pr3,
         "revocation_feed.json": .pr3, "revocation_get.json": .pr3, "revocations_post.json": .pr3,
 
-        "accounts.json": .pr4, "pair_device_post.json": .pr4, "pair_host_post.json": .pr4, "pair_poll.json": .pr4,
-        "cert_challenge.json": .pr4, "cert_rejection.json": .pr4, "cert_request_get.json": .pr4,
-        "cert_requests_poll.json": .pr4, "cert_requests_post.json": .pr4,
 
         "bridge_device_poll.json": .pr5, "bridge_device_post.json": .pr5, "bridge_host_post.json": .pr5
     ]
+
+    /// PRs whose files are all replayable now.
+    static let done: Set<PR> = [.pr4]
 
     /// Per-case overrides of `pending` (case id -> PR), for cases whose enabling PR differs from the rest of their file. None yet.
     static let caseOverrides: [String: PR] = [:]
 
     /// Fixture files whose cases the FakeRelay replays today (all cases of the file; see RelayReplayTests).
-    static let replayable: Set<String> = ["session_challenge.json", "session_login.json", "session_logout.json"]
+    static let replayable: Set<String> = ["session_challenge.json", "session_login.json", "session_logout.json",
+                                          "accounts.json", "pair_device_post.json", "pair_host_post.json", "pair_poll.json",
+                                          "cert_challenge.json", "cert_rejection.json", "cert_request_get.json",
+                                          "cert_requests_poll.json", "cert_requests_post.json"]
 
     /// Pinned by the 386a6cb copy: 29 JSON files, 298 cases. Update together with PROVENANCE.md.
     static let expectedFileCount = 29

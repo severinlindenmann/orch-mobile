@@ -103,6 +103,7 @@ enum InitialRouteParser {
         case "r1": return .alarm(.r1Attack(primaryLabel: primary))
         case "wrongKey": return .alarm(.echoWrongKey)
         case "refused": return .refused(.rejectedOnHost)
+        case "denied": return .denied
         case "linkUsed": return .refused(.linkUsed)
         default: return nil
         }

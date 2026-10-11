@@ -73,6 +73,8 @@ package enum PairingWire {
         case certPending(primaryLabel: String, pkPub: SigningPublicKey, challenge: Challenge?)
         case approved(scopes: [String], cert: JSONValue, certificate: DeviceCertificate, pkPub: SigningPublicKey, epoch: UInt32)
         case rejected
+        /// The primary declined to certify this phone: a `cert_rejection` that verified under the link-pinned `PK` (P3-D11).
+        case denied(requestID: ID16, pkPub: SigningPublicKey)
         case expired
         case refusal(code: String, hostMs: Int64?)
     }
@@ -190,7 +192,16 @@ package enum PairingWire {
                   dc.deviceID == c.device, !dc.isScopedAgent else { return .failure(Dropped(why: "cert")) }
             guard scopes.count <= dc.scopesMax.count else { return .failure(Dropped(why: "scopes")) }
             return .success(.approved(scopes: scopes, cert: cert, certificate: dc, pkPub: pk, epoch: epoch))
-        case "rejected": return .success(.rejected)
+        case "rejected":
+            // Without a `rejection` this is the host's own "no" (the answer is WSK-signed). With one, it claims the primary said no:
+            // that claim is believed only after it verifies under a `pk_pub` that matches the link's pin, for this workspace and
+            // that person. Anything else is dropped (silence: the phone keeps waiting until its own deadline), never shown.
+            guard let rej = m["rejection"], !rej.isNull else { return .success(.rejected) }
+            guard let pk = m.sigKeyField("pk_pub") else { return .failure(Dropped(why: "shape")) }
+            guard Identifiers.pkPin(pk) == c.pkPin else { return .failure(Dropped(why: "pk_pin")) }
+            guard let v = try? CertRejection.verify(rej, pk: pk) else { return .failure(Dropped(why: "rejection_signature")) }
+            guard v.workspace == c.workspace, v.person == Identifiers.personID(pk) else { return .failure(Dropped(why: "rejection_not_for_this_workspace")) }
+            return .success(.denied(requestID: v.requestID, pkPub: pk))
         case "expired": return .success(.expired)
         default: return .failure(Dropped(why: "shape"))
         }

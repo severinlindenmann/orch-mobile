@@ -14,6 +14,7 @@ public enum SignedKind: String, Sendable, CaseIterable {
     case enrollRequest = "enroll_request"
     case certRequest = "cert_request"
     case certChallenge = "cert_challenge"
+    case certRejection = "cert_rejection"
     case dropObject = "drop_object"
     case dropClaim = "drop_claim"
 
@@ -29,6 +30,7 @@ public enum SignedKind: String, Sendable, CaseIterable {
         case .enrollRequest: return Label.sigEnrollRequest
         case .certRequest: return Label.sigCertRequest
         case .certChallenge: return Label.sigCertChallenge
+        case .certRejection: return Label.sigCertRejection
         case .dropObject: return Label.sigDropObject
         case .dropClaim: return Label.sigDropClaim
         }
@@ -53,6 +55,17 @@ public struct SignedObject: Equatable, Sendable {
         }
         let sig = try Signature.sign(signer, label: kind.label, message: try canonicalJSON(.object(object)))
         return SignedObject(object: object, signature: sig)
+    }
+
+    /// The deployment suite a signed-object-shaped value names, read before any other check (section 19.6: a signed object of
+    /// another suite is 400 `wrong_suite`). `nil` when the value has no integer `o.suite`.
+    public static func suite(of v: JSONValue) -> Int64? { v.object?["o"]?.object?["suite"]?.int }
+
+    /// Same canonical object (G0a review 3): `cj(o)` of both are byte-identical, whatever the signatures. Re-signing an
+    /// identical object (P-256 signatures are randomised) is the same submission, never a new one. Both must still verify.
+    public static func sameCanonicalObject(_ a: JSONValue, _ b: JSONValue) -> Bool {
+        guard let oa = a.object?["o"], let ob = b.object?["o"], let ca = try? canonicalJSON(oa), let cb = try? canonicalJSON(ob) else { return false }
+        return ca == cb
     }
 
     /// The wire form `{"o": ..., "sig": ...}`.

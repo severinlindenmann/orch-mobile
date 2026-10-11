@@ -43,14 +43,26 @@ public actor PairingCoordinator {
     private var retryNotBeforeMs: Int64 = 0
     private var failures = 0
     /// Drops the join's relay session: forgotten at once, and a best-effort logout so it does not count against the device's token quota.
-    private func endJoinSession() async {
+    /// Never awaited on the lifecycle paths (start, cancel, dismiss, finish, ready): the cache is cleared synchronously and the logout
+    /// runs detached, so a slow or hostile relay cannot hold a cancel or a terminal state back until the transport times out.
+    /// The detached task has no timeout of its own: the transport's request timeout bounds it (FakeRelay answers at once), and
+    /// a failed logout only leaves the token to expire (15 min). It is best-effort and never retried.
+    private func endJoinSession() {
         guard let c = joinSession else { return }
         joinSession = nil
-        _ = try? await cfg.transport.logout(session: c.session)
+        logOut(c.session)
     }
+    private func logOut(_ session: RelaySession) {
+        let transport = cfg.transport
+        logoutTask = Task.detached { _ = try? await transport.logout(session: session) }
+    }
+    /// The last detached logout (tests wait on it; nothing in the lifecycle does).
+    package private(set) var logoutTask: Task<Void, Never>?
     /// The join's relay session, reused across join retries until near expiry: the relay allows a device only a few live tokens
     /// (protocol-v2 section 19.1, 429 `quota_exceeded`), so a retry must never log in again while its token is still good.
-    private var joinSession: (device: ID16, session: RelaySession, expiresMs: Int64)?
+    /// Bound to the device, the workspace and the pairing generation it was opened for: never reused for another attempt.
+    private var joinSession: (device: ID16, ws: ID16, generation: Int64, session: RelaySession, expiresMs: Int64)?
+    package func joinSessionBinding() -> (device: ID16, ws: ID16, generation: Int64)? { joinSession.map { ($0.device, $0.ws, $0.generation) } }
     private var streams: [Int: AsyncStream<PairingState>.Continuation] = [:]
     private var nextStreamID = 0
     private var wakers: [Int: AsyncStream<Void>.Continuation] = [:]
@@ -199,7 +211,7 @@ public actor PairingCoordinator {
         token += 1
         let mine = token
         publish(.parsing)
-        await endJoinSession()
+        endJoinSession()
         try? await crashPoint("start.reserved")          // test seam, like `resume.row`: the lifecycle is held and nothing else has happened
         do { try checkConfig(); try cfg.context.admit(origin: link.origin) } catch { return fail(violation(error), mine) }
         let ws = link.workspace
@@ -369,7 +381,7 @@ public actor PairingCoordinator {
         lifecycleBusy = true; defer { lifecycleBusy = false }
         token += 1
         await drainInstall()
-        await endJoinSession()
+        endJoinSession()
         _ = await eraseAll()
         record = nil
         publish(.cancelled)
@@ -380,7 +392,7 @@ public actor PairingCoordinator {
     public func dismiss() async {
         guard !dead else { return }
         lifecycleBusy = true; defer { lifecycleBusy = false }
-        await endJoinSession()
+        endJoinSession()
         if record != nil { token += 1; await drainInstall(); _ = await eraseAll(); record = nil }
         for row in (try? await cfg.index.pairings()) ?? [] where row.terminal != nil {
             if let ws = ID16(hex: row.ws) { _ = await purgeResidue(ws: ws, createdKeys: row.createdKeys, keepRow: false, gate: true) }
@@ -655,7 +667,9 @@ public actor PairingCoordinator {
             guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
             if let pinned = r.pkPub, pinned != pk.x963 { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
             // when a challenge was shown, the certificate must be for exactly the keys (and person) it named
-            if let ch = r.challenge?.object?["o"]?.object {
+            if let pinned = r.challenge {
+                // a pinned challenge that no longer parses cannot bind the certificate: fail closed, never skip the check
+                guard let ch = pinned.object?["o"]?.object else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
                 guard ch.b64uField("dk_sig_pub") == certificate.signingKey.x963, ch.b64uField("dk_kx_pub") == certificate.agreementKey.x963,
                       ch.idField("person_id") == certificate.personID, ch.idField("device_id") == certificate.deviceID
                 else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
@@ -672,6 +686,20 @@ public actor PairingCoordinator {
             guard await persist(mine) else { return }
             publish(.joining)
         case .rejected: _ = await finish(.rejected, mine)
+        case .denied(let requestID, let pk):
+            // the wire verified the rejection under a PK matching the link's pin; it must also be the PK and the request this
+            // pairing pinned (the challenge it showed), or it is a substitution
+            guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
+            // "denied" names the primary, so it needs a binding to this pairing: the PK and the request of the challenge the phone
+            // pinned. Without a pinned challenge nothing ties the rejection to this attempt (it could be a replay of an older
+            // request of the same workspace): the phone ends on the host's authenticated "rejected" and attributes nothing.
+            guard let pinned = r.pkPub, let pinnedChallenge = r.challenge else { _ = await finish(.rejected, mine); return }
+            // a pinned challenge that no longer parses binds nothing: alarm, as for `approved`
+            guard let ch = pinnedChallenge.object?["o"]?.object, let pinnedRequest = ch.idField("request_id") else {
+                _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return
+            }
+            guard pinned == pk.x963, pinnedRequest == requestID else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
+            _ = await finish(.denied, mine)
         case .expired: _ = await finish(.expired(r.certPendingSinceMs != nil ? .certification : .beforeApproval), mine)
         }
     }
@@ -785,7 +813,7 @@ public actor PairingCoordinator {
         token += 1
         let t = token
         await drainInstall()
-        await endJoinSession()
+        endJoinSession()
         _ = await eraseAll()
         guard t == token else { return current }          // a cancel interleaved: it owns the final state
         record = nil
@@ -926,7 +954,12 @@ public actor PairingCoordinator {
             return .present(owner: pk, cert: cert, valid: false)
         } catch let r as RealmViolation { return .violation(r)
         } catch Refusal.otherPerson {
-            return .present(owner: pk, cert: cert, valid: true)     // the pinned owner differs: the link check below decides
+            // The context pins another owner, so admission refused before verifying anything: this certificate is unverified
+            // and is never presented (fail closed). The owner binding stays for the link check, only if it is at least authentic
+            // under the stored owner and names this device's keys.
+            guard let dc = try? DeviceCertificate.verify(cert, personKey: pk, nowMs: nowMs), dc.signingKey == id.publicKeys.sig,
+                  dc.agreementKey == id.publicKeys.kx else { return .corrupt }
+            return .present(owner: pk, cert: cert, valid: false)
         } catch { return .corrupt }
     }
 
@@ -939,6 +972,16 @@ public actor PairingCoordinator {
         guard dc.signingKey == id.publicKeys.sig, dc.agreementKey == id.publicKeys.kx else { throw Refusal.certInvalid }
         try storeCertificate(cert, owner: owner)
     }
+
+    /// Tests only: whether the stored certificate would be presented (`nil` when there is none or it is unusable).
+    package func storedCertificateIsPresentable() -> Bool? {
+        if case .present(_, _, let valid) = storedCertificate() { return valid }
+        return nil
+    }
+    /// Tests only: a damaged pinned challenge in the live record (as a corrupted store would leave it).
+    package func damagePinnedChallengeForTest(_ v: JSONValue) { record?.challenge = v }
+    /// Tests only: forget the pinned `sas_nonce` (as if no `pending` answer had been seen).
+    package func clearSasNonceForTest() { record?.sasNonce = nil }
 
     func storeCertificate(_ cert: JSONValue, owner: SigningPublicKey) throws {
         let data = try canonicalJSON(["cert": cert, "pk_pub": .string(B64U.encode(owner.x963))])
@@ -1100,11 +1143,15 @@ extension PairingCoordinator {
             guard mine == token else { return }
             let client = RelayClient(transport: cfg.transport)
             let s: RelaySession
-            if let cached = joinSession, cached.device == r.deviceID, cached.expiresMs - 30_000 > nowMs { s = cached.session }
+            if let cached = joinSession, cached.device == r.deviceID, cached.ws == r.ws, cached.generation == r.generation,
+               cached.expiresMs - 30_000 > nowMs { s = cached.session }
             else {
                 let opened = try await client.openDeviceSession(identity: id, deviceID: r.deviceID)
-                guard mine == token else { return }
-                joinSession = (r.deviceID, opened.session, opened.expiresMs)
+                // superseded (cancel, restart) while logging in: the fresh token is never cached, so log it out at once or quick
+                // repeats would use up the device's eight live tokens
+                guard mine == token else { logOut(opened.session); return }
+                endJoinSession()                                   // a session of another binding is logged out, never kept
+                joinSession = (r.deviceID, r.ws, r.generation, opened.session, opened.expiresMs)
                 s = opened.session
             }
             guard mine == token else { return }
@@ -1249,7 +1296,7 @@ extension PairingCoordinator {
             record = nil
             let joined = JoinedWorkspace(workspace: r.ws, generation: r.generation, name: v.part.name, hosted: v.hosted, scopes: approved.scopes,
                                          epoch: v.epoch, origin: r.origin, session: session, dropCard: v.card)
-            await endJoinSession()
+            endJoinSession()
             publish(.ready(JoinedHandle(joined: joined)))
             signalWake()
         } catch {

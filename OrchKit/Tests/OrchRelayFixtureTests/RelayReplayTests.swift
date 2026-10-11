@@ -10,7 +10,7 @@ import OrchTestVectors
 /// state that history would build, such as outstanding challenges and live tokens), the request is sent byte for byte, and status,
 /// headers, the exact response bytes (fixtures are `cj` bytes) and the post-state are compared. Files in `FixtureCoverage.replayable`
 /// are replayed in full; an unseeded case fails rather than being skipped.
-private final class MutableWall: WallClock, @unchecked Sendable {
+final class MutableWall: WallClock, @unchecked Sendable {
     private let lock = NSLock()
     private var ms: Int64
     init(_ ms: Int64) { self.ms = ms }
@@ -29,7 +29,7 @@ private final class ScriptedEntropy: Entropy, @unchecked Sendable {
     }
 }
 
-private let fixtureOrigin = "https://relay.dev.severin.io"
+let fixtureOrigin = "https://relay.dev.severin.io"
 private let otherOrigin = "https://other.relay.example.org"
 private let fixtureDevice = ID16(hex: "4177b27d8e4ac182e8d388b247d2b136")!
 
@@ -55,7 +55,7 @@ private func scalar(fromSeed seed: Data) -> Data {
 }
 
 /// The vector person key (with its private scalar) whose person id is `person`: it signs the fixture-derived certificates.
-private func personSigner(_ person: ID16) throws -> SoftwareSigner {
+func personSigner(_ person: ID16) throws -> SoftwareSigner {
     let root = try StrictJSON.parse(Vectors.data, maxBytes: .max)
     for (name, k) in root.object?["suites"]?.object?["2"]?.object?["keys"]?.object ?? [:] where name.hasSuffix(".sig") {
         guard let seed = k.object?["seed"]?.string.flatMap({ Hex.decode($0) }) else { continue }
@@ -67,8 +67,8 @@ private func personSigner(_ person: ID16) throws -> SoftwareSigner {
 
 @Suite struct FixtureReplayTests {
     static let files = FixtureSchemaTests.files
-    /// 4 session_challenge + 10 session_login + 4 session_logout cases.
-    static let expectedReplayed = 18
+    /// 4 session_challenge + 10 session_login + 4 session_logout cases, and the 104 cases of the nine PR4 files.
+    static let expectedReplayed = 18 + 104
 
     static func file(_ name: String) throws -> Fixtures.File { try #require(files.first { $0.fileName == name }) }
 
@@ -99,7 +99,8 @@ private func personSigner(_ person: ID16) throws -> SoftwareSigner {
         if f.fileName == "session_login.json", c.name == "success" { script = [try #require(resp["json"]?["token"]?.string.flatMap { B64U.decode($0) })] }
         var limits = RelayLimits()
         let wall = MutableWall(now)
-        let origin = (f.fileName == "session_login.json" && c.name == "refusal_401_bad_signature") ? otherOrigin : fixtureOrigin
+        let origin = (["session_login.json", "accounts.json"].contains(f.fileName) && c.name == "refusal_401_bad_signature") ? otherOrigin : fixtureOrigin
+        Self.pr4Limits(f, c, &limits)
         let challengeCapCase = f.fileName == "session_challenge.json" && c.name == "refusal_429_rate_limited"
         if challengeCapCase { limits.maxOutstandingChallenges = 3 }
         let relay = FakeRelay(testingContext: try RealmContext.live(origin: origin), clock: ContinuousClock(), wall: wall,
@@ -163,7 +164,7 @@ private func personSigner(_ person: ID16) throws -> SoftwareSigner {
             default: Issue.record("\(id): no seed for this scenario"); return
             }
         default:
-            Issue.record("\(id): file is listed replayable but has no replay seeds"); return
+            guard try await Self.seedPR4(f, c, relay, wall, now) else { Issue.record("\(id): no seed for this scenario"); return }
         }
 
         try await check(f, c, relay)
@@ -175,6 +176,7 @@ private func personSigner(_ person: ID16) throws -> SoftwareSigner {
         if f.fileName == "session_login.json", c.name == "refusal_429_quota_exceeded" {
             #expect(await relay.liveSessionTokens.count == 8, "\(id): existing tokens are preserved")
         }
+        try await Self.checkPR4PostState(f, c, relay)
         if f.fileName == "session_challenge.json", challengeCapCase { #expect(await relay.outstandingChallenges.count == 3, "\(id): nothing is evicted") }
     }
 

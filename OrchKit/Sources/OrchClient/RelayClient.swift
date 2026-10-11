@@ -54,6 +54,43 @@ public struct RelayClient: Sendable {
         try HostAPI.cardKey(try HostAPI.expect(try await transport.cardKey(workspaceID: workspace, cardSequence: cardSequence, session: session)))
     }
 
+    // MARK: the primary device's queue (P3-D11)
+
+    /// Open requests addressed to this (primary) device. Each is unverified here; the primary runs section 8.4 step 2 on it.
+    public func certRequests(person: ID16, wait: Int? = nil, session: RelaySession) async throws -> [JSONValue] {
+        try HostAPI.certRequests(try HostAPI.expect(try await transport.certRequests(person: person, wait: wait, session: session)))
+    }
+
+    /// Posts the primary's PK-signed `cert_challenge`. The relay answers 200 `{}` both for the first submission and for a
+    /// resubmission of the identical canonical object (re-signed or not), so a resend after a lost reply is success; any other
+    /// challenge for the request is 409 `replayed` and thrown.
+    public func submitCertChallenge(_ signed: JSONValue, requestID: ID16, session: RelaySession) async throws {
+        let body = try canonicalJSON(.object(["challenge": signed]))
+        try HostAPI.empty(try HostAPI.expect(try await transport.postCertChallenge(requestID: requestID, body, session: session)))
+    }
+
+    /// Posts the primary's PK-signed `cert_rejection`; idempotent like `submitCertChallenge` (200 on an identical resubmission).
+    public func submitCertRejection(_ signed: JSONValue, requestID: ID16, session: RelaySession) async throws {
+        let body = try canonicalJSON(.object(["rejection": signed]))
+        try HostAPI.empty(try HostAPI.expect(try await transport.postCertRejection(requestID: requestID, body, session: session)))
+    }
+
+    /// `POST /v2/accounts` (P3-D3): the invite, the account key, the first device certificate (signed by that key) and a login
+    /// signature of this device over a fresh relay challenge, bound to the transport's origin. Returns the person id, which must
+    /// be `person_id(pkPub)`. The exact same request again (after a lost reply) is answered 200 by digest.
+    public func createAccount(invite: String, pkPub: SigningPublicKey, deviceCert: JSONValue, identity: DeviceIdentity) async throws -> ID16 {
+        let context = transport.context
+        try context.admit(identity: identity)
+        let device = Identifiers.deviceID(identity.sig.publicKey)
+        let ch = try HostAPI.challenge(try HostAPI.expect(try await transport.challenge()))
+        let sig = try RelayAuth.sign(identity.sig, origin: context.origin, challenge: ch.challenge, kind: .device, id: device)
+        let body = try canonicalJSON(["invite": .string(invite), "pk_pub": .string(B64U.encode(pkPub.x963)), "device_cert": deviceCert,
+                                      "challenge": .string(B64U.encode(ch.challenge)), "sig": .string(B64U.encode(sig))])
+        let person = try HostAPI.account(try HostAPI.expect(try await transport.createAccount(body)))
+        guard person == Identifiers.personID(pkPub) else { throw ClientError.badReply }
+        return person
+    }
+
     /// The device's PK-signed revocation record, fetched without a session (a revoked device has none; the record is public).
     public func revocation(device: ID16) async throws -> JSONValue {
         try HostAPI.revocation(try HostAPI.expect(try await transport.revocation(deviceID: device)))

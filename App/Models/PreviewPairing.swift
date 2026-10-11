@@ -95,7 +95,8 @@ final class PreviewPairingModel: PairingFlowModel {
 
     func primaryReject() {
         switch state {
-        case .comparingPrimary, .waitingPrimary: _ = begin(); state = .refused(.rejectedOnPrimary)
+        case .comparingPrimary: _ = begin(); state = .denied
+        case .waitingPrimary: _ = begin(); state = .refused(.rejectedOnPrimary)
         default: break
         }
     }

@@ -101,6 +101,23 @@ public enum HostAPI {
         return v
     }
 
+    /// `{"requests": [signed cert_request]}` (unverified: the primary checks each one, section 8.4 step 2).
+    public static func certRequests(_ body: Data) throws -> [JSONValue] {
+        guard let a = try exact(body, ["requests"])["requests"]?.array else { throw ClientError.badReply }
+        return a
+    }
+
+    /// `{"person_id": hex}`.
+    public static func account(_ body: Data) throws -> ID16 {
+        guard let p = try exact(body, ["person_id"])["person_id"]?.string.flatMap({ ID16(hex: $0) }) else { throw ClientError.badReply }
+        return p
+    }
+
+    /// An empty success body, exactly `{}`.
+    public static func empty(_ body: Data) throws {
+        guard try exact(body, []).isEmpty else { throw ClientError.badReply }
+    }
+
     public struct CardKey: Equatable, Sendable { public let workspace: ID16, device: ID16; public let cardSeq: UInt32; public let sealed: Data }
     public static func cardKey(_ body: Data) throws -> CardKey {
         let o = try exact(body, ["workspace_id", "device_id", "card_seq", "sealed"])

@@ -457,7 +457,9 @@ It implements §8.6 in order, including silence before tag, budgets, replay/quot
 Offer lifetime is 10 minutes; keep used offer records 24 hours; rid records last received_at+900 seconds.
 FakePrimary actor owns synthetic PK/PVK and primary device keys, seen requests, one open request/workspace,
 stored challenges and signed/rejected state. It enforces §8.4 order and signs exactly stored keys once.
-Its queues are fake relay internals using unchanged cert_request/challenge/cert objects, not phone APIs.
+It logs in with its own device key and uses the §19.3 D(p) routes through `RelayClient` (cert-requests poll,
+challenge, PK-signed `cert_rejection`); FakeRelay runs the P3-D11 state machine (`CertQueue`, held to the
+`p3` vectors) and the host posts/reads requests over HTTP with its workspace session.
 Host-is-primary uses the same certification authority logic; a client-hosted host never receives PK.
 Separate labelled Demo host and Demo primary panels default Reject; Approve requires “I compared the codes”.
 No scenario may automatically set that confirmation on behalf of a human in the shipped Demo.
@@ -563,15 +565,18 @@ A late response cannot recreate a cancelled generation. Never retain a pending s
 | echoWrongKey | pending echoes foreign signing or exchange key; host-rejection alarm before SAS |
 | otherPerson | existing foreign cert rejected locally; forged bypass refused by host/directory |
 | rejectOnHost | rejected, no certificate/grant/member addition |
-| rejectOnPrimary | request closed, never signs; host reports rejected (v0 rejection propagation) |
+| rejectOnPrimary | request closed, never signs; PK-signed rejection relayed by the host; phone verifies it and shows `denied` |
 | revokeAfter | verify PK revocation, rotate, remove grants/subscriptions, wipe every dependent workspace |
 | staleEpochRotation | stale epoch refusal, higher grant fetch, new rid/seq; preserve logical decision |
 | already_answered | second valid answer shows by_device_label/at_ms; no accepted haptic |
 | question_changed | hash mismatch forces authoritative reload and a fresh immutable review |
 | lostResponse | fault after commit; restart resends stored envelope/same rid first; expired/unknown replay falls back to question fetch; no duplicate side effect |
 
-Primary rejection propagation and phone joining timeout are provisional coordinator behavior, not new signed
-objects; confirm rejection status delivery with P2/P3 ([gap 22](gaps.md)). UI clock scaling changes no check order.
+Primary rejection is the P3-D11 `cert_rejection` (PK-signed). The host relays it in its `rejected` answer with
+`pk_pub` (an orch-mobile addition to §8.3's answer shape pending orch-relay adoption, ignored by older devices;
+[gaps Q4](gaps.md#pr4-open-spec-items-blockers-before-real-relay-use)); the phone believes it only
+when it verifies and binds to the pinned PK and challenge request id, and otherwise never attributes the
+rejection to the primary. The phone joining timeout stays provisional. UI clock scaling changes no check order.
 
 ## 7. Implementation slices and evidence gates
 

@@ -130,6 +130,7 @@ extension PairHarness {
             switch plan.outcome {
             case .ready: #expect(isReady(final), "\(name): \(final)")
             case .rejected: #expect(final == .rejected, "\(name): \(final)")
+            case .denied: #expect(final == .denied, "\(name): \(final)")
             case .expired(let e): #expect(final == .expired(e), "\(name): \(final)")
             case .alarm(let k): #expect({ if case .alarm(let a) = final { return a.kind == k }; return false }(), "\(name): \(final)")
             case .failed(let f): #expect(final == .failed(f), "\(name): \(final)")
@@ -217,7 +218,8 @@ extension PairHarness {
             _ = try await h.drive(until: isComparingPrimary)
             let p = try #require(await h.primary.openPrompts().first)
             try await h.primary.reject(request: p.requestID, relay: h.relay)
-            #expect(try await h.drive(until: { $0 == .rejected }) == .rejected)
+            // the primary's PK-signed rejection reaches the phone through the host and verifies: denied, not a host rejection
+            #expect(try await h.drive(until: { $0.isTerminal }) == .denied)
             #expect(await h.nothingFor(h.phoneID))
             #expect(await h.primary.ledgerSnapshot().signed.isEmpty)
             await #expect(throws: PrimaryError.self) { _ = try await h.primary.approve(request: p.requestID, confirmedComparison: true, relay: h.relay) }

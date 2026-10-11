@@ -147,7 +147,7 @@ final class LivePairingModel: PairingFlowModel {
 
     private var isTerminalState: Bool {
         switch state {
-        case .ready, .alarm, .refused, .expired: true
+        case .ready, .alarm, .refused, .expired, .denied: true
         default: false
         }
     }
@@ -181,6 +181,7 @@ final class LivePairingModel: PairingFlowModel {
             case .pinSubstitution, .regression: state = .alarm(.substitution)
             }
         case .rejected: state = .refused(rejectedBy)
+        case .denied: state = .denied
         case .expired: state = .expired
         case .failed(let f):
             switch f {
@@ -242,11 +243,15 @@ final class LivePairingModel: PairingFlowModel {
     func primaryReject() {
         switch state {
         case .comparingPrimary, .waitingPrimary:
-            rejectedBy = .rejectedOnPrimary
+            // An opened request ends through the primary's signed rejection (the client shows `denied` once it verifies);
+            // only the "nothing opened yet" path below is decided here.
             Task {
                 guard let runtime = await services.demoRuntime() else { return }
                 let device = runtime.env.deviceID
                 if let prompt = await runtime.primary.openPrompts().first(where: { $0.deviceID == device }) {
+                    // Before the phone pinned the challenge the client cannot bind the signed rejection and ends on plain
+                    // `rejected`; this panel knows the primary said no, so that outcome is worded as the primary's.
+                    rejectedBy = .rejectedOnPrimary
                     try? await runtime.primary.reject(request: prompt.requestID, relay: runtime.env.relay)
                 } else {
                     // Nothing was opened yet: the human at the primary turns the request down, so the pairing ends here.

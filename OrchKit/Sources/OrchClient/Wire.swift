@@ -125,6 +125,25 @@ public protocol RelayTransport: Sendable {
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply
+
+    // The primary device's side of the cert_pending queues and the account route (section 19.1, 19.3).
+    /// `GET /v2/persons/{person}/cert-requests[?wait=s]` with the primary's device session (D(p), addressee only).
+    func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply
+    /// `POST /v2/cert-requests/{id}/challenge` with the primary's device session; the body is `cj({"challenge": signed})`.
+    func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply
+    /// `POST /v2/cert-requests/{id}/rejection` with the primary's device session; the body is `cj({"rejection": signed})`.
+    func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply
+    /// `POST /v2/accounts`, session-less (P3-D3).
+    func createAccount(_ body: Data) async throws -> WireReply
+}
+
+/// Transports that do not carry the primary's routes (test doubles that wrap only the pairing and workspace calls) refuse them
+/// before any I/O.
+extension RelayTransport {
+    public func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
+    public func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
+    public func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
+    public func createAccount(_ body: Data) async throws -> WireReply { throw TransportError.invalidArgument }
 }
 
 public extension RelayTransport {

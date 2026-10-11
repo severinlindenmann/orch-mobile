@@ -85,7 +85,13 @@ owner-approved). Where this file and a proposal differ, this file wins. Spec gap
 ## Provisional answers to owner questions (owner may override)
 
 - D-1 Keep device keys and cert after leaving the last workspace; "Reset this iPhone" wipes them.
-- D-2 The phone is never the primary device in P4.
+- D-2 The phone is never the primary device in P4. (PR4 adds the primary's relay client calls, D(p) cert-request
+  poll, challenge and PK-signed rejection, for FakePrimary and a later primary phone; the shipped app does not act as one.)
+- D-7 (PR4) A pairing ends as "denied" (`pair.denied`) only for a PK-signed `cert_rejection` that the phone verified
+  under the link-pinned PK and bound to the request of the challenge it showed. An invalid one is ignored (the
+  pairing keeps waiting and expires), one for another request raises the substitution alarm, and one that cannot be
+  bound (no challenge shown yet) ends as the host's plain "rejected". Fail closed: the host's word never names the
+  primary.
 - D-3 The QR always carries the universal link (relay origin included); `orch://` only as compatibility with an
   explicit relay origin, otherwise rejected.
 - D-4 No `apns-collapse-id` in the prototype (S2's safer default); replacement via the NSE + delivered-item removal.

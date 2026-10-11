@@ -48,6 +48,7 @@ import Testing
             "sig_card_wsk": Label.sigCardWSK,
             "sig_ws_delegation": Label.sigWSDelegation,
             "sig_cert_challenge": Label.sigCertChallenge,
+            "sig_cert_rejection": Label.sigCertRejection,
             "sig_push": Label.sigPush,
             "sig_decision": Label.sigDecision,
             "sig_member_list": Label.sigMemberList,
@@ -82,17 +83,16 @@ import Testing
         // logs, checkpoints or gate hashes (host/relay side, docs/gaps.md #25), so OrchProtocol has no `Label.*` for them.
         let knownNotUsedByThePhone: Set<String> = [
             "sig_ticket_event", "sig_ws_event", "sig_host_event", "sig_checkpoint",
-            "sig_cert_rejection",   // PR4 (pairing/primary): cert rejection is the primary-device flow
             "h_section", "h_value", "h_gate", "h_policy", "h_people", "h_question_id", "h_event", "h_grant_secret"
         ]
-        #expect(knownNotUsedByThePhone.count == 13)
+        #expect(knownNotUsedByThePhone.count == 12)
         #expect(knownNotUsedByThePhone.isDisjoint(with: Set(mine.keys)))
         #expect(Set(l.keys) == Set(mine.keys).union(knownNotUsedByThePhone))
         for (k, v) in l where !knownNotUsedByThePhone.contains(k) { #expect(mine[k] == v.str, "\(k)") }
     }
 
     @Test func signAndAADLabelsArePrefixFree() {
-        let all = [Label.sigDeviceCert, Label.sigRevocation, Label.sigCardWSK, Label.sigWSDelegation, Label.sigCertChallenge,
+        let all = [Label.sigDeviceCert, Label.sigRevocation, Label.sigCardWSK, Label.sigWSDelegation, Label.sigCertChallenge, Label.sigCertRejection,
                    Label.sigPush, Label.sigDecision, Label.sigMemberList, Label.sigWKGrant, Label.sigSKGrant, Label.sigBridge,
                    Label.sigCertRequest, Label.sigEnrollRequest, Label.sigDropObject, Label.sigDropClaim, Label.sigWSEnvelope,
                    Label.sigWSCosign, Label.sigWebAuthnBind, Label.sigRelayAuth, Label.sigPublish,

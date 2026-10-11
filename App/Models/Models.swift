@@ -284,6 +284,8 @@ enum PairingState: Hashable, Sendable {
     case expired
     case alarm(PairingAlarm)
     case refused(PairingRefusal)
+    /// The primary device declined to sign this iPhone (a PK-signed rejection the client verified, never the host's word alone).
+    case denied
 }
 
 enum PairingScenario: String, CaseIterable, Hashable, Sendable {

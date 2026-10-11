@@ -35,6 +35,8 @@ package struct HostPendingPair: Equatable, Sendable {
     package var challenge: JSONValue?
     package var scopes: [String]?
     package var requestID: ID16?
+    /// The primary's PK-signed `cert_rejection`, verified by the host and relayed unchanged in the `rejected` answer.
+    package var rejection: JSONValue?
     /// What the offer allowed (the most a certificate for this device may carry); `scopes` is what the host's human approved within it.
     package var scopesMax: [String]?
     /// Bumped by every transition (and by every reservation of one): an await in the host's approval path may continue only if the
@@ -150,7 +152,10 @@ extension HostBridgeCore {
         case "approved":
             return ["state": "approved", "scopes": .array((p.scopes ?? []).map { .string($0) }), "cert": p.cert ?? .null,
                     "pk_pub": .string(B64U.encode(owner.x963)), "epoch": .int(Int64(approvedEpochOverride ?? epoch)), "wsk_pub": w]
-        case "rejected": return ["state": "rejected", "wsk_pub": w]
+        case "rejected":
+            // a rejection by the primary carries its PK-signed proof (and pk_pub for the phone's pin check); the host's own has none
+            guard let rej = p.rejection else { return ["state": "rejected", "wsk_pub": w] }
+            return ["state": "rejected", "wsk_pub": w, "pk_pub": .string(B64U.encode(owner.x963)), "rejection": rej]
         case "expired": return ["state": "expired", "wsk_pub": w]
         default: return pendingAnswer(p, wsk: wsk)
         }

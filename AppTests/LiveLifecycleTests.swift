@@ -144,6 +144,32 @@ final class LiveLifecycleTests: XCTestCase {
         await bounded { await services.waitForReset() }
     }
 
+    /// Rejecting on the Demo primary while the phone still waits (request opened, challenge not yet pinned) is worded as the
+    /// primary's "no", never as the Mac's (PR #45 review).
+    func testPrimaryRejectWhileWaitingIsAttributedToThePrimary() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let model = LivePairingModel(services: services, start: nil)
+        /// Real Demo clock (the phone polls every 10 s in cert_pending): up to 60 s, without failing on its own.
+        func await60(_ step: String, _ p: () async -> Bool) async {
+            for _ in 0..<600 { if await p() { return }; try? await Task.sleep(for: .milliseconds(100)) }
+            XCTFail("\(step): \(model.state)")
+        }
+        model.useDemoInvitation()
+        await await60("host code") { if case .comparingHost = model.state { return true }; return false }
+        model.hostApprove()
+        await await60("waiting") { if case .waitingPrimary = model.state { return true }; return false }
+        await runtime.primary.processInbox(relay: runtime.env.relay)          // the request is open on the primary
+        let device = runtime.env.deviceID
+        await await60("prompt") { await !runtime.primary.openPrompts().filter { $0.deviceID == device }.isEmpty }
+        model.primaryReject()
+        await await60("end") { if case .refused = model.state { return true }; return model.state == .denied }
+        XCTAssertTrue(model.state == .denied || model.state == .refused(.rejectedOnPrimary), "\(model.state)")
+        model.screenClosed()
+        services.exitDemo()
+        await bounded { await services.waitForReset() }
+    }
+
     func testFailedRemovalThenForegroundStaysQuarantined() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)
         let services = LiveServices(options: options, runtime: runtime)
