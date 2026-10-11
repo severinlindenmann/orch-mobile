@@ -5,6 +5,7 @@ import Testing
 /// A path component is swapped for a symbolic link between two steps of the descriptor walk (the walk's test hook
 /// pauses right after component N was opened). The operation must fail or stay inside the share root; the tree the
 /// link points to is never read, listed, renamed or deleted.
+#if DEBUG
 @Suite(.serialized) struct FdWalkTests {
     final class Fixture: @unchecked Sendable {
         let area: ShareArea
@@ -99,7 +100,11 @@ import Testing
             #expect(f.outsideIntact())
             let outsideClaimed = f.outside.appendingPathComponent("live/\(WS)/\(f.jobID).claimed")
             #expect(!FileManager.default.fileExists(atPath: outsideClaimed.path))
-            if k < 2 { #expect(!moved) }   // a swapped directory component fails the walk; a swapped leaf may only move the link itself
+            // k == 0 and k == 1 swap a directory component the walk must traverse: the walk fails, nothing moves.
+            // k == 2 swaps the leaf (the job directory itself): renameat does not follow a final link, so the rename
+            // may succeed, but then it moves the link entry inside the share area, never the outside tree.
+            if k < 2 { #expect(!moved) }
+            _ = moved
         }
     }
 
@@ -139,4 +144,116 @@ import Testing
         #expect(throws: (any Error).self) { try ShareFS.checkName("a/b") }
         #expect(throws: (any Error).self) { try ShareFS.checkName("") }
     }
+
+    // MARK: create:true walks
+
+    @Test func createWalksNeverFollowASwappedComponent() throws {
+        // writeFile
+        do {
+            let f = try Fixture(); let (idx, entry, dest) = Self.swaps(f)[0]
+            f.armSwap(afterComponent: idx, replace: entry, with: dest); defer { f.disarm() }
+            #expect(throws: (any Error).self) { try f.area.writeFile(Data("x".utf8), to: f.wsDir.appendingPathComponent("new.json")) }
+            #expect(f.didFire)
+            #expect(!ShareArea.exists(f.outside.appendingPathComponent("live/\(WS)/new.json")))
+            #expect(f.outsideIntact())
+        }
+        // ensureDirectory
+        do {
+            let f = try Fixture(); let (idx, entry, dest) = Self.swaps(f)[1]
+            f.armSwap(afterComponent: idx, replace: entry, with: dest); defer { f.disarm() }
+            #expect(throws: (any Error).self) { try f.area.ensureDirectory(f.wsDir.appendingPathComponent("sub")) }
+            #expect(!ShareArea.exists(f.outside.appendingPathComponent("live/\(WS)/sub")))
+        }
+        // Stager (openDir create:true)
+        do {
+            let f = try Fixture(); let (idx, entry, dest) = Self.swaps(f)[0]
+            let s = try StagingSession(area: f.area, target: target())
+            f.armSwap(afterComponent: idx, replace: entry, with: dest); defer { f.disarm() }
+            #expect(throws: (any Error).self) { try s.add(.text("LEAK")) }
+            #expect(f.didFire)
+            #expect(names(f.outside.appendingPathComponent("live/\(WS)")) == [f.jobID])
+            #expect(f.outsideIntact())
+        }
+        // redirect (quarantined job to another workspace)
+        do {
+            let f = try Fixture()
+            let inbox = ShareInbox(area: f.area)
+            _ = inbox.claim(live: [])
+            let q = try #require(inbox.quarantined().first)
+            let (idx, entry, dest) = Self.swaps(f)[0]
+            f.armSwap(afterComponent: idx, replace: entry, with: dest); defer { f.disarm() }
+            #expect(throws: (any Error).self) { try inbox.redirect(q, to: LiveDestination(realm: "live", ws: WS2, generation: 1)) }
+            #expect(f.didFire)
+            #expect(!ShareArea.exists(f.outside.appendingPathComponent("live/\(WS2)")))
+            #expect(f.outsideIntact())
+        }
+    }
+
+    @Test func swapToARealDirectoryInsideTheRootIsAllowed() throws {
+        // Positive control: the walk only refuses links. A real directory swapped in is still inside the share area.
+        let f = try Fixture()
+        let root = f.rootPath, job = f.jobDir
+        ShareFS.setWalkHook { r, i, _ in
+            guard r == root, i == 3 else { return }
+            let moved = job.deletingLastPathComponent().appendingPathComponent("moved-away")
+            try? FileManager.default.moveItem(at: job, to: moved)
+            try? FileManager.default.createDirectory(at: job, withIntermediateDirectories: false)
+            try? Data("SWAPPED-INSIDE".utf8).write(to: job.appendingPathComponent("item-1"))
+        }
+        defer { f.disarm() }
+        #expect(try f.area.readFile(job.appendingPathComponent("item-1"), cap: 100) == Data("SWAPPED-INSIDE".utf8))
+    }
+
+    // MARK: descriptors
+
+    /// Descriptors whose path lies under `prefix` (other suites run in parallel, so the process-wide count is noisy).
+    static func openDescriptorCount(under prefix: String) -> Int {
+        (0..<1024).filter { fd in
+            guard fcntl(Int32(fd), F_GETFD) != -1 else { return false }
+            var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(Int32(fd), F_GETPATH, &buf) == 0 else { return false }
+            return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self).contains(prefix)
+        }.count
+    }
+
+    @Test func noDescriptorsLeakAcrossManyCyclesIncludingFailures() throws {
+        let f = try Fixture()
+        let marker = f.outside.deletingLastPathComponent().lastPathComponent
+        let before = Self.openDescriptorCount(under: marker)
+        for i in 0..<200 {
+            _ = try? f.area.readFile(f.jobDir.appendingPathComponent("item-1"), cap: 100)
+            _ = try? f.area.readFile(f.jobDir.appendingPathComponent("missing"), cap: 100)
+            _ = f.area.listNames(f.jobDir)
+            try f.area.writeFile(Data("x".utf8), to: f.wsDir.appendingPathComponent("w\(i % 3).json"))
+            _ = f.area.rename(f.wsDir.appendingPathComponent("w0.json"), to: f.wsDir.appendingPathComponent("w9.json"))
+            _ = f.area.safeRemove(f.wsDir.appendingPathComponent("w9.json"))
+            _ = f.area.listNames(f.outside)   // outside the share dir: refused
+        }
+        #expect(before == 0)
+        #expect(Self.openDescriptorCount(under: marker) == 0)
+    }
+
+    // MARK: backup exclusion
+
+    @Test func createdDirectoriesAreExcludedFromBackup() throws {
+        let f = try Fixture()
+        let dir = f.area.shareDir.appendingPathComponent("fresh/deeper", isDirectory: true)
+        try f.area.ensureDirectory(dir)
+        for d in [dir, dir.deletingLastPathComponent()] {
+            #expect(try d.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+            #expect(getxattr(d.path, ShareFS.backupExcludeAttr, nil, 0, 0, 0) > 0)
+        }
+        // Byte-for-byte what Foundation writes for the same directory.
+        let ref = f.area.shareDir.appendingPathComponent("foundation-ref", isDirectory: true)
+        try FileManager.default.createDirectory(at: ref, withIntermediateDirectories: false)
+        var u = ref; var rv = URLResourceValues(); rv.isExcludedFromBackup = true; try u.setResourceValues(rv)
+        func attr(_ p: String) -> [UInt8] {
+            var b = [UInt8](repeating: 0, count: 256)
+            let n = getxattr(p, ShareFS.backupExcludeAttr, &b, b.count, 0, 0)
+            return n > 0 ? Array(b.prefix(n)) : []
+        }
+        #expect(!attr(ref.path).isEmpty)
+        #expect(attr(dir.path) == attr(ref.path))
+    }
 }
+#endif

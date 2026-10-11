@@ -17,8 +17,10 @@ enum ShareFS {
 
     // MARK: test seam
 
-    /// Test seam: called after the walk opened component `index` (0 = the root itself) of a walk below `root`.
+    /// Test seam (DEBUG builds only): called after the walk opened component `index` (0 = the root itself) of a walk
+    /// below `root`. There is a single global slot: tests that set it must run serialized and filter on `root`.
     typealias WalkHook = @Sendable (_ root: String, _ index: Int, _ name: String) -> Void
+    #if DEBUG
     private static let hookLock = NSLock()
     nonisolated(unsafe) private static var hook: WalkHook?
     static func setWalkHook(_ h: WalkHook?) { hookLock.lock(); hook = h; hookLock.unlock() }
@@ -26,6 +28,9 @@ enum ShareFS {
         hookLock.lock(); let h = hook; hookLock.unlock()
         h?(root, index, name)
     }
+    #else
+    @inline(__always) private static func fireHook(_ root: String, _ index: Int, _ name: String) {}
+    #endif
 
     // MARK: walking
 
@@ -74,9 +79,9 @@ enum ShareFS {
 
     // MARK: entries
 
-    /// Entry names of a directory (excluding `.` and `..`), read from a dup of the descriptor.
+    /// Entry names of a directory (excluding `.` and `..`), read from a close-on-exec dup of the descriptor.
     static func list(_ dir: DirFD) throws -> [String] {
-        let d = dup(dir.fd)
+        let d = fcntl(dir.fd, F_DUPFD_CLOEXEC, 0)
         guard d >= 0 else { throw ReadFailure.io(errno) }
         guard let dp = fdopendir(d) else { let e = errno; close(d); throw ReadFailure.io(e) }
         defer { closedir(dp) }
@@ -142,18 +147,18 @@ enum ShareFS {
         let tmp = ".\(name).tmp-\(UUID().uuidString.lowercased())"
         let fd = openat(dir.fd, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw ShareError.io("create: \(errno)") }
+        protect(fd: fd, directory: false)
         var ok = false
         defer { close(fd); if !ok { unlinkat(dir.fd, tmp, 0) } }
         try data.withUnsafeBytes { raw in
             var off = 0
             while off < raw.count {
                 let w = Darwin.write(fd, raw.baseAddress! + off, raw.count - off)
-                if w < 0 { throw ShareError.io("write: \(errno)") }
+                if w < 0 { if errno == EINTR { continue }; throw ShareError.io("write: \(errno)") }
                 off += w
             }
         }
-        fsync(fd)
-        protect(fd: fd, directory: false)
+        guard fsync(fd) == 0 else { throw ShareError.io("fsync: \(errno)") }
         guard renameat(dir.fd, tmp, dir.fd, name) == 0 else { throw ShareError.io("rename: \(errno)") }
         ok = true
     }
@@ -170,7 +175,7 @@ enum ShareFS {
         guard (try? checkName(name)) != nil, depth < 64 else { return false }
         var st = stat()
         if fstatat(parent.fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0 { return errno == ENOENT }
-        if (st.st_mode & S_IFMT) != S_IFDIR { return unlinkat(parent.fd, name, 0) == 0 }
+        if (st.st_mode & S_IFMT) != S_IFDIR { return unlinkat(parent.fd, name, 0) == 0 || errno == ENOENT }
         let fd = openat(parent.fd, name, dirFlags)
         guard fd >= 0 else { return errno == ENOENT }
         let child = DirFD(fd)
@@ -178,8 +183,19 @@ enum ShareFS {
         var ok = true
         for n in names where !removeTree(child, n, depth: depth + 1) { ok = false }
         guard ok else { return false }
-        return unlinkat(parent.fd, name, AT_REMOVEDIR) == 0
+        return unlinkat(parent.fd, name, AT_REMOVEDIR) == 0 || errno == ENOENT
     }
+
+    /// Name and value Foundation's `isExcludedFromBackup` writes (probed on the iOS simulator: the raw string
+    /// "com.apple.MobileBackup"; on macOS a binary plist holding "com.apple.backupd"). A test compares byte for byte.
+    static let backupExcludeAttr = "com.apple.metadata:com_apple_backup_excludeItem"
+    static let backupExcludeValue: [UInt8] = {
+        #if os(iOS)
+        return Array("com.apple.MobileBackup".utf8)
+        #else
+        return Array((try? PropertyListSerialization.data(fromPropertyList: "com.apple.backupd", format: .binary, options: 0)) ?? Data())
+        #endif
+    }()
 
     /// Complete protection and backup exclusion, on the descriptor (iOS data protection is a no-op elsewhere).
     static func protect(fd: Int32, directory: Bool) {
@@ -187,8 +203,8 @@ enum ShareFS {
         _ = fcntl(fd, F_SETPROTECTIONCLASS, 1)   // class A = NSFileProtectionComplete
         #endif
         if directory {
-            var one: UInt8 = 1
-            _ = fsetxattr(fd, "com.apple.MobileBackup", &one, 1, 0, 0)
+            let v = backupExcludeValue
+            _ = fsetxattr(fd, backupExcludeAttr, v, v.count, 0, 0)
         }
     }
 

@@ -109,8 +109,8 @@ public struct ShareArea: Sendable {
         return ShareFS.rename(fd, fname, td, tname)
     }
 
-    /// Removes what is at `url` without following links, through descriptors only. A missing entry (or a missing or
-    /// link-swapped parent) is not an error for the former and a failure for the latter.
+    /// Removes what is at `url` without following links, through descriptors only. Returns true when nothing is left
+    /// at `url` (including when it or a parent never existed); false when a parent is a link or a file, or on I/O failure.
     @discardableResult
     func safeRemove(_ url: URL) -> Bool {
         guard let rel = components(of: url), let last = rel.last else { return false }
