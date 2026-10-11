@@ -7,8 +7,9 @@ import OrchProtocol
 /// (each with its delivery position `n` and its own 60 s lifetime) and the digests of the response chunks stored for it. The record
 /// lives 900 s from the FIRST receipt; a resend never extends that, only a dependent copy or chunk does (`keepUntilMs`).
 ///
-/// Bodies are kept beside the metadata only while they live (`envelope` becomes nil when a copy or chunk expires): an expired body
-/// is never resurrected, but its digest still answers `rid_conflict` and `chunk_conflict` until the record goes.
+/// Bodies are kept beside the metadata only while they live (`envelope` becomes nil when a copy or chunk expires). An expired chunk
+/// comes back only when the host posts the EXACT stored bytes again (P3-D27, bounded); its digest answers `chunk_conflict` for any
+/// other bytes until the record goes.
 package struct RelayRidRecord: Equatable, Sendable {
     package struct Copy: Equatable, Sendable {
         package var n: UInt64
@@ -21,8 +22,10 @@ package struct RelayRidRecord: Equatable, Sendable {
         package var flags: UInt8
         package var expiresMs: Int64
         package var envelope: Data?
-        package init(digest: Data, flags: UInt8, expiresMs: Int64, envelope: Data? = nil) {
-            self.digest = digest; self.flags = flags; self.expiresMs = expiresMs; self.envelope = envelope
+        /// How often the exact bytes were stored again after expiring (P3-D27, orch-relay d3816ea): at most `maxRestores`.
+        package var restores: Int
+        package init(digest: Data, flags: UInt8, expiresMs: Int64, envelope: Data? = nil, restores: Int = 0) {
+            self.digest = digest; self.flags = flags; self.expiresMs = expiresMs; self.envelope = envelope; self.restores = restores
         }
     }
     package var digest: Data
@@ -49,6 +52,10 @@ package enum RidStore {
     package static let requeueIntervalMs: Int64 = 10_000
     package static let maxRequeues = 8
     package static let maxChunks = 64
+    /// P3-D27: an expired chunk's exact bytes may be stored again only until this long after the rid's FIRST receipt, and at most
+    /// `maxRestores` times per chunk (orch-relay d3816ea, Q11).
+    package static let restoreWindowMs: Int64 = 900_000
+    package static let maxRestores = 8
 
     package enum RequestResult: Equatable, Sendable {
         case queued(n: UInt64), coalesced
@@ -58,8 +65,8 @@ package enum RidStore {
     }
 
     package enum ChunkResult: Equatable, Sendable {
-        case stored, replay
-        case expired, chunkConflict, staleEpoch(epoch: UInt32), quotaExceeded
+        case stored, replay, restored
+        case expired, chunkConflict, staleEpoch(epoch: UInt32), quotaExceeded, retryExhausted
     }
 
     package static func digest(_ raw: Data) -> Data { Data(SHA256.hash(data: raw)) }
@@ -96,17 +103,33 @@ package enum RidStore {
         return .queued(n: n)
     }
 
-    /// A host response chunk (P3-D22). The caller has checked shape, holder and the target device's membership.
+    /// A host response chunk (P3-D22, P3-D27). The caller has checked shape, holder and the target device's membership (in that order,
+    /// before this). `room` is the target's remaining response budget in bytes (nil: not constraining); it is the last check.
     package static func chunk(_ record: inout RelayRidRecord?, raw: Data, header: Bridge.Header, epoch: UInt32, nowMs: Int64,
-                              chunkLifetimeMs: Int64 = 60_000) -> ChunkResult {
+                              chunkLifetimeMs: Int64 = 60_000, room: Int? = nil) -> ChunkResult {
         guard var r = record, nowMs < r.keepUntilMs else { return .expired }
         let d = digest(raw)
-        if let old = r.chunks[header.seq] { return old.digest == d ? .replay : .chunkConflict }     // a replay never refreshes a TTL
         let lastRefusal = Bridge.Flags.last.rawValue | Bridge.Flags.refusal.rawValue
+        if var old = r.chunks[header.seq] {
+            // Only the EXACT stored bytes are ever stored again; other bytes for a stored index stay a conflict.
+            guard old.digest == d else { return .chunkConflict }
+            if nowMs < old.expiresMs { return .replay }                      // a live duplicate: TTL unchanged, nothing charged
+            if header.epoch != epoch && header.flags & lastRefusal != lastRefusal { return .replay }   // old-epoch data: never
+            if nowMs >= r.firstMs + restoreWindowMs { return .expired }       // the immutable deadline, never keep_until_ms
+            if old.restores >= maxRestores { return .retryExhausted }
+            if let room, raw.count > room { return .quotaExceeded }
+            old.restores += 1
+            old.expiresMs = min(nowMs + chunkLifetimeMs, r.keepUntilMs)       // keep_until_ms unchanged
+            old.envelope = raw
+            r.chunks[header.seq] = old
+            record = r
+            return .restored
+        }
         if header.epoch != r.reqEpoch || (header.epoch != epoch && header.flags & lastRefusal != lastRefusal) {
             return .staleEpoch(epoch: epoch)
         }
         if r.chunks.count >= maxChunks { return .quotaExceeded }
+        if let room, raw.count > room { return .quotaExceeded }
         r.chunks[header.seq] = .init(digest: d, flags: header.flags, expiresMs: nowMs + chunkLifetimeMs, envelope: raw)
         r.keepUntilMs = max(r.keepUntilMs, nowMs + chunkLifetimeMs)
         record = r

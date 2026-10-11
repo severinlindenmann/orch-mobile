@@ -264,7 +264,22 @@ public actor FakeRelay: RequestSender {
             workspaces[ws] = w
         }
         boxes = boxes.filter { !($0.key.ws == ws && $0.key.device == d) }
-        rids = rids.filter { !($0.key.ws == ws && $0.key.device == d) }
+        exhaustRids(ws: ws, devices: [d])
+    }
+
+    /// A departed or revoked device keeps nothing at the relay: its request copies end, every body goes, and its chunks' re-store
+    /// counts are exhausted (P3-D27), so a re-added device never gets an old answer back. The digests stay for conflict detection.
+    func exhaustRids(ws: ID16, devices: Set<ID16>) {
+        let now = wall.nowMs
+        for (k, var r) in rids where k.ws == ws && devices.contains(k.device) {
+            for i in r.copies.indices { r.copies[i].envelope = nil; r.copies[i].expiresMs = min(r.copies[i].expiresMs, now) }
+            r.chunks = r.chunks.mapValues { c in
+                var c = c
+                c.envelope = nil; c.expiresMs = min(c.expiresMs, now); c.restores = RidStore.maxRestores
+                return c
+            }
+            rids[k] = r
+        }
     }
 
     static func relayError(_ r: Refusal) -> ClientError {
@@ -1037,10 +1052,18 @@ public actor FakeRelay: RequestSender {
         let now = wall.nowMs
         let key = RidKey(ws: ws, device: h.device, rid: rid)
         var record = rids[key]
-        let result = RidStore.chunk(&record, raw: r.body, header: h, epoch: listEpoch(ws) ?? 0, nowMs: now, chunkLifetimeMs: limits.bodyLifetimeMs)
-        // Charged per (workspace, target device) after the known-rid and stored-replay checks, before the epoch rule (orch-relay 813b0fe).
+        // The target's remaining undelivered-response budget (P3-D17): stored and re-stored chunks are charged to it.
+        func undelivered(_ match: (RidKey) -> Bool) -> Int {
+            rids.filter { match($0.key) }.values.reduce(0) { $0 + $1.chunks.values.reduce(0) { $0 + (now < $1.expiresMs ? $1.envelope?.count ?? 0 : 0) } }
+        }
+        let room = min(limits.maxResponseBytesPerDevice - undelivered({ $0.ws == ws && $0.device == h.device }),
+                       limits.maxResponseBytesPerWorkspace - undelivered({ $0.ws == ws }))
+        let result = RidStore.chunk(&record, raw: r.body, header: h, epoch: listEpoch(ws) ?? 0, nowMs: now,
+                                    chunkLifetimeMs: limits.bodyLifetimeMs, room: max(room, 0))
+        // Charged per (workspace, target device) after the known-rid, stored-replay and re-store checks, before the epoch rule
+        // (orch-relay 813b0fe, d3816ea): a live duplicate or an old-epoch data re-post is free.
         switch result {
-        case .stored, .staleEpoch, .quotaExceeded:
+        case .stored, .restored, .staleEpoch, .quotaExceeded:
             guard hostPosts[DeviceKey(ws: ws, device: h.device), default: Window()].hit(now: now, limit: limits.hostPostsPerSecond, spanMs: 1_000) else {
                 rateLimited += 1; return refuse(429, .rateLimited, headers: fixedRetry)
             }
@@ -1052,14 +1075,8 @@ public actor FakeRelay: RequestSender {
         case .chunkConflict: return refuse(409, .chunkConflict)
         case .staleEpoch(let e): return refuse(409, .staleEpoch, extra: ["epoch": .int(Int64(e))])
         case .quotaExceeded: rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry)
-        case .stored:
-            func undelivered(_ match: (RidKey) -> Bool) -> Int {
-                rids.filter { match($0.key) }.values.reduce(0) { $0 + $1.chunks.values.reduce(0) { $0 + (now < $1.expiresMs ? $1.envelope?.count ?? 0 : 0) } }
-            }
-            if undelivered({ $0.ws == ws && $0.device == h.device }) + r.body.count > limits.maxResponseBytesPerDevice
-                || undelivered({ $0.ws == ws }) + r.body.count > limits.maxResponseBytesPerWorkspace {
-                rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry)
-            }
+        case .retryExhausted: return refuse(409, .retryExhausted)
+        case .stored, .restored:
             if liveBodyBytes(now) + r.body.count > limits.maxQueuedBodyBytes { return refuse(503, .overloaded, headers: fixedRetry) }
             rids[key] = record
             _ = duplicate          // a duplicated delivery is a byte-identical stored replay: nothing more to store

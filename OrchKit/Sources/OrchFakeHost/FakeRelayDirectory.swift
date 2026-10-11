@@ -480,7 +480,7 @@ extension FakeRelay {
         w.receipts[digest] = Receipt(listSeq: list.listSeq, epoch: list.epoch, acceptedMs: now)
         workspaces[ws] = w
         if !departed.isEmpty { boxes = boxes.filter { !($0.key.ws == ws && $0.key.device.map(departed.contains) == true) } }
-        if !departed.isEmpty { rids = rids.filter { !($0.key.ws == ws && departed.contains($0.key.device)) } }
+        if !departed.isEmpty { exhaustRids(ws: ws, devices: Set(departed)) }
         return ["list_seq": .int(list.listSeq), "epoch": .int(Int64(list.epoch))]
     }
 

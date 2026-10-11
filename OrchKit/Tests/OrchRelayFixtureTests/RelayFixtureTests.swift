@@ -211,14 +211,14 @@ import OrchTestVectors
         #expect(FixtureCoverage.pending.filter { $0.value == .pr2 }.keys.sorted() == ["host_hold.json", "host_poll.json"])
     }
 
-    /// The p3 vector groups: `cases` (replayed by the P3/RidStore/CertQueue suites), `envelope_sizes`, `objects`, and the groups
-    /// pending a later stage (`pendingVectorGroups`). A new group fails here until it is placed.
+    /// The p3 vector groups: `cases` (replayed by the P3/RidStore/CertQueue suites), `restore` (RidStoreVectorTests), `envelope_sizes`,
+    /// `objects`, and the groups pending a later stage (`pendingVectorGroups`). A new group fails here until it is placed.
     @Test func p3VectorGroupsAreAccountedFor() throws {
         let root = try StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
         for suite in ["1", "2"] {
             let p3 = try #require(root.object?["suites"]?.object?[suite]?.object?["p3"]?.object)
             let pending = Set(FixtureCoverage.pendingVectorGroups.keys.map { String($0.dropFirst(3)) })
-            #expect(Set(p3.keys) == Set(["cases", "envelope_sizes", "objects"]).union(pending), "suite \(suite): \(p3.keys.sorted())")
+            #expect(Set(p3.keys) == Set(["cases", "envelope_sizes", "objects", "restore"]).union(pending), "suite \(suite): \(p3.keys.sorted())")
             #expect(p3["restore"]?.array?.count == 34, "suite \(suite) restore")
         }
     }
