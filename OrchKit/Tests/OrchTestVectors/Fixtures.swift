@@ -68,8 +68,11 @@ public enum Fixtures {
 
     /// Names of the JSON fixture files (README.md excluded), sorted.
     public static func fileNames() throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".json") }.sorted()
+        try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".json") && $0 != "MANIFEST.json" }.sorted()
     }
+
+    /// Every file of the copied directory (fixtures, README, the relay's manifest script and `MANIFEST.json`).
+    public static func allFileNames() throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() }
 
     public static func rawData(_ fileName: String) throws -> Data { try Data(contentsOf: directory.appendingPathComponent(fileName)) }
 

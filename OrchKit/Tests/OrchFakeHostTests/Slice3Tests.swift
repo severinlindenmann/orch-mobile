@@ -123,7 +123,7 @@ import OrchTestVectors
         #expect(!gate.canConfirm(now: .seconds(100)))
     }
     @Test func testDecisionVectors() throws {
-        let v = J(try StrictJSON.parse(Vectors.data, maxBytes: .max))["suites"]["2"]
+        let v = J(try StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]
         let q = v["question_hash"]["content"]
         #expect(B64U.encode(try Decisions.questionHash(questionID: q["question_id"].id, ticket: q["ticket"].str, text: q["text"].str, options: q["options"].v)) == v["question_hash"]["content_hash"].str)
         for c in v["decisions"]["cases"].items {

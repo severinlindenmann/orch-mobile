@@ -27,7 +27,7 @@ func caseID(_ f: Fixtures.File, _ c: Fixtures.Case) -> String { "\(f.fileName)#\
 
 /// The suite-2 signing public keys of the shared vectors (person, wsk, device and primary keys): the fixtures are signed with them.
 func vectorSigningKeys() throws -> [String: SigningPublicKey] {
-    let root = try StrictJSON.parse(Vectors.data, maxBytes: .max)
+    let root = try StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
     var out: [String: SigningPublicKey] = [:]
     for (name, k) in root.object?["suites"]?.object?["2"]?.object?["keys"]?.object ?? [:] where name.hasSuffix(".sig") {
         guard let hex = k.object?["pub"]?.string, let d = Hex.decode(hex) else { continue }
