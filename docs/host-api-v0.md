@@ -335,7 +335,9 @@ and the required `wk_commit = b64u(H("orch/v2/wk-commit|" || ws || u32(epoch) ||
 One WK per epoch, ever: the phone seals only at the head list's epoch, under a grant whose WK matches its `wk_commit`; a
 mismatch or a missing list/grant blocks sending (no_key), never a fallback. Older epochs are read with any WSK-verified
 grant, checked against `wk_commit` when a list for that epoch is held. Two verified lists at one epoch with different
-`wk_commit` are the local alarm `wk_commit_conflict` (durable; nothing is sealed while it stands).
+`wk_commit` are the local alarm `wk_commit_conflict`, raised before a lower `list_seq` is refused as stale; it stops sealing at
+that epoch until a verified list at a higher epoch arrives. The head's own `list_seq` with other content is `conflicting_snapshot`
+(no sealing block). A read above the head, or before any verified list, is the local `future_epoch` (G2b D1–D4, orch-relay 491b500).
 Grants are published with their list in one `PUT /v2/workspaces/{ws}/membership` (P3-D7, §19.2), never staged.
 Verify signatures, identity binding and monotonic epoch/list/card counters before committing anything.
 Routes and authorization are protocol-v2 §19.1/§19.2; the FakeRelay replays orch-relay's HTTP fixtures for them ([gap 24](gaps.md)).

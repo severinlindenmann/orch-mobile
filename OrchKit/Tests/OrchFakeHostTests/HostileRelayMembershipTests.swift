@@ -118,10 +118,10 @@ extension FakeHost {
         await #expect(throws: Refusal.wkCommitConflict) { _ = try await phone.session.exchange(meta: httpGet) }
         await #expect(throws: Refusal.wkCommitConflict) { _ = try await phone.session.exchange(meta: httpGet) }
         #expect(WorkspaceKeyAlarm(error: Refusal.wkCommitConflict) != nil && WorkspaceKeyAlarm(error: SessionError.wkCommitMismatch(2)) == .mismatch(epoch: 2))
-        // an older list_seq with the other commitment is the same alarm (not merely stale_list)
-        let older = try await w.host.memberList([(w.primaryID, World.all)], epoch: 1, listSeq: 1,
-                                                wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
-        await #expect(throws: Refusal.wkCommitConflict) { _ = try await phone.session.acceptMemberList(older) }
+        // the head's own list_seq with other content (and another commitment) is conflicting_snapshot, not the alarm (G2b D2)
+        let sameSeq = try await w.host.memberList([(w.primaryID, World.all)], epoch: 1, listSeq: 1,
+                                                  wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
+        await #expect(throws: Refusal.conflictingSnapshot) { _ = try await phone.session.acceptMemberList(sameSeq) }
     }
 
     /// Phone-side enforcement (security review of #46): a later list at the head's epoch that drops a device is refused
@@ -190,28 +190,5 @@ extension FakeHost {
         #expect(r.status == 200)
         #expect(try await phone.container.memberListHead()?.listSeq == 1)    // the re-issued list, accepted as the new head
         #expect(try await phone.container.wkCommit(epoch: 1) != nil)
-    }
-
-    /// The local Q10 snapshot vectors, through the code the device runs (`acceptMemberList` and the persisted head), not only the pure
-    /// `MemberList.checkSnapshot`. TODO(G2b): use orch-relay's `member_list_snapshots`.
-    @Test func localSnapshotVectorsThroughTheSession() async throws {
-        let local = try StrictJSON.parse(LocalG2bVectors.data, maxBytes: .max)
-        let cases = local.object!["member_list_snapshots"]!.array!
-        #expect(cases.count == 10)
-        for c in cases {
-            let co = c.object!, name = co["name"]!.string!
-            let w = try await World.make()
-            let phone = try await w.makePhone(install: false)
-            func signed(_ l: JSONValue) async throws -> JSONValue {
-                let o = l.object!
-                return try await w.host.memberList(o["members"]!.array!.map { (ID16(hex: $0.string!)!, ["look"]) }, epoch: UInt32(o["epoch"]!.int!),
-                                                   listSeq: o["list_seq"]!.int!, wkCommit: B64U.decode(o["wk_commit"]!.string!)!)
-            }
-            if let k = co["known"], k != .null { _ = try await phone.session.acceptMemberList(try await signed(k)) }
-            let next = co["next"]! == co["known"] ? try await signed(co["known"]!) : try await signed(co["next"]!)
-            let want = co["expect"]!.string!
-            do { _ = try await phone.session.acceptMemberList(next); #expect(want == "ok", "\(name)") }
-            catch let r as Refusal { #expect(r.rawValue == want, "\(name)") }
-        }
     }
 }

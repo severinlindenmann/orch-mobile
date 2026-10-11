@@ -31,6 +31,10 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
             cfg.deviceID = ctx["device"].id
             let session = try await WorkspaceSession(cfg)
             for (k, v) in ctx["wk"].v.object! { try await session.install(epoch: UInt32(k)!, key: keyFromHex(v.string!)) }
+            // G2b D4: keys are read only at or below a verified head; these bridge vectors predate it, so the head is the top key epoch
+            let top = ctx["wk"].v.object!.keys.compactMap { Int64($0) }.max() ?? 1
+            try await container.database().execute("INSERT INTO member_list_head(id, list_seq, epoch, digest, members) VALUES(1,1,?,?,'')",
+                                                   [.int(top), .blob(Data(count: 32))])
             try await session.setClockOffset(ctx["offset_ms"].i64)
             var pending: [ID16: Bridge.PendingRequest] = [:]
             for (k, v) in ctx["pending"].v.object! {
@@ -64,7 +68,7 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
 
 @Suite struct RevocationOpVectorTests {
     @Test func testRevocationOpVectors() throws {
-        let s2 = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]
+        let s2 = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]
         let cases = s2["revocation_op"].items
         #expect(cases.count == 5)
         for c in cases {
