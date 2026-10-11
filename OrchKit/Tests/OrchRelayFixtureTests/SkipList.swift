@@ -55,7 +55,7 @@ enum FixtureCoverage {
                                           // PR5: bridge (RelayReplayTests bridge seeds)
                                           "bridge_device_post.json", "bridge_device_poll.json", "bridge_host_post.json"]
 
-    /// Pinned by the d3816ea copy (MANIFEST.json revision 5): 38 JSON fixture files, 396 cases. Update together with PROVENANCE.md.
+    /// Pinned by the 04da0e7 copy (MANIFEST.json revision 6): 38 JSON fixture files, 396 cases. Update together with PROVENANCE.md.
     static let expectedFileCount = 38
     static let expectedCaseCount = 396
 }
