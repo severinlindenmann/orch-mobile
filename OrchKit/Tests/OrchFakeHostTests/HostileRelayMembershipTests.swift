@@ -122,6 +122,11 @@ extension FakeHost {
         let sameSeq = try await w.host.memberList([(w.primaryID, World.all)], epoch: 1, listSeq: 1,
                                                   wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
         await #expect(throws: Refusal.conflictingSnapshot) { _ = try await phone.session.acceptMemberList(sameSeq) }
+        // G2b D2: a verified list at a higher epoch lifts the block
+        try await w.host.rotate(remaining: w.baseRoster, relay: w.relay, session: w.hostSession)
+        #expect(try await phone.session.refreshGrants() == 2)
+        #expect(await phone.session.keyAlarm() == nil)
+        _ = try await phone.session.sealingKey()
     }
 
     /// Phone-side enforcement (security review of #46): a later list at the head's epoch that drops a device is refused
@@ -190,5 +195,17 @@ extension FakeHost {
         #expect(r.status == 200)
         #expect(try await phone.container.memberListHead()?.listSeq == 1)    // the re-issued list, accepted as the new head
         #expect(try await phone.container.wkCommit(epoch: 1) != nil)
+    }
+
+    /// After migration 12 dropped the head, a read finds no verified list (`future_epoch`): the response path does the same bounded
+    /// list + grants fetch as the send path, so a pending response still opens.
+    @Test func theReadPathRecoversAWithoutHeadStore() async throws {
+        let w = try await World.make()
+        let phone = try await w.makePhone()
+        try await phone.container.database().execute("DELETE FROM member_list_head")
+        await #expect(throws: Refusal.futureEpoch) { _ = try await phone.session.readKey(1) }
+        let ctx = try await phone.session.context(epochs: [1])
+        #expect(ctx.wk[1] != nil)
+        #expect(try await phone.container.memberListHead()?.epoch == 1)
     }
 }

@@ -251,8 +251,8 @@ public actor WorkspaceSession {
         return UInt32(clamping: head.epoch)
     }
 
-    /// Opens and keeps every WSK-verified grant of `raw` (as `refreshGrants` does, without fetching). Returns the epochs whose only
-    /// offered grant the held list does not commit (not kept). Tests and the vector harness.
+    /// TESTS ONLY (the `member_list_snapshots` harness; no product caller): opens and keeps every WSK-verified grant of `raw` as
+    /// `refreshGrants` does, without fetching. Returns the epochs whose only offered grant the held list does not commit (not kept).
     package func ingestGrants(_ raw: [JSONValue]) async throws -> Set<UInt32> {
         var mismatched: Set<UInt32> = [], matched: Set<UInt32> = []
         for g in raw {
@@ -586,7 +586,10 @@ public actor WorkspaceSession {
     // MARK: response validation (protocol 8.8)
 
     /// The device context with the read keys of `epochs` (loaded lazily, Q10-checked).
+    /// Without any verified list (first start after migration 12 dropped the pre-Q10 head) every read is `future_epoch`: one bounded
+    /// list + grants fetch first, as on the send path, so a pending response still opens.
     package func context(epochs: Set<UInt32>) async throws -> Bridge.DeviceContext {
+        if !epochs.isEmpty, try await cfg.container.memberListHead() == nil { _ = try? await refreshGrants(forceList: true) }
         var wk: [UInt32: SymmetricKey] = [:]
         for e in epochs { if let k = try? await readKey(e) { wk[e] = k } }
         return Bridge.DeviceContext(workspace: cfg.workspace, device: cfg.deviceID, wsk: cfg.wsk, wk: wk, offsetMs: try await clockOffsetMs())
@@ -1262,7 +1265,13 @@ extension WorkspaceSession {
         return try await readKey(epoch)
     }
 
-    /// The key to SEAL a new Drop wrap under: the same rule as the bridge (`sealingKey`), at exactly `epoch`.
+    /// The key to SEAL a new Drop wrap under, the bridge's rule (`sealingKeyRecovering`): the head epoch and its committed key.
+    package func dropSealKey() async throws -> (epoch: UInt32, key: SymmetricKey) {
+        try await ensureCurrent()
+        return try await sealingKeyRecovering()
+    }
+
+    /// The same, required to be exactly `epoch` (a list the caller just accepted).
     package func dropSealKey(_ epoch: UInt32) async throws -> SymmetricKey {
         try await ensureCurrent()
         let s = try await sealingKeyRecovering()

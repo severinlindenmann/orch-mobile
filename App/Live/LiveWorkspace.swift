@@ -68,6 +68,7 @@ final class LiveWorkspace: WorkspaceModel {
             let snapshot = try await api.snapshot()
             guard usable else { return }
             apply(snapshot)
+            await checkKeyAlarm()
         } catch {
             noteKeyAlarm(error)
             markOffline()
@@ -78,9 +79,10 @@ final class LiveWorkspace: WorkspaceModel {
 
     static let keyAlarmMessage = "Key alarm: this workspace published two different keys for the same version, so orch has stopped sending to it. It clears when your Mac issues a new key. If it stays, remove the workspace and pair again."
 
-    /// Reads the durable alarm (at launch); it never clears by itself.
+    /// Reads the alarm (at launch and after every snapshot). It is per epoch (G2b D2): a verified list at a higher epoch lifts it,
+    /// and then it is cleared here.
     func checkKeyAlarm() async {
-        if await api.keyAlarm() != nil { info.keyAlarm = Self.keyAlarmMessage }
+        info.keyAlarm = await api.keyAlarm() != nil ? Self.keyAlarmMessage : nil
     }
 
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
