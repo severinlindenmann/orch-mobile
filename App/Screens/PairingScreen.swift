@@ -110,6 +110,13 @@ struct PairingScreen: View {
                 closeButton
             }
         case .alarm(let alarm): alarmView(alarm)
+        case .denied:
+            VStack(spacing: OS.s4) {
+                step(icon: "hand.raised", title: "Your primary device said no",
+                     text: "Nothing was added. Your primary device declined to sign this iPhone. Start again on your Mac if that was a mistake.",
+                     id: "pair.denied")
+                closeButton
+            }
         case .refused(let reason):
             VStack(spacing: OS.s4) {
                 step(icon: "xmark.octagon", title: refusalTitle(reason), text: refusalText(reason), id: "pair.refused")

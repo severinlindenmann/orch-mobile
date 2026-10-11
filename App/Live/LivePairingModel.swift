@@ -147,7 +147,7 @@ final class LivePairingModel: PairingFlowModel {
 
     private var isTerminalState: Bool {
         switch state {
-        case .ready, .alarm, .refused, .expired: true
+        case .ready, .alarm, .refused, .expired, .denied: true
         default: false
         }
     }
@@ -181,6 +181,7 @@ final class LivePairingModel: PairingFlowModel {
             case .pinSubstitution, .regression: state = .alarm(.substitution)
             }
         case .rejected: state = .refused(rejectedBy)
+        case .denied: state = .denied
         case .expired: state = .expired
         case .failed(let f):
             switch f {
@@ -242,7 +243,8 @@ final class LivePairingModel: PairingFlowModel {
     func primaryReject() {
         switch state {
         case .comparingPrimary, .waitingPrimary:
-            rejectedBy = .rejectedOnPrimary
+            // An opened request ends through the primary's signed rejection (the client shows `denied` once it verifies);
+            // only the "nothing opened yet" path below is decided here.
             Task {
                 guard let runtime = await services.demoRuntime() else { return }
                 let device = runtime.env.deviceID

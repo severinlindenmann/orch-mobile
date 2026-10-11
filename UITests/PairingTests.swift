@@ -130,6 +130,21 @@ final class PairingTests: XCTestCase {
         XCTAssertTrue(app.el("pair.refused").waitForExistence(timeout: Self.slow))
     }
 
+    /// The primary rejects: its PK-signed rejection travels relay -> host -> phone, and the phone shows "denied" only after verifying it.
+    @MainActor
+    func testRejectOnPrimaryShowsDenied() {
+        let app = launch("pair", seed: false)
+        startDemoInvitation(app)
+        approveOnDemoHost(app)
+        openRequestOnDemoPrimary(app)
+        let reject = app.buttons["demo.primaryPanel.reject"]
+        XCTAssertTrue(app.reveal(reject, timeout: Self.slow))
+        reject.tap()
+        XCTAssertTrue(app.el("pair.denied").waitForExistence(timeout: Self.slow))
+        XCTAssertFalse(app.el("pair.certCode").exists)
+        XCTAssertFalse(app.el("pair.refused").exists)
+    }
+
     @MainActor
     func testCodeExpiryClearsCodeAndDisablesApprovalEverywhere() {
         let app = launch("pair", seed: false)

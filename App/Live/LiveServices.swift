@@ -158,7 +158,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 case .comparingHost where !model.demoHostCode.isEmpty: model.hostApprove()
                 case .waitingPrimary: model.primaryOpenRequest()
                 case .comparingPrimary where model.demoPrimaryHasChallenge: model.primaryApprove()
-                case .ready, .refused, .alarm, .expired: done = true
+                case .ready, .refused, .alarm, .expired, .denied: done = true
                 default: break
                 }
             }
