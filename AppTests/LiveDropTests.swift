@@ -45,6 +45,28 @@ final class LiveDropTests: XCTestCase {
         services.resetThisiPhone(); await services.waitForReset()
     }
 
+    func testRetentionRunsAfterAuthorizationFailureAndAlarmPurgesAllFiles() async throws {
+        for alarm in [false, true] {
+            let (services, drop) = try await fixture()
+            let object = try await drop.service.send(Data("private".utf8), name: "private")
+            await drop.refresh()
+            await drop.open(object.descriptor.object.hex)
+            let file = try XCTUnwrap(drop.downloads[object.descriptor.object.hex])
+            drop.report(alarm ? DropError.integrity : DropError.unauthorized)
+            if alarm {
+                await drop.alarmCleanup?.value
+            } else {
+                let runtime = try XCTUnwrap(services.runtime)
+                runtime.clock.advance(milliseconds: file.deadlineMs - runtime.clock.nowMs)
+                services.setActive(false); await services.waitForLifecycle()
+                services.setActive(true); await services.waitForShareActivation()
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+            XCTAssertNil(drop.previewURL)
+            services.resetThisiPhone(); await services.waitForReset()
+        }
+    }
+
     func testLatePublicationCannotSurviveLeaveOrReset() async throws {
         for reset in [false, true] {
             let (services, drop) = try await fixture()

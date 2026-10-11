@@ -262,10 +262,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 await ws.api.setForeground(active && self.canUse(ws.info.id))
             }
             guard active, self.active else { return }
+            // Local retention is independent of relay authorization and Drop alarms.
+            for ws in workspaces where ws.info.lifecycle != .removed {
+                await ws.drop?.foreground()
+            }
             for ws in workspaces where self.canUse(ws.info.id) {
                 ws.start()
                 self.refreshTasks[ws.info.id] = Task { [weak self] in
-                    await ws.drop?.foreground()
                     await ws.api.refreshViews()
                     guard !Task.isCancelled, let self, self.canUse(ws.info.id) else { return }
                     await self.refreshPending(reconcile: true)
@@ -453,7 +456,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func importShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
         guard eligibleShareDestination(workspaceID), let drop = live.first(where: { $0.info.id == workspaceID })?.drop else { throw DropError.suspended }
         let mine = drop.revision
-        let objects = try await drop.service.importShareJob(job, inbox: inbox)
+        let objects: [DropObject]
+        do { objects = try await drop.service.importShareJob(job, inbox: inbox) }
+        catch {
+            if mine == drop.revision && drop.workspace?.usable == true { drop.report(error) }
+            throw error
+        }
         guard drop.canOperate, mine == drop.revision else { throw DropError.suspended }
         for (index, object) in objects.enumerated() {
             drop.aliases[object.descriptor.object.hex] = "share-\(job.manifest.jobID)-\(index)"

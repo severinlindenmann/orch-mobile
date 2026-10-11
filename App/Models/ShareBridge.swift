@@ -235,14 +235,18 @@ extension ShareBridge {
 
 @MainActor
 extension ShareWorld {
-    func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
-        guard inbox.complete(job) else { throw ShareError.io("cleanup") }
-    }
     func waitForShareActivation() async {}
     func eligibleShareDestination(_ id: String) -> Bool {
         workspaces.contains { $0.id == id && $0.lifecycle == .live && $0.scopes.contains(.operate) }
     }
     func shareProgress(_ value: String) {}
+}
+
+@MainActor
+extension PreviewWorld {
+    func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
+        guard inbox.complete(job) else { throw ShareError.io("cleanup") }
+    }
     func importShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
         var items: [PreviewWorld.SharedItem] = []
         for (n, item) in job.manifest.items.enumerated() {

@@ -131,6 +131,7 @@ public actor DropService {
     private nonisolated static func importAbandonmentKey(_ object: ID16) -> String {
         "import:\(object.hex)"
     }
+    public nonisolated var downloadContainer: WorkspaceContainer { session.cfg.container }
     let session: WorkspaceSession
     let card: VerifiedCard
     let certificates: [ID16: DeviceCertificate]

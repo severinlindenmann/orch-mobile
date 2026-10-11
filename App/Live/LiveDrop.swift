@@ -31,6 +31,7 @@ final class LiveDrop {
     var rows: [DropItem] = []
     var failures: [DropUploadFailure] = []
     var previewURL: URL?
+    @ObservationIgnored private(set) var alarmCleanup: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
     var nowMs: Int64 { workspace?.services?.runtime?.clock.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000) }
     var locked: Bool { workspace?.services?.deviceLocked ?? true }
@@ -53,7 +54,11 @@ final class LiveDrop {
              Refusal.staleList, Refusal.staleCard, SessionError.pairAgain, SessionError.grantConflict, SessionError.badResponse, is DropDocument.Fork, is CryptoFailure, is CryptoKitError:
             alarm = true; status = "Verification alarm"; downloads = [:]; previewURL = nil
             for index in rows.indices { rows[index].name = "Blocked item"; rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil; rows[index].verified = false }
-            Task { await service.invalidate() }
+            alarmCleanup = Task {
+                await service.invalidate()
+                do { try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max) }
+                catch { status = "Verification alarm: local cleanup needs retry" }
+            }
         case DropError.unavailableKey, SessionError.noKeyForEpoch, SessionError.epochUnavailable: status = "Key unavailable: retry later"
         case DropError.unauthorized, ClientError.host(.forbiddenScope), ClientError.host(.scopeChanged), ClientError.host(.notMember), ClientError.host(.revoked): unauthorized = true; previewURL = nil; status = "Action unavailable"
         default: status = "Unavailable: retry later"
@@ -136,7 +141,7 @@ extension LiveDrop {
 
  extension LiveDrop {
     func purge() async throws {
-        try await service.purgeExpiredDownloads()
+        try await service.downloadContainer.purgeExpiredDownloads(nowMs: alarm ? .max : nowMs)
         let expired = downloads.filter { $0.value.deadlineMs <= nowMs }.map(\.key)
         for id in expired {
             downloads[id] = nil
@@ -150,6 +155,8 @@ extension LiveDrop {
         if !expired.isEmpty || !signedExpired.isEmpty { previewURL = nil }
     }
     func foreground() async {
+        await alarmCleanup?.value
+        do { try await purge() } catch { status = "Local cleanup needs retry" }
         guard usable else { return }
         let mine = revision
         var failure: (any Error)?
