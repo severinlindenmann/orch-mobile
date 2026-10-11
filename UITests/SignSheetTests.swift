@@ -98,17 +98,33 @@ final class SignSheetStateTests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
         XCTAssertTrue(confirm.waitForEnabled())
         confirm.tap()
-        XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 60))
-        XCUIDevice.shared.press(.home)
-        Thread.sleep(forTimeInterval: 1)
-        app.activate()
-        XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 30))
+        // "Checking" is transient: foreground reconcile may settle the lost response before it is rendered. Wait for either.
+        let checking = app.el("sign.checking"), accepted = app.el("sign.accepted")
+        let settle = { (t: TimeInterval) -> Bool in
+            let end = Date().addingTimeInterval(t)
+            while Date() < end { if checking.exists || accepted.exists { return true }; Thread.sleep(forTimeInterval: 0.25) }
+            return checking.exists || accepted.exists
+        }
+        XCTAssertTrue(settle(60), "neither checking nor accepted after the lost response")
+        if !accepted.exists {
+            XCUIDevice.shared.press(.home)
+            Thread.sleep(forTimeInterval: 1)
+            app.activate()
+            XCTAssertTrue(settle(30))
+        }
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Review dropped'")).firstMatch.exists)
         // Reconcile reads what the host has: the stored decision was applied exactly once. The background reconcile may settle
-        // first; either way the sheet ends accepted, never signed a second time.
+        // first; either way the sheet ends accepted, never signed a second time (a second signature would end as alreadyAnswered/refused).
         let recheck = app.buttons["sign.recheck"]
-        if recheck.exists && recheck.isHittable { recheck.tap() }
-        XCTAssertTrue(app.el("sign.accepted").waitForExistence(timeout: 60))
+        if !accepted.exists && recheck.exists && recheck.isHittable { recheck.tap() }
+        XCTAssertTrue(accepted.waitForExistence(timeout: 60))
+        XCTAssertFalse(app.el("sign.alreadyAnswered").exists, "a second signature would be answered as already answered")
+        XCTAssertFalse(app.el("sign.refused").exists)
+        // Exactly once: the host holds a single answer from this device with the signed option.
+        app.buttons["sign.done"].tap()
+        let resolution = app.el("question.resolution")
+        XCTAssertTrue(resolution.waitForExistence(timeout: 30))
+        XCTAssertTrue(resolution.label.contains("Demo iPhone") && resolution.label.contains("Approve"), resolution.label)
     }
 
     @MainActor
