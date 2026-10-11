@@ -15,11 +15,22 @@ import Testing
 
     @Test func strictParseVectors() throws {
         let cases = Vectors.root["encodings"]["strict_parse"].items
-        #expect(cases.count == 10)
+        #expect(cases.count == 15)
+        var withCanonical = 0
         for c in cases {
-            let ok = (try? StrictJSON.parse(c["text"].str)) != nil
-            #expect(ok == c["ok"].bool, "\(c["name"].str)")
+            let parsed = try? StrictJSON.parse(c["text"].str)
+            #expect((parsed != nil) == c["ok"].bool, "\(c["name"].str)")
+            // Accepted cases that carry a `canonical` string: the parsed value must serialise to exactly those bytes
+            // (depth_16, depth_16_objects, and minus_zero where `-0` is written `0`).
+            if c["ok"].bool == true, !c["canonical"].isNull, let parsed {
+                withCanonical += 1
+                #expect(try canonicalJSON(parsed) == Data(c["canonical"].str.utf8), "\(c["name"].str) canonical")
+            }
         }
+        #expect(withCanonical == 3)
+        let byName = Dictionary(uniqueKeysWithValues: cases.map { ($0["name"].str, $0) })
+        for n in ["depth_16", "depth_17", "depth_16_objects", "depth_17_objects", "minus_zero"] { #expect(byName[n] != nil, "\(n)") }
+        #expect(byName["minus_zero"]?["canonical"].str == "[0]")
     }
 
     @Test func b64uVectors() {

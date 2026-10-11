@@ -10,14 +10,6 @@ import OrchProtocol
 /// The security review's interleavings, with the fixed behaviour asserted. Every one drives a fault delay (an `await` inside the
 /// relay) and changes authoritative state while the request is suspended; the clock is injected, so the order is exact.
 @Suite struct AdvRace {
-    /// Bounded: a regression that stops requests reaching their delay fails the test instead of hanging CI.
-    private func waitForSleepers(_ w: World, _ n: Int) async -> Bool {
-        for _ in 0..<200_000 where w.clock.sleeperCount < n { await Task.yield() }
-        if w.clock.sleeperCount >= n { return true }
-        Issue.record("expected \(n) sleepers, saw \(w.clock.sleeperCount)")
-        return false
-    }
-
     @Test func aDeviceRemovedDuringADelayedPostIsRefusedAndNothingIsQueued() async throws {
         let faults = ScriptedFaults().enqueue(.delay(.seconds(5)), at: .beforeQueue, routePrefix: "POST bridge")
         let w = try await World.make(faults: faults)
@@ -128,10 +120,10 @@ import OrchProtocol
 }
 
 private func waitForSleepers(_ w: World, _ n: Int) async -> Bool {
-    for _ in 0..<200_000 where w.clock.sleeperCount < n { await Task.yield() }
-    if w.clock.sleeperCount >= n { return true }
-    Issue.record("expected \(n) sleepers, saw \(w.clock.sleeperCount)")
-    return false
+    await eventually("at least \(n) sleepers", timeoutSeconds: 60,
+                     diagnostics: { "expected \(n) sleepers, saw \(w.clock.sleeperCount)" }) {
+        w.clock.sleeperCount >= n
+    }
 }
 
 @Suite struct AdvGrant {

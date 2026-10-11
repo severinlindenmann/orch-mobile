@@ -1,4 +1,5 @@
 import Foundation
+@testable import OrchCoordination
 import Testing
 import SQLite3
 @testable import OrchStore
@@ -15,7 +16,7 @@ import SQLite3
         try Data("keep".utf8).write(to: sentinel)
         let dir = layout.tombstones.directories[0]
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fd = open(dir.appendingPathComponent("tombstones.lock").path, O_RDWR | O_CREAT, 0o600)
+        let fd = openCoordinationLock(dir.appendingPathComponent("tombstones.lock").path)
         defer { flock(fd, LOCK_UN); close(fd) }
         #expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0)
         do {
@@ -94,7 +95,7 @@ import SQLite3
         try Data("keep".utf8).write(to: sentinel)
         let dir = layout.tombstones.directories[0]
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fd = open(dir.appendingPathComponent("tombstones.lock").path, O_RDWR | O_CREAT, 0o600)
+        let fd = openCoordinationLock(dir.appendingPathComponent("tombstones.lock").path)
         defer { flock(fd, LOCK_UN); close(fd) }
         let probe = SecondRead(fd: fd, layout: layout, removed: removed)
         try await index.db.transaction { tx in

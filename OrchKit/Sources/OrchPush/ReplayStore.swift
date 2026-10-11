@@ -29,6 +29,11 @@ public struct ReplayStore: Sendable {
             .appendingPathComponent(workspace.hex, isDirectory: true)
     }
 
+    /// Stable across state purges. Legacy state/<realm>/<ws>/replay.lock is no longer used.
+    func lockURL(workspace: ID16) -> URL {
+        CoordinationFiles.replayLockURL(pushDir: pushDir, realm: realm, workspace: workspace.hex)
+    }
+
     func fileURL(workspace: ID16, generation: Int64) -> URL {
         stateDir(workspace: workspace).appendingPathComponent("replay.\(generation).json")
     }
@@ -105,8 +110,10 @@ public struct ReplayStore: Sendable {
     public func transact<T>(workspace: ID16, generation: Int64, nowMs: Int64, lockTimeout: TimeInterval? = nil,
                             _ body: (PushProcessor.WorkspaceReplay) throws -> (T, PushProcessor.WorkspaceReplay?)) throws -> T {
         let dir = stateDir(workspace: workspace)
-        try Self.makeDir(dir)
-        guard let r = try CoordinationFiles.withFlock(dir.appendingPathComponent("replay.lock").path, timeout: lockTimeout, { () throws -> T in
+        let lock = lockURL(workspace: workspace)
+        try Self.makeDir(lock.deletingLastPathComponent())
+        guard let r = try CoordinationFiles.withFlock(lock.path, timeout: lockTimeout, { () throws -> T in
+            try Self.makeDir(dir)
             try dropOlderGenerations(workspace: workspace, generation: generation)
             var current: PushProcessor.WorkspaceReplay
             do {

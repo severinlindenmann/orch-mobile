@@ -716,6 +716,8 @@ extension WorkspaceSession {
         catch { try await ensureCurrent(); throw ViewError.offline }
         return try await driveDecision(id, first: first)
     }
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     public func pendingDecisions() async throws -> [DecisionStatus] {
         try await ensureCurrent()
         return try await cfg.container.database().query("SELECT * FROM decisions WHERE state <> 'resolved' ORDER BY rowid").compactMap { r in
@@ -723,6 +725,8 @@ extension WorkspaceSession {
             return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: r.text("state") == "uncertain" ? .uncertain : .pending)
         }
     }
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     public func reconcileDecision(_ id: ID16) async throws -> DecisionOutcome {
         guard foreground, !preparingDecisions.contains(id) || decisionDrivers[id] != nil else { throw ViewError.offline }
         return try await driveDecision(id)
@@ -945,5 +949,14 @@ private func decodeOutcome(_ v: JSONValue) throws -> DecisionOutcome {
     case "already_answered": guard let l = m["label"]?.string, let a = m["at"]?.int else { throw ViewError.malformed }; return .alreadyAnswered(label: l, at: a)
     case "question_changed": guard let h = m.b64uField("hash", length: 32) else { throw ViewError.malformed }; return .questionChanged(hash: h)
     default: throw ViewError.malformed
+    }
+}
+
+extension WorkspaceSession {
+    package func dropRelaySession() async throws -> RelaySession { try await ensureCurrent(); return try await relaySession() }
+    package func dropKey(_ epoch: UInt32) async throws -> SymmetricKey {
+        try await ensureCurrent(); try await loadKeys()
+        guard let key = keys[epoch] else { throw SessionError.noKeyForEpoch(epoch) }
+        return key
     }
 }

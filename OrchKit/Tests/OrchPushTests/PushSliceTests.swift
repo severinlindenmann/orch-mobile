@@ -120,9 +120,9 @@ struct ReplayStoreTests {
         #expect(try s.load(workspace: a.id, generation: 3) == st)
         #expect(try s.load(workspace: a.id, generation: 4) == nil)
         #expect(try ReplayStore(pushDir: dir, realm: "demo").load(workspace: a.id, generation: 3) == nil, "realm separated")
-        // no temp files left behind; the lock file is the only extra
+        // No temp or lock files in the purgeable state directory.
         let names = try FileManager.default.contentsOfDirectory(atPath: s.stateDir(workspace: a.id).path).sorted()
-        #expect(names == ["replay.3.json", "replay.lock"])
+        #expect(names == ["replay.3.json"])
     }
 
     @Test func newerGenerationReplacesOlderAndStaleMaterialIsRefused() throws {

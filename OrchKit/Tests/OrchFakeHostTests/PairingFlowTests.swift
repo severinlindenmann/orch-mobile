@@ -15,21 +15,22 @@ actor StateLog {
     private(set) var states: [PairingState] = []
     private var task: Task<Void, Never>?
     func attach(_ c: PairingCoordinator) async {
-        let stream = await c.states()
+        let stream = await c.states(bufferingPolicy: .unbounded)
+        attach(stream)
+    }
+    func attach(_ stream: AsyncStream<PairingState>) {
         task = Task { for await s in stream { self.add(s) } }
     }
     private func add(_ s: PairingState) { states.append(s) }
     func stop() { task?.cancel() }
-    /// Waits (real-time bound 60 s) until the log has consumed everything the coordinator published, i.e. its last entry is the
-    /// coordinator's current state, then gives a few more yields for anything published after.
+    /// Waits for a published snapshot, not `state`: expiry may change that getter without publishing.
     func settled(_ c: PairingCoordinator) async {
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while ContinuousClock.now < deadline {
-            if states.last == (await c.state) { break }
+            if states.last == (await c.lastPublishedState) { return }
             await Task.yield()
         }
-        if states.last != (await c.state) { Issue.record("StateLog did not catch up within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")") }
-        for _ in 0..<10 { await Task.yield() }
+        Issue.record("StateLog did not consume the last published state within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")")
     }
     var showedHostCode: Bool { states.contains { isComparingHost($0) } }
     var showedPrimaryCode: Bool { states.contains { isComparingPrimary($0) } }
@@ -641,6 +642,36 @@ extension PairHarness {
 }
 
 @Suite struct PairingLoopTests {
+    @Test func stateLogRetainsHostCodeWhenConsumerStartsAfterExpiry() async throws {
+        let h = try await PairHarness.make(.primaryOffline)
+        // Register before driving, but deliberately consume nothing until the flow ends.
+        // Repeated cert_pending replies must not evict the earlier host comparison.
+        let stream = await h.coordinator.states(bufferingPolicy: .unbounded)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        #expect(try await h.drive(steps: 800, until: { $0.isTerminal }) == .expired(.certification))
+        let log = StateLog()
+        await log.attach(stream)
+        await log.settled(h.coordinator)
+        await log.stop()
+        #expect(await log.showedHostCode)
+        #expect(await log.states.count > 16)
+    }
+
+    @Test func stateLogSettlesAfterAnUnpublishedExpiry() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let log = StateLog(); await log.attach(h.coordinator)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        _ = try await h.drive(until: isComparingPrimary)
+        #expect(isComparingPrimary(await h.coordinator.lastPublishedState))
+        h.clock.advance(milliseconds: 600_000)
+        #expect(!isComparingPrimary(await h.coordinator.state))
+        await log.settled(h.coordinator)
+        #expect(isComparingPrimary(await log.states.last ?? .idle))
+        await log.stop()
+    }
+
     /// The run loop sleeps on the injected clock and polls when due; the code is hidden at the challenge's expiry without any poll.
     @Test func testRunLoopDrivesThePairingAndHidesTheCodeAtExpiry() async throws {
         let h = try await PairHarness.make(.firstTime)

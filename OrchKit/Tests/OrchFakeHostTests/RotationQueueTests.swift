@@ -44,7 +44,7 @@ extension FakeHost {
             try await w.relay.publishRevocation(try await w.primary.revoke(device: w.primaryID))
         }
         if revokedAt != "relay" { await w.host.markRevoked(w.primaryID) }
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
 
         #expect(await w.host.rotationRequired == false)
         #expect(await w.host.epoch == 3)
@@ -87,7 +87,7 @@ extension FakeHost {
             await #expect(throws: TestCrash.self) { try await second.value }
             #expect(await w.host.rotationRequired)
             #expect(await w.host.epoch == 1)
-            _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+            _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         } else {
             try await first.value
             try await second.value

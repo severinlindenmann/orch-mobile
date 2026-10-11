@@ -1,4 +1,5 @@
 import Foundation
+import OrchCoordination
 
 /// Hooks for the parts of A11 that do not live in this module (keychain, notifications, routes, writers).
 /// All default to no-ops; OrchClient supplies the real ones.
@@ -112,7 +113,16 @@ public final class LocalWipe: Sendable {
         let layout = index.layout
         let fm = FileManager.default
         for f in StoreLayout.sqliteFiles(try layout.wsDatabaseURL(ws)) where fm.fileExists(atPath: f.path) { try fm.removeItem(at: f) }
-        for d in [try layout.filesDir(ws), try layout.tmpDir(ws), try layout.stagedJobsDir(ws), try layout.quarantineDir(ws), try layout.pushStateDir(ws)]
+        let lock = CoordinationFiles.replayLockURL(pushDir: layout.pushDir, realm: layout.realm, workspace: ws)
+        try CoordinationFiles.makeDir(lock.deletingLastPathComponent())
+        // Never block the cooperative pool: a busy replay transaction leaves phase 3 pending for retry.
+        guard try CoordinationFiles.withFlock(lock.path, blocking: false, {
+            let state = try layout.pushStateDir(ws)
+            if fm.fileExists(atPath: state.path) { try fm.removeItem(at: state) }
+            return true
+        }) == true else { throw CoordinationFiles.FileError.io("replay lock busy") }
+        // Replay locks live in push/locks, outside the purgeable push state directory. Never remove them.
+        for d in [try layout.filesDir(ws), try layout.tmpDir(ws), try layout.stagedJobsDir(ws), try layout.quarantineDir(ws)]
         where fm.fileExists(atPath: d.path) { try fm.removeItem(at: d) }
     }
 }

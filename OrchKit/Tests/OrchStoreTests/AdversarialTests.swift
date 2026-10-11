@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import OrchCoordination
 @testable import OrchStore
 
 /// Security-review cases; confirmed bugs assert the fixed behaviour.
@@ -230,6 +231,31 @@ import Testing
         if await c.isSuspended { await #expect(throws: StoreError.suspended) { try await c.database() } }
         try await c.resume()
         #expect(try await c.hasRequestId("x") == false)
+    }
+
+    @Test func resumedWipeRefusesActiveReplayTransaction() async throws {
+        struct Crash: Error {}
+        let l = try makeLayout(tempDir()), fm = FileManager.default
+        let idx = try await WorkspaceIndex(layout: l)
+        await #expect(throws: Crash.self) {
+            try await LocalWipe(index: idx, afterPhase: { if $0 == 2 { throw Crash() } }).wipe(ws: A, generation: 1)
+        }
+        let state = try l.pushStateDir(A)
+        try fm.createDirectory(at: state, withIntermediateDirectories: true)
+        let replay = state.appendingPathComponent("replay.2.json"), bytes = Data("active transaction".utf8)
+        try bytes.write(to: replay)
+        let lock = CoordinationFiles.replayLockURL(pushDir: l.pushDir, realm: l.realm, workspace: A)
+        try CoordinationFiles.makeDir(lock.deletingLastPathComponent())
+        let fd = open(lock.path, O_CREAT | O_RDWR, 0o600)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        await #expect(throws: WipeError.self) { try await LocalWipe(index: idx).resumePendingWipes() }
+        #expect(try Data(contentsOf: replay) == bytes)
+        #expect(flock(fd, LOCK_UN) == 0)
+        _ = try await LocalWipe(index: idx).resumePendingWipes()
+        #expect(!fm.fileExists(atPath: state.path))
+        #expect(fm.fileExists(atPath: lock.path))
     }
 
     @Test func wipePurgesPushState() async throws {

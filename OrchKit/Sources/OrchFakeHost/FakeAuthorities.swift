@@ -115,6 +115,11 @@ public actor FakeHost {
     public internal(set) var epoch: UInt32 = 0
     var core: HostBridgeCore
     var handler: HostHandler?
+    let demoDropFixtures: Bool
+    var dropSeedTask: Task<Void, Error>?
+    var dropSeedComplete = false
+    var dropSeedBodies: [Data]?
+    var dropSeedUploaded = 0
     var viewState: HostViewState?
     var lastArrival: UInt64 = 0
     /// Adversarial tests: sign responses with another key (a member device, not the host).
@@ -180,10 +185,11 @@ public actor FakeHost {
     package func setHostile(_ f: (inout Hostile) -> Void) { f(&hostile) }
 
     public init(capability: DemoCapability, context: RealmContext, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
-                hostedBy: String? = nil, workspace: ID16? = nil, wall: any WallClock, entropy: any Entropy) throws {
+                hostedBy: String? = nil, workspace: ID16? = nil, demoDropFixtures: Bool = false, wall: any WallClock, entropy: any Entropy) throws {
         guard context.realm == .demo, context.generation === capability.generation else { throw RealmViolation.wrongStore }
         self.workspace = workspace ?? entropy.id16()
         self.capability = capability
+        self.demoDropFixtures = demoDropFixtures
         self.primary = primary; self.wall = wall; self.entropy = entropy; self.origin = context.origin
         self.name = name; self.clientHosted = clientHosted; self.hostedBy = hostedBy; isClientHosted = clientHosted
         wskPublic = wsk.publicKey

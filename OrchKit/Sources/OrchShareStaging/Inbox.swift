@@ -75,8 +75,33 @@ public struct ShareInbox: Sendable {
         return String(decoding: data.prefix(maxBytes), as: UTF8.self)
     }
 
+    /// Bounded, no-follow read of a validated, claimed job item for sealing in the main app.
+    public func contents(of item: StagedItem, in job: StagedJob) throws -> Data {
+        guard job.manifest.isValid(), job.manifest.items.contains(item),
+              peekReady().contains(job), job.dir.lastPathComponent == job.manifest.jobID + JobFiles.claimedSuffix else { throw ShareError.unreadable }
+        let data = try area.readFile(job.dir.appendingPathComponent(item.file), cap: ShareLimits.maxTotalBytes)
+        guard data.count == item.bytes else { throw ShareError.unreadable }
+        return data
+    }
+
     /// Deletes the staged plaintext after the app has imported it.
-    public func complete(_ job: StagedJob) { area.safeRemove(job.dir) }
+    @discardableResult
+    public func complete(_ job: StagedJob) -> Bool { area.safeRemove(job.dir) }
+
+    /// Called only after the workspace database has committed job completion. Keep discovery metadata until
+    /// all plaintext is gone, so a failed deletion or interrupted cleanup is retried by the next recovery claim.
+    /// The final metadata-only directory is also safe for the partial-job janitor after an interruption.
+    package func cleanupCompleted(_ job: StagedJob,
+                                  afterRemovingItem: (@Sendable (String) async throws -> Void)? = nil) async throws {
+        let dir: DirFD
+        do { dir = try area.openDir(job.dir) }
+        catch ShareFS.ReadFailure.notFound { return }
+        for name in try ShareFS.list(dir).sorted() where name != JobFiles.manifest && name != JobFiles.ready {
+            guard ShareFS.removeTree(dir, name) else { throw ShareError.io("remove staged plaintext") }
+            try await afterRemovingItem?("import.cleanup.removed:\(name)")
+        }
+        guard area.safeRemove(job.dir) else { throw ShareError.io("remove completed job") }
+    }
 
     // MARK: durable import ledger (idempotency by full job id)
 

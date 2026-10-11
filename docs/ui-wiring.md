@@ -91,3 +91,15 @@ Fix-round lifecycle and recovery behaviour:
 `AppTests/LiveLifecycleTests.swift` covers failed removal then foreground, background with
 suspended refresh, failed-reset retry, draft write errors and lost-response retry, closing
 pairing during invitation creation, and Leave notification draining/purge.
+
+## Drop
+
+Use `DropService` for verified objects, downloads and durable sends. Recover pending
+uploads with `resumeUploads`; surface `failedUploads` for explicit retry or discard.
+`discardUpload` and `discardShareJob` stop local sending. The UI must present the
+outcome as "stopped sending", not "deleted": a PUT with a lost response may already
+have committed, and that content remains on the relay. Share-job discard also
+removes local staged plaintext. A fresh document seal may reuse an uncommitted
+version after discard; the discarded sealed body remains blocked.
+
+`DropService.setHook` is a test seam and must never be wired in app code.
