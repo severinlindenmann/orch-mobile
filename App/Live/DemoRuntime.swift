@@ -248,11 +248,11 @@ final class DemoRuntime {
 
     /// Seals a push as the host would and runs it through the same processor the notification extension uses, ending in a local,
     /// labelled-as-simulated notification (decision A12).
-    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String) async -> PushSimulator.Result? {
+    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String, delay: TimeInterval = 1) async -> PushSimulator.Result? {
         guard let entry = entries[workspace], let sealed = try? await entry.host.demoSealPush(kind: "question", id: "demo-" + UUID().uuidString, label: label) else { return nil }
         let keys = await entry.host.demoPushKeys()
         guard let material = try? PushMaterial(generation: generation, name: name, wsk: entry.host.wskPublic, kPush: [keys.epoch: keys.kPush]) else { return nil }
-        let sim = PushSimulator(materials: [workspace: material], scheduler: ScopedDemoNotifications(owner: notifications, workspace: workspace.hex), now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
+        let sim = PushSimulator(materials: [workspace: material], scheduler: ScopedDemoNotifications(owner: notifications, workspace: workspace.hex), delay: delay, now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
         return await sim.simulate(sealed: sealed)
     }
 }
