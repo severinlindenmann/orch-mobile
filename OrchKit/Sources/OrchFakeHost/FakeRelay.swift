@@ -1056,8 +1056,9 @@ public actor FakeRelay: RequestSender {
         func undelivered(_ match: (RidKey) -> Bool) -> Int {
             rids.filter { match($0.key) }.values.reduce(0) { $0 + $1.chunks.values.reduce(0) { $0 + (now < $1.expiresMs ? $1.envelope?.count ?? 0 : 0) } }
         }
-        let room = min(limits.maxResponseBytesPerDevice - undelivered({ $0.ws == ws && $0.device == h.device }),
-                       limits.maxResponseBytesPerWorkspace - undelivered({ $0.ws == ws }))
+        let deviceRoom: Int = limits.maxResponseBytesPerDevice - undelivered({ $0.ws == ws && $0.device == h.device })
+        let workspaceRoom: Int = limits.maxResponseBytesPerWorkspace - undelivered({ $0.ws == ws })
+        let room: Int = min(deviceRoom, workspaceRoom)
         let result = RidStore.chunk(&record, raw: r.body, header: h, epoch: listEpoch(ws) ?? 0, nowMs: now,
                                     chunkLifetimeMs: limits.bodyLifetimeMs, room: max(room, 0))
         // Charged per (workspace, target device) after the known-rid, stored-replay and re-store checks, before the epoch rule

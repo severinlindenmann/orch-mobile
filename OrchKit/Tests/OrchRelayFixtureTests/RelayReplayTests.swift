@@ -74,7 +74,8 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
     /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 121 cases of the twelve PR3 directory and
     /// membership files (121 since G2b added wk_commit_changed), the 103 cases of the nine PR4 files, and
     /// 15 bridge_device_post + 9 bridge_device_poll + 14 bridge_host_post cases (PR5), and the two Q11 bridge_host_post re-store cases.
-    static let expectedReplayed = 18 + 121 + 103 + 38 + 2
+    /// 18 (PR2) + 121 (PR3) + 103 (PR4) + 38 (PR5) + 2 (Q11) = 282; one literal (Xcode 16.4's type checker).
+    static let expectedReplayed: Int = 282
 
     /// The instant of every fixture case that has one (all 386a6cb cases use 1790000000000). The three condition-only cases
     /// (victim_person_without_member, other_workspace_person_refused x2) carry no `given.now_ms`; they replay at that same instant.
@@ -320,20 +321,30 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         let rec = await relay.ridRecord(workspace: fixtureWorkspace, device: fixtureDevice, rid: fixtureRid)
         switch (f.fileName, c.name) {
         case ("bridge_device_post.json", "success"):
-            #expect(rec?.copies.count == 1 && rec?.requeues == 0 && rec?.reqEpoch == 1, "\(id): one queued copy")
+            #expect(rec?.copies.count == 1, "\(id): one queued copy")
+            #expect(rec?.requeues == 0, "\(id): not requeued")
+            #expect(rec?.reqEpoch == 1, "\(id): request epoch")
         case ("bridge_device_post.json", "refusal_409_retry_exhausted"), ("bridge_device_post.json", "refusal_429_rate_limited"):
-            #expect(rec?.copies.count == (c.name == "refusal_429_rate_limited" ? 1 : 9) && rec?.requeues == (c.name == "refusal_429_rate_limited" ? 0 : 8), "\(id): nothing requeued")
+            let limited: Bool = c.name == "refusal_429_rate_limited"
+            let copies: Int = limited ? 1 : 9
+            let requeues: Int = limited ? 0 : 8
+            #expect(rec?.copies.count == copies, "\(id): nothing queued")
+            #expect(rec?.requeues == requeues, "\(id): nothing requeued")
         case ("bridge_device_post.json", _):
             #expect(c.name == "refusal_409_rid_conflict" ? rec?.copies.count == 1 : rec == nil, "\(id): nothing queued")
         case ("bridge_host_post.json", "success"):
             #expect(rec?.chunks[0]?.envelope == (try Self.body(c.request)), "\(id): the chunk is stored")
         case ("bridge_host_post.json", "expired_identical_chunk_restored"):
-            let chunk = rec?.chunks[0]
+            let chunk = try #require(rec?.chunks[0], "\(id): chunk")
             let sentBody = try Self.body(c.request)
-            #expect(chunk?.restores == 1 && chunk?.envelope == sentBody, "\(id): the exact bytes are stored again")
-            #expect(chunk?.expiresMs == Self.conditionOnlyNowMs + 60_000, "\(id): for 60 s")
+            let fresh: Int64 = Self.conditionOnlyNowMs + 60_000
+            #expect(chunk.restores == 1, "\(id): restored once")
+            #expect(chunk.envelope == sentBody, "\(id): the exact bytes are stored again")
+            #expect(chunk.expiresMs == fresh, "\(id): for 60 s")
         case ("bridge_host_post.json", "refusal_409_retry_exhausted"):
-            #expect(rec?.chunks[0]?.restores == RidStore.maxRestores && rec?.chunks[0]?.envelope == nil, "\(id): nothing restored")
+            let chunk = try #require(rec?.chunks[0], "\(id): chunk")
+            #expect(chunk.restores == RidStore.maxRestores, "\(id): count unchanged")
+            #expect(chunk.envelope == nil, "\(id): nothing restored")
         case ("bridge_host_post.json", "refusal_409_chunk_conflict"):
             #expect(rec?.chunks[0]?.digest == Data(repeating: 0xEE, count: 32), "\(id): the stored chunk is kept")
         case ("bridge_host_post.json", _):

@@ -180,7 +180,9 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         let seqAfter = try await s.nextSeq()
         #expect(counter.value == 1 && seqAfter == seq)
         let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: p.rid))
-        #expect(record.requeues == 1 && record.chunks[0]?.restores == 1)
+        let chunk = try #require(record.chunks[0])
+        #expect(record.requeues == 1)
+        #expect(chunk.restores == 1)
     }
 
     @Test func testExpiredOrUnknownRidReconcilesByQuestion() async throws {

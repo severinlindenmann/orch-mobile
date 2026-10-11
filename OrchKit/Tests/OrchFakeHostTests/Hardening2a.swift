@@ -79,6 +79,12 @@ final class HandlerGate: @unchecked Sendable {
     private var continuation: CheckedContinuation<Void, Never>?
     private var entered = false, released = false
     var isEntered: Bool { lock.withLock { entered } }
+    /// Bounded: false if the handler did not enter within `maxYields` scheduler yields.
+    func waitEntered(maxYields: Int = 10_000) async -> Bool {
+        var n = 0
+        while !isEntered && n < maxYields { await Task.yield(); n += 1 }
+        return isEntered
+    }
     func wait() async {
         await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in
             lock.lock()
@@ -403,7 +409,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0x51), meta: ["op": "http", "method": "GET", "path": "/x", "headers": .object([:])])
         let host = w.host
         let t = Task { await host.process(envelope: env, mailbox: h.rid) }
-        while !gate.isEntered { await Task.yield() }
+        guard await gate.waitEntered() else { Issue.record("handler never entered"); gate.open(); _ = await t.value; throw TestCrash() }
         try await change(w)
         gate.open()
         return (w, await t.value, h)
@@ -451,7 +457,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0x52), flags: [.stream], meta: ["op": "http", "method": "GET", "path": "/s", "headers": .object([:])])
         let host = w.host
         let t = Task { await host.process(envelope: env, mailbox: h.rid) }
-        while !gate.isEntered { await Task.yield() }
+        guard await gate.waitEntered() else { Issue.record("handler never entered"); gate.open(); _ = await t.value; return }
         #expect(await w.host.coreState().streams[h.rid] == w.phoneID)
         try await w.host.rotate(remaining: [(w.primary.deviceKeys, World.all), (w.phone, ["look", "decide"])], relay: w.relay, session: w.hostSession)
         #expect(await w.host.coreState().streams.isEmpty)

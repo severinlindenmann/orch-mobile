@@ -133,7 +133,7 @@ import OrchStore
         let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0xB3))
         let host = w.host
         let first = Task { await host.process(envelope: env, mailbox: h.rid) }
-        while !gate.isEntered { await Task.yield() }
+        guard await gate.waitEntered() else { Issue.record("handler never entered"); gate.open(); _ = await first.value; return }
         let copy = await w.host.process(envelope: env, mailbox: h.rid)
         #expect(copy.isEmpty)
         gate.open()
@@ -155,7 +155,9 @@ import OrchStore
         #expect(try await w.host.postBridgeChunk(chunk, rid: rid, relay: w.relay, session: w.hostSession).status == 202)
         _ = try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 2)
         let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: rid))
-        #expect(record.chunks[0]?.restores == RidStore.maxRestores && record.chunks[0]?.envelope == nil)
+        let stored = try #require(record.chunks[0])
+        #expect(stored.restores == RidStore.maxRestores)
+        #expect(stored.envelope == nil)
         #expect(await w.relay.storedBodyCount() == 0)
     }
 
