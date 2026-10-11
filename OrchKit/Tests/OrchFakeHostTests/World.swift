@@ -122,6 +122,12 @@ struct HostRig {
 
 extension World {
     /// A genuine ORB2 response chunk from `rig` to the phone's device: sealed under K_bridge(wk, ws, epoch) and signed by the rig.
+    /// P3-D22: the relay stores a response chunk only for a rid it knows. Posts the phone's request for `rid` first.
+    @discardableResult
+    func postRequest(rid: ID16, epoch: UInt32 = 1) async throws -> WireReply {
+        try await transport.bridgePost(try envelope(rid: rid, epoch: epoch), route: BridgeRoute(workspaceID: ws, requestID: rid), session: phoneSession)
+    }
+
     func sealedResponse(rig: HostRig, rid: ID16, seq: UInt64, flags: Bridge.Flags = [], dataBytes: Int = 4, epoch: UInt32 = 1) throws -> Data {
         let h = Bridge.Header(direction: .toDevice, flags: flags, workspace: ws, device: phoneID, rid: rid, seq: seq, tsMs: UInt64(env.wall.nowMs), epoch: epoch)
         let key = Bridge.channelKey(header: h, wk: rig.wk)!

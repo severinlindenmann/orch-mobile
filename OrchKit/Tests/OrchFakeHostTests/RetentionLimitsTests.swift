@@ -96,7 +96,7 @@ import OrchProtocol
         let over = try w.envelope(rid: ridB, payload: n + 1)
         #expect(over.count == Bridge.maxRequest + 1)
         let r = try await w.transport.bridgePost(over, route: BridgeRoute(workspaceID: w.ws, requestID: ridB), session: w.phoneSession)
-        #expect(r.status == 400 && errorCode(r) == "malformed")
+        #expect(r.status == 400 && errorCode(r) == "too_large")          // bounded ORB2 posts: 400 too_large (section 19.6)
         // The host sees exactly the one request, byte for byte.
         let pending = try await w.relay.pendingRequests(workspace: w.ws, token: w.hostSession.token)
         #expect(pending.count == 1 && pending[0].envelope == exact)
@@ -106,6 +106,7 @@ import OrchProtocol
         let w = try await World.make()
         let rig = HostRig()
         let rid = ID16.fresh(0x83), route = BridgeRoute(workspaceID: w.ws, requestID: rid)
+        #expect(try await w.postRequest(rid: rid).status == 202)
         let base = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last], dataBytes: 0).count
         let exact = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last], dataBytes: Bridge.maxChunk - base)
         #expect(exact.count == Bridge.maxChunk)
@@ -119,7 +120,7 @@ import OrchProtocol
         let over = try w.sealedResponse(rig: rig, rid: ridB, seq: 0, flags: [.last], dataBytes: Bridge.maxChunk - base + 1)
         #expect(over.count == Bridge.maxChunk + 1)
         let r = try await w.transport.bridgePost(over, route: BridgeRoute(workspaceID: w.ws, requestID: ridB), session: w.hostSession)
-        #expect(r.status == 400 && errorCode(r) == "malformed")
+        #expect(r.status == 400 && errorCode(r) == "too_large")          // bounded ORB2 posts: 400 too_large (section 19.6)
         #expect(w.check(over, rig: rig, rid: ridB, index: 0, last: true) == .drop(.size))
         let ridC = ID16.fresh(0x85)
         #expect(try chunkList(try await w.transport.bridgePoll(route: BridgeRoute(workspaceID: w.ws, requestID: ridC), after: nil, session: w.phoneSession)).isEmpty)

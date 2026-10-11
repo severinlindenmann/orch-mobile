@@ -87,16 +87,15 @@ import OrchProtocol
         let chunks = if fail { try await rotationRetry(w) { await revocation.value } } else { await revocation.value }
         let reply = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
         if fail {
-            #expect(reply.meta.object?["status"] == .int(200))
-            #expect(try StrictJSON.parse(reply.data).object?["revoked"] == .bool(true))
+            // Sealed under the old epoch after its own rotation: `already_done` "completed" as LAST | REFUSAL (orch-29 Q12, provisional).
+            #expect(reply.meta == HostRefusal.alreadyDone(status: "completed").meta && reply.data.isEmpty)
         } else {
             #expect(reply.meta == HostRefusal.staleEpoch(epoch: 2).meta)
             let (retry, header) = try await w.sealedRequest(rid: .fresh(0x83), seq: 2, epoch: 2,
                 meta: ["op": "revocation", "record": record])
             let retried = await w.host.process(envelope: retry, mailbox: header.rid)
             let completed = try openChunk(#require(retried.first), wk: await w.host.wkFor(2))
-            #expect(completed.meta.object?["status"] == .int(200))
-            #expect(try StrictJSON.parse(completed.data).object?["revoked"] == .bool(true))
+            #expect(completed.meta == HostRefusal.alreadyDone(status: "completed").meta && completed.data.isEmpty)
         }
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         #expect(await w.host.rotationRequired == false)
