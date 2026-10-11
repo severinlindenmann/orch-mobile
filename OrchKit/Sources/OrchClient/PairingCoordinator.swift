@@ -1112,7 +1112,11 @@ extension PairingCoordinator {
             list = try MemberList.verify(listJSON, wsk: wsk)
             try list.checkSnapshot(cardWorkspace: card.workspace, known: nil)
         } catch { throw JoinFailure(reason: "member_list") }
-        guard let me = list.members.first(where: { $0.deviceID == deviceID }), let scopes = me.scopeStrings,
+        // P3-D6: every listed person has a member device and the owner has one; this device is listed as the person its
+        // certificate (signed by the pinned PK) names.
+        let owner = Identifiers.personID(pk)
+        do { try list.checkPersons(owner: owner, first: true) } catch { throw JoinFailure(reason: "member_persons") }
+        guard let me = list.members.first(where: { $0.deviceID == deviceID }), me.personID == owner, let scopes = me.scopeStrings,
               scopes.count == approved.scopes.count, zip(scopes, approved.scopes).allSatisfy({ $0.utf8Equal($1) })
         else { throw JoinFailure(reason: "member_scopes") }
         guard list.epoch >= approved.epoch else { throw JoinFailure(reason: "member_epoch") }

@@ -100,13 +100,15 @@ public struct VerifiedCard: Equatable, Sendable {
     /// The signed `o`.
     public let object: [String: JSONValue]
 
-    public var objectDigest: Data { Self.digest(object) }
-    public static func digest(_ o: [String: JSONValue]) -> Data { Data(SHA256.hash(data: (try? canonicalJSON(.object(o))) ?? Data())) }
+    /// `H(cj(o))`, computed once at verification; a card whose object cannot be canonicalised is refused there (fail closed).
+    public let objectDigest: Data
+    /// `H(cj(o))`, or nil when `o` cannot be canonicalised (callers refuse).
+    public static func digest(_ o: [String: JSONValue]) -> Data? { (try? canonicalJSON(.object(o))).map { Data(SHA256.hash(data: $0)) } }
 
     /// What a phone or relay keeps to judge the next card against.
     public var head: Card.Head {
         Card.Head(workspace: workspace, ownerPersonID: ownerPersonID, wsk: wsk, wxk: wxk, wxkVersion: wxkVersion, cardSeq: cardSeq,
-                  delegationObject: delegation.object, objectDigest: Self.digest(object))
+                  delegationObject: delegation.object, objectDigest: objectDigest)
     }
 }
 
@@ -181,7 +183,8 @@ public enum Card {
         _ = try SignedObject(object: o, signature: sig).verify(kind: .card, key: wsk)
         guard sealedHash == Data(SHA256.hash(data: sealed)) else { throw Refusal.badSignature }
         return VerifiedCard(delegation: d, workspace: ws, wsk: wsk, wxk: wxk, wxkVersion: wxkVersion, ownerPersonID: ownerID,
-                            relayURL: url, cardSeq: seq, issuedMs: issued, sealedHash: sealedHash, ckCommit: commit, sealed: sealed, object: o)
+                            relayURL: url, cardSeq: seq, issuedMs: issued, sealedHash: sealedHash, ckCommit: commit, sealed: sealed, object: o,
+                            objectDigest: try VerifiedCard.digest(o) ?? { throw Refusal.malformed }())
     }
 
     /// Update rules (section 7.1), for the relay and for the phone ("never accept a lower card sequence"). `previous` is

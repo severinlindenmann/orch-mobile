@@ -64,6 +64,10 @@ public actor WorkspaceContainer {
         Migration(version: 10, statements: [
             "ALTER TABLE drop_heads ADD COLUMN downloaded_at INTEGER",
         ]),
+        // PR3 (P3-D6): the last verified member list this device accepted, so a relay cannot roll it back.
+        Migration(version: 11, statements: [
+            "CREATE TABLE member_list_head (id INTEGER PRIMARY KEY CHECK (id = 1), list_seq INTEGER NOT NULL, epoch INTEGER NOT NULL, digest BLOB NOT NULL)",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
@@ -136,6 +140,28 @@ public actor WorkspaceContainer {
 
     public func hasRequestId(_ id: String) async throws -> Bool {
         !(try await database().query("SELECT 1 FROM request_ids WHERE id=?", [.text(id)])).isEmpty
+    }
+
+    /// Records a verified member list's head (`list_seq`, epoch, `H(cj(o))`) if it does not roll back the last one (P3-D6): an
+    /// older `list_seq` is `rollback`, other content under the same `list_seq` is `conflict`, a falling epoch is `epochFell`. The
+    /// identical list again is accepted. Check and write are one transaction.
+    public func acceptMemberListHead(listSeq: Int64, epoch: Int64, digest: Data) async throws {
+        try await database().transaction { tx in
+            if let row = try tx.query("SELECT list_seq, epoch, digest FROM member_list_head WHERE id=1").first,
+               let seq = row.int("list_seq"), let e = row.int("epoch"), let d = row.blob("digest") {
+                if listSeq < seq { throw MemberListHeadError.rollback }
+                if listSeq == seq { if d != digest { throw MemberListHeadError.conflict }; return }
+                if epoch < e { throw MemberListHeadError.epochFell }
+            }
+            try tx.execute("INSERT INTO member_list_head(id, list_seq, epoch, digest) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET list_seq=excluded.list_seq, epoch=excluded.epoch, digest=excluded.digest",
+                           [.int(listSeq), .int(epoch), .blob(digest)])
+        }
+    }
+
+    public func memberListHead() async throws -> (listSeq: Int64, epoch: Int64)? {
+        guard let row = try await database().query("SELECT list_seq, epoch FROM member_list_head WHERE id=1").first,
+              let seq = row.int("list_seq"), let e = row.int("epoch") else { return nil }
+        return (seq, e)
     }
 
     public func epochHighWater() async throws -> Int64 {
@@ -245,3 +271,6 @@ extension WorkspaceContainer {
     }
 }
 public enum DropStoreError: Error, Sendable { case rollback, expired }
+
+/// A member list that would roll back the one this device last accepted (P3-D6).
+public enum MemberListHeadError: Error, Equatable, Sendable { case rollback, conflict, epochFell }

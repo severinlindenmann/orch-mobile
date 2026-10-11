@@ -111,28 +111,39 @@ extension FakeHost {
         let reply = try await putMembership(p.raw, relay: relay, session: session)
         if reply.status == 200 {
             let o = try HostAPI.object(reply.body)
-            guard o["list_seq"] == .int(p.listSeq), o["epoch"] == .int(Int64(p.epoch)) else { throw MembershipPublicationError.conflict }
-            installCommitted(p)
-            return p
+            if o["list_seq"] == .int(p.listSeq), o["epoch"] == .int(Int64(p.epoch)) { installCommitted(p); return p }
+            // An answer for other values than these bytes carry: settle it from the relay's signed list, never sticky.
+            return try await reconcile(p, relay: relay, session: session)
         }
         let failure = HostAPI.failure(of: reply)
         guard case .relay(let r) = failure else { throw failure }
         if Self.undecided.contains(r.code) { throw failure }
-        if r.code == .staleList {
-            // Section 19.7: after a lost response the relay may hold exactly this list (its receipt expired): compare the signed lists.
-            if try await relayMemberList(relay: relay, session: session) == p.memberList { installCommitted(p); return p }
-            discardRefused(p)
-            throw MembershipPublicationError.conflict
-        }
+        if r.code == .staleList { return try await reconcile(p, relay: relay, session: session) }
         discardRefused(p)
         throw failure
+    }
+
+    /// Section 19.7: after a lost response the relay may hold exactly this list (its receipt expired): compare the signed lists.
+    /// If it holds another (newer) list, these bytes can never commit: they are discarded with their uncommitted key, the relay's
+    /// `list_seq` and epoch become the floor of the next publication (a fresh sequence and epoch), and the conflict is surfaced once.
+    private func reconcile(_ p: PendingPublication, relay: FakeRelay, session: RelaySession) async throws -> PendingPublication {
+        let current = try await relayMemberList(relay: relay, session: session)
+        if current == p.memberList { installCommitted(p); return p }
+        discardRefused(p)
+        if let other = try? MemberList.verify(current, wsk: wskPublic) {
+            listSeq = max(listSeq, other.listSeq)
+            relayEpochFloor = max(relayEpochFloor, other.epoch)
+        }
+        throw MembershipPublicationError.conflict
     }
 
     private func installCommitted(_ p: PendingPublication) {
         pendingPublication = nil
         listSeq = max(listSeq, p.listSeq)
         if p.epoch != epoch { installEpoch(p.epoch) }
-        setRoster(p.roster)
+        // A member revoked or removed while these bytes were in flight is not re-added locally; the gate stays up and the next
+        // rotation publishes without it.
+        setRoster(p.roster.filter { !rotationRemoved.contains($0.0.deviceID) && !core.revoked.contains($0.0.deviceID) })
     }
 
     /// The relay saw these bytes and refused them. A key it saw sealed to the roster of a refused rotation is never activated: a device
@@ -174,18 +185,21 @@ extension FakeHost {
             try await resolvePending(relay: relay, session: session)
             var members = roster.values.filter { $0.keys.deviceID != adding?.0.deviceID }.map { ($0.keys, $0.scopes) }
             if let adding { members.append(adding) }
-            _ = try preparePublication(roster: members, epoch: epoch, wraps: wraps)
+            // Behind a relay list this host did not publish: a fresh epoch above it (its key is unknown here).
+            let e = relayEpochFloor > epoch ? relayEpochFloor + 1 : epoch
+            _ = wk(e)
+            _ = try preparePublication(roster: members, epoch: e, wraps: wraps)
             try await sendPending(relay: relay, session: session)
             return members
         }
     }
 
+    /// FIFO: the lock is handed directly to the longest waiter, so no later caller can barge in between.
     func withPublicationLock<T: Sendable>(_ body: () async throws -> T) async throws -> T {
-        while publicationLocked { await withCheckedContinuation { publicationWaiters.append($0) } }
-        publicationLocked = true
+        if publicationLocked { await withCheckedContinuation { publicationWaiters.append($0) } }   // resumed holding the lock
+        else { publicationLocked = true }
         defer {
-            publicationLocked = false
-            if !publicationWaiters.isEmpty { publicationWaiters.removeFirst().resume() }
+            if publicationWaiters.isEmpty { publicationLocked = false } else { publicationWaiters.removeFirst().resume() }
         }
         return try await body()
     }

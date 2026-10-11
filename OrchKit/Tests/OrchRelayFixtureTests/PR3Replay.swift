@@ -56,7 +56,7 @@ enum PR3Replay {
         let certs = devices ? ["phone", "primary", "laptop"].map { cert($0) } : []
         let card = Self.card, ws = Self.ws, person = Self.person, device = Self.device
         let verified = try Card.verify(card, ownerKey: pk)
-        try await relay.seed { r in
+        await relay.seed { r in
             r.owners[person] = pk
             for c in certs { let x = row(c, now: now, accounts: r.owners); r.devices[ID16(hex: c.object!["o"]!.object!["device_id"]!.string!)!] = x }
             if withCard {
@@ -85,7 +85,7 @@ enum PR3Replay {
         var signedList: JSONValue?
         if let o = st["list"], o != .null { signedList = try SignedObject.sign(o.object!, kind: .memberList, signer: try signer("wsk_a.sig")).json }
         let list = signedList, accounts = accountKeys
-        try await relay.seed { r in
+        await relay.seed { r in
             r.owners = accounts
             r.devices = [:]
             for c in certs { r.devices[ID16(hex: c.object!["o"]!.object!["device_id"]!.string!)!] = row(c, now: now, accounts: accounts) }
@@ -136,38 +136,38 @@ enum PR3Replay {
                             directory: base.object!["args"]!.object!["directory"]!, now: now)
         let ws = Self.ws, device = Self.device, person = Self.person, record = Self.record
         let body = baseBody
-        if name == "members" { try await relay.seed { r in r.workspaces[ws]!.listJSON = body.object!["member_list"]! } }
+        if name == "members" { await relay.seed { r in r.workspaces[ws]!.listJSON = body.object!["member_list"]! } }
         switch scenario {
         case "cert_invalid":
-            try await relay.seed { r in r.devices[device]!.cert = .object([:]); r.devices[device]!.info = nil }
+            await relay.seed { r in r.devices[device]!.cert = .object([:]); r.devices[device]!.info = nil }
         case "bad_signature":
             let pk = try key("person_alice.sig")
-            try await relay.seed { r in r.workspaces[ws]!.card!.wsk = pk }
+            await relay.seed { r in r.workspaces[ws]!.card!.wsk = pk }
         case "cert_expired":
             let c = try resigned(cert("phone"), by: "person_alice.sig", kind: .deviceCert) { $0["expires_ms"] = .int(now) }
-            try await relay.seed { r in r.devices[device]!.cert = c; r.devices[device]!.expiresMs = now }
+            await relay.seed { r in r.devices[device]!.cert = c; r.devices[device]!.expiresMs = now }
         case "not_eligible":
             let primary = Self.primary
-            try await relay.seed { r in
+            await relay.seed { r in
                 r.sessions["FAKE-workspace"] = .init(kind: .device, id: primary, expiresMs: now + 900_000)
                 r.workspaces[ws]!.members = [:]
             }
         case "revoked":
-            try await relay.seed { r in r.revocationRows[device] = .init(record: record, personID: person, reason: "lost", cursor: 1) }
+            await relay.seed { r in r.revocationRows[device] = .init(record: record, personID: person, reason: "lost", cursor: 1) }
         case "other_person":
             let bobPhone = cert("bob_phone")
-            try await relay.seed { r in r.devices[device]!.cert = bobPhone }
+            await relay.seed { r in r.devices[device]!.cert = bobPhone }
         case "scope_exceeded":
             let c = try resigned(cert("phone"), by: "person_alice.sig", kind: .deviceCert) {
                 $0["scopes_max"] = [.string("drop:" + ws.hex)]; $0["expires_ms"] = .int(now + 10_000)
             }
-            try await relay.seed { r in r.devices[device]!.cert = c }
+            await relay.seed { r in r.devices[device]!.cert = c }
         case "rotation_required", "stale_list":
             var o = body.object!["member_list"]!.object!["o"]!.object!
             o["list_seq"] = 1; o["epoch"] = 1
             let list = try SignedObject.sign(o, kind: .memberList, signer: try signer("wsk_a.sig")).json
             let laptop = id("device_laptop")
-            try await relay.seed { r in
+            await relay.seed { r in
                 r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.listSeq = 1; r.workspaces[ws]!.epoch = 1
                 if scenario == "rotation_required" { r.workspaces[ws]!.members[laptop] = .init(personID: person, scopes: ["look"]) }
             }
@@ -175,15 +175,15 @@ enum PR3Replay {
             var o = body.object!["member_list"]!.object!["o"]!.object!
             o["members"] = .array(o["members"]!.array!.filter { $0.object?["device_id"] != .string(device.hex) })
             let list = try SignedObject.sign(o, kind: .memberList, signer: try signer("wsk_a.sig")).json
-            try await relay.seed { r in r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.members[device] = nil }
+            await relay.seed { r in r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.members[device] = nil }
         case "grant_conflict":
-            try await relay.seed { r in r.workspaces[ws]!.grants[.init(device: device, epoch: 1)] = .object([:]) }
+            await relay.seed { r in r.workspaces[ws]!.grants[.init(device: device, epoch: 1)] = .object([:]) }
         case "stale_card":
-            try await relay.seed { r in r.workspaces[ws]!.card!.cardSeq = 2 }
+            await relay.seed { r in r.workspaces[ws]!.card!.cardSeq = 2 }
         case "wrap_conflict":
-            try await relay.seed { r in r.workspaces[ws]!.cardKeys[device, default: [:]][1] = "other" }
+            await relay.seed { r in r.workspaces[ws]!.cardKeys[device, default: [:]][1] = "other" }
         case "not_found":
-            try await relay.seed { r in
+            await relay.seed { r in
                 switch name {
                 case "members": r.workspaces[ws]!.listJSON = nil
                 case "grants": r.workspaces[ws]!.grants = [:]
@@ -204,31 +204,31 @@ enum PR3Replay {
         let ws = Self.ws, device = Self.device, primary = Self.primary, person = Self.person, record = Self.record
         let bobKey = try key("person_bob.sig")
         if c.request["headers"]?["Authorization"]?.string == "Bearer FAKE-workspace-token" {
-            try await relay.seed { r in r.sessions["FAKE-workspace-token"] = .init(kind: .workspace, id: ws, expiresMs: now + 900_000) }
+            await relay.seed { r in r.sessions["FAKE-workspace-token"] = .init(kind: .workspace, id: ws, expiresMs: now + 900_000) }
         }
         if name == "device_put", c.name == "resigned_identical" {
             let original = p3Cases.first { $0.object?["name"]?.string == "certificate_directory_resigned_retry" }!
                 .object!["state"]!.object![device.hex]!
-            try await relay.seed { r in r.devices[device]!.cert = original }
+            await relay.seed { r in r.devices[device]!.cert = original }
         }
-        if scenario == "other_workspace_person_refused" { try await relay.seed { r in r.workspaces[ws]!.everPersons = [] } }
-        if name == "device_put", scenario == "rate_limited" { try await relay.seed { r in r.devices[device] = nil } }
+        if scenario == "other_workspace_person_refused" { await relay.seed { r in r.workspaces[ws]!.everPersons = [] } }
+        if name == "device_put", scenario == "rate_limited" { await relay.seed { r in r.devices[device] = nil } }
         if name == "revocation_feed", c.name == "filtered_workspace_feed" {
             let other = try resigned(record, by: "person_alice.sig", kind: .revocation) { $0["device_id"] = .string(primary.hex) }
-            try await relay.seed { r in r.revocationRows[primary] = .init(record: other, personID: person, reason: "lost", cursor: 2) }
+            await relay.seed { r in r.revocationRows[primary] = .init(record: other, personID: person, reason: "lost", cursor: 2) }
         }
         if name == "revocation_feed" {
             // the feed's target is revoked; its caller is another live device of the person
-            try await relay.seed { r in r.sessions["FAKE-device"] = .init(kind: .device, id: primary, expiresMs: now + 900_000) }
+            await relay.seed { r in r.sessions["FAKE-device"] = .init(kind: .device, id: primary, expiresMs: now + 900_000) }
         }
         if name == "revocation_get" || name == "revocation_feed" || scenario == "revoked" {
-            try await relay.seed { r in
+            await relay.seed { r in
                 r.revocationRows[device] = .init(record: record, personID: person, reason: "lost", cursor: 1)
                 if name == "revocation_feed", scenario == "revoked" { r.sessions["FAKE-device"] = .init(kind: .device, id: device, expiresMs: now + 900_000) }
             }
         }
         if name == "card_put", c.name == "first_card_without_session" || scenario == "rate_limited" || scenario == "other_person" {
-            try await relay.seed { r in r.workspaces = [:] }
+            await relay.seed { r in r.workspaces = [:] }
         }
         func windowFull(_ purpose: String, _ duration: Int64, _ cap: Int) async {
             // full until 20 s from now: the fixtures' Retry-After
@@ -236,29 +236,29 @@ enum PR3Replay {
         }
         switch scenario {
         case "cert_expired" where name != "device_put":
-            try await relay.seed { r in for d in Array(r.devices.keys) { r.devices[d]!.expiresMs = now } }
+            await relay.seed { r in for d in Array(r.devices.keys) { r.devices[d]!.expiresMs = now } }
         case "cert_invalid":
-            if name == "device_put" { try await relay.seed { r in r.owners[person] = bobKey } }
-            else { try await relay.seed { r in for d in Array(r.devices.keys) { r.devices[d]!.cert = .object([:]) } } }
+            if name == "device_put" { await relay.seed { r in r.owners[person] = bobKey } }
+            else { await relay.seed { r in for d in Array(r.devices.keys) { r.devices[d]!.cert = .object([:]) } } }
         case "bad_signature" where name != "card_put":
-            try await relay.seed { r in r.owners[person] = bobKey }
+            await relay.seed { r in r.owners[person] = bobKey }
         case "not_eligible":
             if name == "device_get" || name == "revocation_feed" {
-                try await relay.seed { r in
+                await relay.seed { r in
                     for t in Array(r.sessions.keys) { r.sessions[t] = .init(kind: .workspace, id: ws, expiresMs: now + 900_000) }
                     r.workspaces[ws]!.everPersons = []
                 }
             } else {
-                try await relay.seed { r in
+                await relay.seed { r in
                     r.workspaces[ws]!.members = [:]
                     if name == "card_put" { for t in Array(r.sessions.keys) { r.sessions[t] = .init(kind: .device, id: device, expiresMs: now + 900_000) } }
                 }
             }
         case "other_person":
             switch name {
-            case "revocations_post": try await relay.seed { r in r.devices[device] = nil }
-            case "card_put": try await relay.seed { r in r.owners[person] = bobKey }
-            default: try await relay.seed { r in r.devices = [:]; r.owners = [:] }
+            case "revocations_post": await relay.seed { r in r.devices[device] = nil }
+            case "card_put": await relay.seed { r in r.owners[person] = bobKey }
+            default: await relay.seed { r in r.devices = [:]; r.owners = [:] }
             }
         case "cert_conflict":
             var other = cert("phone").object!
@@ -266,16 +266,16 @@ enum PR3Replay {
             o["label_sealed"] = .string(B64U.encode(Data("other".utf8)))
             other["o"] = .object(o)
             let conflicting = JSONValue.object(other)
-            try await relay.seed { r in r.devices[device]!.cert = conflicting }
+            await relay.seed { r in r.devices[device]!.cert = conflicting }
         case "not_found":
             switch name {
             case "device_get":
-                try await relay.seed { r in
+                await relay.seed { r in
                     r.sessions["FAKE-device"] = .init(kind: .device, id: primary, expiresMs: now + 900_000)
                     r.workspaces[ws]!.members = [:]; r.devices[device] = nil
                 }
-            case "card_get": try await relay.seed { r in r.workspaces = [:] }
-            default: try await relay.seed { r in r.revocationRows = [:] }
+            case "card_get": await relay.seed { r in r.workspaces = [:] }
+            default: await relay.seed { r in r.revocationRows = [:] }
             }
         case "rate_limited":
             switch name {
@@ -312,7 +312,7 @@ enum PR3Replay {
             }
             old["o"] = .object(o)
             let stored = JSONValue.object(old)
-            if stored != card { try await relay.seed { r in r.workspaces[ws]?.card?.json = stored } }
+            if stored != card { await relay.seed { r in r.workspaces[ws]?.card?.json = stored } }
         }
         return true
     }
@@ -373,6 +373,13 @@ enum PR3Replay {
                 let want = expect["state"]!.object!
                 let a = after.object!
                 #expect(a["list"] == want["list"], "\(name) list")
+                // the relay's member table is exactly the accepted list's entries
+                var members: [String: JSONValue] = [:]
+                for m in want["list"]?.object?["members"]?.array ?? [] {
+                    let mo = m.object!
+                    members[mo["device_id"]!.string!] = ["person_id": mo["person_id"]!, "scopes": mo["scopes"]!]
+                }
+                #expect(a["members"] == .object(members), "\(name) members")
                 #expect(a["grants"] == want["grants"], "\(name) grants")
                 var wraps: [String: JSONValue] = [:]
                 for (d, x) in want["wraps"]?.object ?? [:] { wraps[d + "/" + String(x.object!["card_seq"]!.int!)] = x.object!["sealed"]! }

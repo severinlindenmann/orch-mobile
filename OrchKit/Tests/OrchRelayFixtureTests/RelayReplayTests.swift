@@ -71,6 +71,10 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
     /// membership files, and the 104 cases of the nine PR4 files.
     static let expectedReplayed = 18 + 120 + 104
 
+    /// The instant of every fixture case that has one (all 386a6cb cases use 1790000000000). The three condition-only cases
+    /// (victim_person_without_member, other_workspace_person_refused x2) carry no `given.now_ms`; they replay at that same instant.
+    static let conditionOnlyNowMs: Int64 = 1_790_000_000_000
+
     static func file(_ name: String) throws -> Fixtures.File { try #require(files.first { $0.fileName == name }) }
 
     static func body(_ r: Fixtures.JSON) throws -> Data {
@@ -97,7 +101,7 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         let now: Int64
         if let n = c.given["now_ms"]?.int { now = n } else {
             #expect(c.given["condition"] != nil && c.given["scenario"] == nil, "\(id) now_ms")
-            now = 1_790_000_000_000
+            now = Self.conditionOnlyNowMs
         }
         let req = c.request, resp = c.response
         var script: [Data] = []     // the relay mints the challenge or the token the fixture shows

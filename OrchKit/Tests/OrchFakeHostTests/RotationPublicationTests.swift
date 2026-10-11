@@ -74,7 +74,8 @@ import OrchProtocol
         #expect(await w.host.pendingPublicationState() == nil)
     }
 
-    /// A newer list the host did not send: acceptance cannot be established, so it is surfaced, never assumed.
+    /// A newer list the host did not send: acceptance cannot be established, so it is surfaced (once), never assumed; the host then
+    /// publishes a fresh sequence and epoch above the relay's list (section 19.7) instead of failing forever.
     @Test func staleListWithAnotherListIsAConflict() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
@@ -91,6 +92,53 @@ import OrchProtocol
         #expect(await w.host.pendingPublicationState() == nil)
         #expect(await w.host.rotationRequired)
         #expect(await w.host.epoch == 1)
+        try await rotationRetry(w, milliseconds: 200) { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+        #expect(await w.host.rotationRequired == false)
+        #expect(await w.host.epoch == 2)
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 3)
+    }
+
+    /// C4: the host fails after persisting the body but before sending it. Those bytes never left: the slot is dropped, the
+    /// key is kept, and the retry publishes the same epoch.
+    @Test func crashBeforeSendRetriesTheSameEpochWithTheSameKey() async throws {
+        let w = try await World.make()
+        let calls = Counter()
+        await w.host.setPublishHook { calls.bump(); if calls.value == 1 { throw TestCrash() } }
+        await #expect(throws: TestCrash.self) {
+            try await w.host.rotate(remaining: [(w.phone, ["look", "decide"])], relay: w.relay, session: w.hostSession)
+        }
+        #expect(await w.host.pendingPublicationState() == nil)
+        #expect(await w.relay.memberListEpoch(workspace: w.ws) == 1)
+        let kept = await key(w, 2)
+        _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+        #expect(await w.host.epoch == 2 && calls.value == 2)
+        #expect(await key(w, 2) == kept)
+        #expect(await w.relay.memberListEpoch(workspace: w.ws) == 2)
+    }
+
+    /// C3: a member revoked at the host while the publication that still names it is in flight is not re-added to the local roster
+    /// by that commit; the follow-up rotation publishes without it.
+    @Test func memberRevokedDuringTheSendIsNotReAdded() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        faults.enqueue(.delay(.seconds(1)), at: .beforeMembershipPublication)
+        let seen = RosterBox()
+        await w.host.setPublishHook { await seen.record(await w.host.coreState().members[w.primaryID] != nil) }
+        let rotation = Task {
+            try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)], relay: w.relay, session: w.hostSession)
+        }
+        while w.clock.sleeperCount == 0 { await Task.yield() }
+        await w.host.markRevoked(w.primaryID)
+        w.clock.advance(milliseconds: 1000)
+        _ = try? await rotation.value
+        if await w.host.rotationRequired {
+            _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+        }
+        #expect(await seen.values.count == 2)
+        #expect(await seen.values.last == false)          // after the first commit the primary was not back in the roster
+        #expect(await w.host.epoch == 3)
+        #expect(await w.host.coreState().members[w.primaryID] == nil)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
     }
 
     /// I3: the relay refused the publication (a member was revoked while it was delayed). Nothing was committed and the relay saw
@@ -152,4 +200,9 @@ import OrchProtocol
 private actor KeyBox {
     var value: Data?
     func set(_ d: Data) { if value == nil { value = d } }
+}
+
+private actor RosterBox {
+    var values: [Bool] = []
+    func record(_ v: Bool) { values.append(v) }
 }

@@ -10,7 +10,7 @@ import Testing
     func head(_ stored: JSONValue) throws -> Card.Head {
         let o = stored["o"], d = stored["delegation"]
         return Card.Head(workspace: o["workspace_id"].id, ownerPersonID: o["owner_person_id"].id, wsk: o["wsk_pub"].sigPub, wxk: o["wxk_pub"].kxPub,
-                         wxkVersion: o["wxk_version"].u32, cardSeq: o["card_seq"].u32, delegationObject: d.object!, objectDigest: VerifiedCard.digest(o.object!))
+                         wxkVersion: o["wxk_version"].u32, cardSeq: o["card_seq"].u32, delegationObject: d.object!, objectDigest: VerifiedCard.digest(o.object!)!)
     }
 
     /// Relay vectors 386a6cb: 19 cases, 4 accepted, including `same_seq` (an identical verified card at the stored sequence is an

@@ -489,9 +489,9 @@ extension FakeRelay {
               let wsk = o["wsk_pub"]?.string.flatMap({ B64U.decode($0) }).flatMap({ try? SigningPublicKey(x963: $0) }),
               let wxk = o["wxk_pub"]?.string.flatMap({ B64U.decode($0) }).flatMap({ try? AgreementPublicKey(x963: $0) }),
               let version = o["wxk_version"]?.int, version >= 0, version <= Int64(UInt32.max),
-              let seq = o["card_seq"]?.int, seq >= 0, seq <= Int64(UInt32.max) else { return nil }
+              let seq = o["card_seq"]?.int, seq >= 0, seq <= Int64(UInt32.max), let digest = VerifiedCard.digest(o) else { return nil }
         return Card.Head(workspace: ws, ownerPersonID: owner, wsk: wsk, wxk: wxk, wxkVersion: UInt32(version), cardSeq: UInt32(seq),
-                         delegationObject: d, objectDigest: VerifiedCard.digest(o))
+                         delegationObject: d, objectDigest: digest)
     }
 
     /// `PUT /v2/workspaces/{ws}/card` (directory.py `card_put`). `request` is nil for the in-process publication stand-in (no session,

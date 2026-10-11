@@ -147,6 +147,8 @@ public actor FakeHost {
     var holderGen: UInt64?
     /// One membership publication at a time (joins and rotations share the pending slot and `list_seq`).
     var publicationLocked = false
+    /// The epoch of a relay list this host did not publish (section 19.7): the next publication goes above it.
+    var relayEpochFloor: UInt32 = 0
     var publicationWaiters: [CheckedContinuation<Void, Never>] = []
     /// Set BEFORE any rotation suspends (or a revocation removes a member), cleared only after grants, list and epoch install. While set,
     /// no data is sealed; the next pump retries the publication.

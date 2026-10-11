@@ -173,7 +173,9 @@ public actor DropService {
         let s = try await auth()
         try requireAvailable()
         let raw = try await RelayClient(transport: session.cfg.transport).memberList(workspace: card.workspace, session: s)
-        let list = try MemberList.verify(raw, wsk: card.wsk)
+        let list: MemberList
+        do { list = try await session.acceptMemberList(raw) }
+        catch let r as Refusal where r == .staleList || r == .conflictingSnapshot || r == .badEpoch { throw DropError.rollback }
         guard list.workspace == card.workspace, list.members.contains(where: { $0.deviceID == session.cfg.deviceID && ($0.scopeStrings?.contains(operate ? "operate" : "look") ?? false) }) else { throw DropError.unauthorized }
         guard list.epoch >= (try await session.currentEpoch()) else { throw DropError.rollback }
         if list.epoch > (try await session.currentEpoch()) {

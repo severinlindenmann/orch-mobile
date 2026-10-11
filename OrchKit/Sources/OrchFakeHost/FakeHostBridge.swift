@@ -177,8 +177,9 @@ extension FakeHost {
             let before = epoch
             if let done = try await resolvePending(relay: relay, session: currentRotationSession(relay, fallback: s)),
                done.epoch > before, rostersEqual(done.roster, remaining) { return }
-            guard epoch < UInt32.max else { throw Refusal.badEpoch }
-            let next = epoch + 1
+            let base = max(epoch, relayEpochFloor)
+            guard base < UInt32.max else { throw Refusal.badEpoch }
+            let next = base + 1
             _ = wk(next)                                   // persisted before anything is sealed under it
             try await checkRotationRoster(remaining, relay: relay)
             endOpenStreams(newEpoch: next)
