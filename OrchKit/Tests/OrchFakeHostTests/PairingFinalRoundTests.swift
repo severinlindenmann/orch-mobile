@@ -1,4 +1,5 @@
 import Foundation
+@testable import OrchCoordination
 import Testing
 import OrchClient
 import OrchProtocol
@@ -14,7 +15,7 @@ import OrchStore
         let before = try #require(h.pairingRecord)
         let dir = h.env.index.layout.tombstones.directories[0]
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fd = open(dir.appendingPathComponent("tombstones.lock").path, O_RDWR | O_CREAT, 0o600)
+        let fd = openCoordinationLock(dir.appendingPathComponent("tombstones.lock").path)
         #expect(fd >= 0)
         defer { flock(fd, LOCK_UN); close(fd) }
         try h.env.index.layout.prepareWorkspace(h.wsHex)
@@ -54,7 +55,7 @@ import OrchStore
         let file = dir.appendingPathComponent("tombstones.json")
         var fd: Int32 = -1
         if locked {
-            fd = open(dir.appendingPathComponent("tombstones.lock").path, O_RDWR | O_CREAT, 0o600)
+            fd = openCoordinationLock(dir.appendingPathComponent("tombstones.lock").path)
             #expect(fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0)
         } else { try Data("unreadable JSON".utf8).write(to: file) }
         let c = h.fresh()

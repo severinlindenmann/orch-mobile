@@ -46,6 +46,7 @@ struct PushHarnessView: View {
             // Start from a clean slate: this test owns the state of the fixture workspace.
             if let dir = PushGroup.pushDir() {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(NSEMarker.fileName))
+                // Stable replay locks live outside stateDir and must survive this reset.
                 try? FileManager.default.removeItem(at: ReplayStore(pushDir: dir, realm: "live").stateDir(workspace: ws))
             }
             status = "material installed gen=\(decoded.generation)"
