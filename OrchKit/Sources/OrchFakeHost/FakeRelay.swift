@@ -913,11 +913,19 @@ public actor FakeRelay: RequestSender {
         return (after, wait, true)
     }
 
+    // Plain loops: the nested reduce form exceeds Xcode 16.4's type-checker time limit.
     private func liveBodyBytes(_ now: Int64) -> Int {
-        rids.values.reduce(0) { acc, r in
-            acc + r.copies.reduce(0) { $0 + (now < $1.expiresMs ? $1.envelope?.count ?? 0 : 0) }
-                + r.chunks.values.reduce(0) { $0 + (now < $1.expiresMs ? $1.envelope?.count ?? 0 : 0) }
-        } + boxes.values.reduce(0) { $0 + live($1, now).requests.reduce(0) { $0 + $1.envelope.count } + live($1, now).responses.reduce(0) { $0 + $1.envelope.count } }
+        var total = 0
+        for r in rids.values {
+            for c in r.copies where now < c.expiresMs { total += c.envelope?.count ?? 0 }
+            for c in r.chunks.values where now < c.expiresMs { total += c.envelope?.count ?? 0 }
+        }
+        for box in boxes.values {
+            let l = live(box, now)
+            for q in l.requests { total += q.envelope.count }
+            for p in l.responses { total += p.envelope.count }
+        }
+        return total
     }
 
     private func bridge(_ r: WireRequest, ws: String, rid: String, _ query: String?) async throws -> WireReply {
