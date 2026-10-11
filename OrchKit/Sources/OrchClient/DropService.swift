@@ -347,7 +347,7 @@ public actor DropService {
         return try await sendData(data, name: name, mime: mime, transcript: transcript, expiresMs: expiresMs, document: document, chosenObject: nil, kind: kind)
     }
 
-    /// Atomically commits a whole compose send. No relay operation occurs during sealing.
+    /// Atomically commits a whole compose send after checking signed membership. No upload occurs during sealing.
     /// Object identities bind workspace, send UUID and attachment UUID; retries reuse stored ciphertext.
     public func sealSend(_ sendID: UUID, attachments: [DropSendAttachment]) async throws -> [DropUploadIdentity] {
         if Self.operationEpoch == nil {
@@ -357,7 +357,8 @@ public actor DropService {
         guard !attachments.isEmpty, attachments.count <= 5,
               Set(attachments.map(\.id)).count == attachments.count,
               attachments.reduce(0, { $0 + $1.data.count }) <= Self.maxPlaintextBytes else { throw DropError.tooLarge }
-        let epoch = try await session.currentEpoch(), wk = try await session.dropKey(epoch)
+        let members = try await membership(operate: true)
+        let epoch = members.epoch, wk = try await session.dropKey(epoch)
         let now = session.cfg.wall.nowMs
         var sealed: [(String, Data)] = []
         for attachment in attachments {
@@ -376,6 +377,7 @@ public actor DropService {
         let db = try await session.cfg.container.database()
         try await check()
         let batch = sealed
+        try await hook?("send.persist")
         try await db.transaction { tx in
             for (object, body) in batch {
                 try tx.execute("INSERT OR IGNORE INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(object), .blob(body)])

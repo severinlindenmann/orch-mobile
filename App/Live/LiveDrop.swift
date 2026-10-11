@@ -23,7 +23,7 @@ final class LiveDrop {
     @ObservationIgnored var beforePublication: (() async -> Void)?
     @ObservationIgnored private var sendTask: Task<Void, Never>?
     private var notSent = false
-    private var pendingDraft: DropDraft?
+    @ObservationIgnored var beforeSealOutcome: (() async -> Void)?
     var stopped: Set<String> = []
     var readIDs: Set<String> = []
     var confirmed: [DropUploadIdentity] = []
@@ -46,9 +46,7 @@ final class LiveDrop {
     }
     func cancelUI(clear: Bool) {
         revision += 1; previewURL = nil; expiryTask?.cancel(); sendTask?.cancel()
-        if pendingDraft != nil { notSent = true; status = "Not sent" }
-        pendingDraft = nil
-        if clear { metadata = [:]; downloads = [:]; objects = [:]; rows = []; failures = []; pendingDraft = nil; stopped = []; confirmed = []; readIDs = []; aliases = [:]; status = nil }
+        if clear { metadata = [:]; downloads = [:]; objects = [:]; rows = []; failures = []; stopped = []; confirmed = []; readIDs = []; aliases = [:]; status = nil }
     }
     func report(_ error: any Error) {
         if error is CancellationError || (error as? DropError) == .suspended { return }
@@ -213,18 +211,16 @@ extension LiveDrop {
             downloads[id] = file; metadata[id] = file.metadata
             if let index = rows.firstIndex(where: { $0.id == id }) { rows[index] = row(object, direction: rows[index].direction) }
             let kind = rows.first(where: { $0.id == id })?.kind
-            guard file.metadata.size > 0, kind != .note, kind != .url else { return }
-            previewURL = file.url
+            if file.metadata.size > 0, kind != .note, kind != .url { previewURL = file.url }
             expiryTask?.cancel()
             expiryTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-                    guard let self, self.revision == mine, self.previewURL == file.url else { return }
-                    if !self.usable || self.nowMs >= file.deadlineMs {
-                        self.previewURL = nil
-                        if self.usable { do { try await self.purge() } catch { self.report(error) } }
-                        return
+                    guard let self, self.revision == mine else { return }
+                    if self.downloads.values.contains(where: { $0.deadlineMs <= self.nowMs }) {
+                        do { try await self.purge() } catch { self.report(error) }
                     }
+                    if self.downloads.isEmpty { return }
                 }
             }
         } catch { if mine == revision && workspace?.usable == true { report(error) } }
@@ -243,15 +239,20 @@ extension LiveDrop {
     func send(_ draft: DropDraft) async {
         guard canOperate, !sending, draft.attachments.count <= DropLimits.maxAttachments,
               draft.attachments.reduce(0, { $0 + $1.data.count }) <= DropLimits.maxBytes else { return }
-        sending = true; notSent = false; pendingDraft = draft; status = "Sending…"
+        sending = true; notSent = false; status = "Sending…"
+        var sealed = false
         let mine = revision
         defer { sending = false }
         do {
             let attachments = draft.attachments.isEmpty
                 ? [DropSendAttachment(id: UUID(), data: Data(draft.note.utf8), name: "note.txt", mime: "text/plain")]
                 : draft.attachments.map { DropSendAttachment(id: $0.id, data: $0.data, name: $0.name, transcript: draft.note.isEmpty ? nil : draft.note) }
-            _ = try await service.sealSend(UUID(), attachments: attachments)
-            pendingDraft = nil
+            let outcome: Result<[DropUploadIdentity], any Error>
+            do { outcome = .success(try await service.sealSend(UUID(), attachments: attachments)) }
+            catch { outcome = .failure(error) }
+            await beforeSealOutcome?()
+            _ = try outcome.get()
+            sealed = true
             if workspace?.info.lifecycle != .removed {
                 notSent = false
                 if status == "Not sent" { status = "Sending…" }
@@ -261,14 +262,15 @@ extension LiveDrop {
             guard canOperate, mine == revision else { return }
             await refresh()
             guard canOperate, mine == revision else { return }
-            pendingDraft = nil
             status = "Sent (confirmed)"
         } catch {
+            // Cancellation alone cannot tell whether the atomic seal transaction committed.
+            if !sealed, workspace?.info.lifecycle != .removed {
+                notSent = true; status = "Not sent"
+            }
             guard workspace?.usable == true, mine == revision else { return }
-            let unsealed = pendingDraft != nil
-            pendingDraft = nil
             report(error)
-            if unsealed { notSent = true; status = "Not sent" }
+            if !sealed { status = "Not sent" }
             // A durable pending identity is recovered by resumeUploads, never a fresh send.
             do {
                 let updated = try await service.failedUploads()

@@ -37,6 +37,61 @@ final class LiveDropTests: XCTestCase {
         return (services, drop)
     }
 
+    func testTextOpensExpireWhileDetailRemainsActive() async throws {
+        let (services, drop) = try await fixture()
+        let runtime = try XCTUnwrap(services.runtime)
+        for (name, mime, body) in [("note.txt", "text/plain", "private note"),
+                                   ("link.txt", "text/uri-list", "https://example.com/private")] {
+            let object = try await drop.service.send(Data(body.utf8), name: name, mime: mime)
+            await drop.refresh()
+            let id = object.descriptor.object.hex
+            await drop.open(id)
+            let file = try XCTUnwrap(drop.downloads[id])
+            XCTAssertNil(drop.previewURL)
+            XCTAssertEqual(drop.rows.first { $0.id == id }?.text, body)
+            runtime.clock.advance(milliseconds: file.deadlineMs - runtime.clock.nowMs)
+            try await bounded { drop.downloads[id] == nil }
+            XCTAssertNil(drop.rows.first { $0.id == id }?.text)
+            XCTAssertNil(drop.metadata[id])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        }
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testCancelledSendReportsActualSealOutcome() async throws {
+        for succeeds in [true, false] {
+            let (services, drop) = try await fixture()
+            let before = try await drop.service.confirmedUploads().count
+            if !succeeds { await drop.service.suspend() }
+            let gate = PublicationGate()
+            drop.beforeSealOutcome = { await gate.hit() }
+            var finished = false
+            let task = Task {
+                await drop.send(.init(workspaceID: drop.workspace!.info.id, attachments: [], note: "cancel at seal outcome"))
+                finished = true
+            }
+            do {
+                try await bounded { gate.entered }
+                // The UI sees cancellation before it learns whether sealing committed.
+                drop.cancelUI(clear: false); task.cancel()
+                XCTAssertNotEqual(drop.status, "Not sent")
+                gate.release()
+                try await bounded { finished }
+                drop.beforeSealOutcome = nil
+                try await drop.service.activate()
+                await drop.foreground()
+                XCTAssertEqual(drop.status == "Not sent", !succeeds)
+                let after = try await drop.service.confirmedUploads().count
+                XCTAssertEqual(after, before + (succeeds ? 1 : 0))
+            } catch {
+                gate.release(); task.cancel(); drop.beforeSealOutcome = nil
+                services.resetThisiPhone(); await services.waitForReset()
+                throw error
+            }
+            services.resetThisiPhone(); await services.waitForReset()
+        }
+    }
+
     func testBusyAndUnknownRemovalPreserveRowsAndAlarmBlocksContent() async throws {
         let (services, drop) = try await fixture()
         let rows = drop.rows

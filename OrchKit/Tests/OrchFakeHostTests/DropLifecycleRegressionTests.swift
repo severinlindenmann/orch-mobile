@@ -122,3 +122,45 @@ extension DropServiceTests {
         #expect(try Data(contentsOf: file.url) == Data("private".utf8))
     }
 }
+
+
+extension DropServiceTests {
+    @Test(.timeLimit(.minutes(1))) func composeRequiresCurrentOperateMembershipBeforeSealing() async throws {
+        for removed in [false, true] {
+            let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+            var members = [(w.primary.deviceKeys, World.all)]
+            if !removed { members.append((w.phone, ["look"])) }
+            try await w.host.rotate(remaining: members, relay: w.relay, session: w.hostSession)
+            let attachment = DropSendAttachment(id: UUID(), data: Data("private".utf8), name: "note.txt")
+            await #expect(throws: (any Error).self) {
+                _ = try await service.sealSend(UUID(), attachments: [attachment])
+            }
+            #expect(try await phone.container.database().query("SELECT object FROM drop_uploads").isEmpty)
+        }
+    }
+
+    @Test func composeCancellationAfterFinalCheckReturnsCommittedOutcome() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let gate = DropGate(), completed = DropCompletion<[DropUploadIdentity]>()
+        await service.setHook { if $0 == "send.persist" { await gate.hit() } }
+        let task = Task {
+            do {
+                await completed.set(.success(try await service.sealSend(UUID(), attachments: [
+                    DropSendAttachment(id: UUID(), data: Data("durable".utf8), name: "note.txt")
+                ])))
+            } catch { await completed.set(.failure(error)) }
+        }
+        do {
+            try await gate.wait()
+            task.cancel(); await service.suspend(); await gate.release()
+            let ids = try await completed.value()
+            #expect(ids.count == 1)
+            #expect(try await phone.container.database().query("SELECT object FROM drop_uploads").count == 1)
+            await service.setHook(nil); try await service.activate()
+            let resumed = try await service.resumeUploads()
+            #expect(resumed.count == 1)
+            for row in resumed { _ = try row.result.get() }
+            #expect(try await service.confirmedUploads() == ids)
+        } catch { task.cancel(); await gate.release(); throw error }
+    }
+}
