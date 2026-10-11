@@ -73,7 +73,7 @@ extension FakeHost {
     }
 
     /// Renews this host's holder generation, or takes a new one (the Demo host is the only writer).
-    func holderGeneration(relay: FakeRelay, session: RelaySession) async throws -> UInt64 {
+    package func holderGeneration(relay: FakeRelay, session: RelaySession) async throws -> UInt64 {
         if let g = holderGen, let renewed = try? await relay.hold(workspace: workspace, token: session.token, gen: g) { return renewed }
         let g = try await relay.hold(workspace: workspace, token: session.token, gen: nil, takeOver: true)
         holderGen = g

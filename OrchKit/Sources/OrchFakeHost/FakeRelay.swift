@@ -122,9 +122,6 @@ public actor FakeRelay: RequestSender {
     // Accounts (P3-D3): person -> account key and the digest of the request that made it; invites by SHA-256 of the code.
     private var accounts: [ID16: (pk: SigningPublicKey, digest: Data)] = [:]
     private var invites: [Data: Int64] = [:]
-    // Holder generations (P3-D10) of workspaces whose host took one. A workspace without one takes unfenced host writes (see
-    // `fence`): the FakeHost does not hold yet (host_hold.json stays with the host-only PR2 leftovers).
-    private var holders: [ID16: UInt64] = [:]
     private var pairPostsGlobal = Window()
     private var livePolls: [String: Int] = [:]
     private var livePollsGlobal = 0
@@ -161,7 +158,7 @@ public actor FakeRelay: RequestSender {
         challenges = [:]; sessions = [:]; owners = [:]; devices = [:]; revocationRows = [:]; recoveryReceipts = [:]
         rateWindows = [:]
         drops = [:]; claims = [:]; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
-        certRecords = [:]; accounts = [:]; invites = [:]; holders = [:]; pairPostsGlobal = Window(); livePolls = [:]; livePollsGlobal = 0
+        certRecords = [:]; accounts = [:]; invites = [:]; pairPostsGlobal = Window(); livePolls = [:]; livePollsGlobal = 0
         seededCards = [:]; seededDevices = [:]
         rids = [:]; positions = [:]; cursors = [:]; seededMembers = [:]; hostPosts = [:]; devicePosts = [:]; lyingRids = []
     }
@@ -592,7 +589,10 @@ public actor FakeRelay: RequestSender {
         owners[person] = key
         if !digest.isEmpty { accounts[person] = (key, digest) }
     }
-    package func seedHolder(_ ws: ID16, generation: UInt64) { holders[ws] = generation }
+    /// The workspace's holder lease (P3-D10) as if its host had taken `generation` (unexpired unless `leaseUntilMs` says otherwise).
+    package func seedHolder(_ ws: ID16, generation: UInt64, leaseUntilMs: Int64 = .max) {
+        workspaces[ws, default: Workspace()].holder = Holder(gen: generation, leaseUntilMs: leaseUntilMs)
+    }
     package func seedCertRecord(_ r: CertQueue.Record) { certRecords[r.requestID] = r }
     package func certRecord(_ id: ID16) -> CertQueue.Record? { certRecords[id] }
     package func challengedCertRequestCount() -> Int { certRecords.values.filter { $0.challenge != nil }.count }
@@ -706,16 +706,13 @@ public actor FakeRelay: RequestSender {
         return .success((s.id, e.person))
     }
 
-    /// `Orch-Holder` (P3-D10): once a workspace's host holds a generation, every host write must carry exactly it (409 `fenced`
-    /// for a missing, stale or unparsable one). A workspace whose host never took a hold is not fenced (FakeHost simplification).
+    /// `Orch-Holder` (P3-D10, W(g)) on the pairing answer and cert-request routes: the same strict lease as the section 19 routes
+    /// (`FakeRelayDirectory.fence`). A missing header, or one that does not name the current generation of an unexpired lease, is
+    /// 409 `fenced` (a host must hold first, orch-29 Q9); an unparsable one 400 `malformed`.
     private func fence(_ r: WireRequest, ws: ID16) -> WireReply? {
-        let h = r.header("orch-holder")
-        if let current = holders[ws] {
-            guard let h, let g = HostAPI.parseDecimal(h), g == current else { return refuse(409, .fenced) }
-            return nil
-        }
-        if let h, HostAPI.parseDecimal(h) == nil { return refuse(400, .malformed) }
-        return nil
+        do { try fence(r, ws, now: wall.nowMs); return nil }
+        catch let f as Fail { return refuse(f.status ?? Self.status(of: f.code), f.code) }
+        catch { return refuse(409, .fenced) }
     }
 
     /// Concurrent polls (section 19.4 P3-D17): refused, never queued or evicted. Pair with `endPoll`.

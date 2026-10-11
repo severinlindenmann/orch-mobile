@@ -49,8 +49,14 @@ import OrchProtocol
         let answer = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
         let posted = try await w.transport.pairingPost(answer, route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid))
         #expect(posted.status == 401 && errorCode(posted) == "unauthenticated")      // still no bearer: pairingPost sends none
-        let bearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
+        // W(g): a host answer without the holder generation is fenced (orch-29 Q9), with it accepted
+        let unheld = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
                                                         headers: ["Authorization": "Bearer " + w.hostSession.token], body: answer, clientAddress: "h"))
+        #expect(unheld.status == 409 && errorCode(unheld) == "fenced")
+        let gen = try await w.host.holderGeneration(relay: w.relay, session: w.hostSession)
+        let bearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
+                                                        headers: ["Authorization": "Bearer " + w.hostSession.token, "Orch-Holder": String(gen)],
+                                                        body: answer, clientAddress: "h"))
         #expect(bearer.status == 202)
         let polled = try chunkList(try await w.transport.pairingPoll(route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid), after: nil))
         #expect(polled.count == 1 && polled[0].idx == 0 && polled[0].last && polled[0].envelope == answer)

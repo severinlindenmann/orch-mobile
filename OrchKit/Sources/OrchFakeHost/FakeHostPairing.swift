@@ -155,9 +155,12 @@ extension FakeHost {
         let session = try await currentSession(transport: transport)
         await stage("cert_request.post")
         try still(device, v)
-        // `POST /v2/persons/{person}/cert-requests` with the workspace session (W(g)); 200 also for an identical resend
+        let gen = try await holderGeneration(relay: relay, session: session)
+        try still(device, v)
+        // `POST /v2/persons/{person}/cert-requests` with the workspace session under this host's holder generation (W(g)); 200 also
+        // for an identical resend
         let post = try WireRequest(method: "POST", target: "\(HostAPI.base)/persons/\(primary.personID.hex)/cert-requests",
-                                   headers: ["authorization": "Bearer " + session.token, "content-type": "application/json"],
+                                   headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen), "content-type": "application/json"],
                                    body: canonicalJSON(.object(["request": req.json])), clientAddress: "host")
         _ = try HostAPI.expect(try await relay.send(post))
         // a rejection that landed during the post wins; the posted request is not retracted (the primary may still challenge it, but the
@@ -240,9 +243,12 @@ extension FakeHost {
         for item in inbox.sorted(by: { $0.arrival < $1.arrival }) {
             lastPairArrival = max(lastPairArrival, item.arrival)
             for chunk in await process(envelope: item.envelope, mailbox: item.rid) {
-                // the response is posted with the workspace session; a lost post is a lost answer (the phone re-sends)
+                // the response is posted with the workspace session under this host's holder generation (W(g)); a lost post (or a
+                // lost hold) is a lost answer (the phone re-sends)
                 let target = "\(HostAPI.base)/workspaces/\(workspace.hex)/pair/\(item.offer.hex)/\(item.rid.hex)"
-                if let req = try? WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token],
+                guard let gen = try? await holderGeneration(relay: relay, session: session) else { continue }
+                if let req = try? WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token,
+                                                                                         "orch-holder": String(gen)],
                                               body: chunk, clientAddress: "host") {
                     _ = try? await relay.send(req)
                 }
