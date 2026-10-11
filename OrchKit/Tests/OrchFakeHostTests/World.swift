@@ -138,15 +138,24 @@ extension World {
                              mailbox: .init(id: rid, index: index, last: last, stream: false), nowMs: env.wall.nowMs).outcome
     }
 
+    /// The initial roster: the primary (all scopes) and the phone (look, decide).
+    var baseRoster: [(DemoKeys, [String])] { [(primary.deviceKeys, World.all), (phone, ["look", "decide"])] }
+
+    /// One atomic membership publication (P3-D7) straight to the relay: the signed list, every member's (persisted) grant at
+    /// `epoch`, and the card-key wraps of `wraps`. The host's own state is not updated.
+    @discardableResult
+    func publish(_ roster: [(DemoKeys, [String])], epoch: UInt32, listSeq: Int64, wraps: [DemoKeys] = [],
+                 session: RelaySession? = nil) async throws -> (listSeq: Int64, epoch: UInt32) {
+        let body = try await host.membershipBody(roster: roster, epoch: epoch, listSeq: listSeq, wraps: wraps)
+        return try await host.sendMembership(body, relay: relay, session: session ?? hostSession)
+    }
+
     /// A second member device with its own certificate, grant, card-key wrap and a session, added through the honest path.
     func addMember(scopes: [String] = ["look"], listSeq: Int64 = 2) async throws -> (id: ID16, keys: DemoKeys, session: RelaySession) {
         let signer = SoftwareSigner(), kx = SoftwareKeyAgreer()
         let keys = DemoKeys(sig: signer.publicKey, kx: kx.publicKey)
         try await relay.publishCertificate(try await primary.certify(keys, label: "Second", scopesMax: ["look", "decide"]))
-        try await relay.putGrant(try await host.grant(for: keys, epoch: 1), token: hostSession.token)
-        try await relay.putCardKeyWrap(device: keys.deviceID, cardSeq: 1, sealed: try await host.cardKeyWrap(for: keys), token: hostSession.token)
-        try await relay.publishMemberList(try await host.memberList([(primaryID, World.all), (phoneID, ["look", "decide"]), (keys.deviceID, scopes)],
-                                                                    epoch: 1, listSeq: listSeq), token: hostSession.token)
+        try await publish(baseRoster + [(keys, scopes)], epoch: 1, listSeq: listSeq, wraps: [keys])
         let s = try await RelayClient(transport: transport).openSession(kind: .device, id: keys.deviceID, signer: signer).session
         return (keys.deviceID, keys, s)
     }

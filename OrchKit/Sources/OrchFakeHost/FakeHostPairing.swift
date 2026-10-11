@@ -171,9 +171,10 @@ extension FakeHost {
 
     // MARK: approval (section 8.3 step 6)
 
-    /// Uploads the certificate (if new), a grant for the current epoch, the card key wrap, and publishes the new member list, in that
-    /// order. Runs only for a device whose certificate is valid for exactly its two keys; the relay checks the same again. Reserves a
-    /// transition first (unless the caller did) and revalidates it before every publication and before the final write.
+    /// Uploads the certificate (if new), then publishes the new member list with every member's grant for the current epoch and the
+    /// device's card-key wrap in one atomic membership publication (P3-D7). Runs only for a device whose certificate is valid for
+    /// exactly its two keys; the relay checks the same again. Reserves a transition first (unless the caller did) and revalidates it
+    /// before every publication and before the final write.
     func completeJoin(device: ID16, relay: FakeRelay, transport: any RelayTransport, reserved: Int? = nil) async throws {
         guard var p = core.pendingPairs[device], let cert = p.cert, let want = p.scopes else { throw PairingApprovalError.unknownPairing }
         let v: Int
@@ -192,29 +193,22 @@ extension FakeHost {
         let session = try await currentSession(transport: transport)
         await stage("complete.cert"); try still(device, v)
         try await relay.publishCertificate(cert)
-        await stage("complete.grant"); try still(device, v)
-        try await relay.putGrant(try grant(for: keys, epoch: epoch), token: session.token)
-        await stage("complete.wrap"); try still(device, v)
-        try await relay.putCardKeyWrap(device: device, cardSeq: max(cardSeq, 1), sealed: try cardKeyWrap(for: keys, cardSeq: max(cardSeq, 1)), token: session.token)
-        var members = roster.values.map { ($0.keys, $0.scopes) }
-        let listed = hostile.listScopes ?? scopes
-        if !hostile.omitFromList { members.append((keys, listed)) }
+        let adding: (DemoKeys, [String])? = hostile.omitFromList ? nil : (keys, hostile.listScopes ?? scopes)
+        let wraps = hostile.omitFromList ? [] : [keys]           // a wrap may name only a listed member
         await stage("complete.list"); try still(device, v)
         if let hold = listHoldUntilMs, wall.nowMs < hold {
-            heldList = (members, listSeq + 1)          // published by the first pump at or after the hold time
+            heldList = (adding, wraps)                 // published by the first pump at or after the hold time
         } else {
-            listSeq += 1
-            try await relay.publishMemberList(try memberList(members.map { ($0.0.deviceID, $0.1) }, epoch: epoch, listSeq: listSeq), token: session.token)
+            try await publishJoin(adding: adding, wraps: wraps, relay: relay, session: session)
         }
         await stage("complete.final")
         guard core.pendingPairs[device]?.version == v else {
             // rejected after the publication began: the device was listed, so taking it out is a removal and rotates (section 7.2)
             if heldList != nil { heldList = nil } else {
-                try? await rotate(remaining: roster.values.map { ($0.keys, $0.scopes) }, relay: relay, session: session)
+                try? await rotate(remaining: roster.values.filter { $0.keys.deviceID != device }.map { ($0.keys, $0.scopes) }, relay: relay, session: session)
             }
             throw PairingApprovalError.notPending
         }
-        if heldList == nil { setRoster(members) }
         core.approvedEpochOverride = hostile.approvedEpoch
         core.pendingPairs[device]?.state = "approved"
         core.pendingPairs[device]?.scopes = scopes
@@ -225,9 +219,7 @@ extension FakeHost {
     private func publishHeldList(relay: FakeRelay, session: RelaySession) async throws {
         guard let h = heldList, let hold = listHoldUntilMs, wall.nowMs >= hold else { return }
         heldList = nil
-        listSeq = max(listSeq, h.listSeq - 1) + 1
-        try await relay.publishMemberList(try memberList(h.members.map { ($0.0.deviceID, $0.1) }, epoch: epoch, listSeq: listSeq), token: session.token)
-        setRoster(h.members)
+        try await publishJoin(adding: h.adding, wraps: h.wraps, relay: relay, session: session)
     }
 
     // MARK: serving

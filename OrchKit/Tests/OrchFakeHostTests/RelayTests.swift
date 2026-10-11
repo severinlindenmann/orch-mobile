@@ -177,92 +177,119 @@ import OrchProtocol
         await #expect(throws: TransportError.invalidEpoch) { _ = try await c.grants(workspace: w.ws, epoch: 0, session: w.phoneSession) }
         let before = await w.relay.requestsReceived
         // Even a hand-built request is refused by the relay.
-        for q in ["epoch=0", "epoch=00", "epoch=-1", "epoch=4294967296", "epoch=", "epoch=1&epoch=1", "other=1"] {
+        for q in ["epoch=0", "epoch=00", "epoch=-1", "epoch=9007199254740992", "epoch=", "epoch=1&epoch=1", "other=1"] {
             let raw = try WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/grants?\(q)",
                                       headers: ["Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
             #expect(try await w.relay.send(raw).status == 400, "\(q)")
         }
         _ = before
+        // A safe-integer epoch beyond UInt32 is well formed and simply absent (as at orch-relay).
+        let big = try WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/grants?epoch=4294967296",
+                                  headers: ["Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
+        #expect(try await w.relay.send(big).status == 404)
         // A grant for epoch 0 is not publishable either: epoch 0 is reserved for pairing envelopes.
-        let zero = try await w.host.grant(for: w.phone, epoch: 0)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .malformed))) { try await w.relay.putGrant(zero, token: w.hostSession.token) }
+        var body = try await w.host.membershipBody(roster: w.baseRoster, epoch: 1, listSeq: 2).object!
+        body["grants"] = .array([try await w.host.grant(for: w.phone, epoch: 0), try await w.host.grant(for: w.primary.deviceKeys, epoch: 1)])
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .malformed))) {
+            try await w.host.sendMembership(.object(body), relay: w.relay, session: w.hostSession)
+        }
         // Epoch 1 is served; asking for epoch 2 is a clean not_found.
         #expect(try await c.grants(workspace: w.ws, epoch: 1, session: w.phoneSession).count == 1)
         await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.grants(workspace: w.ws, epoch: 2, session: w.phoneSession) }
         #expect(try await c.grants(workspace: w.ws, session: w.phoneSession).count == 1)
     }
 
-    // MARK: publication order (protocol 7.2)
+    // MARK: atomic membership publication (protocol 7.2, P3-D7)
 
-    @Test func testMemberListRequiresGrantsBeforePublish() async throws {
+    @Test func testMembershipPublicationIsAtomic() async throws {
         let w = try await World.make()
         let relay = w.relay
-        // A new device joins: certificate first, then (grant, CK wrap), then the list.
+        // A new device joins: certificate first, then one publication with the list, every grant and its CK wrap.
         let laptop2 = SoftwareSigner(), kx2 = SoftwareKeyAgreer()
         let keys2 = DemoKeys(sig: laptop2.publicKey, kx: kx2.publicKey)
         let id2 = keys2.deviceID
-        let list2 = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"]), (id2, ["look"])], epoch: 1, listSeq: 2)
+        let roster2 = w.baseRoster + [(keys2, ["look"])]
         // No certificate: cert_invalid (400), nothing published.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certInvalid))) { try await relay.publishMemberList(list2, token: w.hostSession.token) }
-        // No grant for a device without a certificate.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
-            try await relay.putGrant(try await w.host.grant(for: keys2, epoch: 1), token: w.hostSession.token)
-        }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certInvalid))) { try await w.publish(roster2, epoch: 1, listSeq: 2, wraps: [keys2]) }
         #expect(await relay.grantCount(workspace: w.ws, device: id2) == 0)
         try await relay.publishCertificate(try await w.primary.certify(keys2, label: "Laptop 2", scopesMax: ["look"]))
-        // Certificate but no grant: missing_grant (409), and the old list still stands.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .missingGrant))) { try await relay.publishMemberList(list2, token: w.hostSession.token) }
+        // Certificate but its grant left out of the body: missing_grant (409), and the old list still stands with nothing written.
+        var partial = try await w.host.membershipBody(roster: roster2, epoch: 1, listSeq: 2, wraps: [keys2]).object!
+        partial["grants"] = .array(partial["grants"]!.array!.filter { $0.object?["o"]?.object?["device_id"] != .string(id2.hex) })
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .missingGrant))) {
+            try await w.host.sendMembership(.object(partial), relay: relay, session: w.hostSession)
+        }
         #expect(await relay.memberListSeq(workspace: w.ws) == 1)
-        try await relay.putGrant(try await w.host.grant(for: keys2, epoch: 1), token: w.hostSession.token)
-        try await relay.publishMemberList(list2, token: w.hostSession.token)
+        #expect(await relay.hasCardKeyWrap(workspace: w.ws, device: id2, cardSeq: 1) == false)
+        let committed = try await w.host.membershipBody(roster: roster2, epoch: 1, listSeq: 2, wraps: [keys2])
+        try await w.host.sendMembership(committed, relay: relay, session: w.hostSession)
         #expect(await relay.memberListSeq(workspace: w.ws) == 2)
+        #expect(await relay.hasGrant(workspace: w.ws, device: id2, epoch: 1))
+        #expect(await relay.hasCardKeyWrap(workspace: w.ws, device: id2, cardSeq: 1))
         // The phone now sees the new list through the real route, and it verifies with the pinned WSK.
         let fetched = try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession)
         let verified = try MemberList.verify(fetched, wsk: w.host.wskPublic)
         #expect(verified.members.map(\.deviceID).contains(id2) && verified.listSeq == 2)
-        // Same list_seq again, an older one, a skipped epoch, an epoch-1 start over a later list: refused with the specific code.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .staleList))) { try await relay.publishMemberList(list2, token: w.hostSession.token) }
-        let skip = try await w.host.memberList([(w.primaryID, World.all)], epoch: 3, listSeq: 3)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) { try await relay.publishMemberList(skip, token: w.hostSession.token) }
-        // Removal without an epoch bump needs rotation; with the bump but no grants for the rest, missing_grant.
-        let drop = try await w.host.memberList([(w.primaryID, World.all)], epoch: 1, listSeq: 3)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .rotationRequired))) { try await relay.publishMemberList(drop, token: w.hostSession.token) }
-        let rotate = try await w.host.memberList([(w.primaryID, World.all)], epoch: 2, listSeq: 3)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .missingGrant))) { try await relay.publishMemberList(rotate, token: w.hostSession.token) }
-        let primaryKeys = w.primary.deviceKeys
-        try await relay.putGrant(try await w.host.grant(for: primaryKeys, epoch: 2), token: w.hostSession.token)
+        #expect(verified.members.allSatisfy { $0.personID == w.primary.personID } && verified.persons.isEmpty)
+        // The exact same body again is the committed result; other bytes for that list_seq are stale_list.
+        #expect(try await w.host.sendMembership(committed, relay: relay, session: w.hostSession) == (2, 1))
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .staleList))) { try await w.publish(roster2, epoch: 1, listSeq: 2) }
+        // A skipped epoch, a removal without the bump: refused with the specific code.
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 3, listSeq: 3) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .rotationRequired))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 1, listSeq: 3) }
+        // A grant at another epoch than the list's: not_for_this_device. Other bytes for a committed (device, epoch): grant_conflict.
+        var wrongEpoch = try await w.host.membershipBody(roster: [(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 3).object!
+        wrongEpoch["grants"] = .array([try await w.host.grant(for: w.primary.deviceKeys, epoch: 1)])
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notForThisDevice))) {
+            try await w.host.sendMembership(.object(wrongEpoch), relay: relay, session: w.hostSession)
+        }
+        var resealed = try await w.host.membershipBody(roster: roster2, epoch: 1, listSeq: 3).object!
+        resealed["grants"] = .array(try await resealed["grants"]!.array!.asyncMap { g in
+            g.object?["o"]?.object?["device_id"] == .string(id2.hex) ? try await w.host.grant(for: keys2, epoch: 1) : g
+        })
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .grantConflict))) {
+            try await w.host.sendMembership(.object(resealed), relay: relay, session: w.hostSession)
+        }
         // A request mailbox of a device about to be removed goes away with it.
         let rid = ID16.fresh(0x61)
         _ = try await w.transport.bridgePost(try w.envelope(rid: rid), route: BridgeRoute(workspaceID: w.ws, requestID: rid), session: w.phoneSession)
         #expect(await relay.liveMailboxCount(workspace: w.ws, device: w.phoneID) == 1)
-        try await relay.publishMemberList(rotate, token: w.hostSession.token)
+        try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 3)
         #expect(await relay.liveMailboxCount(workspace: w.ws, device: w.phoneID) == 0)
         let g1 = await relay.grantCount(workspace: w.ws, device: w.phoneID), g2 = await relay.grantCount(workspace: w.ws, device: id2)
         #expect(g1 == 0 && g2 == 0)
+        #expect(await relay.hasCardKeyWrap(workspace: w.ws, device: id2, cardSeq: 1) == false)
         // Departed devices lose their routes: not_eligible.
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
             _ = try await RelayClient(transport: w.transport).card(workspace: w.ws, session: w.phoneSession)
         }
     }
 
-    @Test func memberListChecksCertificatesScopesAndRevocation() async throws {
+    @Test func membershipChecksCertificatesScopesAndRevocation() async throws {
         let w = try await World.make()
         let relay = w.relay
         let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         try await relay.publishCertificate(try await w.primary.certify(keys, label: "Narrow", scopesMax: ["look"]))
-        try await relay.putGrant(try await w.host.grant(for: keys, epoch: 1), token: w.hostSession.token)
         // scopes wider than scopes_max
-        let wide = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"]), (keys.deviceID, ["look", "decide"])], epoch: 1, listSeq: 2)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .scopeExceeded))) { try await relay.publishMemberList(wide, token: w.hostSession.token) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .scopeExceeded))) { try await w.publish(w.baseRoster + [(keys, ["look", "decide"])], epoch: 1, listSeq: 2) }
         // list signed by another key
-        let forged = try await FakeHostForgery.list(workspace: w.ws, members: [(w.primaryID, World.all), (w.phoneID, ["look", "decide"])], seq: 2)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .badSignature))) { try await relay.publishMemberList(forged, token: w.hostSession.token) }
+        var forged = try await w.host.membershipBody(roster: w.baseRoster, epoch: 1, listSeq: 2).object!
+        forged["member_list"] = try FakeHostForgery.list(workspace: w.ws, members: [(w.primaryID, World.all), (w.phoneID, ["look", "decide"])], seq: 2)
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .badSignature))) { try await w.host.sendMembership(.object(forged), relay: relay, session: w.hostSession) }
         // revoked member
         try await relay.publishRevocation(try await w.primary.revoke(device: keys.deviceID))
-        let withRevoked = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"]), (keys.deviceID, ["look"])], epoch: 1, listSeq: 2)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { try await relay.publishMemberList(withRevoked, token: w.hostSession.token) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { try await w.publish(w.baseRoster + [(keys, ["look"])], epoch: 1, listSeq: 2) }
         // a device session is not a workspace session
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))) { try await relay.publishMemberList(withRevoked, token: w.phoneSession.token) }
+        await #expect(throws: (any Error).self) { try await w.publish(w.baseRoster, epoch: 1, listSeq: 2, session: w.phoneSession) }
+        let raw = try canonicalJSON(try await w.host.membershipBody(roster: w.baseRoster, epoch: 1, listSeq: 2))
+        let deviceAttempt = try await relay.send(WireRequest(method: "PUT", target: "/v2/workspaces/\(w.ws.hex)/membership",
+            headers: ["authorization": "Bearer \(w.phoneSession.token)", "orch-holder": "1", "content-type": "application/json"], body: raw, clientAddress: "a"))
+        #expect(deviceAttempt.status == 403 && errorCode(deviceAttempt) == "not_eligible")
+        // no holder generation: fenced
+        let unfenced = try await relay.send(WireRequest(method: "PUT", target: "/v2/workspaces/\(w.ws.hex)/membership",
+            headers: ["authorization": "Bearer \(w.hostSession.token)", "content-type": "application/json"], body: raw, clientAddress: "a"))
+        #expect(unfenced.status == 409 && errorCode(unfenced) == "fenced")
+        #expect(await relay.memberListSeq(workspace: w.ws) == 1)
         // a certificate of another person is other_person
         let other = SoftwareSigner()
         await relay.registerOwner(other.publicKey)
@@ -351,14 +378,20 @@ import OrchProtocol
         #expect(g.epoch == 1)
         // Missing wrap and unknown sequence are clean 404s; a malformed sequence is a 400.
         await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.cardKey(workspace: w.ws, cardSequence: 2, session: w.phoneSession) }
-        for q in ["card_seq=0", "card_seq=01", "card_seq=4294967296", "card_seq=", ""] {
+        for q in ["card_seq=0", "card_seq=01", "card_seq=9007199254740992", "card_seq=", ""] {
             let raw = try WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/card-key" + (q.isEmpty ? "" : "?" + q),
                                       headers: ["Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
             #expect(try await w.relay.send(raw).status == 400, "\(q)")
         }
-        // A workspace the device is not in.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
+        // An unknown workspace is not_found (orch-relay looks the card up first); one the device is not a member of is not_eligible.
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) {
             _ = try await c.card(workspace: ID16.fresh(9), session: w.phoneSession)
+        }
+        let other = try DemoSetup.makeHost(w.env, primary: w.primary, name: "Desk")
+        _ = try await other.publishInitial(relay: w.relay, transport: w.transport,
+                                           devices: [(w.primary.deviceKeys, try #require(await w.relay.certificate(device: w.primaryID)), World.all)])
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
+            _ = try await c.card(workspace: other.workspace, session: w.phoneSession)
         }
         // Exact reply shape of card-key.
         let raw = try await w.transport.cardKey(workspaceID: w.ws, cardSequence: 1, session: w.phoneSession)
@@ -368,22 +401,38 @@ import OrchProtocol
     @Test func noGrantOrCardKeyForAnUncertifiedDevice() async throws {
         let w = try await World.make()
         let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
-            try await w.relay.putCardKeyWrap(device: keys.deviceID, cardSeq: 1, sealed: try await w.host.cardKeyWrap(for: keys), token: w.hostSession.token)
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certInvalid))) {
+            try await w.publish(w.baseRoster + [(keys, ["look"])], epoch: 1, listSeq: 2, wraps: [keys])
         }
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .notEligible))) {
-            try await w.relay.putGrant(try await w.host.grant(for: keys, epoch: 1), token: w.hostSession.token)
-        }
+        // PUT card-keys names only current members.
+        let wrapBody = try canonicalJSON(["card_seq": 1, "wraps": [["device_id": .string(keys.deviceID.hex),
+                                                                    "sealed": .string(B64U.encode(try await w.host.cardKeyWrap(for: keys)))]]])
+        let gen = try await w.relay.hold(workspace: w.ws, token: w.hostSession.token, gen: nil, takeOver: true)
+        let r = try await w.relay.send(WireRequest(method: "PUT", target: "/v2/workspaces/\(w.ws.hex)/card-keys",
+            headers: ["authorization": "Bearer \(w.hostSession.token)", "orch-holder": String(gen), "content-type": "application/json"],
+            body: wrapBody, clientAddress: "a"))
+        #expect(r.status == 403 && errorCode(r) == "not_for_this_device")
         #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1) == false)
         #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: keys.deviceID, cardSeq: 1) == false)
         // A revoked device gets none after revocation either.
         try await w.relay.publishCertificate(try await w.primary.certify(keys, label: "X", scopesMax: ["look"]))
         try await w.relay.publishRevocation(try await w.primary.revoke(device: keys.deviceID))
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) {
-            try await w.relay.putGrant(try await w.host.grant(for: keys, epoch: 1), token: w.hostSession.token)
+            try await w.publish(w.baseRoster + [(keys, ["look"])], epoch: 1, listSeq: 2, wraps: [keys])
         }
-        // A card regression is stale_card.
+        // The same card again is an idempotent retry (P3-D4); a different card at the same sequence is stale_card.
+        let same = try #require(await w.relay.verifiedCard(workspace: w.ws))
+        _ = same
+        w.clock.advance(milliseconds: 1)
         let again = try await w.host.card()
         await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .staleCard))) { try await w.relay.publishCard(again) }
+    }
+}
+
+extension Array {
+    func asyncMap<T>(_ f: (Element) async throws -> T) async rethrows -> [T] {
+        var out: [T] = []
+        for x in self { out.append(try await f(x)) }
+        return out
     }
 }

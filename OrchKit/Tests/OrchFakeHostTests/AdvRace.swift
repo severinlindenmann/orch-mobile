@@ -19,8 +19,7 @@ import OrchProtocol
         let post = Task { try await t.bridgePost(env, route: BridgeRoute(workspaceID: w.ws, requestID: rid), session: s) }
         guard await waitForSleepers(w, 1) else { post.cancel(); return }
         // While the phone's request is suspended inside the actor, the host removes the phone (epoch 2, primary only).
-        try await w.relay.putGrant(try await w.host.grant(for: w.primary.deviceKeys, epoch: 2), token: w.hostSession.token)
-        try await w.relay.publishMemberList(try await w.host.memberList([(w.primaryID, World.all)], epoch: 2, listSeq: 2), token: w.hostSession.token)
+        try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 2)
         w.clock.advance(by: .seconds(5))
         let r = try await post.value
         #expect(r.status == 403 && errorCode(r) == "not_eligible")
@@ -127,74 +126,70 @@ private func waitForSleepers(_ w: World, _ n: Int) async -> Bool {
 }
 
 @Suite struct AdvGrant {
-    @Test func grantAndCardKeyForAnotherPersonsDeviceAreRefusedAndStorageIsUnchanged() async throws {
+    func roster(_ w: World, plus keys: DemoKeys, scopes: [String] = ["look"]) -> [(DemoKeys, [String])] { w.baseRoster + [(keys, scopes)] }
+
+    @Test func aPublicationNamingAnotherPersonsDeviceIsRefusedAndStorageIsUnchanged() async throws {
         let w = try await World.make()
         let other = DemoSetup.makeAuthority(w.env)
         await w.relay.registerOwner(other.publicKey)
         try await w.relay.publishCertificate(try await other.certifyOwnDevice())
         let grantsBefore = await w.relay.grantCount(workspace: w.ws), wrapsBefore = await w.relay.cardKeyWrapCount(workspace: w.ws)
+        // The list names the device as the owner's: its stored certificate belongs to another person.
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .otherPerson))) {
-            try await w.relay.putGrant(try await w.host.grant(for: other.deviceKeys, epoch: 1), token: w.hostSession.token)
-        }
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .otherPerson))) {
-            try await w.relay.putCardKeyWrap(device: other.deviceID, cardSeq: 1, sealed: try await w.host.cardKeyWrap(for: other.deviceKeys), token: w.hostSession.token)
+            try await w.publish(roster(w, plus: other.deviceKeys), epoch: 1, listSeq: 2, wraps: [other.deviceKeys])
         }
         #expect(await w.relay.grantCount(workspace: w.ws) == grantsBefore)
         #expect(await w.relay.cardKeyWrapCount(workspace: w.ws) == wrapsBefore)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: other.deviceID, epoch: 1) == false)
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 1)
     }
 
     @Test func aCertificateThatExpiredBetweenPublicationAndUploadGetsNothing() async throws {
         let w = try await World.make()
         let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         try await w.relay.publishCertificate(try await w.primary.certify(keys, label: "Short", scopesMax: ["look"], lifetimeMs: 10_000))
-        let grant = try await w.host.grant(for: keys, epoch: 1), wrap = try await w.host.cardKeyWrap(for: keys)
-        // Within its life: accepted.
-        w.clock.advance(milliseconds: 9_999)
-        try await w.relay.putGrant(grant, token: w.hostSession.token)
-        try await w.relay.putCardKeyWrap(device: keys.deviceID, cardSeq: 1, sealed: wrap, token: w.hostSession.token)
-        // A second device, uploaded to after expiry: refused, nothing stored.
         let late = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         try await w.relay.publishCertificate(try await w.primary.certify(late, label: "Late", scopesMax: ["look"], lifetimeMs: 10_000))
-        let lateGrant = try await w.host.grant(for: late, epoch: 1), lateWrap = try await w.host.cardKeyWrap(for: late)
+        // Within its life: accepted, grant and wrap committed with the list.
+        w.clock.advance(milliseconds: 9_999)
+        try await w.publish(roster(w, plus: keys), epoch: 1, listSeq: 2, wraps: [keys])
+        // A second device, published after expiry: 403 cert_expired (a member's certificate, not the session's), nothing stored.
         w.clock.advance(milliseconds: 10_000)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certExpired))) { try await w.relay.putGrant(lateGrant, token: w.hostSession.token) }
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certExpired))) {
-            try await w.relay.putCardKeyWrap(device: late.deviceID, cardSeq: 1, sealed: lateWrap, token: w.hostSession.token)
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .certExpired))) {
+            try await w.publish(w.baseRoster + [(late, ["look"])], epoch: 2, listSeq: 3, wraps: [late])
         }
         #expect(await w.relay.hasGrant(workspace: w.ws, device: late.deviceID, epoch: 1) == false)
         #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: late.deviceID, cardSeq: 1) == false)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1))
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 2)
     }
 
-    @Test func aCertificateThatExpiresDuringADelayedUploadIsRefused() async throws {
+    @Test func aCertificateThatExpiresDuringADelayedPublicationIsRefused() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
         let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         try await w.relay.publishCertificate(try await w.primary.certify(keys, label: "Short", scopesMax: ["look"], lifetimeMs: 10_000))
-        let grant = try await w.host.grant(for: keys, epoch: 1)
-        faults.enqueue(.delay(.seconds(20)), at: .beforeGrantPublication)
-        let (relay, token) = (w.relay, w.hostSession.token)
-        let upload = Task { try await relay.putGrant(grant, token: token) }
+        faults.enqueue(.delay(.seconds(20)), at: .beforeMembershipPublication)
+        let upload = Task { try await w.publish(roster(w, plus: keys), epoch: 1, listSeq: 2, wraps: [keys]) }
         guard await waitForSleepers(w, 1) else { upload.cancel(); return }
         w.clock.advance(by: .seconds(20))
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .certExpired))) { try await upload.value }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .certExpired))) { try await upload.value }
         #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1) == false)
+        #expect(await w.relay.memberListSeq(workspace: w.ws) == 1)
     }
 
-    @Test func aDeviceRevokedDuringADelayedUploadGetsNoGrant() async throws {
+    @Test func aDeviceRevokedDuringADelayedPublicationGetsNoGrant() async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
         let keys = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         try await w.relay.publishCertificate(try await w.primary.certify(keys, label: "N", scopesMax: ["look"]))
-        let grant = try await w.host.grant(for: keys, epoch: 1)
-        faults.enqueue(.delay(.seconds(2)), at: .beforeGrantPublication)
-        let (relay, token) = (w.relay, w.hostSession.token)
-        let upload = Task { try await relay.putGrant(grant, token: token) }
+        faults.enqueue(.delay(.seconds(2)), at: .beforeMembershipPublication)
+        let upload = Task { try await w.publish(roster(w, plus: keys), epoch: 1, listSeq: 2, wraps: [keys]) }
         guard await waitForSleepers(w, 1) else { upload.cancel(); return }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: keys.deviceID))
         w.clock.advance(by: .seconds(2))
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { try await upload.value }
         #expect(await w.relay.hasGrant(workspace: w.ws, device: keys.deviceID, epoch: 1) == false)
+        #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: keys.deviceID, cardSeq: 1) == false)
     }
 }

@@ -213,7 +213,10 @@ import OrchStore
         #expect(await PairingCoordinator(h.config).start(link: try h.link(again)) == .failed(.alreadyMember))
         // an existing certificate (D-1) is reused: a second workspace does not ask the primary
         let second = try DemoSetup.makeHost(h.env, primary: h.primary, name: "Desk")
-        let cert = try await h.primary.certifyOwnDevice()
+        // directory certificates are immutable per device (cert_conflict otherwise): the primary's stored one is reused
+        let stored = await h.relay.certificate(device: h.primary.deviceID)
+        let cert: JSONValue
+        if let stored { cert = stored } else { cert = try await h.primary.certifyOwnDevice() }
         _ = try await second.publishInitial(relay: h.relay, transport: h.env.transport, devices: [(h.primary.deviceKeys, cert, World.all)])
         let offer2 = try await second.createOffer()
         let c2 = PairingCoordinator(h.config)
