@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import OrchUI
+import QuickLook
 
 struct DropScreen: View {
     let services: any AppServices
@@ -126,13 +127,19 @@ struct DropItemScreen: View {
                         }
                     }
                 }
+                if let drop = (services as? LiveServices)?.dropState(itemID) {
+                    if let status = drop.status { Text(verbatim: status) }
+                    Button("Open") { Task { await drop.open(item.id) } }
+                        .disabled(!drop.usable || !item.verified || item.bytes == 0)
+                        .accessibilityIdentifier("drop.open")
+                }
                 if let text = item.text {
                     Section(item.kind == .url ? "Link (shown as text, never opened)" : "Note") {
                         SafeTextView(text, style: .prose).accessibilityIdentifier("drop.item.text")
                     }
                 } else {
                     Section {
-                        Label(item.bytes == 0 ? "This file is empty." : "Preview opens after the file is decrypted and checked.",
+                        Label(item.verified && item.bytes == 0 ? "This file is empty." : "Preview opens after the file is decrypted and checked.",
                               systemImage: "lock.doc").foregroundStyle(OC.textMuted)
                     }
                 }
@@ -143,6 +150,9 @@ struct DropItemScreen: View {
         .navigationTitle("Item")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { model.markRead(id: itemID) }
+        .task { await model.verifyDropRow(itemID) }
+        .quickLookPreview(Binding(get: { (services as? LiveServices)?.dropState(itemID)?.previewURL },
+                                 set: { (services as? LiveServices)?.dropState(itemID)?.previewURL = $0 }))
     }
 }
 

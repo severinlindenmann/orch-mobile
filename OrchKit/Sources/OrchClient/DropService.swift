@@ -28,6 +28,8 @@ public struct DropObject: Sendable, Equatable {
 public struct DropDownload: Sendable, Equatable {
     public let url: URL
     public let metadata: DropMetadata
+    /// Persisted local retention deadline, bounded by signed expiry.
+    public let deadlineMs: Int64
 }
 
 public struct DropUploadFailure: Sendable, Equatable {
@@ -526,8 +528,10 @@ public actor DropService {
         try await hook?("download.publish")
         let wall = session.cfg.wall
         try await check()
-        return DropDownload(url: try await session.cfg.container.writeDrop(plaintext, object: d.object.hex, version: d.version,
-            expiresMs: d.expiresMs, now: { wall.nowMs }), metadata: metadata)
+        let file = try await session.cfg.container.writeDropVerified(plaintext, object: d.object.hex, version: d.version,
+            expiresMs: d.expiresMs, now: { wall.nowMs })
+        try await check()
+        return DropDownload(url: file.url, metadata: metadata, deadlineMs: file.deadlineMs)
     }
     private func openKey(_ wraps: [DropWrapRecord], descriptor d: DropDescriptor) async throws -> SymmetricKey? {
         for w in wraps {

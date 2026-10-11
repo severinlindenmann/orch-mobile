@@ -256,6 +256,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             }
             guard active, self.active else { return }
             for ws in workspaces where self.canUse(ws.info.id) {
+                await ws.drop?.foreground()
                 ws.start()
                 self.refreshTasks[ws.info.id] = Task { [weak self] in
                     await ws.api.refreshViews()

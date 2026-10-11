@@ -20,13 +20,16 @@ final class LiveDrop {
     var rows: [DropItem] = []
     var failures: [DropUploadFailure] = []
     var previewURL: URL?
-    var usable: Bool { workspace.usable && !alarm }
+    @ObservationIgnored private var expiryTask: Task<Void, Never>?
+    var nowMs: Int64 { workspace.services?.runtime?.clock.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000) }
+    var locked: Bool { workspace.services?.deviceLocked ?? true }
+    var usable: Bool { workspace.usable && !alarm && !locked }
 
     init(service: DropService, workspace: LiveWorkspace) {
         self.service = service; self.workspace = workspace
     }
     func cancelUI(clear: Bool) {
-        revision += 1; previewURL = nil
+        revision += 1; previewURL = nil; expiryTask?.cancel()
         if clear { downloads = [:]; objects = [:]; rows = [] }
     }
     func report(_ error: any Error) {
@@ -105,3 +108,48 @@ extension LiveDrop {
                         verified: metadata != nil)
     }
 }
+
+ extension LiveDrop {
+    func purge() async throws {
+        try await service.purgeExpiredDownloads()
+        let expired = downloads.filter { $0.value.deadlineMs <= nowMs }.map(\.key)
+        for id in expired { downloads[id] = nil }
+        if !expired.isEmpty { previewURL = nil }
+    }
+    func foreground() async {
+        guard usable else { return }
+        let mine = revision
+        do {
+            try await purge()
+            let results = try await service.resumeUploads()
+            guard usable, mine == revision else { return }
+            for result in results { if case .failure(let error) = result.result { report(error) } }
+            failures = try await service.failedUploads()
+        } catch { if mine == revision && workspace.usable { report(error) } }
+        await refresh()
+    }
+    func open(_ id: String) async {
+        guard usable else { return }
+        let mine = revision
+        do {
+            try await purge()
+            guard usable, mine == revision else { return }
+            await verifyVisible(id)
+            guard usable, mine == revision, let file = downloads[id], file.deadlineMs > nowMs else { return }
+            guard file.metadata.size > 0 else { return }
+            previewURL = file.url
+            expiryTask?.cancel()
+            expiryTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                    guard let self, self.revision == mine else { return }
+                    if !self.usable || self.nowMs >= file.deadlineMs {
+                        self.previewURL = nil
+                        if self.usable { do { try await self.purge() } catch { self.report(error) } }
+                        return
+                    }
+                }
+            }
+        } catch { if mine == revision && workspace.usable { report(error) } }
+    }
+ }
