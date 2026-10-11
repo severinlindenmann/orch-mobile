@@ -9,6 +9,10 @@ import Testing
     var dek: SymmetricKey { d["dek"].key }
     var obj: ID16 { d["object_id"].id }
 
+    @Test func testDropVectorsAndDocumentChains() throws {
+        try blob(); try metadataAndCommit(); try wraps(); try wrapNegatives(); try descriptorCases(); try documentsAndChains(); try claims()
+    }
+
     @Test func blob() throws {
         #expect(KDF.kDropContent(dek: dek, object: obj, version: 1).rawBytes == d["k_content"].hexData)
         let content = d["content"].hexData, prefix = d["nonce_prefix"].hexData

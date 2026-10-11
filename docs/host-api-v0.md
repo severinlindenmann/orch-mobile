@@ -397,7 +397,7 @@ are provisional v0. Confirm packaging with P3 ([gap 25](gaps.md)).
 Put JSON: `{"host_api":0,"descriptor":$signedDropObject,"wraps":[$wrap],"blob":"$b64uORD2"}`.
 List request: `{"host_api":0,"workspace_id":"$ws","direction":"received"}` (`received|sending`).
 List reply: `{"host_api":0,"objects":[{"descriptor":$signedDropObject,"wraps":[$wrap]}]}`.
-Get descriptor/wraps replies use `{"host_api":0,"descriptor":$signedDropObject}` / `{"host_api":0,"wraps":[]}`;
+Get descriptor/wraps replies use `{"host_api":0,"descriptor":$signedDropObject}` / `{"host_api":0,"wraps":[],"claimed_by":null}`;
 blob response is raw ORD2 with version header. Put reply is `{"host_api":0,"version":1}`.
 Author dk_sig/WSK signs the existing descriptor; fresh DEK seals content/meta; existing §10.3 wraps only.
 No extra signature on wrappers. Verify author authorization, content_hash, dek_commit, chain and latest version.
@@ -409,7 +409,10 @@ Later versions obey §10.6 CAS/parent_hash unchanged. A lost successful PUT foll
 If-Match returns 409; fetch and compare the committed descriptor/blob to reconcile it.
 Authenticated read/write scope, recipients and expiry gate access; bad eligibility is not_eligible.
 Host-only claim uses existing `POST /drop/{id}/claim` (§10.5), never a phone-generated WSK signature.
-Old objects use exact `drop_rewrap` (§7.5), requiring read scope; no historical WK grant to new devices.
+Explicit inbox claim uses bridge meta `{"op":"drop_claim","object_id":"$id","version":1}` with empty data and **operate** scope. It returns status 200 and `{"host_api":0}` after the host's WSK-signed §10.5 claim succeeds. Phones never sign claims. Download refuses an unclaimed inbox (`unavailableKey`); wraps read-back includes `claimed_by` (workspace ID or null).
+Old objects use exact `drop_rewrap` (§7.5), requiring look scope. It refuses an unclaimed inbox; an already-claimed inbox receives a current-WK wrap through ordinary rewrap publication, preserving claim ownership. No historical WK grant is issued to a new device.
+Send/recovery require signed current membership with operate scope and matching epoch grants. An uncommitted stale-epoch upload is resealed with a fresh DEK only after read-back confirms an empty slot. Recovery returns per-upload outcomes and persists terminal conflicts/rejections; retry/discard are explicit.
+`downloadVerified` exposes authenticated name, MIME, plaintext size and transcript with the plaintext URL through `DropDownload`; keys remain private.
 Native compose chooses destination first, maximum five attachments/25 MiB total plaintext, default seven-day
 expiry. Notes/URLs are immutable file content with suitable MIME; URLs are text, never fetched.
 Preview only after full authenticated decryption. Share extension stages; foreground app signs/uploads.
@@ -656,3 +659,13 @@ Prove transport isolation and cross-realm certificate denial there; Debug vector
 entitlements, also run in Release; an in-memory SwiftPM backend is supplementary evidence only.
 T0 does not establish real NSE invocation, Secure Enclave custody, passcode-removal behavior or APNs
 delivery: retain the pinned-runtime/device evidence gates in decisions T2/T5.
+
+### Slice 5 implementation notes
+
+`DropService` is workspace-scoped and constructed with a `WorkspaceSession`, its verified card and
+owner-verified certificates for other device authors. Unknown authors fail closed (v0 has no certificate
+lookup route). `list`, `send`, `download`, `claim`, `resumeUploads` and `importShareJob` expose no signing
+or agreement handles. Device PUT requires `operate`; read/rewrap requires `look`. A member send includes
+WXK, sender-device and current-WK wraps. Inbox claim requests use the operate-scoped host `drop_claim` op to
+produce the §10.5 WSK-signed claim; no new phone signing authority or protocol claim route is introduced.
+See **Slice 5 additions** in gaps.md for quotas, persistence and authorization limitations.

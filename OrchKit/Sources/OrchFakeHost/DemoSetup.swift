@@ -139,8 +139,8 @@ public enum DemoSetup {
     }
 
     public static func makeHost(_ env: DemoEnvironment, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
-                                hostedBy: String? = nil, workspace: ID16? = nil) throws -> FakeHost {
+                                hostedBy: String? = nil, workspace: ID16? = nil, demoDropFixtures: Bool = false) throws -> FakeHost {
         try FakeHost(capability: env.capability, context: env.context, primary: primary, name: name, clientHosted: clientHosted,
-                     hostedBy: hostedBy, workspace: workspace, wall: env.wall, entropy: env.entropy)
+                     hostedBy: hostedBy, workspace: workspace, demoDropFixtures: demoDropFixtures, wall: env.wall, entropy: env.entropy)
     }
 }

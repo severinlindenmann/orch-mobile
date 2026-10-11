@@ -1,4 +1,5 @@
 import Foundation
+import OrchCoordination
 
 /// Opens and closes one workspace's `ws.sqlite`. On protected-data loss the app calls `suspend()`
 /// (handles closed, operations throw `.suspended`) and `resume()` when data is available again.
@@ -40,6 +41,18 @@ public actor WorkspaceContainer {
         Migration(version: 4, statements: [
             // Existing slice-3 envelopes may have been dispatched. Missing envelopes are still refused by reconciliation.
             "ALTER TABLE decisions ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 1",
+        ]),
+        Migration(version: 5, statements: [
+            "CREATE TABLE drop_heads (object TEXT PRIMARY KEY, version INTEGER NOT NULL, hash BLOB NOT NULL)",
+            "CREATE TABLE drop_uploads (object TEXT NOT NULL, version INTEGER NOT NULL, body BLOB NOT NULL, done INTEGER NOT NULL, PRIMARY KEY(object,version))",
+            "CREATE TABLE drop_imports (job TEXT NOT NULL, item INTEGER NOT NULL, object TEXT NOT NULL, PRIMARY KEY(job,item))",
+        ]),
+        Migration(version: 6, statements: [
+            "ALTER TABLE drop_uploads ADD COLUMN failure TEXT",
+        ]),
+        Migration(version: 7, statements: [
+            "ALTER TABLE drop_uploads ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            "CREATE TABLE drop_abandoned (key TEXT PRIMARY KEY)",
         ]),
     ]
 
@@ -127,3 +140,35 @@ public actor WorkspaceContainer {
         return try await epochHighWater()
     }
 }
+
+
+extension WorkspaceContainer {
+    public func acceptDropChain(object: String, chain: [Data]) async throws {
+        guard !chain.isEmpty, chain.count <= 1024 else { throw DropStoreError.rollback }
+        try await database().transaction { tx in
+            if let previous = try tx.query("SELECT version,hash FROM drop_heads WHERE object=?", [.text(object)]).first {
+                guard let n = previous.int("version"), n > 0, n <= chain.count,
+                      previous.blob("hash") == chain[Int(n) - 1] else { throw DropStoreError.rollback }
+            }
+            try tx.execute("INSERT INTO drop_heads(object,version,hash) VALUES(?,?,?) ON CONFLICT(object) DO UPDATE SET version=excluded.version,hash=excluded.hash",
+                           [.text(object), .int(Int64(chain.count)), .blob(chain.last!)])
+        }
+    }
+    public func writeDrop(_ data: Data, object: String, version: UInt32) async throws -> URL {
+        try StoreLayout.validate(ws: object)
+        try await index.requireNotRemoved(ws: ws, generation: generation)
+        _ = try database()
+        let directory = try layout.filesDir(ws)
+        let url = directory.appendingPathComponent("\(object)-\(version)")
+        // Never wait for a cross-process lock on the cooperative pool. A busy lock refuses this
+        // attempt; holding it through the write prevents publication after a removal tombstone.
+        guard try layout.tombstones.ifNotRemoved(realm: layout.realm, ws: ws, generation: generation, timeout: 0, {
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            return true
+        }) == true else { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
+        do { try await index.requireNotRemoved(ws: ws, generation: generation) }
+        catch { try? FileManager.default.removeItem(at: url); throw error }
+        return url
+    }
+}
+public enum DropStoreError: Error, Sendable { case rollback }

@@ -951,3 +951,12 @@ private func decodeOutcome(_ v: JSONValue) throws -> DecisionOutcome {
     default: throw ViewError.malformed
     }
 }
+
+extension WorkspaceSession {
+    package func dropRelaySession() async throws -> RelaySession { try await ensureCurrent(); return try await relaySession() }
+    package func dropKey(_ epoch: UInt32) async throws -> SymmetricKey {
+        try await ensureCurrent(); try await loadKeys()
+        guard let key = keys[epoch] else { throw SessionError.noKeyForEpoch(epoch) }
+        return key
+    }
+}

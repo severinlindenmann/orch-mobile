@@ -32,11 +32,12 @@ public enum DropBlob {
 
     /// TEST-ONLY seam for a fixed nonce prefix. A prefix must never repeat under one DEK (the DEK is per version).
     static func encrypt(dek: SymmetricKey, object: ID16, version: UInt32, plaintext: Data, chunkSize: Int, noncePrefix: Data) throws -> Data {
-        guard noncePrefix.count == 8, chunkSize > 0, chunkSize <= Drop.maxChunkSize else { throw CryptoFailure.invalidLength }
+        guard plaintext.count <= Drop.maxBlobBytes - Drop.headerLength - 16, noncePrefix.count == 8, chunkSize > 0, chunkSize <= Drop.maxChunkSize else { throw CryptoFailure.invalidLength }
         let hdr = header(object: object, version: version, chunkSize: chunkSize, prefix: noncePrefix)
         let key = KDF.kDropContent(dek: dek, object: object, version: version)
         let pt = Data(plaintext)
         let n = max(1, (pt.count + chunkSize - 1) / chunkSize)
+        guard n <= (Drop.maxBlobBytes - Drop.headerLength - pt.count) / 16 else { throw CryptoFailure.invalidLength }
         var out = hdr
         for i in 0..<n {
             let chunk = pt.subdata(in: min(i * chunkSize, pt.count)..<min((i + 1) * chunkSize, pt.count))
@@ -316,8 +317,8 @@ public enum DropDocument {
     /// A reader MUST check that each version's `parent_hash` is the hash of the version before it, from version 1 up, and
     /// (stricter than the reference) that every version names the same object, space and kinds as version 1.
     /// `versions` are signature-checked descriptor objects.
-    /// TODO(reader slice): a reader must also persist the highest version it has seen per document and treat a lower
-    /// "latest" as an error (section 10.6); that state lives outside this pure function.
+    /// DropService persists the highest version and head hash in its workspace container; that state lives
+    /// outside this pure function.
     public static func verifyChain(_ versions: [[String: JSONValue]]) throws {
         for (i, o) in versions.enumerated() {
             if i > 0, !sameDocument(o, versions[0]) { throw Fork(at: o["version"]?.int ?? -1) }
