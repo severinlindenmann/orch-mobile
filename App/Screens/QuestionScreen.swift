@@ -181,7 +181,7 @@ struct SignSheet: View {
                 }
                 .padding(OS.s4).orchCard()
                 if review.hasUnsafeContent {
-                    Label("Some text contains characters that cannot be seen. They are marked in orange so you can see exactly what is signed.",
+                    Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(OF.meta).foregroundStyle(OC.warn)
                         .accessibilityIdentifier("sign.unsafeNotice")

@@ -68,5 +68,11 @@ final class SafeTextTests: XCTestCase {
         let app = launch("question/q7")
         XCTAssertTrue(app.el("question.ambiguous").waitForExistence(timeout: 60))
         XCTAssertFalse(app.buttons["question.option.a"].isEnabled)
+        XCTAssertFalse(app.buttons["question.option.b"].isEnabled)
+        // Full-width "Ｙes": the look-alike is named in the question text and in the option, in any font.
+        let marker = "⟨look-alike U+FF39⟩"
+        XCTAssertTrue(app.el("question.text").label.contains(marker), app.el("question.text").label)
+        XCTAssertTrue(app.buttons["question.option.b"].label.contains(marker), app.buttons["question.option.b"].label)
+        XCTAssertFalse(app.buttons["question.option.a"].label.contains(marker))
     }
 }

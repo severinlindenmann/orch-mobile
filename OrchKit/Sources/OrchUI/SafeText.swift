@@ -3,6 +3,8 @@ import SwiftUI
 /// Plain-text rendering for host-provided text (U7). Nothing is rewritten: unsafe scalars stay in the
 /// text and are followed by a visible marker such as ⟨U+202E⟩. The marker delimiters U+27E8/U+27E9 are
 /// themselves marked when they occur in host text, so a literal "⟨U+202E⟩" can never imitate a marker.
+/// Look-alikes (see `Confusables`) are kept too and followed by a marker naming them, e.g. "а⟨Cyrillic U+0430⟩pprove",
+/// "Ａ⟨look-alike U+FF21⟩", "١⟨digit U+0661⟩": markers are text, so they show in any font (proportional or monospace).
 public enum SafeText {
     public enum Piece: Equatable, Sendable {
         case text(String)
@@ -49,26 +51,36 @@ public enum SafeText {
         }
     }
 
-    public static func pieces(_ input: String) -> [Piece] {
+    /// `lookalikes == false` leaves out the look-alike markers (only `skeleton` does, which maps look-alikes instead).
+    public static func pieces(_ input: String, lookalikes: Bool = true) -> [Piece] {
         var result: [Piece] = []
         var buffer = String.UnicodeScalarView()
         func flush() {
             if !buffer.isEmpty { result.append(.text(String(buffer))); buffer = .init() }
         }
+        let flags = lookalikes ? Confusables.flags(Array(input.unicodeScalars)) : [:]
+        var index = 0
         var previous: Unicode.Scalar?
         for character in input {
             let scalars = Array(character.unicodeScalars)
             let marks = scalars.filter(isMark).count
             let zalgo = marks > 3
+            var after: [String] = []                  // look-alike markers follow the whole character, marks included
             for scalar in scalars {
+                defer { index += 1 }
                 if zalgo && isMark(scalar) { continue }
                 if isUnsafe(scalar, after: previous) {
                     flush()
                     result.append(.marker(markerLabel(for: scalar)))
                 } else {
                     buffer.append(scalar)
+                    if let m = flags[index] { after.append(m) }
                 }
                 previous = scalar
+            }
+            if !after.isEmpty {
+                flush()
+                result += after.map(Piece.marker)
             }
             if zalgo {
                 flush()
@@ -77,6 +89,11 @@ public enum SafeText {
         }
         flush()
         return result
+    }
+
+    /// Look-alike markers name a script or "look-alike"/"digit"; unsafe markers are "⟨U+…⟩" or "⟨n marks⟩".
+    public static func isLookalikeMarker(_ marker: String) -> Bool {
+        !marker.hasPrefix("⟨U+") && !marker.hasSuffix(" marks⟩")
     }
 
     public static func markers(in input: String) -> [String] {
@@ -116,19 +133,18 @@ public enum SafeText {
         return out
     }
 
-    private static let confusables: [Character: Character] = {
-        var m: [Character: Character] = [:]
-        let pairs: [(String, String)] = [
-            ("АВЕКМНОРСТХаеорсухі", "ABEKMHOPCTXaeopcuxi"),     // Cyrillic
-            ("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧο", "ABEZHIKMNOPTYXo"),           // Greek
-        ]
-        for (from, to) in pairs { for (f, t) in zip(from, to) { m[f] = t } }
-        return m
-    }()
-
-    /// Reduces common Cyrillic/Greek look-alikes to Latin so "Approve" and "Аpprove" collide.
+    /// UTS #39-style skeleton (partial table, see `Confusables`): NFKD, Cyrillic/Greek/Armenian/Cherokee/Lisu and
+    /// punctuation look-alikes mapped to Latin, I/1/| → l, 0 → O, m → rn, whitespace runs collapsed and trimmed.
+    /// Unsafe-character markers stay in, so "Approve" and "Approve⟨U+200B⟩" remain different (the marker is visible).
     public static func skeleton(_ input: String) -> String {
-        String(inline(input, limit: 400).trimmingCharacters(in: .whitespaces).map { confusables[$0] ?? $0 })
+        var out = ""
+        for piece in pieces(input, lookalikes: false) {
+            switch piece {
+            case .text(let t): out += Confusables.skeleton(t)
+            case .marker(let m): out += m
+            }
+        }
+        return out.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     /// Two answers whose skeletons are equal cannot be told apart by the reader: refuse.
@@ -168,7 +184,7 @@ public enum SafeText {
         pieces(input).map {
             switch $0 {
             case .text(let s): return s
-            case .marker(let m): return " unsafe character " + m + " "
+            case .marker(let m): return (isLookalikeMarker(m) ? " look-alike character " : " unsafe character ") + m + " "
             }
         }.joined()
     }

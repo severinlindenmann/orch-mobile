@@ -183,6 +183,7 @@ struct ReviewValue: Hashable, Sendable {
     var optionsAmbiguous: Bool { SafeText.hasAmbiguousOptions(options.map(\.label)) }
     var hasUnsafeContent: Bool {
         SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label) }
+            || SafeText.hasUnsafe(workspaceName) || hostedBy.map(SafeText.hasUnsafe) == true
     }
 }
 
