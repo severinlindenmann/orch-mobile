@@ -5,10 +5,10 @@ import Testing
 import OrchTestVectors
 
 @Suite struct FixtureSchemaTests {
-    static let files: [Fixtures.File] = try! Fixtures.loadAll()
+    static let files: [Fixtures.File] = (try? Fixtures.loadAll()) ?? []
 
     @Test func everyFileAndCaseParses() throws {
-        let files = Self.files
+        let files = try Fixtures.loadAll()   // a load failure fails this test; other suites then see no files and fail their counts
         #expect(files.count == FixtureCoverage.expectedFileCount)
         #expect(files.reduce(0) { $0 + $1.cases.count } == FixtureCoverage.expectedCaseCount)
         for f in files {
@@ -77,10 +77,19 @@ import OrchTestVectors
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("OrchTestVectors/PROVENANCE.md")
         let prov = try String(contentsOf: url, encoding: .utf8)
-        for name in try Fixtures.fileNames() {
+        let vdigest = Hex.encode(SHA256.hash(data: Vectors.data))
+        #expect(prov.contains("sha256: `\(vdigest)`"), "vectors_v2.json differs from PROVENANCE.md")
+        let names = try Fixtures.fileNames() + ["README.md"]
+        for name in names {
             let digest = Hex.encode(SHA256.hash(data: try Fixtures.rawData(name)))
             #expect(prov.contains("\(name): sha256 `\(digest)`"), "\(name) differs from PROVENANCE.md")
         }
+        // reverse: every per-file line in PROVENANCE names an existing fixture file
+        let listed = prov.split(separator: "\n").compactMap { line -> String? in
+            guard line.hasPrefix("- "), let r = line.range(of: ": sha256 `") else { return nil }
+            return String(line[line.index(line.startIndex, offsetBy: 2)..<r.lowerBound])
+        }
+        #expect(Set(listed) == Set(names) && listed.count == names.count, "PROVENANCE file list differs from the fixture directory")
     }
 }
 
@@ -108,42 +117,47 @@ import OrchTestVectors
         #expect(n > 400)
     }
 
-    /// Success-path signed objects (device certs, revocations, cards, member lists, cert requests/challenges/rejections)
-    /// verify under the shared vector keys with the suite-2 labels. Pure wire: no product behaviour involved.
+    /// Success-path signed objects verify under their EXPECTED signer only (not any vector key): person-signed kinds
+    /// (device_cert, revocation, cert_challenge, card) under the key whose person id equals the object's person/owner id;
+    /// workspace-key kinds (member_list, cert_request, wk_grant) under `wsk_a` for the vectors' workspace 705d40ab….
+    /// Pure wire: no product behaviour involved.
     @Test func signedObjectsInSuccessCasesVerify() throws {
         let keys = try vectorSigningKeys()
         #expect(keys.count == 11)
+        let byPerson = Dictionary(uniqueKeysWithValues: ["person_alice.sig", "person_bob.sig"].map { (Identifiers.personID(keys[$0]!).hex, keys[$0]!) })
+        let wskA = keys["wsk_a.sig"]!
         let kinds = Dictionary(uniqueKeysWithValues: SignedKind.allCases.map { ($0.rawValue, $0) })
+        let personField = ["device_cert": "person_id", "revocation": "person_id", "cert_challenge": "person_id", "card": "owner_person_id"]
+        let wskKinds: Set<String> = ["member_list", "cert_request", "wk_grant"]
         var verified: [String: Int] = [:]
         let okNames: Set<String> = ["success", "exact_retry", "resigned_identical", "first_card_without_session"]
 
         func walk(_ v: JSONValue, _ id: String) {
-            if let m = v.object {
-                if let kind = m["o"]?.object?["kind"]?.string, m["sig"] != nil {
-                    if kind == "card" {
-                        if keys.values.contains(where: { (try? Card.verify(v, ownerKey: $0)) != nil }) { verified["card", default: 0] += 1 }
-                        else { Issue.record("\(id): card does not verify under any vector key") }
-                    } else if let k = kinds[kind], let s = try? SignedObject.parse(v) {
-                        if keys.values.contains(where: { (try? s.verify(kind: k, key: $0)) != nil }) { verified[kind, default: 0] += 1 }
-                        else { Issue.record("\(id): \(kind) does not verify under any vector key") }
-                    } else if kind == "cert_rejection" {
-                        // no SignedKind yet (PR4): checked structurally only, signature checked once the label is supported
-                        verified["cert_rejection(unchecked)", default: 0] += 1
-                    }
-                    return
-                }
-                for x in m.values { walk(x, id) }
-            } else if let a = v.array { for x in a { walk(x, id) } }
+            guard let m = v.object else { if let a = v.array { for x in a { walk(x, id) } }; return }
+            guard let o = m["o"]?.object, let kind = o["kind"]?.string, m["sig"] != nil else { for x in m.values { walk(x, id) }; return }
+            // TODO(PR4): cert_rejection has no SignedKind/label support yet; excluded from `verified` and from the pinned counts.
+            if kind == "cert_rejection" { return }
+            let key: SigningPublicKey?
+            if let f = personField[kind] { key = o[f]?.string.flatMap { byPerson[$0] } }
+            else if wskKinds.contains(kind) {
+                if o["workspace_id"]?.string != "705d40abbb8c1c90354a1acaa94c935c" { Issue.record("\(id): unexpected workspace for \(kind)") }
+                key = wskA
+            } else { Issue.record("\(id): no expected signer for \(kind)"); return }
+            guard let key else { Issue.record("\(id): \(kind) person/owner is not a vector person"); return }
+            let ok: Bool
+            if kind == "card" { ok = (try? Card.verify(v, ownerKey: key)) != nil }
+            else if let k = kinds[kind], let s = try? SignedObject.parse(v) { ok = (try? s.verify(kind: k, key: key)) != nil }
+            else { ok = false }
+            if ok { verified[kind, default: 0] += 1 } else { Issue.record("\(id): \(kind) does not verify under its expected signer") }
         }
         for f in Self.files {
             for c in f.cases where okNames.contains(c.name) {
                 for node in [c.request["json"], c.response["json"]] { if let v = node?.jsonValue { walk(v, caseID(f, c)) } }
             }
         }
-        for kind in ["device_cert", "revocation", "card", "member_list", "cert_request", "cert_challenge"] {
-            #expect((verified[kind] ?? 0) >= 1, "no \(kind) was verified: \(verified)")
-        }
-        #expect(verified.values.reduce(0, +) >= 20, "\(verified)")
+        // pinned: a fixture re-copy that changes these counts must be reviewed
+        let expected: [String: Int] = ["card": 3, "cert_challenge": 4, "cert_request": 2, "device_cert": 6, "member_list": 3, "revocation": 4, "wk_grant": 5]
+        #expect(verified == expected, "\(verified)")
     }
 }
 
@@ -171,7 +185,7 @@ import OrchTestVectors
     }
 
     /// PR1 changes no behaviour: nothing is replayable yet. A PR that enables a file must edit this number with the skip list.
-    @Test func nothingIsReplayableInPR1() { #expect(FixtureCoverage.replayable.isEmpty) }
+    @Test func replayableSetMatchesPRStage() { #expect(FixtureCoverage.replayable.isEmpty) }   // PR2+ edit the expected set here with the skip list
 
     @Test func everyPRHasWork() {
         for pr in FixtureCoverage.PR.allCases { #expect(FixtureCoverage.pending.values.contains(pr), "\(pr.rawValue)") }

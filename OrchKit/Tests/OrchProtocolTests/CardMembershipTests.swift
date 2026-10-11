@@ -169,33 +169,55 @@ import Testing
         return .init(ownerKey: d["owner_pk_pub"].sigPub, certs: certs, revoked: Set(d["revoked"].items.map(\.id)), grants: grants)
     }
 
-    /// Relay vectors 386a6cb (P3-D6): member lists now carry `persons` and per-member `person_id`. `MemberList.parse` rejects
-    /// the new shape (strict keys), so every case is an expected failure until PR3 (membership/persons) updates the parser.
-    @Test func memberListCases() throws {
-        withKnownIssue("PR3: member_list persons / person_id not parsed yet", isIntermittent: false) { try memberListCasesBody() }
-    }
+    /// Relay vectors 386a6cb (P3-D6): every member list now carries `persons` and per-member `person_id`, which the strict
+    /// `MemberList.parse` rejects (malformed). Measured: all 14 cases fail for that reason, so all 14 are listed. Each is wrapped
+    /// on its own (non-intermittent: it fails once PR3 makes it pass, forcing removal from this set).
+    static let pr3ExpectedFailureMemberLists: Set<String> = [
+        "first_list",
+        "first_list_for_another_workspace",
+        "first_list_not_epoch_1",
+        "add_device_same_epoch",
+        "remove_device_with_rotation",
+        "remove_device_without_rotation",
+        "epoch_skips",
+        "list_seq_not_increasing",
+        "revoked_member",
+        "other_persons_device",
+        "scoped_agent_as_member",
+        "scopes_above_cert",
+        "missing_grant_for_new_epoch",
+        "signed_by_another_workspace_key"
+    ]
 
-    func memberListCasesBody() throws {
+    @Test func memberListCases() throws {
         let cases = s2["member_lists"].items
         #expect(cases.count == 14)
-        var ok = 0
+        #expect(Set(cases.map { $0["name"].str }).isSuperset(of: Self.pr3ExpectedFailureMemberLists))
+        var ok = 0, known = 0
         for c in cases {
             let name = c["name"].str
-            do {
-                let list = try MemberList.verify(c["signed"], wsk: c["wsk_pub"].sigPub)
-                let prev = c["prev"].isNull ? nil : try MemberList.parse(object: c["prev"].object!)
-                try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previous: prev, directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
-                ok += 1
-                let want = c["expect"]["ok"]
-                #expect(!want.isNull, "\(name) accepted")
-                #expect(list.epoch == want["epoch"].u32 && list.listSeq == want["list_seq"].i64, "\(name)")
-                #expect(list.members.map { $0.deviceID.hex } == want["members"].items.map { $0["device_id"].str }, "\(name)")
-                #expect(list.members.map { $0.scopeStrings } == want["members"].items.map { $0["scopes"].items.map(\.str) }, "\(name)")
-            } catch let r as Refusal {
-                #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
+            func run() throws {
+                do {
+                    let list = try MemberList.verify(c["signed"], wsk: c["wsk_pub"].sigPub)
+                    let prev = c["prev"].isNull ? nil : try MemberList.parse(object: c["prev"].object!)
+                    try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previous: prev, directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
+                    ok += 1
+                    let want = c["expect"]["ok"]
+                    #expect(!want.isNull, "\(name) accepted")
+                    #expect(list.epoch == want["epoch"].u32 && list.listSeq == want["list_seq"].i64, "\(name)")
+                    #expect(list.members.map { $0.deviceID.hex } == want["members"].items.map { $0["device_id"].str }, "\(name)")
+                    #expect(list.members.map { $0.scopeStrings } == want["members"].items.map { $0["scopes"].items.map(\.str) }, "\(name)")
+                } catch let r as Refusal {
+                    #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
+                }
             }
+            if Self.pr3ExpectedFailureMemberLists.contains(name) {
+                known += 1
+                withKnownIssue("PR3: member_list persons / person_id not parsed yet") { try run() }
+            } else { try run() }
         }
-        #expect(ok == 3)
+        #expect(known == Self.pr3ExpectedFailureMemberLists.count)
+        #expect(ok == 0)   // all accepted cases are in the PR3 set; PR3 sets this back to 3
     }
 
     @Test func memberListShapeRefusals() throws {

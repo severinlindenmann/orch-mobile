@@ -61,7 +61,10 @@ public enum Fixtures {
         private enum CodingKeys: String, CodingKey { case contract, suite, route, cases }
     }
 
-    public static var directory: URL { Bundle.module.resourceURL!.appendingPathComponent("http_fixtures", isDirectory: true) }
+    public static var directory: URL {
+        // Bundle.module's resource URL is only nil for a broken bundle; fall back to a path that fails loudly on first read.
+        (Bundle.module.resourceURL ?? URL(fileURLWithPath: "/nonexistent")).appendingPathComponent("http_fixtures", isDirectory: true)
+    }
 
     /// Names of the JSON fixture files (README.md excluded), sorted.
     public static func fileNames() throws -> [String] {
