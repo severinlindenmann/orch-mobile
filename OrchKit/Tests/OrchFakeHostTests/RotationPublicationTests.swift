@@ -96,6 +96,26 @@ import OrchProtocol
         #expect(await w.host.rotationRequired == false)
         #expect(await w.host.epoch == 2)
         #expect(await w.relay.memberListSeq(workspace: w.ws) == 3)
+        #expect(await w.host.relayEpochFloor == 0)               // cleared by the commit
+    }
+
+    /// A relay that answers `stale_list` and then serves one of the host's own older WSK-signed lists (here: list_seq 1 claiming
+    /// epoch 9) cannot push the host's next epoch up: only a list above the host's committed list_seq sets the floor.
+    @Test func replayedOwnOlderListDoesNotRaiseTheEpochFloor() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        faults.enqueue(.drop, at: .beforeMembershipPublication, routePrefix: "PUT /v2/workspaces/\(w.ws.hex)/membership")
+        await #expect(throws: TransportError.disconnected) {
+            try await w.host.rotate(remaining: [(w.phone, ["look", "decide"])], relay: w.relay, session: w.hostSession)
+        }
+        let old = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"])], epoch: 9, listSeq: 1)
+        let ws = w.ws
+        await w.relay.seed { r in r.workspaces[ws]!.listJSON = old; r.workspaces[ws]!.listSeq = 2 }
+        await #expect(throws: MembershipPublicationError.conflict) {
+            try await rotationRetry(w) { try await w.host.rotate(remaining: [(w.phone, ["look", "decide"])], relay: w.relay, session: w.hostSession) }
+        }
+        #expect(await w.host.relayEpochFloor == 0)
+        #expect(await w.host.listSeq == 1)
     }
 
     /// C4: the host fails after persisting the body but before sending it. Those bytes never left: the slot is dropped, the

@@ -130,8 +130,10 @@ extension FakeHost {
         let current = try await relayMemberList(relay: relay, session: session)
         if current == p.memberList { installCommitted(p); return p }
         discardRefused(p)
-        if let other = try? MemberList.verify(current, wsk: wskPublic) {
-            listSeq = max(listSeq, other.listSeq)
+        // Only a list above this host's committed list_seq can be newer: a relay replaying one of this host's own earlier (refused,
+        // still WSK-signed) lists must not push the next epoch up, or an honest relay would refuse the skip (bad_epoch) forever.
+        if let other = try? MemberList.verify(current, wsk: wskPublic), other.listSeq > listSeq {
+            listSeq = other.listSeq
             relayEpochFloor = max(relayEpochFloor, other.epoch)
         }
         throw MembershipPublicationError.conflict
@@ -140,6 +142,7 @@ extension FakeHost {
     private func installCommitted(_ p: PendingPublication) {
         pendingPublication = nil
         listSeq = max(listSeq, p.listSeq)
+        relayEpochFloor = 0                          // the relay now holds this host's list
         if p.epoch != epoch { installEpoch(p.epoch) }
         // A member revoked or removed while these bytes were in flight is not re-added locally; the gate stays up and the next
         // rotation publishes without it.

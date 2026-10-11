@@ -176,9 +176,10 @@ public actor WorkspaceSession {
     }
 
     /// Keeps `WK_e` in custody without making `e` current. A CONFIRMED epoch's key never changes (`grantConflict`). For an epoch
-    /// not yet confirmed, a different WSK-signed key replaces the stored one: a hostile relay may hand out the grant of a publication
-    /// the relay refused (same epoch, another key, also WSK-signed), and pinning it would lock this device out until `e+1`. The key
-    /// is used only once a verified list confirms the epoch, from the grant the relay serves then (gaps: `wk_commit`).
+    /// not yet confirmed, a different WSK-signed key replaces the stored one, so a refused publication's grant seen early is not
+    /// pinned. This does NOT stop a hostile relay from locking the device out: it can serve the refused key in the very refresh that
+    /// confirms the epoch, and that key is then pinned (the same power as first-wins, moved). Confidentiality is unchanged: nothing
+    /// is sealed under an unconfirmed key. The lasting fix is `wk_commit` in the member list (gaps.md).
     private func store(epoch: UInt32, key: SymmetricKey) async throws {
         try await ensureCurrent()
         guard epoch >= 1 else { throw SessionError.noKeyForEpoch(epoch) }
