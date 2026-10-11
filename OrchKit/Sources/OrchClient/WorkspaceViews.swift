@@ -10,6 +10,8 @@ public protocol WorkspaceAPI: Sendable {
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     func reconcile(decisionID: ID16) async throws -> DecisionOutcome
+    /// The person's explicit "Send again" for a `needsRetry` decision (relay `retry_exhausted`). Reads the question first.
+    func retry(decisionID: ID16) async throws -> DecisionOutcome
     var verifiedReceiptMs: Int64? { get async }
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
@@ -31,8 +33,13 @@ public protocol WorkspaceAPI: Sendable {
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String) }
 public enum DecisionOutcome: Equatable, Sendable {
     case accepted, alreadyAnswered(label: String, at: Int64), questionChanged(hash: Data), uncertain
+    /// The relay ended delivery with 409 `retry_exhausted` (protocol-v2 section 19.6) and the question is still open: nothing is sent
+    /// again until the person asks for it (`retry(decisionID:)`). Not "checking": automatic reconciliation only reads.
+    case needsRetry
+    /// The host signed that it recorded the decision and did NOT apply it (`not_visible`, orch-29 Q2): definite, never re-sent.
+    case notApplied
 }
-public enum DecisionState: Equatable, Sendable { case pending, uncertain }
+public enum DecisionState: Equatable, Sendable { case pending, uncertain, needsRetry }
 public struct DecisionStatus: Equatable, Sendable {
     public let decisionID: ID16, questionID: ID16
     public let optionID: String

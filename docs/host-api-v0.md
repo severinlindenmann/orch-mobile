@@ -156,6 +156,36 @@ Poll is non-consuming; retain sealed bodies 60 seconds (§8.9). Validate clear f
 Route/header mismatch is 400 `malformed`; bad membership/session is 403 `not_eligible`/401 `unauthenticated`.
 Bridge refuses inside signed/sealed envelopes; relay HTTP errors never count as verified host refusals.
 Ordinary limits: request 1 MiB, chunk 256 KiB, meta 64 KiB; incomplete responses fail as a whole.
+A body over its cap is 400 `too_large` before parsing (§19.6); `wait` (0–25) is accepted on the poll.
+
+**Bridge delivery (protocol-v2 §19.3 P3-D8/D9/D22, §19.6).** The relay keeps a replay record per
+`(ws, device, rid)` for 900 s from the FIRST receipt; resends never extend it (a dependent copy or chunk
+does, `keep_until_ms`). An identical resend is coalesced (202, nothing queued) while a live copy is
+undelivered (above the host's acknowledged cursor); otherwise it is requeued at most once per 10 s
+(429 `rate_limited`, `Retry-After` = rest of the interval rounded up) and at most 8 times, then 409
+`retry_exhausted` (terminal). Other bytes for a known rid are 409 `rid_conflict`. A NEW rid whose
+header epoch is not the current list epoch is 409 `stale_epoch {"epoch"}`, an unsigned hint; a known
+rid skips the epoch check. Host chunks need a known, unexpired rid (else 410 `expired`), the request's
+epoch (an old epoch only as `LAST|REFUSAL` or a byte-identical stored replay, else 409 `stale_epoch`);
+other bytes at a stored index are 409 `chunk_conflict`; a stored replay never refreshes a TTL or
+resurrects an expired body. The phone (`WorkspaceSession`):
+- after 202 or 429 keeps polling the SAME rid and never reissues under a new rid; with no answer the
+  request stays pending (`noResponse`, or the 429 refusal) and `resend` sends the same bytes (a 503
+  queued nothing: surfaced at once, still pending);
+- after 409 `retry_exhausted` keeps polling while the relay retains a copy, then marks the attempt `uncertain`
+  together with an `exhausted` marker (one transaction) and throws `SessionError.retryExhausted`; nothing
+  is re-sent automatically. Such a decision is `needsRetry` (`DecisionOutcome`/`DecisionState`): automatic
+  reconciliation only reads the question; `retry(decisionID:)` ("Send again") is the explicit retry;
+- on 409 `stale_epoch` never raises the epoch from the hint: it refetches the SIGNED grants and member
+  list (only hints count: at most 3 starts per sliding 60 s, then 20/40/60 s, reset after 120 s without a
+  hint or on a newer signed epoch; `EpochRefetchLimiter`, `SessionError.epochRefetchDeferred`). If the
+  signed list confirms a newer epoch, a FIRST attempt is re-sealed under the SAME rid, but only within 240 s
+  of its first copy (later: `uncertain`, reconcile). A host that ran a copy a relay delivered anyway answers
+  `rid_conflict` → `uncertain`, keeping the ORIGINAL attempt. Without a newer signed epoch:
+  `awaitingSignedEpoch`, still pending. A resend refused by the hint, and 410 `expired`, give `uncertain`;
+- re-signs under a new rid only after a sealed host refusal that says the request did not run
+  (`stale_epoch`, first `stale_timestamp`, `stale_sequence`, §8.5) and never on a resend (U8).
+  `not_visible` is terminal and definite: a decision ends `notApplied`; other ops get the typed refusal.
 
 ## 2. Host view and mutations (provisional v0)
 
@@ -231,6 +261,8 @@ Changed question receives `question_changed` with content_hash; fetch again and 
 Persist immutable review, decision_id, answer, detached signature and envelope before the first send.
 After a lost response, first resend the stored envelope byte-for-byte with the same rid/seq/salt;
 the host replays its recorded response while the rid record lives (received_at + 900 s, §8.6 step 5).
+Under protocol-v2 the relay delivers that replay only while the original answer chunk lives (60 s):
+an expired chunk is never resurrected (P3-D22), so a later resend gets no answer and ends `uncertain`.
 On `already_done(unknown)`, unknown-rid `stale_timestamp`, or expiry of that 900-second window, fetch
 the question: matching resolution decision_id AND answer confirms acceptance; another resolution
 shows who/when; open permits resending only the same detached signed decision in a fresh envelope

@@ -178,12 +178,24 @@ struct ReviewValue: Hashable, Sendable {
     /// Bumped each time the question is re-read after `question_changed`.
     let revision: Int
     var isDemo = false
+    /// Non-nil: the sheet refuses to sign (look-alike answers, or answers outside the plain-label allowlist). Computed once.
+    let optionsRefusal: SafeText.OptionRefusal?
+    /// Computed once: the sheet body reads it on every pass and host text can be long.
+    let hasUnsafeContent: Bool
+
+    init(workspaceID: String, workspaceName: String, hue: Int, clientHosted: Bool, hostedBy: String?, questionID: String,
+         ticket: String, text: String, optionID: String, optionLabel: String, options: [QuestionOption], contentHash: String,
+         revision: Int, isDemo: Bool = false) {
+        self.workspaceID = workspaceID; self.workspaceName = workspaceName; self.hue = hue; self.clientHosted = clientHosted
+        self.hostedBy = hostedBy; self.questionID = questionID; self.ticket = ticket; self.text = text; self.optionID = optionID
+        self.optionLabel = optionLabel; self.options = options; self.contentHash = contentHash; self.revision = revision
+        self.isDemo = isDemo
+        optionsRefusal = SafeText.optionRefusal(options.map(\.label))
+        hasUnsafeContent = SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label, strictLabel: true) }
+            || SafeText.hasUnsafe(workspaceName) || hostedBy.map { SafeText.hasUnsafe($0) } == true
+    }
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
-    var optionsAmbiguous: Bool { SafeText.hasAmbiguousOptions(options.map(\.label)) }
-    var hasUnsafeContent: Bool {
-        SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label) }
-    }
 }
 
 /// Opaque session-issued review: the only thing `decide` would accept. Views never see it.
@@ -203,7 +215,8 @@ enum ReviewLoad: Hashable, Sendable {
     case failed(String)
 }
 
-enum DecisionOutcomeState: String, Hashable, Sendable { case pending, uncertain, resolved }
+/// `needsRetry`: the relay ended delivery (`retry_exhausted`) and the question is still open; only "Send again" sends it.
+enum DecisionOutcomeState: String, Hashable, Sendable { case pending, uncertain, needsRetry, resolved }
 
 struct DecisionStatus: Identifiable, Hashable, Sendable {
     var id: String { decisionID }
@@ -227,6 +240,11 @@ enum SignPhase: Hashable, Sendable {
     case alreadyAnswered(by: String, at: Date)
     case questionChanged
     case checking
+    /// Delivery ended without an answer (relay `retry_exhausted`) and the question is still open. Nothing is sent again unless the
+    /// person taps "Send again", which resends the SAME signed answer.
+    case needsRetry
+    /// The host signed that it recorded the answer and did not apply it (`not_visible`): definite, never sent again.
+    case notApplied
     case unlockToContinue
     case custodyUnavailable
     /// The send failed before anything was signed or stored.
@@ -235,7 +253,7 @@ enum SignPhase: Hashable, Sendable {
 
 /// What the fake host does with the next answer (Demo controls and tests).
 enum SignOutcome: String, CaseIterable, Hashable, Sendable {
-    case accepted, alreadyAnswered, questionChanged, uncertain, locked, custodyUnavailable, loadFails
+    case accepted, alreadyAnswered, questionChanged, uncertain, notDelivered, locked, custodyUnavailable, loadFails
 
     /// What the Demo can really do to the next answer (the fake host or the lock); `custodyUnavailable` stays preview-only.
     static var liveCases: [SignOutcome] {
@@ -252,6 +270,7 @@ enum SignOutcome: String, CaseIterable, Hashable, Sendable {
         case .alreadyAnswered: "Already answered"
         case .questionChanged: "Question changed"
         case .uncertain: "Response lost (checking)"
+        case .notDelivered: "Not delivered (send again)"
         case .locked: "iPhone locked"
         case .custodyUnavailable: "Key unavailable"
         case .loadFails: "Review fails to load"

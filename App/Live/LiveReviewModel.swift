@@ -29,7 +29,7 @@ final class LiveReviewModel: QuestionReviewModel {
             review = pending.review
             decisionID = ID16(hex: pending.decisionID)
             load = .loaded
-            phase = .checking
+            phase = pending.outcome == .needsRetry ? .needsRetry : .checking
         }
     }
 
@@ -65,7 +65,7 @@ final class LiveReviewModel: QuestionReviewModel {
     }
 
     func sign() async {
-        guard workspace.usable, phase == .ready, let issued, let review, !review.optionsAmbiguous else { return }
+        guard workspace.usable, phase == .ready, let issued, let review, review.optionsRefusal == nil else { return }
         phase = .sending
         self.issued = nil              // one review, one signature: it is consumed by this call
         services.recordSubmission(review)
@@ -109,7 +109,28 @@ final class LiveReviewModel: QuestionReviewModel {
                 decisionID = id
                 services.startReconcile(workspace: workspace, decisionID: id)
             }
+        case .notApplied: phase = .notApplied
+        case .needsRetry:
+            phase = .needsRetry
+            if decisionID == nil { decisionID = await services.storedDecision(workspace: workspace, questionID: questionID) }
         }
+    }
+
+    /// The explicit "Send again" after delivery ended: the session reads the question first and resends the same signed decision
+    /// only while it is still open. Never a new signature.
+    func sendAgain() async {
+        guard workspace.usable, phase == .needsRetry else { return }
+        let id: ID16?
+        if let decisionID { id = decisionID } else { id = await services.storedDecision(workspace: workspace, questionID: questionID) }
+        guard let id else { return }
+        decisionID = id
+        phase = .sending
+        do {
+            await apply(try await workspace.api.retry(decisionID: id))
+        } catch {
+            phase = .needsRetry          // still stored and exhausted: nothing was lost, the person may try again
+        }
+        if phase == .checking { await services.refreshPending() } else { await services.decisionSettled(workspace: workspace) }
     }
 
     func reread() async {

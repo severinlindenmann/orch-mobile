@@ -77,6 +77,7 @@ import OrchProtocol
         // A device session cannot post a response (direction 2), even for itself.
         let denied = try await w.transport.bridgePost(try w.envelope(direction: .toDevice, rid: rid, seq: 0, flags: [.last]), route: route, session: w.phoneSession)
         #expect(denied.status == 400)
+        #expect(try await w.postRequest(rid: rid).status == 202)          // P3-D22: a response needs a known rid
         var ids: [UInt64] = []
         for (n, seq) in [UInt64(0), 1, UInt64(UInt32.max) + 2, UInt64(maxSafeInt)].enumerated() {
             let last = n == 3
@@ -129,6 +130,7 @@ import OrchProtocol
         let rid = ID16.fresh(0x42)
         let route = BridgeRoute(workspaceID: w.ws, requestID: rid)
         let idx = UInt64(UInt32.max) + 1
+        #expect(try await w.postRequest(rid: rid).status == 202)
         let e = try w.envelope(direction: .toDevice, rid: rid, seq: idx, flags: [.last], signer: SoftwareSigner())
         #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)
         let reply = try await w.transport.bridgePoll(route: route, after: UInt64(UInt32.max), session: w.phoneSession)

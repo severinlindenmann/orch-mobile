@@ -29,6 +29,21 @@ public struct RelayLimits: Sendable {
     public var maxConcurrentPollsGlobal = 4_096
     public var maxDropVersions = 1024
     public var maxDropBytes = 100 << 20
+    /// Global queued bridge bodies (live request copies and response chunks): a post past it is 503 `overloaded` (P3-D17, 256 MiB).
+    public var maxQueuedBodyBytes = 256 << 20
+    /// Undelivered response bytes per device and per workspace: a host chunk past either is 429 `quota_exceeded` (P3-D17).
+    public var maxResponseBytesPerDevice = 2 << 20
+    public var maxResponseBytesPerWorkspace = 16 << 20
+    /// Long polls (`wait` > 0) per device (429 `quota_exceeded`) and globally (503 `overloaded`) (P3-D17). The fake answers every poll
+    /// at once, so only a limit of 0 (or seeded state) ever refuses; the knobs exist for the shared fixtures.
+    public var maxLongPollsPerDevice = 6
+    public var maxLongPolls = 4096
+    /// Bridge posts per second (429 `rate_limited`, P3-D17): a device's own requests, and host chunks per (workspace, target device),
+    /// never charged against the device's window (orch-relay 813b0fe). Charged only after the replay/coalescing checks.
+    public var devicePostsPerSecond = 20
+    public var hostPostsPerSecond = 20
+    /// Replay records per device (P3-D17: 4 096 `rid_seen`), then 429 `quota_exceeded` for a new rid.
+    public var maxRidRecordsPerDevice = 4096
     public init() {}
 }
 
@@ -58,8 +73,8 @@ public actor FakeRelay: RequestSender {
     private struct Window {
         var stamps: [Int64] = []
         func isActive(_ now: Int64) -> Bool { stamps.contains { $0 > now - 60_000 } }
-        mutating func hit(now: Int64, limit: Int) -> Bool {
-            stamps.removeAll { $0 <= now - 60_000 }
+        mutating func hit(now: Int64, limit: Int, spanMs: Int64 = 60_000) -> Bool {
+            stamps.removeAll { $0 <= now - spanMs }
             guard stamps.count < limit else { return false }
             stamps.append(now); return true
         }
@@ -79,6 +94,26 @@ public actor FakeRelay: RequestSender {
     package var rateWindows: [String: RateWindow] = [:]
     package var workspaces: [ID16: Workspace] = [:]
     var boxes: [BoxKey: Box] = [:]
+    /// Device bridge mailboxes: the replay record of each `(workspace, device, rid)` (P3-D8/D9/D22), with its live bodies.
+    struct RidKey: Hashable { let ws: ID16; let device: ID16; let rid: ID16 }
+    var rids: [RidKey: RelayRidRecord] = [:]
+    /// Per workspace: the last delivery position handed out (`n`) and the host's acknowledged cursor (P3-D10).
+    private var positions: [ID16: UInt64] = [:]
+    private var cursors: [ID16: UInt64] = [:]
+    /// Test seed: a workspace's member devices and list epoch without a signed list (the bridge fixtures are not about lists).
+    private var seededMembers: [ID16: (devices: Set<ID16>, epoch: UInt32)] = [:]
+    private struct DeviceKey: Hashable { let ws: ID16; let device: ID16 }
+    private var hostPosts: [DeviceKey: Window] = [:]
+    private var devicePosts: [ID16: Window] = [:]
+    /// Tests only: a relay that answers the next new device request with 409 `stale_epoch` after running `then` (e.g. holding the
+    /// reply while time passes). With `deliver` it LIES (orch-29 Q14): it queued the request anyway, and later accepts other bytes for
+    /// that rid as a new record (an honest relay answers `rid_conflict`). Without it, nothing was queued.
+    private var lieNext: (epoch: UInt32, deliver: Bool, then: @Sendable () async throws -> Void)?
+    private var lyingRids: Set<RidKey> = []
+    package func lieWithStaleEpochOnNextRequest(epoch: UInt32, deliver: Bool = true, then: @escaping @Sendable () async throws -> Void) {
+        lieNext = (epoch, deliver, then)
+    }
+    package func ridKeys(workspace: ID16) -> Set<ID16> { Set(rids.keys.filter { $0.ws == workspace }.map(\.rid)) }
     private var pairPostsByWS: [ID16: Window] = [:]
     private var pairPostsByAddress: [String: Window] = [:]
     private var pairPollsByAddress: [String: Window] = [:]
@@ -128,6 +163,7 @@ public actor FakeRelay: RequestSender {
         drops = [:]; claims = [:]; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
         certRecords = [:]; accounts = [:]; invites = [:]; holders = [:]; pairPostsGlobal = Window(); livePolls = [:]; livePollsGlobal = 0
         seededCards = [:]; seededDevices = [:]
+        rids = [:]; positions = [:]; cursors = [:]; seededMembers = [:]; hostPosts = [:]; devicePosts = [:]; lyingRids = []
     }
 
     static let expiredChallengeGraceMs: Int64 = 5 * 60_000
@@ -231,6 +267,7 @@ public actor FakeRelay: RequestSender {
             workspaces[ws] = w
         }
         boxes = boxes.filter { !($0.key.ws == ws && $0.key.device == d) }
+        rids = rids.filter { !($0.key.ws == ws && $0.key.device == d) }
     }
 
     static func relayError(_ r: Refusal) -> ClientError {
@@ -271,24 +308,45 @@ public actor FakeRelay: RequestSender {
     public func memberListSeq(workspace: ID16) -> Int64? { workspaces[workspace].flatMap { $0.hasList ? $0.listSeq : nil } }
     public func memberListEpoch(workspace: ID16) -> UInt32? { workspaces[workspace]?.currentEpoch }
     public func hasCertificate(_ device: ID16) -> Bool { devices[device] != nil }
+    /// Request mailboxes of a device that hold a live request copy (the P3-D17 mailbox quota counts these).
     public func liveMailboxCount(workspace: ID16, device: ID16) -> Int {
         let now = wall.nowMs
-        return boxes.filter { $0.key.ws == workspace && $0.key.device == device && !live($0.value, now).requests.isEmpty }.count
+        return rids.filter { $0.key.ws == workspace && $0.key.device == device && $0.value.copies.contains { now < $0.expiresMs } }.count
     }
     public func sessionCount() -> Int { sessions.count }
     /// Stored sealed bodies of every mailbox, expired or not (pruning is by time on each request, so this shows what is retained).
-    public func storedBodyCount() -> Int { boxes.values.reduce(0) { $0 + $1.requests.count + $1.responses.count } }
-    public func mailboxCount() -> Int { boxes.count }
-    public func rateWindowCount() -> Int { pairPostsByWS.count + pairPostsByAddress.count + pairPollsByAddress.count + rateWindows.count }
+    public func storedBodyCount() -> Int {
+        boxes.values.reduce(0) { $0 + $1.requests.count + $1.responses.count }
+            + rids.values.reduce(0) { $0 + $1.copies.filter { $0.envelope != nil }.count + $1.chunks.values.filter { $0.envelope != nil }.count }
+    }
+    /// Mailboxes that still hold a body. A bridge rid's metadata (digests, requeue count) outlives its bodies: `ridRecordCount`.
+    public func mailboxCount() -> Int {
+        boxes.count + rids.values.filter { r in r.copies.contains { $0.envelope != nil } || r.chunks.values.contains { $0.envelope != nil } }.count
+    }
+    public func ridRecordCount() -> Int { rids.count }
+    package func ridRecord(workspace: ID16, device: ID16, rid: ID16) -> RelayRidRecord? { rids[RidKey(ws: workspace, device: device, rid: rid)] }
+    package func holderCursor(workspace: ID16) -> UInt64 { cursors[workspace] ?? 0 }
+    public func rateWindowCount() -> Int { pairPostsByWS.count + pairPostsByAddress.count + pairPollsByAddress.count + rateWindows.count + hostPosts.count + devicePosts.count }
     public func challengeCount() -> Int { challenges.count }
 
-    /// The host's view of its inbox: requests waiting for it, non-consuming, until their body lifetime ends.
-    public func pendingRequests(workspace: ID16, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data, arrival: UInt64)] {
+    /// The host's view of its inbox (P3-D10 delivery): the live request copies above the holder's cursor, in position order,
+    /// non-consuming. `after` acknowledges everything up to it (the host's durably completed prefix): the cursor only moves forward
+    /// and never past the last position handed out. `arrival` is the copy's position `n`.
+    public func pendingRequests(workspace: ID16, after: UInt64? = nil, token: String) throws -> [(device: ID16, rid: ID16, envelope: Data, arrival: UInt64)] {
         try checkLive()
         guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
-        let now = wall.nowMs
-        return boxes.filter { $0.key.ws == workspace && $0.key.device != nil && $0.key.offer == nil }
-            .flatMap { k, v in live(v, now).requests.map { (device: k.device!, rid: k.rid, envelope: $0.envelope, arrival: $0.arrival) } }
+        if let after {
+            guard after <= positions[workspace] ?? 0 else { throw ClientError.relay(RelayRefusal(status: 400, code: .malformed)) }
+            cursors[workspace] = max(cursors[workspace] ?? 0, after)
+        }
+        let now = wall.nowMs, cursor = cursors[workspace] ?? 0
+        return rids.filter { $0.key.ws == workspace }
+            .flatMap { k, r in
+                r.copies.compactMap { c in
+                    c.n > cursor && now < c.expiresMs ? c.envelope.map { (device: k.device, rid: k.rid, envelope: $0, arrival: c.n) } : nil
+                }
+            }
+            .sorted { $0.arrival < $1.arrival }
     }
 
     /// Epoch-0 requests of a pairing offer, for the host.
@@ -339,6 +397,15 @@ public actor FakeRelay: RequestSender {
             let l = live(b, now)
             boxes[k] = (l.requests.isEmpty && l.responses.isEmpty) ? nil : l
         }
+        // Bridge rids: a body goes when it expires (never resurrected); the record (digests, requeues) at `keep_until_ms`.
+        for (k, var r) in rids {
+            if now >= r.keepUntilMs { rids[k] = nil; continue }
+            for i in r.copies.indices where now >= r.copies[i].expiresMs { r.copies[i].envelope = nil }
+            for (idx, c) in r.chunks where now >= c.expiresMs { r.chunks[idx]?.envelope = nil }
+            rids[k] = r
+        }
+        hostPosts = hostPosts.filter { $0.value.isActive(now) }
+        devicePosts = devicePosts.filter { $0.value.isActive(now) }
         pairPostsByWS = pairPostsByWS.filter { $0.value.isActive(now) }
         pairPostsByAddress = pairPostsByAddress.filter { $0.value.isActive(now) }
         pairPollsByAddress = pairPollsByAddress.filter { $0.value.isActive(now) }
@@ -542,6 +609,18 @@ public actor FakeRelay: RequestSender {
     }
     /// Tests: reads the relay's tables inside the actor.
     package func inspect<T: Sendable>(_ body: @Sendable (isolated FakeRelay) -> T) -> T { body(self) }
+    package func seedMembership(workspace: ID16, devices: Set<ID16>, epoch: UInt32) { seededMembers[workspace] = (devices, epoch) }
+    package func seedRid(workspace: ID16, device: ID16, rid: ID16, record: RelayRidRecord) {
+        rids[RidKey(ws: workspace, device: device, rid: rid)] = record
+        positions[workspace] = max(positions[workspace] ?? 0, record.copies.map(\.n).max() ?? 0)
+    }
+    /// Tests: the host's answer for a rid never reached the relay (e.g. the host crashed before posting it). Its chunk digests go,
+    /// so a later answer (such as `already_done(unknown)`) can be stored for the same indexes.
+    package func forgetResponses(workspace: ID16, device: ID16, rid: ID16) { rids[RidKey(ws: workspace, device: device, rid: rid)]?.chunks = [:] }
+    /// The host's acknowledged delivery cursor (P3-D10), as if it had polled that far.
+    package func seedHolderCursor(workspace: ID16, cursor: UInt64) {
+        cursors[workspace] = cursor; positions[workspace] = max(positions[workspace] ?? 0, cursor)
+    }
     package var liveSessionTokens: Set<String> { Set(sessions.keys) }
     package var outstandingChallenges: Set<Data> { Set(challenges.keys) }
 
@@ -550,13 +629,23 @@ public actor FakeRelay: RequestSender {
         return s
     }
 
-    /// Current membership and non-revocation (section 8.9 and host-api section 3).
+    /// Current membership and non-revocation (section 8.9 and host-api section 3), and the D session's certificate, re-checked at
+    /// request time (section 19.4: an expired certificate is 400 `cert_expired`).
     private func memberGate(_ s: Session, ws: ID16) -> WireReply? {
         guard s.kind == .device else { return refuse(403, .notEligible) }
         if revoked.contains(s.id) { return refuse(403, .revoked) }
-        guard workspaces[ws]?.members[s.id] != nil else { return refuse(403, .notEligible) }
+        if let exp = directoryEntry(s.id)?.expiresMs, wall.nowMs >= exp { return refuse(400, .certExpired) }
+        guard memberDevices(ws)?.contains(s.id) == true else { return refuse(403, .notEligible) }
         return nil
     }
+
+    /// The devices of the workspace's current list (or of a test seed) and that list's epoch.
+    private func memberDevices(_ ws: ID16) -> Set<ID16>? {
+        if let seeded = seededMembers[ws] { return seeded.devices }
+        guard let w = workspaces[ws], w.hasList else { return nil }
+        return Set(w.members.keys)
+    }
+    private func listEpoch(_ ws: ID16) -> UInt32? { seededMembers[ws]?.epoch ?? workspaces[ws]?.currentEpoch }
 
     // MARK: accounts, the cert_pending queues and their principals (section 19.1, 19.3; P3-D3, P3-D11)
 
@@ -815,6 +904,30 @@ public actor FakeRelay: RequestSender {
         boxes[key] = box
     }
 
+    /// `wait` is an integer 0...25 (section 19.6); `after` an exclusive decimal position. Anything else is malformed.
+    private func pollQuery(_ query: String?) -> (after: UInt64?, wait: Int, ok: Bool) {
+        guard let q = queryItems(query, allowed: ["after", "wait"]) else { return (nil, 0, false) }
+        var after: UInt64?, wait = 0
+        if let a = q["after"] { guard let v = HostAPI.parseDecimal(a) else { return (nil, 0, false) }; after = v }
+        if let w = q["wait"] { guard let v = HostAPI.parseDecimal(w), v <= 25 else { return (nil, 0, false) }; wait = Int(v) }
+        return (after, wait, true)
+    }
+
+    // Plain loops: the nested reduce form exceeds Xcode 16.4's type-checker time limit.
+    private func liveBodyBytes(_ now: Int64) -> Int {
+        var total = 0
+        for r in rids.values {
+            for c in r.copies where now < c.expiresMs { total += c.envelope?.count ?? 0 }
+            for c in r.chunks.values where now < c.expiresMs { total += c.envelope?.count ?? 0 }
+        }
+        for box in boxes.values {
+            let l = live(box, now)
+            for q in l.requests { total += q.envelope.count }
+            for p in l.responses { total += p.envelope.count }
+        }
+        return total
+    }
+
     private func bridge(_ r: WireRequest, ws: String, rid: String, _ query: String?) async throws -> WireReply {
         // A fault delay on a POST happens before any authoritative check; from here to the store there is no suspension, so
         // membership, revocation, epoch and quota are decided under the state the write happens in.
@@ -824,42 +937,137 @@ public actor FakeRelay: RequestSender {
         switch r.method {
         case "POST":
             guard queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
-            // Responses come only from the workspace's host session; requests only from a device session.
-            let response = s.kind == .workspace
-            let (parsed, err) = parseEnvelope(r.body, direction: response ? .toDevice : .toHost,
-                                              maxSize: response ? Bridge.maxChunk : Bridge.maxRequest)
-            if let err { return err }
-            let h = parsed!.header
-            guard h.workspace == wsID, h.rid == ridID else { return refuse(400, .malformed) }
-            guard h.epoch >= 1 else { return refuse(400, .malformed) }      // epoch 0 belongs to the pairing route
-            let key: BoxKey
-            if response {
-                guard s.id == wsID else { return refuse(403, .notForThisDevice) }
-                // The recipient is checked now, after any fault delay and with no suspension before the store: a device revoked or
-                // removed while the host's response was in flight gets no mailbox.
-                if revoked.contains(h.device) { return refuse(403, .revoked) }
-                guard workspaces[wsID]?.members[h.device] != nil else { return refuse(403, .notEligible) }
-                key = BoxKey(ws: wsID, device: h.device, offer: nil, rid: ridID)
-            } else {
-                // The header's device must be the session's device (section 8.9), then membership and revocation.
-                guard h.device == s.id, s.kind == .device else { return refuse(403, .notForThisDevice) }
-                if let denied = memberGate(s, ws: wsID) { return denied }
-                key = BoxKey(ws: wsID, device: s.id, offer: nil, rid: ridID)
-                let now = wall.nowMs
-                let liveBoxes = boxes.filter { $0.key.ws == wsID && $0.key.device == s.id && $0.key.rid != ridID && !live($0.value, now).requests.isEmpty }
-                if liveBoxes.count >= limits.maxLiveMailboxesPerDevice { rateLimited += 1; return refuse(429, .quotaExceeded, headers: ["retry-after": String(limits.retryAfterSeconds)]) }
+            if s.kind == .device, let lie = lieNext {
+                lieNext = nil
+                if lie.deliver {
+                    let reply = devicePost(r, s, ws: wsID, rid: ridID, duplicate: false)
+                    guard reply.status == 202 else { return reply }
+                    lyingRids.insert(RidKey(ws: wsID, device: s.id, rid: ridID))
+                }
+                try await lie.then()
+                return refuse(409, .staleEpoch, extra: ["epoch": .int(Int64(lie.epoch))])
             }
-            store(key, parsed: parsed!, envelope: r.body, response: response)
-            if a == .duplicate { store(key, parsed: parsed!, envelope: r.body, response: response) }
-            accepted += 1
-            return json(202)
+            return s.kind == .workspace ? hostPost(r, s, ws: wsID, rid: ridID, duplicate: a == .duplicate)
+                                        : devicePost(r, s, ws: wsID, rid: ridID, duplicate: a == .duplicate)
         case "GET":
-            let (after, ok) = afterCursor(query)
+            let (after, wait, ok) = pollQuery(query)
             guard ok else { return refuse(400, .malformed) }
             if let denied = memberGate(s, ws: wsID) { return denied }
-            let box = live(boxes[BoxKey(ws: wsID, device: s.id, offer: nil, rid: ridID)] ?? Box(), wall.nowMs)
-            return try await chunkReply(box.responses, rid: ridID, after: after, route: "GET bridge")
+            if wait > 0 {
+                if limits.maxLongPollsPerDevice <= 0 { rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry) }
+                if limits.maxLongPolls <= 0 { return refuse(503, .overloaded, headers: fixedRetry) }
+            }
+            let now = wall.nowMs
+            let record = rids[RidKey(ws: wsID, device: s.id, rid: ridID)]
+            let stored = (record?.chunks ?? [:]).compactMap { idx, c -> Stored? in
+                guard now < c.expiresMs, let e = c.envelope else { return nil }
+                return Stored(idx: idx, flags: c.flags, envelope: e, receivedMs: c.expiresMs - limits.bodyLifetimeMs, digest: c.digest)
+            }
+            return try await chunkReply(stored, rid: ridID, after: after, route: "GET bridge")
         default: return refuse(404, .notFound)
+        }
+    }
+
+    private var fixedRetry: [String: String] { ["retry-after": String(max(1, limits.retryAfterSeconds))] }
+
+    /// A device request (P3-D8/D9, section 19.3). Order: session and membership, shape, replay store, epoch; budgets only when
+    /// something would be queued. An identical resend of a known rid is coalesced (202) while a live copy is undelivered, else
+    /// requeued at most once per 10 s (429 with the remaining interval) and at most 8 times (then 409 `retry_exhausted`).
+    private func devicePost(_ r: WireRequest, _ s: Session, ws: ID16, rid: ID16, duplicate: Bool) -> WireReply {
+        if r.body.count > Bridge.maxRequest { return refuse(400, .tooLarge) }
+        let (parsed, err) = parseEnvelope(r.body, direction: .toHost, maxSize: Bridge.maxRequest)
+        if let err { return err }
+        let h = parsed!.header
+        guard h.workspace == ws, h.rid == rid, h.epoch >= 1 else { return refuse(400, .malformed) }   // epoch 0 belongs to the pairing route
+        // The header's device must be the session's device (section 8.9), then membership and revocation.
+        guard h.device == s.id else { return refuse(403, .notForThisDevice) }
+        if let denied = memberGate(s, ws: ws) { return denied }
+        let now = wall.nowMs, key = RidKey(ws: ws, device: s.id, rid: rid)
+        if lyingRids.contains(key), let old = rids[key], old.digest != RidStore.digest(r.body) {
+            rids[key] = nil; lyingRids.remove(key)          // the liar forgets what it delivered (and its answers)
+        }
+        var record = rids[key]
+        let isNew = record.map { now >= $0.keepUntilMs } ?? true
+        let result = RidStore.request(&record, raw: r.body, header: h, epoch: listEpoch(ws) ?? 0, nowMs: now, cursor: cursors[ws] ?? 0,
+                                      copyLifetimeMs: limits.bodyLifetimeMs, nextN: (positions[ws] ?? 0) + 1)
+        // The device's own post rate is charged after the replay and coalescing checks (identical resends are free) and, for a new
+        // rid, before its epoch check (orch-relay bridge.post).
+        switch result {
+        case .queued, .staleEpoch:
+            guard devicePosts[s.id, default: Window()].hit(now: now, limit: limits.devicePostsPerSecond, spanMs: 1_000) else {
+                rateLimited += 1; return refuse(429, .rateLimited, headers: ["retry-after": "1"])
+            }
+        default: break
+        }
+        if case .queued = result, isNew, rids.keys.filter({ $0.device == s.id && $0 != key }).count >= limits.maxRidRecordsPerDevice {
+            rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry)
+        }
+        switch result {
+        case .coalesced: accepted += 1; return json(202)
+        case .ridConflict: return refuse(409, .ridConflict)
+        case .retryExhausted: return refuse(409, .retryExhausted)
+        case .staleEpoch(let e): return refuse(409, .staleEpoch, extra: ["epoch": .int(Int64(e))])
+        case .rateLimited(let after): rateLimited += 1; return refuse(429, .rateLimited, headers: ["retry-after": String(max(1, after))])
+        case .queued(let n):
+            let liveBoxes = rids.filter { $0.key.ws == ws && $0.key.device == s.id && $0.key.rid != rid && $0.value.copies.contains { now < $0.expiresMs } }
+            if liveBoxes.count >= limits.maxLiveMailboxesPerDevice { rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry) }
+            if liveBodyBytes(now) + r.body.count > limits.maxQueuedBodyBytes { return refuse(503, .overloaded, headers: fixedRetry) }
+            rids[key] = record
+            positions[ws] = n
+            if duplicate {     // a duplicated delivery of the same POST is an identical resend: coalesced, nothing new queued
+                var again = rids[key]
+                _ = RidStore.request(&again, raw: r.body, header: h, epoch: listEpoch(ws) ?? 0, nowMs: now, cursor: cursors[ws] ?? 0)
+            }
+            accepted += 1
+            return json(202)
+        }
+    }
+
+    /// A host response chunk (P3-D22, section 19.3): only for a known, unexpired rid of a current, unrevoked member, at the
+    /// request's epoch (an old-epoch chunk only as `LAST | REFUSAL` or as a byte-identical stored replay, which never refreshes a TTL).
+    private func hostPost(_ r: WireRequest, _ s: Session, ws: ID16, rid: ID16, duplicate: Bool) -> WireReply {
+        guard s.id == ws else { return refuse(403, .notEligible) }
+        if let fenced = fence(r, ws: ws) { return fenced }
+        if r.body.count > Bridge.maxChunk { return refuse(400, .tooLarge) }
+        let (parsed, err) = parseEnvelope(r.body, direction: .toDevice, maxSize: Bridge.maxChunk)
+        if let err { return err }
+        let h = parsed!.header
+        guard h.workspace == ws, h.rid == rid, h.epoch >= 1 else { return refuse(400, .malformed) }
+        // The recipient is checked now, after any fault delay and with no suspension before the store: a device revoked or
+        // removed while the host's response was in flight gets no mailbox.
+        if revoked.contains(h.device) { return refuse(403, .revoked) }
+        guard memberDevices(ws)?.contains(h.device) == true else { return refuse(403, .notEligible) }
+        let now = wall.nowMs
+        let key = RidKey(ws: ws, device: h.device, rid: rid)
+        var record = rids[key]
+        let result = RidStore.chunk(&record, raw: r.body, header: h, epoch: listEpoch(ws) ?? 0, nowMs: now, chunkLifetimeMs: limits.bodyLifetimeMs)
+        // Charged per (workspace, target device) after the known-rid and stored-replay checks, before the epoch rule (orch-relay 813b0fe).
+        switch result {
+        case .stored, .staleEpoch, .quotaExceeded:
+            guard hostPosts[DeviceKey(ws: ws, device: h.device), default: Window()].hit(now: now, limit: limits.hostPostsPerSecond, spanMs: 1_000) else {
+                rateLimited += 1; return refuse(429, .rateLimited, headers: fixedRetry)
+            }
+        default: break
+        }
+        switch result {
+        case .replay: return json(202)
+        case .expired: return refuse(410, .expired)
+        case .chunkConflict: return refuse(409, .chunkConflict)
+        case .staleEpoch(let e): return refuse(409, .staleEpoch, extra: ["epoch": .int(Int64(e))])
+        case .quotaExceeded: rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry)
+        case .stored:
+            func undelivered(_ match: (RidKey) -> Bool) -> Int {
+                rids.filter { match($0.key) }.values.reduce(0) { $0 + $1.chunks.values.reduce(0) { $0 + (now < $1.expiresMs ? $1.envelope?.count ?? 0 : 0) } }
+            }
+            if undelivered({ $0.ws == ws && $0.device == h.device }) + r.body.count > limits.maxResponseBytesPerDevice
+                || undelivered({ $0.ws == ws }) + r.body.count > limits.maxResponseBytesPerWorkspace {
+                rateLimited += 1; return refuse(429, .quotaExceeded, headers: fixedRetry)
+            }
+            if liveBodyBytes(now) + r.body.count > limits.maxQueuedBodyBytes { return refuse(503, .overloaded, headers: fixedRetry) }
+            rids[key] = record
+            _ = duplicate          // a duplicated delivery is a byte-identical stored replay: nothing more to store
+            accepted += 1
+            return json(202)
         }
     }
 

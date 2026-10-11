@@ -55,12 +55,10 @@ final class SafeTextTests: XCTestCase {
         }
         let option = app.buttons["question.option.ok2"]
         XCTAssertTrue(option.label.contains("⟨U+200B⟩"), option.label)
-        option.tap()
-        XCTAssertTrue(app.el("sign.answer").waitForExistence(timeout: 5))
-        XCTAssertTrue(app.el("sign.answer").label.contains("⟨U+200B⟩"))
-        XCTAssertTrue(app.el("sign.unsafeNotice").exists)
-        app.el("sign.details").tap()
-        XCTAssertTrue(app.staticTexts["ok2"].waitForExistence(timeout: 3), "answer id under Signed details")
+        // An invisible character in an answer is outside the plain-label allowlist: marked, and never signable.
+        XCTAssertTrue(app.el("question.nonStandard").exists)
+        XCTAssertFalse(option.isEnabled)
+        XCTAssertFalse(app.buttons["question.option.ok"].isEnabled)
     }
 
     @MainActor
@@ -68,5 +66,11 @@ final class SafeTextTests: XCTestCase {
         let app = launch("question/q7")
         XCTAssertTrue(app.el("question.ambiguous").waitForExistence(timeout: 60))
         XCTAssertFalse(app.buttons["question.option.a"].isEnabled)
+        XCTAssertFalse(app.buttons["question.option.b"].isEnabled)
+        // Full-width "Ｙes": the look-alike is named in the question text and in the option, in any font.
+        let marker = "⟨look-alike U+FF39⟩"
+        XCTAssertTrue(app.el("question.text").label.contains(marker), app.el("question.text").label)
+        XCTAssertTrue(app.buttons["question.option.b"].label.contains(marker), app.buttons["question.option.b"].label)
+        XCTAssertFalse(app.buttons["question.option.a"].label.contains(marker))
     }
 }

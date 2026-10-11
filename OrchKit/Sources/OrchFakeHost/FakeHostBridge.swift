@@ -270,6 +270,14 @@ extension FakeHost {
                 return chunks
             case .response(let status, let headers, let data):
                 let meta: JSONValue = ["status": .int(Int64(status)), "headers": .object(headers.mapValues { .string($0) })]
+                if isRevocation && core.epoch != h.epoch {
+                    // §6.2 rotates before this reply, so it is sealed under the request's OLD epoch, where P3-D22 admits only
+                    // `LAST | REFUSAL`. orch-29 Q12 (provisional): answer `already_done` with status "completed" (advisory) as that refusal; the real
+                    // confirmation is the signed list at the higher epoch without the revoked device.
+                    let chunks = (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "completed").meta, data: Data(), refusal: true)) ?? []
+                    core.complete(rid: h.rid, with: .stored(chunks))
+                    return chunks
+                }
                 guard let chunks = try? respond(to: h, meta: meta, data: data, refusal: false) else { return [] }
                 core.complete(rid: h.rid, with: .stored(chunks))
                 return chunks
@@ -375,17 +383,28 @@ extension FakeHost {
         refreshRotationSession(relay: relay, session: session)
         if rotationRequired { await runRotation() }
         try await flushOutbox(transport: transport, session: session)
-        let inbox = try await relay.pendingRequests(workspace: workspace, token: session.token).filter { $0.arrival > lastArrival }
-            .sorted { $0.arrival < $1.arrival }
+        // P3-D10: `after` acknowledges what this host completed, so the relay requeues (rather than coalesces) a later resend.
+        let inbox = try await relay.pendingRequests(workspace: workspace, after: completedArrival, token: session.token)
+            .filter { $0.arrival > lastArrival }.sorted { $0.arrival < $1.arrival }
         var handled = 0
         for item in inbox {
-            lastArrival = max(lastArrival, item.arrival)
+            lastArrival = max(lastArrival, item.arrival)          // claimed: a concurrent pass never runs it twice
             let chunks = await process(envelope: item.envelope, mailbox: item.rid)
             for c in chunks {
-                let r = try await transport.bridgePost(c, route: BridgeRoute(workspaceID: workspace, requestID: item.rid), session: session)
-                _ = try HostAPI.expect(r, status: 202)
+                let route = BridgeRoute(workspaceID: workspace, requestID: item.rid)
+                let r = try await transport.bridgePost(c, route: route, session: session)
+                guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
+                let flags = (try? Bridge.Parts(envelope: c).header.flags) ?? 0
+                if refusal.code == .chunkConflict, flags & Bridge.Flags.refusal.rawValue != 0 {
+                    // A refusal re-sealed (new salt) for a requeued copy: the relay already stores an answer for this index (P3-D22)
+                    // and the device reads that one. Counted, so tests can assert where it happens.
+                    relayRefusedChunks.append((item.rid, refusal.code))
+                    continue
+                }
+                _ = try HostAPI.expect(r, status: 202)              // anything else is an error of the pass
             }
             try await flushOutbox(transport: transport, session: session)
+            completedArrival = max(completedArrival, item.arrival)
             handled += 1
         }
         return handled

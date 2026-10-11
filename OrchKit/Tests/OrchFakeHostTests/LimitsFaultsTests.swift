@@ -123,8 +123,11 @@ import OrchProtocol
     @Test func mailboxQuotaPerDeviceCountsLiveMailboxesOnly() async throws {
         var l = RelayLimits(); l.maxLiveMailboxesPerDevice = 3
         let w = try await World.make(limits: l)
+        var sent: [UInt8: Data] = [:]          // a re-send is the stored envelope, byte for byte (other bytes are rid_conflict)
         func post(_ n: UInt8) async throws -> WireReply {
-            try await w.transport.bridgePost(try w.envelope(rid: ID16.fresh(n), seq: UInt64(n)), route: BridgeRoute(workspaceID: w.ws, requestID: ID16.fresh(n)), session: w.phoneSession)
+            let e = try sent[n] ?? w.envelope(rid: ID16.fresh(n), seq: UInt64(n))
+            sent[n] = e
+            return try await w.transport.bridgePost(e, route: BridgeRoute(workspaceID: w.ws, requestID: ID16.fresh(n)), session: w.phoneSession)
         }
         for n in 1...3 { #expect(try await post(UInt8(n)).status == 202) }
         let over = try await post(4)
@@ -200,6 +203,7 @@ import OrchProtocol
         let route = BridgeRoute(workspaceID: w.ws, requestID: rid)
         let rig = HostRig()
         var sent: [Data] = []
+        #expect(try await w.postRequest(rid: rid).status == 202)
         for seq in 0..<3 {
             let e = try w.sealedResponse(rig: rig, rid: rid, seq: UInt64(seq), flags: seq == 2 ? [.last] : [])
             #expect(try await w.transport.bridgePost(e, route: route, session: w.hostSession).status == 202)

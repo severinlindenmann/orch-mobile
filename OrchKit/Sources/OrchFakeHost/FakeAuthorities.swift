@@ -125,6 +125,8 @@ public actor FakeHost {
     var dropSeedUploaded = 0
     var viewState: HostViewState?
     var lastArrival: UInt64 = 0
+    /// The last request position this host completed (its acknowledged cursor, P3-D10).
+    var completedArrival: UInt64 = 0
     /// Adversarial tests: sign responses with another key (a member device, not the host).
     package var responseSigner: SoftwareSigner?
     var roster: [ID16: (keys: DemoKeys, scopes: [String])] = [:]
@@ -159,6 +161,8 @@ public actor FakeHost {
     var streamOpen: [ID16: (device: ID16, epoch: UInt32, next: UInt64)] = [:]
     /// Streams a rotation already ended; their handlers' late answers are discarded.
     var streamEnded: Set<ID16> = []
+    /// Host chunks the relay refused and this host tolerated (rid, code): tests assert where they happen.
+    package var relayRefusedChunks: [(rid: ID16, code: RelayRefusal.Code)] = []
     /// Chunks the host must post that no request is waiting on (rotation ending open streams).
     var outbox: [(rid: ID16, chunk: Data)] = []
 
