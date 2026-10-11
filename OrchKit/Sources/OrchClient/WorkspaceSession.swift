@@ -120,9 +120,10 @@ public actor WorkspaceSession {
     /// A bounded number of re-sends of one logical request within a single call (stale epoch, offset, sequence).
     static let maxAttempts = 4
     static let hostWindowMs: Int64 = 900_000
-    /// A byte-identical re-send is only made while the host surely still holds the rid record: the host's 900 s window minus
-    /// this margin (clock skew between the two walls, polling and queue delays). Later than that it is `uncertain`, not re-sent.
-    static let resendSafetyMarginMs: Int64 = 600_000
+    /// A byte-identical re-send is only STARTED while the host surely still holds the rid record and the relay may still store its
+    /// answer again: by ~240 s after the first send (orch-29 Q11, best effort), i.e. the host's 900 s window minus this margin
+    /// (clock skew between the two walls, polling and queue delays). Later than that it is `uncertain`, not re-sent.
+    static let resendSafetyMarginMs: Int64 = 660_000
     static var resendWindowMs: Int64 { hostWindowMs - resendSafetyMarginMs }
     /// A same-rid re-seal after the relay's unsigned `stale_epoch` hint is made only this soon after the first copy (orch-29 Q14):
     /// later, a copy a lying relay held could still be delivered after the re-seal, so the request is reconciled instead.
@@ -846,7 +847,14 @@ public actor WorkspaceSession {
                     table = newTable
                     advanced = true
                     try await resetPinFailures()            // a verified host answer ends the run of failures
-                    if let off = a.offsetMs { try await setOffset(off) }
+                    if a.offsetMs != nil {
+                        // Q11: a host's stored stale_timestamp may be re-posted (and re-stored) long after it was sealed, still
+                        // carrying the host_ms of the FIRST receipt, so the offset is taken against the time of the first send.
+                        guard let hostMs = a.meta.object?["host_ms"]?.int else { throw SessionError.badResponse }
+                        let off = hostMs.subtractingReportingOverflow(row.createdMs)
+                        guard !off.overflow, abs(off.partialValue) <= Bridge.maxOffsetMs else { throw SessionError.badResponse }
+                        try await setOffset(off.partialValue)
+                    }
                     if a.clockWrong { throw SessionError.badResponse }
                     if a.refusal {
                         guard a.last, let refusal = HostRefusal(meta: a.meta) else { throw SessionError.badResponse }
