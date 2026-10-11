@@ -187,7 +187,8 @@ public actor DropService {
     }
 
     /// Imports only this generation's claimed destination. The SQLite item mapping survives crashes;
-    /// plaintext is deleted after every non-abandoned item is confirmed by read-back.
+    /// plaintext is deleted after every non-abandoned item is confirmed by read-back and job completion is durable.
+    /// Completed jobs retry cleanup only and return no new objects; deletion failures are reported to the caller.
     public func importShareJob(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
         guard job.manifest.realm == session.cfg.context.realm.rawValue, job.manifest.ws == card.workspace.hex,
               job.manifest.generation == session.generation else { throw DropError.unauthorized }
@@ -208,6 +209,10 @@ public actor DropService {
         guard job.manifest.realm.utf8.elementsEqual(session.cfg.context.realm.rawValue.utf8),
               job.manifest.ws.utf8.elementsEqual(card.workspace.hex.utf8), job.manifest.generation == session.generation else { throw DropError.unauthorized }
         let db = try await session.cfg.container.database()
+        if try await !db.query("SELECT job FROM drop_completed_jobs WHERE job=?", [.text(job.manifest.jobID)]).isEmpty {
+            try await inbox.cleanupCompleted(job, afterRemovingItem: hook)
+            return []
+        }
         var result: [DropObject] = []
         for (i, item) in job.manifest.items.enumerated() {
             let fresh = session.cfg.entropy.id16()
@@ -223,7 +228,10 @@ public actor DropService {
             }
         }
         try await check()
-        inbox.complete(job)
+        try await db.transaction { tx in
+            try tx.execute("INSERT OR IGNORE INTO drop_completed_jobs(job) VALUES(?)", [.text(job.manifest.jobID)])
+        }
+        try await inbox.cleanupCompleted(job, afterRemovingItem: hook)
         return result
     }
 

@@ -58,6 +58,9 @@ public actor WorkspaceContainer {
             "ALTER TABLE drop_heads ADD COLUMN file_version INTEGER",
             "ALTER TABLE drop_heads ADD COLUMN file_expires_ms INTEGER",
         ]),
+        Migration(version: 9, statements: [
+            "CREATE TABLE drop_completed_jobs (job TEXT PRIMARY KEY)",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
