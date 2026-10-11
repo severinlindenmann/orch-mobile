@@ -75,6 +75,15 @@ public struct ShareInbox: Sendable {
         return String(decoding: data.prefix(maxBytes), as: UTF8.self)
     }
 
+    /// Bounded, no-follow read of a validated, claimed job item for sealing in the main app.
+    public func contents(of item: StagedItem, in job: StagedJob) throws -> Data {
+        guard job.manifest.isValid(), job.manifest.items.contains(item),
+              peekReady().contains(job), job.dir.lastPathComponent == job.manifest.jobID + JobFiles.claimedSuffix else { throw ShareError.unreadable }
+        let data = try area.readFile(job.dir.appendingPathComponent(item.file), cap: ShareLimits.maxTotalBytes)
+        guard data.count == item.bytes else { throw ShareError.unreadable }
+        return data
+    }
+
     /// Deletes the staged plaintext after the app has imported it.
     public func complete(_ job: StagedJob) { area.safeRemove(job.dir) }
 

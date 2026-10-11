@@ -1,0 +1,318 @@
+import CryptoKit
+import Foundation
+import Testing
+@testable import OrchClient
+@testable import OrchFakeHost
+import OrchCustody
+import OrchProtocol
+import OrchShareStaging
+import OrchStore
+
+private extension World {
+    static func drop(faults: any FaultPolicy = NoFaults(), limits: RelayLimits = RelayLimits(), lateMember: Bool = false) async throws -> World {
+        let w = try await World.make(faults: faults, limits: limits, publish: false)
+        let cert = try await w.primary.certify(w.phone, label: "Sender", scopesMax: World.all)
+        await w.relay.registerOwner(w.primary.publicKey)
+        try await w.relay.publishCertificate(cert)
+        var devices = [(w.primary.deviceKeys, try await w.primary.certifyOwnDevice(), World.all)]
+        if !lateMember { devices.append((w.phone, cert, World.all)) }
+        let hs = try await w.host.publishInitial(relay: w.relay, transport: w.transport, devices: devices)
+        let ps = try await RelayClient(transport: w.transport).openDeviceSession(identity: w.env.device, deviceID: w.phoneID).session
+        return World(env: w.env, clock: w.clock, custody: w.custody, vault: w.vault, primary: w.primary, host: w.host, phone: w.phone,
+                     phoneID: w.phoneID, primaryID: w.primaryID, phoneCert: cert, hostSession: hs, phoneSession: ps)
+    }
+    func dropService(_ phone: Phone) async throws -> DropService {
+        let raw = try await RelayClient(transport: transport).card(workspace: ws, session: phoneSession)
+        return try DropService(session: phone.session, card: Card.verify(raw, ownerKey: primary.publicKey))
+    }
+    func dropBody(id: ID16, parent: DropDescriptor? = nil, kind: String = "file") async throws -> Data {
+        let card = try Card.verify(await RelayClient(transport: transport).card(workspace: ws, session: phoneSession), ownerKey: primary.publicKey)
+        let data = Data("Hello Drop".utf8)
+        let key = try #require(await host.wks[1])
+        return try DropUpload.seal(data, metadata: DropMetadata(name: "hello.txt", mime: "text/plain", size: Int64(data.count), transcript: nil),
+            object: id, workspace: ws, author: phoneID, authorKind: "device", signer: env.device.sig, wxk: card.wxk, wxkVersion: card.wxkVersion,
+            sender: env.device.publicKeys.kx, wk: key, epoch: 1, now: clock.nowMs, expiry: clock.nowMs + 60000, parent: parent, kind: kind)
+    }
+}
+
+@Suite struct DropServiceTests {
+    @Test func testDropPutProtocolRoute() async throws {
+        let w = try await World.drop(), id = ID16.fresh(0x71)
+        let body = try await w.dropBody(id: id)
+        let r = try await w.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: w.phoneSession)
+        #expect(r.status == 201)
+        let got = try await w.transport.dropGet(objectID: id, version: 1, part: .blob, session: w.phoneSession)
+        #expect(got.status == 200 && got.body.prefix(4) == Drop.magic)
+        let wrong = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions/1", headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(w.phoneSession.token)"], body: body, clientAddress: "test"))
+        #expect(wrong.status != 201)
+    }
+    @Test func testDropPutRequiresIfMatch428() async throws {
+        let w = try await World.drop(), id = ID16.fresh(0x72)
+        let body = try await w.dropBody(id: id)
+        for value in [nil, "", "01", "-1", "1.0", "18446744073709551616"] as [String?] {
+            var headers = [HostAPI.versionHeader: "0", "authorization": "Bearer \(w.phoneSession.token)"]
+            headers["if-match"] = value
+            let r = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions", headers: headers, body: body, clientAddress: "test"))
+            #expect(r.status == 428 && errorCode(r) == "precondition_required")
+        }
+    }
+    @Test func testDropCreateIfMatchZeroProposal() async throws {
+        let w = try await World.drop(), id = ID16.fresh(0x73)
+        let body = try await w.dropBody(id: id)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 1, body: body, session: w.phoneSession).status == 409)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: w.phoneSession).status == 201)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: w.phoneSession).status == 409)
+    }
+    @Test func testDropCASConflict409AndLostResponse() async throws {
+        let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
+        let phone = try await w.makePhone(), service = try await w.dropService(phone)
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "PUT /drop/")
+        let object = try await service.send(Data("durable".utf8), name: "note", kind: .document)
+        #expect(object.descriptor.version == 1)
+        let version2 = try await service.send(Data("second".utf8), name: "note", document: object)
+        #expect(version2.descriptor.version == 2)
+        await #expect(throws: (any Error).self) { _ = try await service.send(Data("fork".utf8), name: "note", document: object) }
+        #expect(try await service.resumeUploads().isEmpty)
+    }
+    @Test func testTamperedBlobDescriptorAndRollbackRejected() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let first = try await service.send(Data("first".utf8), name: "note", kind: .document)
+        _ = try await service.send(Data("second".utf8), name: "note", document: first)
+        await #expect(throws: (any Error).self) { _ = try await service.download(first) }
+        let id = ID16.fresh(0x74)
+        var body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        var blob = B64U.decode(body["blob"]!.string!)!; blob[blob.count - 1] ^= 1
+        body["blob"] = .string(B64U.encode(blob))
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 400)
+        body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        var signed = body["descriptor"]!.object!, raw = signed["o"]!.object!
+        raw["created_ms"] = 0; signed["o"] = .object(raw); body["descriptor"] = .object(signed)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 401)
+    }
+    @Test func testNewMemberRewrapWithoutHistoricalGrant() async throws {
+        let w = try await World.drop(lateMember: true)
+        try await w.host.seedDrop(relay: w.relay, transport: w.transport, session: w.hostSession)
+        try await w.host.rotate(remaining: [(w.phone, World.all), (w.primary.deviceKeys, World.all)], relay: w.relay, session: w.hostSession)
+        let phone = try await w.makePhone(install: false)
+        // Model a newly admitted phone: it has only the new epoch key, never WK_1.
+        try await phone.session.install(epoch: 2, key: #require(await w.host.wks[2]))
+        let service = try await w.dropService(phone)
+        let objects = try await service.list()
+        #expect(objects.count == 4)
+        let url = try await w.serve(phone) { try await service.download(objects[0]) }
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect((try? w.vault.scoped(to: .demo).get(ws: w.ws.hex, purpose: "wk.1")) == nil)
+    }
+    @Test func testDownloadAndWipeRemovesPlaintext() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let object = try await service.send(Data("plaintext".utf8), name: "../../escape")
+        let url = try await service.download(object)
+        #expect(try Data(contentsOf: url) == Data("plaintext".utf8))
+        #expect(url.deletingLastPathComponent().lastPathComponent == "files")
+        try await LocalWipe(index: w.env.index).wipe(ws: w.ws.hex, generation: 1)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        await #expect(throws: (any Error).self) { _ = try await service.download(object) }
+    }
+}
+
+extension DropServiceTests {
+    @Test func testShareJobImportEndToEnd() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let area = ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot)
+        let target = ShareTarget(realm: "demo", ws: w.ws.hex, name: "Laptop", hue: 0, generation: 1)
+        let staging = try StagingSession(area: area, target: target, now: { Date(timeIntervalSince1970: 1790000000) })
+        try staging.add(.text("shared plaintext")); try staging.add(.url("https://example.invalid/")); try staging.commit(note: "sealed note")
+        let inbox = ShareInbox(area: area)
+        let job = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
+        let sent = try await service.importShareJob(job, inbox: inbox)
+        #expect(sent.count == 2 && !FileManager.default.fileExists(atPath: job.dir.path))
+
+        let identity = DeviceIdentity(sig: SoftwareSigner(), kx: SoftwareKeyAgreer(), realm: .demo)
+        let keys = DemoKeys(identity.publicKeys)
+        try await w.relay.publishCertificate(w.primary.certify(keys, label: "Receiver", scopesMax: World.all))
+        try await w.host.rotate(remaining: [(w.phone, World.all), (w.primary.deviceKeys, World.all), (keys, World.all)], relay: w.relay, session: w.hostSession)
+        let layout = try tempLayout(), index = try await WorkspaceIndex(layout: layout)
+        try await index.addWorkspace(ws: w.ws.hex, generation: 1)
+        let container = try await WorkspaceContainer(index: index, ws: w.ws.hex, generation: 1)
+        let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend())
+        let cfg = WorkspaceSessionConfig(context: w.env.context, workspace: w.ws, generation: 1, identity: identity, wsk: w.host.wskPublic,
+            container: container, vault: vault.scoped(to: .demo), transport: w.transport, clock: w.clock, wall: w.clock)
+        let receiver = try await WorkspaceSession(cfg)
+        try await receiver.refreshGrants()
+        let card = try Card.verify(await RelayClient(transport: w.transport).card(workspace: w.ws, session: w.phoneSession), ownerKey: w.primary.publicKey)
+        let cert = try DeviceCertificate.verify(w.phoneCert, personKey: w.primary.publicKey, nowMs: w.clock.nowMs, revoked: [])
+        let receiving = try DropService(session: receiver, card: card, certificates: [cert])
+        let objects = try await receiving.list()
+        #expect(objects.count == 2)
+        // Rewrap via the real host, then the other device opens only the current-epoch WK wrap.
+        for object in objects { try await w.host.rewrapDrop(object: object.descriptor.object, version: 1, relay: w.relay, session: w.hostSession) }
+        let refreshed = try await receiving.list()
+        var contents: Set<Data> = []
+        for object in refreshed { contents.insert(try Data(contentsOf: await receiving.download(object))) }
+        #expect(contents == [Data("shared plaintext".utf8), Data("https://example.invalid/".utf8)])
+        #expect((try? vault.scoped(to: .demo).get(ws: w.ws.hex, purpose: "wk.1")) == nil)
+    }
+
+    @Test func testClaimRace() async throws {
+        let w = try await World.drop()
+        let other = try DemoSetup.makeHost(w.env, primary: w.primary, name: "Other")
+        let otherSession = try await other.publishInitial(relay: w.relay, transport: w.transport, devices: [(w.phone, w.phoneCert, World.all)])
+        let id = ID16.fresh(0x79)
+        var body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        var raw = body["descriptor"]!.object!["o"]!.object!
+        raw["recipients"] = "inbox"
+        body["descriptor"] = try SignedObject.sign(raw, kind: .dropObject, signer: w.env.device.sig).json
+        var wraps = body["wraps"]!.array!
+        wraps.append(DropWrapRecord(object: id, version: 1, targetKind: .wxk, target: other.workspace, keyVersion: 1, wrap: Data(repeating: 1, count: 128)).json)
+        body["wraps"] = .array(wraps)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 201)
+        func claim(_ host: FakeHost, _ session: RelaySession) async throws -> WireReply {
+            let record = DropWrapRecord(object: id, version: 1, targetKind: .wk, target: host.workspace, keyVersion: 1, wrap: Data(repeating: 1, count: 64))
+            let signed = try DropClaim.make(wsk: host.wsk, object: id, workspace: host.workspace, wrap: record)
+            return try await w.relay.send(WireRequest(method: "POST", target: "/drop/\(id.hex)/claim",
+                headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"], body: canonicalJSON(signed.json), clientAddress: "test"))
+        }
+        async let a = claim(w.host, w.hostSession)
+        async let b = claim(other, otherSession)
+        let replies = try await [a, b]
+        #expect(replies.map(\.status).sorted() == [200, 409])
+        let winner = replies[0].status == 200 ? w.host : other
+        let token = replies[0].status == 200 ? w.hostSession : otherSession
+        #expect(try await claim(winner, token).status == 200)
+        let fetched = try await w.transport.dropGet(objectID: id, version: 1, part: .wraps, session: token)
+        #expect(fetched.status == 200)
+        #expect(try json(fetched)["wraps"]?.array?.count == 1)
+        let loser = replies[0].status == 200 ? otherSession : w.hostSession
+        #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .blob, session: loser).status == 403)
+    }
+
+    @Test func testDropExpiryQuotaAndReadScope() async throws {
+        var limits = RelayLimits(); limits.maxDropVersions = 1
+        let w = try await World.drop(limits: limits), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let first = try await service.send(Data(), name: "empty", expiresMs: phone.clock.nowMs + 1000)
+        await #expect(throws: (any Error).self) { _ = try await service.send(Data(), name: "over quota") }
+        phone.clock.advance(by: .seconds(2)); w.clock.advance(by: .seconds(2))
+        #expect(try await service.list(.sending).isEmpty)
+        await #expect(throws: (any Error).self) { _ = try await service.download(first) }
+        let readonly = try await World.make(), id = ID16.fresh(0x7a)
+        let body = try await readonly.dropBody(id: id)
+        #expect(try await readonly.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: readonly.phoneSession).status == 403)
+    }
+}
+
+private actor DropAdversary: RequestSender {
+    nonisolated let origin: String
+    let relay: FakeRelay
+    var corruptBlob = false
+    var corruptDescriptor = false
+    var replayList: Data?
+    init(_ relay: FakeRelay) { self.relay = relay; origin = relay.origin }
+    func set(blob: Bool = false, descriptor: Bool = false, list: Data? = nil) {
+        corruptBlob = blob; corruptDescriptor = descriptor; replayList = list
+    }
+    func send(_ request: WireRequest) async throws -> WireReply {
+        let reply = try await relay.send(request)
+        if request.target.hasSuffix("/drop/list"), let replayList { return try WireReply(status: 200, body: replayList) }
+        if corruptBlob, request.target.hasSuffix("/blob"), reply.status == 200 {
+            var body = reply.body; body[body.count - 1] ^= 1
+            return try WireReply(status: 200, headers: reply.headers, body: body)
+        }
+        if corruptDescriptor, request.target.hasSuffix("/drop/list"), reply.status == 200 {
+            var o = try StrictJSON.parse(reply.body).object!, objects = o["objects"]!.array!
+            var entry = objects[0].object!, signed = entry["descriptor"]!.object!, raw = signed["o"]!.object!
+            raw["created_ms"] = 0; signed["o"] = .object(raw); entry["descriptor"] = .object(signed)
+            objects[0] = .object(entry); o["objects"] = .array(objects)
+            return try WireReply(status: 200, body: canonicalJSON(.object(o)))
+        }
+        return reply
+    }
+}
+extension DropServiceTests {
+    @Test func testReaderRejectsTamperingAndPersistedRollback() async throws {
+        let w = try await World.drop(), adversary = DropAdversary(w.relay)
+        let transport = try RoutedRelayTransport(context: w.env.context, origin: w.env.context.origin, sender: adversary, clientAddress: "test")
+        let phone = try await w.makePhone(transport: transport), service = try await w.dropService(phone)
+        let first = try await service.send(Data("secret".utf8), name: "doc", kind: .document)
+        let query = try canonicalJSON(["host_api": 0, "workspace_id": .string(w.ws.hex), "direction": "sending"])
+        let old = try await w.transport.dropList(query, session: w.phoneSession).body
+        await adversary.set(blob: true)
+        await #expect(throws: (any Error).self) { _ = try await service.download(first) }
+        await adversary.set(descriptor: true)
+        await #expect(throws: (any Error).self) { _ = try await service.list(.sending) }
+        await adversary.set()
+        _ = try await service.send(Data("updated".utf8), name: "doc", document: first)
+        let restarted = try await w.dropService(phone)
+        await adversary.set(list: old)
+        await #expect(throws: (any Error).self) { _ = try await restarted.list(.sending) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: w.env.layout.filesDir(w.ws.hex).path).isEmpty)
+    }
+
+    @Test func testShareImportRetainsPlaintextUntilConfirmedAndRetriesSameObject() async throws {
+        let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
+        let phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let area = ShareArea(shareGroupRoot: w.env.layout.shareGroupRoot)
+        let staging = try StagingSession(area: area, target: ShareTarget(realm: "demo", ws: w.ws.hex, name: "Laptop", hue: 0, generation: 1))
+        try staging.add(.text("keep until durable")); try staging.commit(note: nil)
+        let inbox = ShareInbox(area: area)
+        let job = try #require(inbox.claim(live: [LiveDestination(realm: "demo", ws: w.ws.hex, generation: 1)]).claimed.first)
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET /mobile/host-api/0/drop/")
+        await #expect(throws: (any Error).self) { _ = try await service.importShareJob(job, inbox: inbox) }
+        #expect(FileManager.default.fileExists(atPath: job.dir.path))
+        let restarted = try await w.dropService(phone)
+        _ = try await restarted.importShareJob(job, inbox: inbox)
+        #expect(!FileManager.default.fileExists(atPath: job.dir.path))
+        #expect(try await restarted.list(.sending).count == 1)
+    }
+}
+
+extension DropServiceTests {
+    @Test func testClientVMDemoSeedsClaimedDeploymentAndRunbook() async throws {
+        let w = try await World.drop()
+        let host = try DemoSetup.makeHost(w.env, primary: w.primary, name: "Client VM", clientHosted: true, demoDropFixtures: true)
+        let token = try await host.publishInitial(relay: w.relay, transport: w.transport, devices: [(w.phone, w.phoneCert, World.all)])
+        _ = try await host.pump(relay: w.relay, transport: w.transport, session: token)
+        _ = try await host.pump(relay: w.relay, transport: w.transport, session: token)
+        let query = try canonicalJSON(["host_api": 0, "workspace_id": .string(host.workspace.hex), "direction": "received"])
+        let entries = try json(await w.transport.dropList(query, session: w.phoneSession))["objects"]!.array!
+        #expect(entries.count == 2)
+        for entry in entries {
+            let d = try DropDescriptor.verify(entry.object!["descriptor"]!, authorKey: host.wskPublic)
+            if d.objectKind == "file" {
+                #expect(d.recipients == .inbox)
+                let wraps = try entry.object!["wraps"]!.array!.map(DropWrapRecord.init(json:))
+                #expect(wraps.count == 1 && wraps[0].targetKind == .wk)
+            } else {
+                #expect(d.version == 2)
+                let first = try json(await w.transport.dropGet(objectID: d.object, version: 1, part: .descriptor, session: w.phoneSession))["descriptor"]!
+                let parent = try DropDescriptor.verify(first, authorKey: host.wskPublic)
+                try DropDocument.verifyChain([parent.raw, d.raw])
+            }
+        }
+    }
+}
+
+extension DropServiceTests {
+    @Test func testDemoSendingFixture() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let object = try await DemoSetup.seedDropSending(service)
+        #expect(try await service.list(.sending).map(\.descriptor.object) == [object.descriptor.object])
+    }
+}
+
+extension DropServiceTests {
+    @Test func testDropPUTRejectsChangedSpaceIdentity() async throws {
+        let w = try await World.drop(), id = ID16.fresh(0x7b)
+        let other = try DemoSetup.makeHost(w.env, primary: w.primary, name: "Other")
+        _ = try await other.publishInitial(relay: w.relay, transport: w.transport, devices: [(w.phone, w.phoneCert, World.all)])
+        let first = try await w.dropBody(id: id, kind: "document")
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: first, session: w.phoneSession).status == 201)
+        let parent = try DropDescriptor(object: StrictJSON.parse(first).object!["descriptor"]!.object!["o"]!.object!)
+        var body = try StrictJSON.parse(await w.dropBody(id: id, parent: parent)).object!
+        var raw = body["descriptor"]!.object!["o"]!.object!
+        raw["space_id"] = .string(other.workspace.hex)
+        body["descriptor"] = try SignedObject.sign(raw, kind: .dropObject, signer: w.env.device.sig).json
+        let reply = try await w.transport.dropPut(objectID: id, ifMatch: 1, body: canonicalJSON(.object(body)), session: w.phoneSession)
+        #expect(reply.status == 409 && errorCode(reply) == "version_conflict")
+        #expect(try json(reply)["current"] == 1)
+    }
+}

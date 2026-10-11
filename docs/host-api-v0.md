@@ -656,3 +656,13 @@ Prove transport isolation and cross-realm certificate denial there; Debug vector
 entitlements, also run in Release; an in-memory SwiftPM backend is supplementary evidence only.
 T0 does not establish real NSE invocation, Secure Enclave custody, passcode-removal behavior or APNs
 delivery: retain the pinned-runtime/device evidence gates in decisions T2/T5.
+
+### Slice 5 implementation notes
+
+`DropService` is workspace-scoped and constructed with a `WorkspaceSession`, its verified card and
+owner-verified certificates for other device authors. Unknown authors fail closed (v0 has no certificate
+lookup route). `list`, `send`, `download`, `claim`, `resumeUploads` and `importShareJob` expose no signing
+or agreement handles. Device PUT requires `operate`; read/rewrap requires `look`. A member send includes
+WXK, sender-device and current-WK wraps. Inbox claim requests use the existing host `drop_rewrap` op to
+produce the §10.5 WSK-signed claim; no new phone signing authority or protocol claim route is introduced.
+See **Slice 5 additions** in gaps.md for quotas, persistence and authorization limitations.

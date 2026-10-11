@@ -293,7 +293,7 @@ extension FakeHost {
 
     private func requiredScope(_ op: String, meta: JSONValue) -> String?? {
         switch op {
-        case "http": return .some("look")
+        case "http", "drop_rewrap": return .some("look")
         case "decision": return .some("decide")
         case "new_ticket", "member_remove": return .some("operate")
         case "revocation": return .some(nil)           // authority is PK's signature, not a scope
@@ -306,6 +306,7 @@ extension FakeHost {
         if let need, !a.scopes.contains(need) { return .refuse(.forbiddenScope) }
         if op == "revocation" { return await applyRevocation(a) }
         let request = HostRequest(device: a.header.device, scopes: a.scopes, meta: a.meta, data: a.data, epoch: a.header.epoch)
+        if op == "drop_rewrap" { return await handleDropRewrap(request) }
         if let handler { return await handler(request) }
         return handleView(request)
     }
@@ -380,6 +381,11 @@ extension FakeHost {
     @discardableResult
     public func pump(relay: FakeRelay, transport: any RelayTransport, session: RelaySession) async throws -> Int {
         bridgeRelay = (relay, session)
+        if demoDropFixtures, !dropSeedComplete, epoch > 0, !rotationRequired {
+            if dropSeedTask == nil { dropSeedTask = Task { try await self.seedDrop(relay: relay, transport: transport, session: session) } }
+            do { try await dropSeedTask?.value; dropSeedComplete = true; dropSeedTask = nil }
+            catch { dropSeedTask = nil; throw error }
+        }
         refreshRotationSession(relay: relay, session: session)
         if rotationRequired { await runRotation() }
         try await flushOutbox(transport: transport, session: session)
