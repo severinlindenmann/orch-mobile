@@ -65,7 +65,9 @@ public extension HostRefusal {
         case "cert_invalid": guard let r = none(.certInvalid) else { return nil }; self = r
         case "cert_expired": guard let r = none(.certExpired) else { return nil }; self = r
         case "already_done":
-            guard rest == ["status"], let s = m["status"]?.string else { return nil }; self = .alreadyDone(status: s)
+            // Whitelisted outcome (orch-29 Q12): completed | failed | unknown. Advisory only; never a host status code.
+            guard rest == ["status"], let s = m["status"]?.string, ["completed", "failed", "unknown"].contains(s) else { return nil }
+            self = .alreadyDone(status: s)
         case "stale_timestamp":
             guard rest == ["host_ms"], let h = m["host_ms"]?.int else { return nil }; self = .staleTimestamp(hostMs: h)
         case "stale_sequence":

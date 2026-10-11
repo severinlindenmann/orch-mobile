@@ -36,7 +36,8 @@ public struct SystemEntropy: Entropy {
 public enum FaultBoundary: Hashable, Sendable {
     case beforeQueue
     case afterCommitBeforeResponse
-    case beforeGrantPublication
+    /// `PUT membership`, before any of the relay's checks (a delay here lets state change before the atomic commit).
+    case beforeMembershipPublication
     /// Chunks leaving a poll: reorder, duplicate, drop or corrupt them.
     case pollDelivery
 }

@@ -80,8 +80,8 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
                      options: [QuestionOption(id: "ok", label: "Approve"), QuestionOption(id: "ok2", label: "Approve\u{200B}")],
                      contentHash: "9a3c71e0d4b2586f1e0a7c93d5b8f2461c0e9d7a3b5f84e2d61a0c7b9e3f5d18",
                      created: now.addingTimeInterval(-8 * 60), resolution: nil),
-            Question(id: "q7", workspaceID: "laptop", ticket: "MOB-2", text: "Which one?",
-                     options: [QuestionOption(id: "a", label: "Yes"), QuestionOption(id: "b", label: "Yes")],
+            Question(id: "q7", workspaceID: "laptop", ticket: "MOB-2", text: "Which one: Yes or \u{FF39}es?",
+                     options: [QuestionOption(id: "a", label: "Yes"), QuestionOption(id: "b", label: "\u{FF39}es")],
                      contentHash: "7e2b905c1d4a38f6e0b7c2a95d1f8e346b0c7a2d9e5f1834c6b0a7d2e9f5c431",
                      created: now.addingTimeInterval(-7 * 60), resolution: nil),
             Question(id: "q4", workspaceID: "laptop", ticket: "MOB-1", text: "Use the Demo Mac as primary?",
@@ -358,7 +358,7 @@ final class PreviewReviewModel: QuestionReviewModel {
             self.optionID = pending.optionID
             review = pending.review
             load = .loaded
-            phase = .checking
+            phase = pending.outcome == .needsRetry ? .needsRetry : .checking
         }
     }
 
@@ -394,7 +394,7 @@ final class PreviewReviewModel: QuestionReviewModel {
     }
 
     func sign() async {
-        guard phase == .ready, let session, let review, !review.optionsAmbiguous else { return }
+        guard phase == .ready, let session, let review, review.optionsRefusal == nil else { return }
         phase = .sending
         let mine = token
         let decisionID = "d-\(session.question.id)"
@@ -420,6 +420,10 @@ final class PreviewReviewModel: QuestionReviewModel {
         case .uncertain:
             world.markUncertain(decisionID)
             phase = .checking
+        case .notDelivered:
+            // The relay ended delivery (retry_exhausted): stored, not resent until the person asks.
+            if let i = world.pendingDecisions.firstIndex(where: { $0.decisionID == decisionID }) { world.pendingDecisions[i].outcome = .needsRetry }
+            phase = .needsRetry
         case .locked:
             world.dropPending(decisionID)
             phase = .unlockToContinue
@@ -445,6 +449,15 @@ final class PreviewReviewModel: QuestionReviewModel {
         try? await Task.sleep(for: .milliseconds(600))
         let id = "d-\(questionID)"
         if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }
+        phase = .accepted
+    }
+
+    func sendAgain() async {
+        guard phase == .needsRetry else { return }
+        phase = .sending
+        try? await Task.sleep(for: .milliseconds(300))
+        let id = "d-\(questionID)"
+        if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }   // the same stored answer
         phase = .accepted
     }
 

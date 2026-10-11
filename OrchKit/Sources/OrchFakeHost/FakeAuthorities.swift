@@ -113,6 +113,7 @@ public actor FakeHost {
     var wks: [UInt32: SymmetricKey] = [:]
     var cks: [UInt32: SymmetricKey] = [:]
     var cardSeq: UInt32 = 0
+    var cardDelegation: SignedObject?
     var listSeq: Int64 = 0
     public internal(set) var epoch: UInt32 = 0
     var core: HostBridgeCore
@@ -124,6 +125,8 @@ public actor FakeHost {
     var dropSeedUploaded = 0
     var viewState: HostViewState?
     var lastArrival: UInt64 = 0
+    /// The last request position this host completed (its acknowledged cursor, P3-D10).
+    var completedArrival: UInt64 = 0
     /// Adversarial tests: sign responses with another key (a member device, not the host).
     package var responseSigner: SoftwareSigner?
     var roster: [ID16: (keys: DemoKeys, scopes: [String])] = [:]
@@ -135,19 +138,34 @@ public actor FakeHost {
     var pendingRotations: [(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession)] = []
     var lastRotationRoster: [(DemoKeys, [String])]?
     var rotationRemoved: Set<ID16> = []
-    var rotationEpoch: UInt32 = 0
     var rotationSessions: [ObjectIdentifier: RelaySession] = [:]
-    var pendingRetirement: (relay: FakeRelay, epoch: UInt32)?
     var rotationFailures = 0
+    /// The membership publication persisted before it is sent (P3-D7): resent byte for byte until committed or definitely refused.
+    var pendingPublication: PendingPublication?
+    /// Grants and card-key wraps exactly as sealed and sent: a later publication carries the same bytes, never a reseal.
+    var sealedGrants: [MemberList.Directory.GrantKey: JSONValue] = [:]
+    var sealedWraps: [ID16: [UInt32: String]] = [:]
+    /// The holder generation this host writes under (P3-D10).
+    var holderGen: UInt64?
+    /// One membership publication at a time (joins and rotations share the pending slot and `list_seq`).
+    var publicationLocked = false
+    /// The epoch of a relay list this host did not publish (section 19.7): the next publication goes above it.
+    var relayEpochFloor: UInt32 = 0
+    /// Q10 liveness: refusals in a row that burned an epoch, and the alarm that stops publishing (`MembershipPublicationAlarm`).
+    var consecutiveBurns = 0
+    public internal(set) var publicationAlarm: MembershipPublicationAlarm?
+    var publicationWaiters: [CheckedContinuation<Void, Never>] = []
     /// Set BEFORE any rotation suspends (or a revocation removes a member), cleared only after grants, list and epoch install. While set,
     /// no data is sealed; the next pump retries the publication.
     var rotationRequired = false
-    /// Tests: runs inside the publication, before the first grant.
+    /// Tests: runs inside a rotation's publication, after the body is built and persisted, before it is first sent.
     package var publishHook: (@Sendable () async throws -> Void)?
     /// Streams (by request id) that are accepted but not finished: request epoch and next chunk index.
     var streamOpen: [ID16: (device: ID16, epoch: UInt32, next: UInt64)] = [:]
     /// Streams a rotation already ended; their handlers' late answers are discarded.
     var streamEnded: Set<ID16> = []
+    /// Host chunks the relay refused and this host tolerated (rid, code): tests assert where they happen.
+    package var relayRefusedChunks: [(rid: ID16, code: RelayRefusal.Code)] = []
     /// Chunks the host must post that no request is waiting on (rotation ending open streams).
     var outbox: [(rid: ID16, chunk: Data)] = []
 
@@ -189,7 +207,7 @@ public actor FakeHost {
     /// of the join (certificate, grant, card-key wrap) is already out, so the phone sits in `joining` until exactly this boundary.
     package var listHoldUntilMs: Int64?
     package func holdMemberList(until ms: Int64?) { listHoldUntilMs = ms }
-    var heldList: (members: [(DemoKeys, [String])], listSeq: Int64)?
+    var heldList: (adding: (DemoKeys, [String])?, wraps: [DemoKeys])?
     package func setHostile(_ f: (inout Hostile) -> Void) { f(&hostile) }
 
     public init(capability: DemoCapability, context: RealmContext, primary: FakePrimary, name: String = "Laptop", clientHosted: Bool = false,
@@ -220,7 +238,13 @@ public actor FakeHost {
         let ck = cks[cardSeq] ?? SymmetricKey(data: entropy.bytes(32)); cks[cardSeq] = ck
         let part = CardSealedPart(name: name, description: "Demo workspace", capabilities: ["tickets", "questions", "drop"], hostedBy: hostedBy)
         let sealed = try Card.sealPart(part, ck: ck, workspace: workspace, cardSeq: cardSeq)
-        return try Card.make(delegation: try await primary.delegation(workspace: workspace, wsk: wsk.publicKey, clientHosted: clientHosted),
+        // PK signs the delegation once; every later card carries it byte for byte (`delegation_changed` otherwise).
+        let delegation: SignedObject
+        if let d = cardDelegation { delegation = d } else {
+            delegation = try await primary.delegation(workspace: workspace, wsk: wsk.publicKey, clientHosted: clientHosted)
+            cardDelegation = delegation
+        }
+        return try Card.make(delegation: delegation,
                              workspace: workspace, wxk: wxk.publicKey, wxkVersion: 1, owner: primary.personID, relayURL: relayURL ?? origin,
                              cardSeq: cardSeq, issuedMs: wall.nowMs, sealed: sealed, ck: ck, wsk: wsk)
     }
@@ -239,12 +263,26 @@ public actor FakeHost {
         return try CardKeyWrap.seal(ck: ck, to: keys.kx, deviceID: Identifiers.deviceID(keys.sig), workspace: workspace, cardSeq: seq)
     }
 
-    public func memberList(_ members: [(device: ID16, scopes: [String])], epoch e: UInt32, listSeq seq: Int64) throws -> JSONValue {
+    /// A WSK-signed member list (section 7.2, P3-D6). Every member names its person: the owner's unless `personOf` says otherwise;
+    /// `persons` lists the other persons the list authorizes (sorted, unique). `wk_commit` commits this host's `WK_e` (Q10; created
+    /// here if the epoch has none yet); `wkCommit` overrides it (adversarial tests only).
+    public func memberList(_ members: [(device: ID16, scopes: [String])], epoch e: UInt32, listSeq seq: Int64, persons: [ID16] = [],
+                           personOf: [ID16: ID16] = [:]) throws -> JSONValue {
+        try memberList(members, epoch: e, listSeq: seq, persons: persons, personOf: personOf, wkCommit: nil)
+    }
+
+    package func memberList(_ members: [(device: ID16, scopes: [String])], epoch e: UInt32, listSeq seq: Int64, persons: [ID16] = [],
+                            personOf: [ID16: ID16] = [:], wkCommit: Data?) throws -> JSONValue {
         try capability.generation.check()
         let sorted = members.sorted { $0.device.hex < $1.device.hex }
+        let entries: [JSONValue] = sorted.map {
+            .object(["device_id": .string($0.device.hex), "person_id": .string((personOf[$0.device] ?? primary.personID).hex),
+                     "scopes": .array($0.scopes.map { .string($0) })])
+        }
         return try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(workspace.hex), "epoch": .int(Int64(e)), "list_seq": .int(seq),
-            "issued_ms": .int(wall.nowMs), "members": .array(sorted.map { .object(["device_id": .string($0.device.hex), "scopes": .array($0.scopes.map { .string($0) })]) })],
+            "issued_ms": .int(wall.nowMs), "persons": .array(Set(persons).map(\.hex).sorted().map { .string($0) }), "members": .array(entries),
+            "wk_commit": .string(B64U.encode(wkCommit ?? WKCommit.compute(workspace: workspace, epoch: e, wk: wk(e))))],
                                      kind: .memberList, signer: wsk).json
     }
 
@@ -266,22 +304,16 @@ public actor FakeHost {
         return try await openSession(transport: transport)
     }
 
-    /// Publishes the directory entries, the card, the CK wrap and `WK_1` grant for the given devices and then the first list.
-    /// Order is section 7.2's: certificates and card, grants, then the list. Returns the workspace session.
+    /// Publishes the directory entries and the card, then the first list with every `WK_1` grant and CK wrap in one atomic
+    /// membership publication (P3-D7). Returns the workspace session.
     @discardableResult
     public func publishInitial(relay: FakeRelay, transport: any RelayTransport, devices: [(keys: DemoKeys, cert: JSONValue, scopes: [String])]) async throws -> RelaySession {
         await relay.registerOwner(primary.publicKey)
         for d in devices { try await relay.publishCertificate(d.cert) }
         try await relay.publishCard(try await card())
         let session = try await openSession(transport: transport)
-        epoch = 1; listSeq = 1
-        for d in devices {
-            try await relay.putGrant(try grant(for: d.keys, epoch: 1), token: session.token)
-            try await relay.putCardKeyWrap(device: Identifiers.deviceID(d.keys.sig), cardSeq: 1, sealed: try cardKeyWrap(for: d.keys), token: session.token)
-        }
-        try await relay.publishMemberList(try memberList(devices.map { (Identifiers.deviceID($0.keys.sig), $0.scopes) }, epoch: 1, listSeq: 1), token: session.token)
-        installEpoch(1)
-        setRoster(devices.map { ($0.keys, $0.scopes) })
+        let roster = devices.map { ($0.keys, $0.scopes) }
+        try await publishMembership(roster: roster, epoch: 1, wraps: devices.map(\.keys), relay: relay, session: session)
         return session
     }
 }

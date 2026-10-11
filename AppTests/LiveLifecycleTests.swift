@@ -29,6 +29,7 @@ private actor WorkspaceStub: WorkspaceAPI {
     func refreshViews() async { await suspension.wait() }
     func invalidateReviews() {}
     func reconcile(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
+    func retry(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
     func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
     func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
     func decide(_ review: QuestionReview, optionID: String) throws -> DecisionOutcome { throw ViewError.offline }

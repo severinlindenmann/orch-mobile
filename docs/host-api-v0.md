@@ -156,6 +156,36 @@ Poll is non-consuming; retain sealed bodies 60 seconds (§8.9). Validate clear f
 Route/header mismatch is 400 `malformed`; bad membership/session is 403 `not_eligible`/401 `unauthenticated`.
 Bridge refuses inside signed/sealed envelopes; relay HTTP errors never count as verified host refusals.
 Ordinary limits: request 1 MiB, chunk 256 KiB, meta 64 KiB; incomplete responses fail as a whole.
+A body over its cap is 400 `too_large` before parsing (§19.6); `wait` (0–25) is accepted on the poll.
+
+**Bridge delivery (protocol-v2 §19.3 P3-D8/D9/D22, §19.6).** The relay keeps a replay record per
+`(ws, device, rid)` for 900 s from the FIRST receipt; resends never extend it (a dependent copy or chunk
+does, `keep_until_ms`). An identical resend is coalesced (202, nothing queued) while a live copy is
+undelivered (above the host's acknowledged cursor); otherwise it is requeued at most once per 10 s
+(429 `rate_limited`, `Retry-After` = rest of the interval rounded up) and at most 8 times, then 409
+`retry_exhausted` (terminal). Other bytes for a known rid are 409 `rid_conflict`. A NEW rid whose
+header epoch is not the current list epoch is 409 `stale_epoch {"epoch"}`, an unsigned hint; a known
+rid skips the epoch check. Host chunks need a known, unexpired rid (else 410 `expired`), the request's
+epoch (an old epoch only as `LAST|REFUSAL` or a byte-identical stored replay, else 409 `stale_epoch`);
+other bytes at a stored index are 409 `chunk_conflict`; a stored replay never refreshes a TTL or
+resurrects an expired body. The phone (`WorkspaceSession`):
+- after 202 or 429 keeps polling the SAME rid and never reissues under a new rid; with no answer the
+  request stays pending (`noResponse`, or the 429 refusal) and `resend` sends the same bytes (a 503
+  queued nothing: surfaced at once, still pending);
+- after 409 `retry_exhausted` keeps polling while the relay retains a copy, then marks the attempt `uncertain`
+  together with an `exhausted` marker (one transaction) and throws `SessionError.retryExhausted`; nothing
+  is re-sent automatically. Such a decision is `needsRetry` (`DecisionOutcome`/`DecisionState`): automatic
+  reconciliation only reads the question; `retry(decisionID:)` ("Send again") is the explicit retry;
+- on 409 `stale_epoch` never raises the epoch from the hint: it refetches the SIGNED grants and member
+  list (only hints count: at most 3 starts per sliding 60 s, then 20/40/60 s, reset after 120 s without a
+  hint or on a newer signed epoch; `EpochRefetchLimiter`, `SessionError.epochRefetchDeferred`). If the
+  signed list confirms a newer epoch, a FIRST attempt is re-sealed under the SAME rid, but only within 240 s
+  of its first copy (later: `uncertain`, reconcile). A host that ran a copy a relay delivered anyway answers
+  `rid_conflict` → `uncertain`, keeping the ORIGINAL attempt. Without a newer signed epoch:
+  `awaitingSignedEpoch`, still pending. A resend refused by the hint, and 410 `expired`, give `uncertain`;
+- re-signs under a new rid only after a sealed host refusal that says the request did not run
+  (`stale_epoch`, first `stale_timestamp`, `stale_sequence`, §8.5) and never on a resend (U8).
+  `not_visible` is terminal and definite: a decision ends `notApplied`; other ops get the typed refusal.
 
 ## 2. Host view and mutations (provisional v0)
 
@@ -231,6 +261,8 @@ Changed question receives `question_changed` with content_hash; fetch again and 
 Persist immutable review, decision_id, answer, detached signature and envelope before the first send.
 After a lost response, first resend the stored envelope byte-for-byte with the same rid/seq/salt;
 the host replays its recorded response while the rid record lives (received_at + 900 s, §8.6 step 5).
+Under protocol-v2 the relay delivers that replay only while the original answer chunk lives (60 s):
+an expired chunk is never resurrected (P3-D22), so a later resend gets no answer and ends `uncertain`.
 On `already_done(unknown)`, unknown-rid `stale_timestamp`, or expiry of that 900-second window, fetch
 the question: matching resolution decision_id AND answer confirms acceptance; another resolution
 shows who/when; open permits resending only the same detached signed decision in a fresh envelope
@@ -298,9 +330,15 @@ Optional `epoch=<positive integer>` selects one; default returns all grants elig
 All require authenticated current membership and non-revocation; recipient comes from the session.
 No foreign-device selector. Missing data is 404 `not_found`, unauthorized is 403 `not_eligible`.
 Protocol signature/shape errors retain §14 codes; these HTTP fetch wrappers have no additional signature.
-WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Upload grants before publishing a list.
+WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Lists carry `persons` and a `person_id` per member (P3-D6)
+and the required `wk_commit = b64u(H("orch/v2/wk-commit|" || ws || u32(epoch) || WK))` (orch-29 Q10, decisions A16).
+One WK per epoch, ever: the phone seals only at the head list's epoch, under a grant whose WK matches its `wk_commit`; a
+mismatch or a missing list/grant blocks sending (no_key), never a fallback. Older epochs are read with any WSK-verified
+grant, checked against `wk_commit` when a list for that epoch is held. Two verified lists at one epoch with different
+`wk_commit` are the local alarm `wk_commit_conflict` (durable; nothing is sealed while it stands).
+Grants are published with their list in one `PUT /v2/workspaces/{ws}/membership` (P3-D7, §19.2), never staged.
 Verify signatures, identity binding and monotonic epoch/list/card counters before committing anything.
-Confirmed fetch routes and authorization are still required from P3 ([gap 24](gaps.md)).
+Routes and authorization are protocol-v2 §19.1/§19.2; the FakeRelay replays orch-relay's HTTP fixtures for them ([gap 24](gaps.md)).
 
 `GET R/workspaces/{ws}/card-key?card_seq=N` returns exactly
 `{"workspace_id":"$ws","device_id":"$sessionDevice","card_seq":N,"sealed":"$b64u"}`.
@@ -320,7 +358,8 @@ including retention and card-update races ([gap 29](gaps.md), D-6); fetch errors
 
 After verifying the card, require byte-equal `card.relay_url == reviewed link origin` in §7.1 form.
 Require the verified member list to contain this device_id with scopes exactly equal to approved.scopes,
-list epoch >= approved.epoch (all >= 1), and the installed grant epoch equal to that list epoch.
+list epoch >= approved.epoch (all >= 1), the installed grant epoch equal to that list epoch with its WK matching the list's
+`wk_commit` (`grant_commit` otherwise), and record the verified list as the head before installing any key.
 A mismatch fails join; no partial workspace install or silent origin change is permitted.
 
 `GET R/devices/{device}/revocation` returns `{"record":$signedRevocation}`;
@@ -384,8 +423,8 @@ Confirm post-wipe unregister authorization with P3 ([gaps 20–21](gaps.md)); no
 
 An authorized remaining Operate device/primary can issue exact §6.3
 `{"op":"member_remove","device_id":"$id"}` via its own dk_sig/K_bridge, response WSK/K_bridge.
-No host_api added. Host rotates, uploads remaining grants, publishes list; relay deletes departed mailboxes,
-grants and subscriptions. Its success projection may be `{"host_api":0,"removed":true}` (provisional).
+No host_api added. Host rotates: one atomic membership publication of the list and every remaining grant
+(protocol-v2 P3-D7); the relay deletes departed devices' mailboxes, grants, card-key wraps and subscriptions. Its success projection may be `{"host_api":0,"removed":true}` (provisional).
 Look/Decide phones cannot self-remove through this op; forbidden_scope is correct, even for themselves.
 A PK-signed revocation (§6.2) instead kills the identity across all workspaces: verify then wipe all,
 invalidate cert/device keys and require new keys. Phone is never primary in P4 (D-2).
@@ -450,7 +489,7 @@ Include a Sending entry and an old-epoch object in the rotation scenario; no rea
 FakeRelay actor owns directory certs/revocations, cards, member lists, grants/CK wraps, sessions/challenges,
 mailboxes with TTL, rate budgets, push registrations, Drop blobs/descriptors/wraps/claims and queues.
 It has no WK, CK, S, DEK or authority private keys; route authorization never decrypts bridge content.
-It checks §8.9 header/session membership, §12.2 login, §7 publication order and §10 atomic CAS/claims.
+It checks §8.9 header/session membership, §12.2 login, §19.2 atomic membership publication and §10 atomic CAS/claims.
 FakeHost actor owns WSK/WXK, epoch keys/history, CK per card, offers/S/sas_nonce, device label registry,
 seq windows/rid records, snapshots, durable mutation receipts and per-entity push timestamp counters.
 It implements §8.6 in order, including silence before tag, budgets, replay/quota semantics and rotation.

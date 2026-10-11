@@ -66,4 +66,25 @@ final class ReviewModelTests: XCTestCase {
         await reopened.checkWhetherReceived()
         XCTAssertEqual(world.questions.first { $0.id == "q1" }?.resolution?.optionID, "reject")
     }
+
+    /// Relay `retry_exhausted`: the answer is stored but not delivered. It is not "checking" (nothing keeps polling) and it is never
+    /// resent until the person taps Send again, which sends the same stored answer.
+    func testNotDeliveredNeedsAnExplicitSendAgain() async {
+        let (world, model) = makeModel(option: "reject", outcome: .notDelivered)
+        await model.loadReview()
+        await model.sign()
+        XCTAssertEqual(model.phase, .needsRetry)
+        XCTAssertEqual(world.pendingDecisions.first?.outcome, .needsRetry)
+        model.invalidate()
+        XCTAssertEqual(model.phase, .needsRetry, "a stored answer survives lock/background")
+        await model.checkWhetherReceived()
+        XCTAssertEqual(model.phase, .needsRetry, "checking is not how it is resolved")
+        let reopened = PreviewReviewModel(world: world, questionID: "q1", optionID: "approve")
+        XCTAssertEqual(reopened.phase, .needsRetry)
+        XCTAssertEqual(reopened.review?.optionID, "reject")
+        await reopened.sendAgain()
+        XCTAssertEqual(reopened.phase, .accepted)
+        XCTAssertEqual(world.questions.first { $0.id == "q1" }?.resolution?.optionID, "reject")
+        XCTAssertTrue(world.pendingDecisions.isEmpty)
+    }
 }

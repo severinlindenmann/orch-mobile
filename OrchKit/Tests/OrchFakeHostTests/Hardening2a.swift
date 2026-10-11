@@ -174,13 +174,19 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         faults.enqueue(.disconnect, at: .pollDelivery)
         await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: httpGet) }
         let p = try await s.pendingRequests()[0]
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
-        w.clock.advance(milliseconds: ageMs); phone.clock.advance(milliseconds: ageMs)
         if replayed {
+            // An answer chunk lives 60 s and is never resurrected (P3-D22): the host first sees this request through the resend,
+            // so the copy requeued inside the device's resend window is what gets answered.
+            w.clock.advance(milliseconds: ageMs); phone.clock.advance(milliseconds: ageMs)
             let r = try await w.serve(phone) { try await s.resend(rid: p.rid) }
             #expect(r.data == Data("done".utf8))
         } else {
+            // The host ran the request; past the resend window the device sends nothing at all (not even to the relay).
+            #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
+            w.clock.advance(milliseconds: ageMs); phone.clock.advance(milliseconds: ageMs)
+            let before = await w.relay.requestsReceived
             await #expect(throws: SessionError.uncertain(logical: p.logical)) { _ = try await s.resend(rid: p.rid) }
+            #expect(await w.relay.requestsReceived == before)
         }
         #expect(counter.value == 1)
     }
@@ -355,6 +361,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let p = try await s.pendingRequests()[0]
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         await w.host.forgetOutcome(rid: p.rid)
+        await w.relay.forgetResponses(workspace: w.ws, device: w.phoneID, rid: p.rid)        // the answer never reached the relay
         w.clock.advance(milliseconds: 61_000); phone.clock.advance(milliseconds: 61_000)
         await #expect(throws: SessionError.uncertain(logical: p.logical)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
         let again = try await w.makePhone(install: false)
@@ -468,8 +475,16 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let rid = ID16.fresh(0x53)
         await w.host.adoptStream(rid: rid, owner: w.primaryID)                                              // an open stream of the device to be revoked
         let record = try await w.primary.revoke(device: w.primaryID)
-        let r = try await w.serve(phone) { try await s.exchange(meta: ["op": "revocation", "record": record]) }
-        #expect(r.status == 200)
+        // The host rotates BEFORE its reply (section 6.2), so the reply is sealed under the request's old epoch, where P3-D22 admits
+        // only `LAST | REFUSAL`: after the rotation committed, the host answers `already_done` "completed" (orch-29 Q12, whitelisted
+        // outcome) and the relay delivers it. It is advisory: the confirmation is the signed list below.
+        await #expect(throws: ClientError.host(.alreadyDone(status: "completed"))) {
+            _ = try await w.serve(phone) { try await s.exchange(meta: ["op": "revocation", "record": record]) }
+        }
+        let leftover = try await s.pendingRequests().count + s.uncertainRequests().count
+        #expect(leftover == 0)
+        let refused = await w.host.relayRefusedChunks
+        #expect(refused.isEmpty)
         let core = await w.host.coreState()
         #expect(await w.host.epoch == 2 && core.epoch == 2 && core.keys[2] != nil && core.keys[1] != nil)
         #expect(core.revoked.contains(w.primaryID) && Set(core.members.keys) == [w.phoneID])
@@ -477,6 +492,10 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 2))
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 2) == false)
         #expect((await w.relay.memberListSeq(workspace: w.ws) ?? 0) >= 2)
+        // The reply is advisory; "revoked" is shown only from the SIGNED list: epoch 2, without the revoked device.
+        let signed = try MemberList.verify(try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession),
+                                           wsk: await w.host.wskPublic)
+        #expect(signed.epoch == 2 && !signed.members.contains { $0.deviceID == w.primaryID })
         // The phone follows: its next request is refused stale_epoch once, then runs at epoch 2.
         let next = try await w.serve(phone) { try await s.exchange(meta: httpGet) }
         let epochNow = try await s.currentEpoch()
@@ -493,28 +512,28 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(r.status == 200 && hostEpoch == 1)
     }
 
-    // MARK: 8. unlisted pre-grants
+    // MARK: 8. grants arrive with their list
 
-    // Reviewer's S4: a next-epoch grant uploaded ahead of its list (section 7.2 order) is kept, not used.
-    @Test func S4_preGrantForNextEpochDoesNotStrandThePhone() async throws {
+    // Reviewer's S4, under atomic publication (P3-D7): a next-epoch grant can no longer be staged ahead of its list. The phone keeps
+    // working at epoch 1 until the host publishes epoch 2 (list and grants in one commit); the first refusal then moves it on.
+    @Test func S4_nextEpochArrivesWithItsList() async throws {
         let w = try await World.make()
         await w.host.setHandler({ _ in .response(status: 200, headers: [:], data: Data("ok".utf8)) })
-        try await w.relay.putGrant(try await w.host.grant(for: w.phone, epoch: 2), token: w.hostSession.token)
         let phone = try await w.makePhone()
         let s = phone.session
         #expect(try await s.currentEpoch() == 1)
         let r = try await w.serve(phone) { try await s.exchange(meta: httpGet) }
-        let e1 = try await s.currentEpoch()
-        #expect(r.data == Data("ok".utf8) && e1 == 1)
-        #expect(try w.vault.ids().filter { $0.ws == w.ws.hex }.map(\.purpose).sorted() == ["wk.1", "wk.2"])         // kept
-        // The host now reaches epoch 2 (list published): the first refusal confirms it and the stored grant is used.
+        #expect(r.data == Data("ok".utf8))
+        #expect(try await s.currentEpoch() == 1)
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) {
+            _ = try await RelayClient(transport: w.transport).grants(workspace: w.ws, epoch: 2, session: w.phoneSession)
+        }
+        try await w.publish(w.baseRoster, epoch: 2, listSeq: 2)
         await w.host.installEpoch(2)
-        try await w.relay.putGrant(try await w.host.grant(for: w.primary.deviceKeys, epoch: 2), token: w.hostSession.token)
-        try await w.relay.publishMemberList(try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"])], epoch: 2, listSeq: 2),
-                                            token: w.hostSession.token)
         let r2 = try await w.serve(phone) { try await s.exchange(meta: httpGet) }
         let e2 = try await s.currentEpoch()
         #expect(r2.status == 200 && e2 == 2)
+        #expect(try w.vault.ids().filter { $0.ws == w.ws.hex }.map(\.purpose).sorted() == ["wk.1", "wk.2"])
     }
 
     // MARK: S5, with the host's persistence contract
@@ -681,12 +700,12 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         await w.host.setPublishHook(nil)
         _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         #expect(await w.host.rotationRequired == false)
-        #expect(await w.host.epoch == 3)
+        #expect(await w.host.epoch == 2)           // the failed attempt never left the host: no epoch consumed
         let state = await w.host.coreState()
         #expect(state.members[w.primaryID] == nil) // Retry preserves the public rotation's requested roster.
-        let (next, nh) = try await w.sealedRequest(rid: ID16.fresh(0x73), seq: 2, epoch: 3)
+        let (next, nh) = try await w.sealedRequest(rid: ID16.fresh(0x73), seq: 2, epoch: 2)
         let answer = await w.host.process(envelope: next, mailbox: nh.rid)
-        #expect(try openChunk(#require(answer.first), wk: await w.host.wkFor(3)).data == Data("secret".utf8))
+        #expect(try openChunk(#require(answer.first), wk: await w.host.wkFor(2)).data == Data("secret".utf8))
     }
 
     // A handler returning while the rotation's grants are being published must not seal data.
@@ -735,14 +754,14 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let c2 = await w.host.process(envelope: e2, mailbox: h2.rid)
         let m2 = try openChunk(c2[0], wk: await w.host.wkFor(1)).meta
         #expect(c2.count == 1 && m2 == unknownRefusal.meta && counter.value == 0)
-        // next pump retries; once it succeeds the epoch moves and requests work at epoch 3
+        // next pump retries; once it succeeds the epoch moves and requests work at epoch 2 (epochs never skip)
         fail.value = false
         _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         let rr2 = await w.host.rotationRequired, ep2 = await w.host.epoch
-        #expect(!rr2 && ep2 == 3)
-        let (e3, h3) = try await w.sealedRequest(rid: ID16.fresh(0x65), seq: 3, epoch: 3)
+        #expect(!rr2 && ep2 == 2)
+        let (e3, h3) = try await w.sealedRequest(rid: ID16.fresh(0x65), seq: 3, epoch: 2)
         let c3 = await w.host.process(envelope: e3, mailbox: h3.rid)
-        let d3 = try openChunk(c3[0], wk: await w.host.wkFor(3)).data
+        let d3 = try openChunk(c3[0], wk: await w.host.wkFor(2)).data
         #expect(d3 == Data("data".utf8))
     }
 
@@ -758,9 +777,9 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let (e2, h2) = try await w.sealedRequest(rid: ID16.fresh(0x67), seq: 2, meta: ["op": "revocation", "record": record])
         let c = try await rotationRetry(w) { await w.host.process(envelope: e2, mailbox: h2.rid) }
         let mc = try openChunk(c[0], wk: await w.host.wkFor(1)).meta
-        #expect(mc.object?["status"] == .int(200))
+        #expect(mc == HostRefusal.alreadyDone(status: "completed").meta)            // old-epoch reply after its rotation (orch-29 Q12)
         let rr3 = await w.host.rotationRequired, ep3 = await w.host.epoch
-        #expect(ep3 == 3 && !rr3)
+        #expect(ep3 == 2 && !rr3)
     }
 }
 

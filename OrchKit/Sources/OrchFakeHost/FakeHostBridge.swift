@@ -50,16 +50,19 @@ extension FakeHost {
     /// Deletes an old epoch's key (vector `epoch_whose_key_the_host_deleted_dropped`).
     public func deleteKey(epoch e: UInt32) { core.keys[e] = nil }
 
-    /// Rotation invariants (protocol §8.5):
+    /// Rotation invariants (protocol §8.5, P3-D7 atomic publication):
     /// I1: No data is sealed while the gate is up, except the revocation reply (empty refusals are allowed).
-    /// I2: Clear the gate only after grants, list and installEpoch succeed for one consistent roster.
-    /// I3: Retire failed uncommitted attempts, deleting grants after authenticated acknowledgement; retries use fresh keys and increasing epochs.
+    /// I2: Clear the gate only after one publication (list and every grant, atomically) committed and installEpoch ran for one consistent roster.
+    /// I3: Bytes that may have left the host are resent identically, never resealed; a publication the relay refused burns its epoch
+    ///     (Q10, one WK per epoch, ever; `bad_epoch` included): the key is retained but never activated or resealed, and the next
+    ///     rotation goes to floor + 1.
     /// I4: The final roster excludes every queued removal and every relay/host revocation.
     /// I5: One task serializes requests; same-roster requests on the same relay join using current credentials.
     /// I6: Failures retain the gate and pending work; pump retries it.
-    /// I7: Recovery leaves no final-epoch grant for a removed/revoked device.
+    /// I7: Recovery leaves no final-epoch grant for a removed/revoked device (a resend that commits an older roster is followed by e+2).
     ///
-    /// Rotation (section 7.2 host rules): `WK_{e+1}`, a grant for every remaining device, then the list.
+    /// Rotation (section 7.2 host rules): persist `WK_{e+1}`, seal and persist a grant for every remaining device, publish the list
+    /// and grants atomically, then seal under `e+1`.
     public func rotate(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
         try await beginRotation(remaining: remaining, relay: relay, session: session).value
     }
@@ -167,47 +170,31 @@ extension FakeHost {
         rotationSessions[ObjectIdentifier(relay)] ?? fallback
     }
 
-    private func retirePending(fallback: RelaySession) async throws {
-        guard let pending = pendingRetirement else { return }
-        let body = try RotationAbandon.signed(workspace: workspace, epoch: pending.epoch, signer: wsk)
-        let session = currentRotationSession(pending.relay, fallback: fallback)
-        let request = try WireRequest(method: "POST",
-            target: "\(HostAPI.base)/workspaces/\(workspace.hex)/rotation-abandon",
-            headers: ["authorization": "Bearer \(session.token)"],
-            body: canonicalJSON(body), clientAddress: "198.51.100.7")
-        _ = try HostAPI.expect(await pending.relay.send(request), status: 200)
-        pendingRetirement = nil
-    }
-
     private func publishRotation(remaining: [(DemoKeys, [String])], relay: FakeRelay, session: RelaySession) async throws {
-        try await retirePending(fallback: session)
-        guard max(epoch, rotationEpoch) < UInt32.max else { throw Refusal.badEpoch }
-        rotationEpoch = max(epoch, rotationEpoch) + 1
-        let next = rotationEpoch
-        // Allocate before any suspension, including a failure before the first upload.
-        wks[next] = SymmetricKey(data: entropy.bytes(32))
-        do {
-            try await publishHook?()
+        let s = currentRotationSession(relay, fallback: session)
+        try await withPublicationLock {
+            // An earlier attempt's bytes that may have left are settled first (resent identically); what they commit is installed.
+            // When they were this very rotation (its reply was lost), it is done.
+            let before = epoch
+            if let done = try await resolvePending(relay: relay, session: currentRotationSession(relay, fallback: s)),
+               done.epoch > before, rostersEqual(done.roster, remaining) { return }
+            let base = max(epoch, relayEpochFloor)
+            guard base < UInt32.max else { throw Refusal.badEpoch }
+            let next = base + 1
+            _ = wk(next)                                   // persisted before anything is sealed under it
             try await checkRotationRoster(remaining, relay: relay)
             endOpenStreams(newEpoch: next)
-            listSeq += 1
-            for (k, _) in remaining {
-                try await relay.putGrant(try grant(for: k, epoch: next), token: currentRotationSession(relay, fallback: session).token)
+            _ = try preparePublication(roster: remaining, epoch: next, wraps: [])
+            do {
+                try await publishHook?()
                 try await checkRotationRoster(remaining, relay: relay)
+            } catch {
+                pendingPublication = nil                   // never sent: the bytes and the key stayed on the host
+                throw error
             }
-            try await checkRotationRoster(remaining, relay: relay)
-            try await relay.publishMemberList(try memberList(remaining.map { ($0.0.deviceID, $0.1) }, epoch: next, listSeq: max(listSeq, 2)), token: currentRotationSession(relay, fallback: session).token)
-            installEpoch(next)
-            setRoster(remaining)
-        } catch {
-            wks[next] = nil
-            core.keys[next] = nil
-            pendingRetirement = (relay, next)
-            try? await retirePending(fallback: session)
-            throw error
+            try await sendPending(relay: relay, session: currentRotationSession(relay, fallback: s))
         }
-        // A removal during the list actor hop needs a follow-up rotation. Keep this committed
-        // epoch's grants available; the gate stays raised until the filtered roster is published.
+        // A removal during the publication needs a follow-up rotation: the gate stays raised until the filtered roster is published.
         try await checkRotationRoster(remaining, relay: relay)
     }
 
@@ -284,6 +271,14 @@ extension FakeHost {
                 return chunks
             case .response(let status, let headers, let data):
                 let meta: JSONValue = ["status": .int(Int64(status)), "headers": .object(headers.mapValues { .string($0) })]
+                if isRevocation && core.epoch != h.epoch {
+                    // §6.2 rotates before this reply, so it is sealed under the request's OLD epoch, where P3-D22 admits only
+                    // `LAST | REFUSAL`. orch-29 Q12 (provisional): answer `already_done` with status "completed" (advisory) as that refusal; the real
+                    // confirmation is the signed list at the higher epoch without the revoked device.
+                    let chunks = (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "completed").meta, data: Data(), refusal: true)) ?? []
+                    core.complete(rid: h.rid, with: .stored(chunks))
+                    return chunks
+                }
                 guard let chunks = try? respond(to: h, meta: meta, data: data, refusal: false) else { return [] }
                 core.complete(rid: h.rid, with: .stored(chunks))
                 return chunks
@@ -388,29 +383,49 @@ extension FakeHost {
         }
         refreshRotationSession(relay: relay, session: session)
         if rotationRequired { await runRotation() }
-        try await flushOutbox(transport: transport, session: session)
-        let inbox = try await relay.pendingRequests(workspace: workspace, token: session.token).filter { $0.arrival > lastArrival }
-            .sorted { $0.arrival < $1.arrival }
+        try await flushOutbox(relay: relay, session: session)
+        // P3-D10: `after` acknowledges what this host completed, so the relay requeues (rather than coalesces) a later resend.
+        let inbox = try await relay.pendingRequests(workspace: workspace, after: completedArrival, token: session.token)
+            .filter { $0.arrival > lastArrival }.sorted { $0.arrival < $1.arrival }
         var handled = 0
         for item in inbox {
-            lastArrival = max(lastArrival, item.arrival)
+            lastArrival = max(lastArrival, item.arrival)          // claimed: a concurrent pass never runs it twice
             let chunks = await process(envelope: item.envelope, mailbox: item.rid)
             for c in chunks {
-                let r = try await transport.bridgePost(c, route: BridgeRoute(workspaceID: workspace, requestID: item.rid), session: session)
-                _ = try HostAPI.expect(r, status: 202)
+                let r = try await postBridgeChunk(c, rid: item.rid, relay: relay, session: session)
+                guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
+                let flags = (try? Bridge.Parts(envelope: c).header.flags) ?? 0
+                if refusal.code == .chunkConflict, flags & Bridge.Flags.refusal.rawValue != 0 {
+                    // A refusal re-sealed (new salt) for a requeued copy: the relay already stores an answer for this index (P3-D22)
+                    // and the device reads that one. Counted, so tests can assert where it happens.
+                    relayRefusedChunks.append((item.rid, refusal.code))
+                    continue
+                }
+                _ = try HostAPI.expect(r, status: 202)              // anything else is an error of the pass
             }
-            try await flushOutbox(transport: transport, session: session)
+            try await flushOutbox(relay: relay, session: session)
+            completedArrival = max(completedArrival, item.arrival)
             handled += 1
         }
         return handled
     }
 
-    private func flushOutbox(transport: any RelayTransport, session: RelaySession) async throws {
+    private func flushOutbox(relay: FakeRelay, session: RelaySession) async throws {
         while !outbox.isEmpty {
             let item = outbox.removeFirst()
-            let r = try await transport.bridgePost(item.chunk, route: BridgeRoute(workspaceID: workspace, requestID: item.rid), session: session)
+            let r = try await postBridgeChunk(item.chunk, rid: item.rid, relay: relay, session: session)
             _ = try HostAPI.expect(r, status: 202)
         }
+    }
+
+    /// `POST /v2/workspaces/{ws}/bridge/{rid}` for one host chunk: a W(g) write under this host's holder generation (P3-D10; the
+    /// relay fences a host post without `Orch-Holder`).
+    package func postBridgeChunk(_ chunk: Data, rid: ID16, relay: FakeRelay, session: RelaySession) async throws -> WireReply {
+        let gen = try await holderGeneration(relay: relay, session: session)
+        return try await relay.send(WireRequest(method: "POST", target: "\(HostAPI.base)/workspaces/\(workspace.hex)/bridge/\(rid.hex)",
+                                                headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen),
+                                                          "content-type": "application/octet-stream"],
+                                                body: chunk, clientAddress: "198.51.100.7"))
     }
 }
 

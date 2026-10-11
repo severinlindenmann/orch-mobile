@@ -27,8 +27,10 @@ import Testing
         try Card.checkSnapshot(known: nil, next: try r.card(seq: 9, wxk: x3, version: 4))
         // reconnect: the identical card again
         try Card.checkSnapshot(known: c1.head, next: c1)
-        // the relay's publication rule refuses the same card; the device does not use it
-        #expect(throws: Refusal.staleCard) { try Card.checkRelayUpdate(previous: c1.head, next: c1) }
+        // the relay's publication rule takes the same verified card as an idempotent retry (P3-D4); other content at that sequence
+        // stays stale_card
+        try Card.checkRelayUpdate(previous: c1.head, next: c1)
+        #expect(throws: Refusal.staleCard) { try Card.checkRelayUpdate(previous: c1.head, next: try r.card(seq: 1, wxk: x1, version: 1, name: "other")) }
         // missed rotations: seq 1 -> 5, wxk_version 1 -> 3
         let c5 = try r.card(seq: 5, wxk: x3, version: 3)
         try Card.checkSnapshot(known: c1.head, next: c5)
@@ -55,17 +57,21 @@ import Testing
         r2 = foreign
     }
 
-    func list(_ ws: ID16, epoch: Int64, seq: Int64, ids: [ID16], scopes: [String] = ["look"]) throws -> MemberList {
+    func list(_ ws: ID16, epoch: Int64, seq: Int64, ids: [ID16], scopes: [String] = ["look"], commit: JSONValue? = nil) throws -> MemberList {
         try MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": .int(epoch), "list_seq": .int(seq),
-                                      "issued_ms": 1, "members": .array(ids.sorted { $0.hex < $1.hex }.map { ["device_id": .string($0.hex), "scopes": .array(scopes.map { .string($0) })] })])
+                                      "issued_ms": 1, "persons": [], "wk_commit": commit ?? testWKCommit(ws, epoch),
+                                      "members": .array(ids.sorted { $0.hex < $1.hex }.map { ["device_id": .string($0.hex), "person_id": .string(Self.person.hex),
+                                                                                             "scopes": .array(scopes.map { .string($0) })] })])
     }
+
+    static let person = ID16.random()
 
     @Test func memberListSnapshots() throws {
         let ws = ID16.random(), a = ID16.random(), b = ID16.random(), c = ID16.random()
         let l = try list(ws, epoch: 1, seq: 1, ids: [a, b])
         // late join: the first list the device sees may be far along
         try list(ws, epoch: 3, seq: 7, ids: [a, b]).checkSnapshot(cardWorkspace: ws, known: nil)
-        #expect(throws: Refusal.badEpoch) { try list(ws, epoch: 1, seq: 0, ids: [a]).checkSnapshot(cardWorkspace: ws, known: nil) }
+        #expect(throws: Refusal.malformed) { try list(ws, epoch: 1, seq: 0, ids: [a]).checkSnapshot(cardWorkspace: ws, known: nil) }   // list_seq >= 1
         // reconnect: identical
         try l.checkSnapshot(cardWorkspace: ws, known: l)
         // additions in the same epoch, and jumps over missed lists and rotations
@@ -82,6 +88,12 @@ import Testing
         try list(ws, epoch: 3, seq: 6, ids: [a]).checkSnapshot(cardWorkspace: ws, known: l5)
         // another workspace
         #expect(throws: Refusal.otherWorkspace) { try l.checkSnapshot(cardWorkspace: ID16.random(), known: nil) }
+        // Q10: two lists at one epoch commit to one WK; another commitment is the local alarm, whatever the list_seq order
+        let other = testWKCommit(ID16.random(), 2)
+        #expect(throws: Refusal.wkCommitConflict) { try list(ws, epoch: 2, seq: 6, ids: [a, b, c], commit: other).checkSnapshot(cardWorkspace: ws, known: l5) }
+        #expect(throws: Refusal.wkCommitConflict) { try list(ws, epoch: 2, seq: 4, ids: [a, b], commit: other).checkSnapshot(cardWorkspace: ws, known: l5) }
+        #expect(throws: Refusal.wkCommitConflict) { try list(ws, epoch: 2, seq: 5, ids: [a, b], commit: other).checkSnapshot(cardWorkspace: ws, known: l5) }
+        try list(ws, epoch: 3, seq: 6, ids: [a, b], commit: other).checkSnapshot(cardWorkspace: ws, known: l5)     // another epoch: its own key
     }
 }
 

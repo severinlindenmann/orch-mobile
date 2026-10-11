@@ -100,6 +100,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
         if options.demoSeed, isDemo { await seedDemoWorkspaces() }
+        // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
+        if !isDemo { Task.detached { await SystemDemoNotifications().retryOwedPurges() } }
         ready = true
     }
 
@@ -328,7 +330,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                     hostedBy: ws.info.hostedBy, questionID: d.questionID.hex, ticket: q?.ticket ?? "", text: q?.text ?? "",
                     optionID: d.optionID, optionLabel: q?.options.first { $0.id == d.optionID }?.label ?? d.optionID,
                     options: q?.options ?? [], contentHash: q?.contentHash ?? "", revision: 0, isDemo: isDemo)
-                let outcome: DecisionOutcomeState = d.state == .uncertain ? .uncertain : .pending
+                let outcome: DecisionOutcomeState = switch d.state {
+                case .uncertain: .uncertain
+                case .needsRetry: .needsRetry
+                case .pending: .pending
+                }
                 out.append(DecisionStatus(decisionID: d.decisionID.hex, questionID: d.questionID.hex, workspaceID: ws.info.id,
                                           optionID: d.optionID, optionLabel: review.optionLabel, review: review, outcome: outcome))
                 if reconcile { startReconcile(workspace: ws, decisionID: d.decisionID) }
@@ -628,6 +634,7 @@ final class UnavailableReviewModel: QuestionReviewModel {
     func sign() async {}
     func reread() async {}
     func checkWhetherReceived() async {}
+    func sendAgain() async {}
     func invalidate() {}
     func retryAfterUnlock() {}
 }

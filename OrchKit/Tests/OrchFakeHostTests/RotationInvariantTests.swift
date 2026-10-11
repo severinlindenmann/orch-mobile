@@ -24,7 +24,7 @@ import OrchProtocol
     func I2_consistentCommit(failures: Int) async throws { try await recovery(failures: failures, removal: "none") }
 
     @Test(arguments: [1, 3])
-    func I3_fetchedKeyIsNeverActivated(failures: Int) async throws { try await recovery(failures: failures, removal: "host") }
+    func I3_unsentBodyIsRebuiltForTheFilteredRoster(failures: Int) async throws { try await recovery(failures: failures, removal: "host") }
 
     @Test(arguments: ["host", "relay", "queued"])
     func I4_allRemovalSources(removal: String) async throws { try await recovery(failures: 1, removal: removal) }
@@ -68,7 +68,6 @@ import OrchProtocol
         await w.host.setPublishHook {
             calls.bump()
             if calls.value == 1 {
-                try await w.relay.putGrant(try await w.host.grant(for: w.phone, epoch: 2), token: w.hostSession.token)
                 await gate.pass()
                 if fail { throw TestCrash() }
             }
@@ -88,43 +87,44 @@ import OrchProtocol
         let chunks = if fail { try await rotationRetry(w) { await revocation.value } } else { await revocation.value }
         let reply = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
         if fail {
-            #expect(reply.meta.object?["status"] == .int(200))
-            #expect(try StrictJSON.parse(reply.data).object?["revoked"] == .bool(true))
+            // Sealed under the old epoch after its own rotation: `already_done` "completed" as LAST | REFUSAL (orch-29 Q12, provisional).
+            #expect(reply.meta == HostRefusal.alreadyDone(status: "completed").meta && reply.data.isEmpty)
         } else {
             #expect(reply.meta == HostRefusal.staleEpoch(epoch: 2).meta)
             let (retry, header) = try await w.sealedRequest(rid: .fresh(0x83), seq: 2, epoch: 2,
                 meta: ["op": "revocation", "record": record])
             let retried = await w.host.process(envelope: retry, mailbox: header.rid)
             let completed = try openChunk(#require(retried.first), wk: await w.host.wkFor(2))
-            #expect(completed.meta.object?["status"] == .int(200))
-            #expect(try StrictJSON.parse(completed.data).object?["revoked"] == .bool(true))
+            #expect(completed.meta == HostRefusal.alreadyDone(status: "completed").meta && completed.data.isEmpty)
         }
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         #expect(await w.host.rotationRequired == false)
-        #expect(await w.host.epoch == 3)
+        // Failed: the unsent attempt is rebuilt for the filtered roster at epoch 2. Committed: epoch 2 named the primary, so its
+        // revocation rotates again to 3.
+        let final: UInt32 = fail ? 2 : 3
+        #expect(await w.host.epoch == final)
         #expect(await w.host.coreState().members[w.primaryID] == nil)
-        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: 3) == false)
-        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 3))
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: final) == false)
+        #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: final))
         let list = try MemberList.verify(try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession), wsk: w.host.wskPublic)
-        #expect(list.epoch == 3)
+        #expect(list.epoch == final)
         #expect(list.members.map(\.deviceID) == [w.phoneID])
     }
 
+    /// The publication is refused at the relay (a member revoked while it was delayed there), then the phone is removed too: Q10
+    /// burns the refused epoch, the next one is published under a fresh key for the remaining roster, and no removed device holds
+    /// its grant.
     @Test(arguments: ["host", "relay"])
-    func fetchedGrantThenRealUploadFailure(revokeAt: String) async throws {
+    func refusedPublicationThenRemoval(revokeAt: String) async throws {
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
-        faults.enqueue(.none, at: .beforeGrantPublication)
-            .enqueue(.delay(.seconds(1)), at: .beforeGrantPublication)
+        faults.enqueue(.delay(.seconds(1)), at: .beforeMembershipPublication)
         let rotation = Task {
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)],
                                     relay: w.relay, session: w.hostSession)
         }
         while w.clock.sleeperCount == 0 { await Task.yield() }
-        let grants = try await RelayClient(transport: w.transport).grants(workspace: w.ws, epoch: 2, session: w.phoneSession)
-        let fetched = try WKGrant.open(#require(grants.first), wsk: w.host.wskPublic, workspace: w.ws,
-                                       device: w.phoneID, deviceKey: w.env.device.kx)
-        // Fail the suspended second upload through the relay's real target validation.
+        let refusedKey = await w.host.wkFor(2).withUnsafeBytes { Data($0) }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.primaryID))
         w.clock.advance(milliseconds: 1000)
         await #expect(throws: (any Error).self) { try await rotation.value }
@@ -133,15 +133,15 @@ import OrchProtocol
         else { try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID)) }
         _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         let final = await w.host.epoch
-        #expect(final == 3)
-        #expect(await w.host.wkFor(final).withUnsafeBytes { Data($0) } != fetched.wk.withUnsafeBytes { Data($0) })
+        #expect(final == 3)                                   // Q10: the refused epoch 2 is burned
+        #expect(await w.host.wkFor(final).withUnsafeBytes { Data($0) } != refusedKey)
         #expect(await w.host.coreState().members.isEmpty)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: final) == false)
         #expect(await w.host.rotationRequired == false)
     }
 
-    // Upload and fetch D's grant before failing the publication. This exercises the compromised-key
-    // boundary even when the failure happens before the host's normal grant loop.
+    // Fail the publication `failures` times inside the host, after its body (key and grants) was persisted but before it was sent.
+    // Those bytes never left the host, so the key may stay; the relay sees exactly one publication and epochs never skip.
     private func recovery(failures: Int, removal: String) async throws {
         let w = try await World.make()
         let calls = Counter()
@@ -149,12 +149,7 @@ import OrchProtocol
         await w.host.setPublishHook {
             calls.bump()
             if calls.value <= failures {
-                let e = UInt32(calls.value + 1)
-                try await w.relay.putGrant(try await w.host.grant(for: w.phone, epoch: e), token: w.hostSession.token)
-                let grants = try await RelayClient(transport: w.transport).grants(workspace: w.ws, epoch: e, session: w.phoneSession)
-                let fetched = try WKGrant.open(#require(grants.first), wsk: w.host.wskPublic, workspace: w.ws,
-                                               device: w.phoneID, deviceKey: w.env.device.kx)
-                await keys.append(fetched.wk.withUnsafeBytes { Data($0) })
+                await keys.append(await w.host.wkFor(2).withUnsafeBytes { Data($0) })
                 throw TestCrash()
             }
         }
@@ -165,7 +160,8 @@ import OrchProtocol
         for attempt in 1...failures {
             #expect(await w.host.rotationRequired)
             #expect(await w.host.epoch == 1)
-            #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: UInt32(attempt + 1)) == false)
+            #expect(await w.relay.memberListEpoch(workspace: w.ws) == 1)
+            #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 2) == false)
             if attempt < failures { _ = try await rotationRetry(w, milliseconds: Int64(100 * (1 << (attempt - 1)))) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) } }
         }
         if removal == "host" { await w.host.markRevoked(w.phoneID) }
@@ -176,23 +172,20 @@ import OrchProtocol
             }
         } else { _ = try await rotationRetry(w, milliseconds: Int64(100 * (1 << (failures - 1)))) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) } }
         let final = await w.host.epoch
-        #expect(final == UInt32(failures + 2))
+        #expect(final == 2)
         #expect(await w.host.rotationRequired == false)
         if removal == "none" {
             let list = try MemberList.verify(try await RelayClient(transport: w.transport).memberList(workspace: w.ws, session: w.phoneSession), wsk: w.host.wskPublic)
             #expect(list.epoch == final)
             #expect(Set(list.members.map(\.deviceID)) == Set([w.phoneID, w.primaryID]))
         }
-        let key = await w.host.wkFor(final).withUnsafeBytes { Data($0) }
         #expect(await keys.values.count == failures)
-        #expect(await keys.values.contains(key) == false)
         #expect(await w.host.coreState().epoch == final)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.primaryID, epoch: final))
         #expect((await w.host.coreState().members[w.phoneID] != nil) == (removal == "none"))
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: final) == (removal == "none"))
     }
 }
-
 private actor CapturedRotationKeys {
     var values: [Data] = []
     func append(_ value: Data) { values.append(value) }

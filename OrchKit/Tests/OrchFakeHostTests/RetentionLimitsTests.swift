@@ -19,7 +19,7 @@ import OrchProtocol
         #expect(try await w.transport.bridgePost(try w.envelope(rid: rid), route: route, session: w.phoneSession).status == 202)
         let rig = HostRig()
         let resp = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
-        #expect(try await w.transport.bridgePost(resp, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(resp, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         let n0 = await w.relay.storedBodyCount(), m0 = await w.relay.mailboxCount()
         #expect(n0 == 2 && m0 == 1)
         // Just inside the lifetime: still retained.
@@ -96,7 +96,7 @@ import OrchProtocol
         let over = try w.envelope(rid: ridB, payload: n + 1)
         #expect(over.count == Bridge.maxRequest + 1)
         let r = try await w.transport.bridgePost(over, route: BridgeRoute(workspaceID: w.ws, requestID: ridB), session: w.phoneSession)
-        #expect(r.status == 400 && errorCode(r) == "malformed")
+        #expect(r.status == 400 && errorCode(r) == "too_large")          // bounded ORB2 posts: 400 too_large (section 19.6)
         // The host sees exactly the one request, byte for byte.
         let pending = try await w.relay.pendingRequests(workspace: w.ws, token: w.hostSession.token)
         #expect(pending.count == 1 && pending[0].envelope == exact)
@@ -106,10 +106,11 @@ import OrchProtocol
         let w = try await World.make()
         let rig = HostRig()
         let rid = ID16.fresh(0x83), route = BridgeRoute(workspaceID: w.ws, requestID: rid)
+        #expect(try await w.postRequest(rid: rid).status == 202)
         let base = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last], dataBytes: 0).count
         let exact = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last], dataBytes: Bridge.maxChunk - base)
         #expect(exact.count == Bridge.maxChunk)
-        #expect(try await w.transport.bridgePost(exact, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(exact, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         // Through the relay and back: the device's section 8.8 check accepts the chunk it polled.
         let polled = try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession))
         #expect(polled.count == 1 && polled[0].envelope == exact)
@@ -118,8 +119,8 @@ import OrchProtocol
         let ridB = ID16.fresh(0x84)
         let over = try w.sealedResponse(rig: rig, rid: ridB, seq: 0, flags: [.last], dataBytes: Bridge.maxChunk - base + 1)
         #expect(over.count == Bridge.maxChunk + 1)
-        let r = try await w.transport.bridgePost(over, route: BridgeRoute(workspaceID: w.ws, requestID: ridB), session: w.hostSession)
-        #expect(r.status == 400 && errorCode(r) == "malformed")
+        let r = try await w.host.postBridgeChunk(over, rid: ridB, relay: w.relay, session: w.hostSession)
+        #expect(r.status == 400 && errorCode(r) == "too_large")          // bounded ORB2 posts: 400 too_large (section 19.6)
         #expect(w.check(over, rig: rig, rid: ridB, index: 0, last: true) == .drop(.size))
         let ridC = ID16.fresh(0x85)
         #expect(try chunkList(try await w.transport.bridgePoll(route: BridgeRoute(workspaceID: w.ws, requestID: ridC), after: nil, session: w.phoneSession)).isEmpty)

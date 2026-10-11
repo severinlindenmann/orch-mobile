@@ -60,6 +60,9 @@ struct WorkspaceScreen: View {
             AdaptiveStack {
                 ConnectionChip(state: model.info.connection)
                 if let message = model.info.lifecycle.message { Text(verbatim: message).font(OF.meta).foregroundStyle(OC.textMuted) }
+                if let alarm = model.info.keyAlarm {
+                    Text(verbatim: alarm).font(OF.meta).foregroundStyle(OC.danger).accessibilityIdentifier("ws.keyAlarm")
+                }
                 Text(verbatim: model.info.displayHost).font(OF.meta).foregroundStyle(OC.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
