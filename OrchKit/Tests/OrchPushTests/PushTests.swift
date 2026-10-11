@@ -10,7 +10,7 @@ import Testing
 
 enum PushVectors {
     static let root: JSONValue = {
-        try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max)
+        try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64)
     }()
     static var push: JSONValue { root["suites"]["2"]["push"] }
 }

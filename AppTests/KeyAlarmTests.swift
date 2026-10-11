@@ -8,6 +8,7 @@ import OrchProtocol
 private actor AlarmedWorkspace: WorkspaceAPI {
     var alarm: WorkspaceKeyAlarm?
     init(alarm: WorkspaceKeyAlarm?) { self.alarm = alarm }
+    func lift() { alarm = nil }
     var verifiedReceiptMs: Int64? { nil }
     func start() {}
     func setForeground(_ value: Bool) {}
@@ -46,7 +47,21 @@ final class KeyAlarmTests: XCTestCase {
         XCTAssertEqual(ws.info.keyAlarm, LiveWorkspace.keyAlarmMessage)
         XCTAssertEqual(ws.info.answerBlock, LiveWorkspace.keyAlarmMessage)
         XCTAssertTrue(LiveWorkspace.keyAlarmMessage.contains("pair again"))
+        XCTAssertTrue(LiveWorkspace.keyAlarmMessage.contains("clears when your Mac issues a new key"))
         XCTAssertFalse(LiveWorkspace.keyAlarmMessage.localizedCaseInsensitiveContains("retry"))
+    }
+
+    /// G2b D2: the block is per epoch; once the session holds a verified list at a higher epoch it reports no alarm, and the App clears it.
+    func testTheAlarmClearsAfterAHigherEpochList() async {
+        let services = LiveServices(options: options)
+        let api = AlarmedWorkspace(alarm: .conflict(epoch: 1))
+        let ws = workspace(services, api: api)
+        await ws.checkKeyAlarm()
+        XCTAssertEqual(ws.info.keyAlarm, LiveWorkspace.keyAlarmMessage)
+        await api.lift()                                   // what WorkspaceSession.keyAlarm() returns after the epoch-2 list
+        await ws.checkKeyAlarm()
+        XCTAssertNil(ws.info.keyAlarm)
+        XCTAssertNil(ws.info.answerBlock)
     }
 
     func testNoAlarmLeavesTheWorkspaceAlone() async {

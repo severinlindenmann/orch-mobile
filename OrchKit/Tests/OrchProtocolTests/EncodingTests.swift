@@ -160,3 +160,21 @@ import Testing
         #expect(prov.contains("sha256: `\(digest)`"))
     }
 }
+
+/// The deeper `StrictJSON.parse(_:maxBytes:maxDepth:)` exists only for the vector corpus: no product source may call it.
+@Suite struct StrictJSONDepthOverrideTests {
+    @Test func noProductCodeUsesTheDepthOverride() throws {
+        let kit = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var offenders: [String] = []
+        for dir in [kit.appendingPathComponent("Sources"), kit.deletingLastPathComponent().appendingPathComponent("App"),
+                    kit.deletingLastPathComponent().appendingPathComponent("NotificationService"),
+                    kit.deletingLastPathComponent().appendingPathComponent("ShareExtension")] {
+            guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
+            for case let url as URL in e where url.pathExtension == "swift" && url.lastPathComponent != "JSON.swift" {
+                if (try String(contentsOf: url, encoding: .utf8)).contains("maxDepth:") { offenders.append(url.lastPathComponent) }
+            }
+        }
+        #expect(offenders.isEmpty, "\(offenders)")
+    }
+}
+

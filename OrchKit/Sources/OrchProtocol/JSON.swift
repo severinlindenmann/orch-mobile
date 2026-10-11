@@ -57,6 +57,7 @@ public let maxJSONDepth = 16
 public struct StrictJSON {
     private let b: [UInt8]
     private var i = 0
+    private var maxDepth = maxJSONDepth
 
     /// Default input cap: 1 MiB, the largest bridge request (section 8.1). Callers with a smaller contract pass a
     /// smaller `maxBytes` (meta 64 KiB, push 3 KiB, ...). Larger inputs are refused before any parsing work.
@@ -65,6 +66,19 @@ public struct StrictJSON {
     public static func parse(_ data: Data, maxBytes: Int = StrictJSON.defaultMaxBytes) throws -> JSONValue {
         guard data.count <= maxBytes else { throw JSONError(why: "too large") }
         var p = StrictJSON(b: Array(data))
+        p.skipWS()
+        let v = try p.value(0)
+        p.skipWS()
+        guard p.i == p.b.count else { throw JSONError(why: "trailing bytes") }
+        return v
+    }
+
+    /// The same strict parser with another nesting limit. Package only: the vector corpus nests deeper than any protocol message
+    /// (checkpoint restore steps); every protocol input keeps the 16-level limit.
+    package static func parse(_ data: Data, maxBytes: Int, maxDepth: Int) throws -> JSONValue {
+        guard data.count <= maxBytes else { throw JSONError(why: "too large") }
+        var p = StrictJSON(b: Array(data))
+        p.maxDepth = maxDepth
         p.skipWS()
         let v = try p.value(0)
         p.skipWS()
@@ -98,7 +112,7 @@ public struct StrictJSON {
     private mutating func value(_ depth: Int) throws -> JSONValue {
         switch try peek() {
         case UInt8(ascii: "{"):
-            guard depth < maxJSONDepth else { throw JSONError(why: "too deep") }
+            guard depth < maxDepth else { throw JSONError(why: "too deep") }
             i += 1
             var o: [String: JSONValue] = [:]
             skipWS()
@@ -120,7 +134,7 @@ public struct StrictJSON {
                 guard c == UInt8(ascii: ",") else { throw JSONError(why: "comma") }
             }
         case UInt8(ascii: "["):
-            guard depth < maxJSONDepth else { throw JSONError(why: "too deep") }
+            guard depth < maxDepth else { throw JSONError(why: "too deep") }
             i += 1
             var a: [JSONValue] = []
             skipWS()

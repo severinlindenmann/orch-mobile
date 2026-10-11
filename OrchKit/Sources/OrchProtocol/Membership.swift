@@ -122,9 +122,14 @@ public struct MemberList: Equatable, Sendable {
     /// the grant at this epoch (`missing_grant`). Then every `persons` entry needs a member device (`other_person`), and the
     /// first list a device of the owner (`other_person`).
     public func checkRelayUpdate(cardWorkspace: ID16, previous: MemberList?, directory: Directory, nowMs: Int64) throws {
+        try checkRelayUpdate(cardWorkspace: cardWorkspace, previousRow: previous.map { Previous(listSeq: $0.listSeq, epoch: $0.epoch,
+                             members: Set($0.members.map(\.deviceID)), wkCommit: $0.wkCommit) }, directory: directory, nowMs: nowMs)
+    }
+
+    /// The same, against the relay's stored row as stored (which may lack `wk_commit`: the same epoch is then `wk_commit_changed`).
+    public func checkRelayUpdate(cardWorkspace: ID16, previousRow previous: Previous?, directory: Directory, nowMs: Int64) throws {
         guard workspace == cardWorkspace else { throw Refusal.otherWorkspace }
-        try checkSequence(previous: previous.map { Previous(listSeq: $0.listSeq, epoch: $0.epoch, members: Set($0.members.map(\.deviceID)),
-                                                            wkCommit: $0.wkCommit) })
+        try checkSequence(previous: previous)
         try checkMembers(directory: directory, nowMs: nowMs)
         try checkPersons(owner: Identifiers.personID(directory.ownerKey), first: previous == nil)
     }

@@ -9,7 +9,7 @@ import OrchTestVectors
 /// (challenge, rejection, certificate completion): same result, same post-state, byte for byte.
 @Suite struct CertQueueVectorTests {
     static let p3: [JSONValue] = {
-        let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max)
+        let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
         return root?.object?["suites"]?.object?["2"]?.object?["p3"]?.object?["cases"]?.array ?? []
     }()
 

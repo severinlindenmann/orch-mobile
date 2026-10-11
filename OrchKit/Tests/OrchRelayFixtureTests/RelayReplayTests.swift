@@ -60,7 +60,7 @@ func scalar(fromSeed seed: Data) -> Data {
 
 /// The vector person key (with its private scalar) whose person id is `person`: it signs the fixture-derived certificates.
 func personSigner(_ person: ID16) throws -> SoftwareSigner {
-    let root = try StrictJSON.parse(Vectors.data, maxBytes: .max)
+    let root = try StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
     for (name, k) in root.object?["suites"]?.object?["2"]?.object?["keys"]?.object ?? [:] where name.hasSuffix(".sig") {
         guard let seed = k.object?["seed"]?.string.flatMap({ Hex.decode($0) }) else { continue }
         let signer = try SoftwareSigner(testScalar: scalar(fromSeed: seed))
@@ -71,10 +71,10 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
 
 @Suite struct FixtureReplayTests {
     static let files = FixtureSchemaTests.files
-    /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 120 cases of the twelve PR3 directory and
-    /// membership files less the one Q10 override (SkipList `caseOverrides`), the 104 cases of the nine PR4 files, and
-    /// 15 bridge_device_post + 9 bridge_device_poll + 14 bridge_host_post cases (PR5).
-    static let expectedReplayed = 18 + 119 + 104 + 38
+    /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 121 cases of the twelve PR3 directory and
+    /// membership files (121 since G2b added wk_commit_changed), the 103 cases of the nine PR4 files, and
+    /// 15 bridge_device_post + 9 bridge_device_poll + 14 bridge_host_post cases (PR5; the two Q11 cases of the d3816ea copy are pending).
+    static let expectedReplayed = 18 + 121 + 103 + 38
 
     /// The instant of every fixture case that has one (all 386a6cb cases use 1790000000000). The three condition-only cases
     /// (victim_person_without_member, other_workspace_person_refused x2) carry no `given.now_ms`; they replay at that same instant.
@@ -201,7 +201,7 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
             }
         }
 
-        let sent = try Self.sentBody(f, c)
+        let sent = try Self.body(c.request)
         if c.given["scenario"]?.string == "exact_bytes_already_committed" { try await check(f, c, relay, body: sent) }   // the first, committing send
         try await check(f, c, relay, body: sent)
         if mustBeConsumed, let challenge { #expect(!(await relay.outstandingChallenges.contains(challenge)), "\(id): the challenge is consumed") }
@@ -292,13 +292,6 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         }
         await relay.seedMembership(workspace: fixtureWorkspace, devices: members, epoch: epoch)
         return true
-    }
-
-    /// The request body as sent: byte for byte, except that a membership publication's `wsk_a` list gains `wk_commit` until the
-    /// G2b fixtures land (PreG2b; computed once per case, so a resend is the same bytes).
-    static func sentBody(_ f: Fixtures.File, _ c: Fixtures.Case) throws -> Data {
-        if f.fileName == "membership.json", let j = c.request["json"]?.jsonValue { return try canonicalJSON(try PreG2b.upgradeBody(j)) }
-        return try body(c.request)
     }
 
     func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay, body sent: Data? = nil) async throws {

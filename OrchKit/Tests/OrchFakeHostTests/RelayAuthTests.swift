@@ -8,7 +8,7 @@ import OrchTestVectors
 @testable import OrchProtocol
 
 @Suite struct RelayAuthTests {
-    var vec: J { J(try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]["relay_auth"] }
+    var vec: J { J(try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]["relay_auth"] }
 
     /// A person that is not a Demo authority, so a live-context relay accepts its certificates. Test-only.
     func person() -> (pk: SoftwareSigner, id: ID16) {

@@ -57,7 +57,7 @@ extension J { var isNull: Bool { v.isNull } }
     }
 
     @Test func testPrimaryCertRequestVectors() async throws {
-        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]["cert_request"]
+        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]["cert_request"]
         let cases = vec["cases"].items
         #expect(cases.count == 10)
         var ok = 0
@@ -118,7 +118,7 @@ extension J { var isNull: Bool { v.isNull } }
     }
 
     @Test func testPrimaryOpenCases() async throws {
-        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]["cert_request"]
+        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]["cert_request"]
         let cases = vec["open_cases"].items
         #expect(cases.count == 5)
         var signedCerts = 0

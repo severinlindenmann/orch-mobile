@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import Testing
-import OrchTestVectors
 @testable import OrchProtocol
 
 @Suite struct CardVectorTests {
@@ -161,96 +160,51 @@ import OrchTestVectors
         return .init(ownerKey: d["owner_pk_pub"].sigPub, persons: persons, certs: certs, revoked: Set(d["revoked"].items.map(\.id)), grants: grants)
     }
 
-    /// Q10 changed two of the 386a6cb outcomes (a first list may carry any epoch up to 2^16; an epoch may rise by up to 2^16, after
-    /// which `epoch_skips` meets its missing grant). TODO(G2b): drop with the re-copy of orch-relay's G2b `member_lists`.
-    static let q10Outcomes: [String: String] = ["first_list_not_epoch_1": "ok", "epoch_skips": "missing_grant"]
-
-    /// A pre-G2b vector list: `wk_commit` (a deterministic test key per epoch) added and re-signed by `wsk_a` if the list verifies
-    /// under it; any other signed object is left to fail exactly as before. TODO(G2b): use the vectors unchanged.
-    static func preG2b(_ o: [String: JSONValue]) -> [String: JSONValue] {
-        guard o["wk_commit"] == nil, let ws = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }), let e = o["epoch"]?.int, e >= 1,
-              e <= Int64(UInt32.max) else { return o }
-        var out = o
-        out["wk_commit"] = testWKCommit(ws, e)
-        return out
-    }
-    static func preG2b(signed: JSONValue) throws -> JSONValue {
-        let wsk = try testSigner("wsk_a.sig")
-        guard let o = try? SignedObject.parse(signed).verify(kind: .memberList, key: wsk.publicKey) else { return signed }
-        return try SignedObject.sign(preG2b(o), kind: .memberList, signer: wsk).json
+    /// The relay's stored list as `checkSequence` reads it (members.py): its header, member set and `wk_commit` as stored, which a
+    /// legacy row may lack (`wk_commit_prev_missing_same_epoch_refused`).
+    static func previous(_ p: JSONValue) -> MemberList.Previous {
+        MemberList.Previous(listSeq: p["list_seq"].i64, epoch: p["epoch"].u32, members: Set(p["members"].items.map { $0["device_id"].id }),
+                            wkCommit: p["wk_commit"].string.flatMap { B64U.decode($0, length: WKCommit.length) })
     }
 
-    /// Relay vectors 386a6cb (P3-D6): 14 cases, every list with `persons` and per-member `person_id`; 3 accepted before Q10, 4 now.
+    /// Relay vectors 491b500 (P3-D6, G2b/P3-D26): 34 cases; the first-list and skip windows, burned epochs and list_seqs,
+    /// `wk_commit` shape and `wk_commit_changed`, and the certificate/grant checks after the sequence.
     @Test func memberListCases() throws {
         let cases = s2["member_lists"].items
-        #expect(cases.count == 14)
+        #expect(cases.count == 34)
         var ok = 0
         for c in cases {
             let name = c["name"].str
             do {
-                let list = try MemberList.verify(try Self.preG2b(signed: c["signed"]), wsk: c["wsk_pub"].sigPub)
-                let prev = c["prev"].isNull ? nil : try MemberList.parse(object: Self.preG2b(c["prev"].object!))
-                try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previous: prev, directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
+                let list = try MemberList.verify(c["signed"], wsk: c["wsk_pub"].sigPub)
+                try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previousRow: c["prev"].isNull ? nil : Self.previous(c["prev"]),
+                                          directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
                 ok += 1
-                if Self.q10Outcomes[name] == "ok" { continue }
                 let want = c["expect"]["ok"]
                 #expect(!want.isNull, "\(name) accepted")
                 #expect(list.epoch == want["epoch"].u32 && list.listSeq == want["list_seq"].i64, "\(name)")
+                #expect(B64U.encode(list.wkCommit) == want["wk_commit"].str, "\(name)")
                 #expect(list.persons.map(\.hex) == want["persons"].items.map(\.str), "\(name)")
                 #expect(list.members.map { $0.deviceID.hex } == want["members"].items.map { $0["device_id"].str }, "\(name)")
                 #expect(list.members.map { $0.personID.hex } == want["members"].items.map { $0["person_id"].str }, "\(name)")
                 #expect(list.members.map { $0.scopeStrings } == want["members"].items.map { $0["scopes"].items.map(\.str) }, "\(name)")
             } catch let r as Refusal {
-                #expect(r.rawValue == (Self.q10Outcomes[name] ?? c["expect"]["refuse"].str), "\(name)")
+                #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
             }
         }
-        #expect(ok == 4)
+        #expect(ok == cases.filter { !$0["expect"]["ok"].isNull }.count)
     }
 
-    // MARK: Q10 (LOCAL vectors until orch-relay G2b: Tests/OrchTestVectors/local_g2b_vectors.json)
-
-    static let local: JSONValue = try! StrictJSON.parse(LocalG2bVectors.data, maxBytes: .max)
-
-    static func localList(_ l: JSONValue) throws -> MemberList {
-        try MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": local["workspace_id"], "epoch": .int(l["epoch"].i64),
-                                      "list_seq": .int(l["list_seq"].i64), "issued_ms": 1, "persons": [], "wk_commit": l["wk_commit"],
-                                      "members": .array(l["members"].items.map { ["device_id": $0, "person_id": .string(String(repeating: "a", count: 32)),
-                                                                                   "scopes": ["look"]] })])
-    }
-
-    @Test func localWKCommitVectors() throws {
-        #expect(Self.local["labels"]["h_wk_commit"].str == Label.hWKCommit)
-        let cases = Self.local["wk_commit"].items
-        #expect(cases.count == 4)
+    /// Relay vectors 491b500: the `wk_commit` value vectors and label.
+    @Test func wkCommitVectors() throws {
+        #expect(Vectors.root["labels"]["h_wk_commit"].str == Label.hWKCommit)
+        let cases = s2["wk_commit"].items
+        #expect(!cases.isEmpty)
         for c in cases {
-            let commit = WKCommit.compute(workspace: c["workspace_id"].id, epoch: UInt32(c["epoch"].i64), wk: c["wk"].key)
-            #expect(B64U.encode(commit) == c["wk_commit"].str, "\(c["name"].str)")
-            #expect(WKCommit.matches(c["wk_commit"].b64Data, workspace: c["workspace_id"].id, epoch: UInt32(c["epoch"].i64), wk: c["wk"].key))
-            #expect(!WKCommit.matches(c["wk_commit"].b64Data, workspace: c["workspace_id"].id, epoch: UInt32(c["epoch"].i64) &+ 1, wk: c["wk"].key))
-            #expect(!WKCommit.matches(c["wk_commit"].b64Data, workspace: .random(), epoch: UInt32(c["epoch"].i64), wk: c["wk"].key))
-        }
-    }
-
-    @Test func localSequenceVectors() throws {
-        let cases = Self.local["member_list_sequence"].items
-        #expect(cases.count == 14)
-        for c in cases {
-            let next = try Self.localList(c["next"])
-            let prev = try c["prev"].isNull ? nil : Self.localList(c["prev"])
-            let p = prev.map { MemberList.Previous(listSeq: $0.listSeq, epoch: $0.epoch, members: Set($0.members.map(\.deviceID)), wkCommit: $0.wkCommit) }
-            do { try next.checkSequence(previous: p); #expect(c["expect"].str == "ok", "\(c["name"].str)") }
-            catch let r as Refusal { #expect(r.rawValue == c["expect"].str, "\(c["name"].str)") }
-        }
-    }
-
-    @Test func localSnapshotVectors() throws {
-        let cases = Self.local["member_list_snapshots"].items
-        #expect(cases.count == 10)
-        for c in cases {
-            let next = try Self.localList(c["next"])
-            let known = try c["known"].isNull ? nil : Self.localList(c["known"])
-            do { try next.checkSnapshot(cardWorkspace: Self.local["workspace_id"].id, known: known); #expect(c["expect"].str == "ok", "\(c["name"].str)") }
-            catch let r as Refusal { #expect(r.rawValue == c["expect"].str, "\(c["name"].str)") }
+            let ws = c["workspace_id"].id, e = UInt32(c["epoch"].i64), wk = c["wk"].key
+            #expect(B64U.encode(WKCommit.compute(workspace: ws, epoch: e, wk: wk)) == c["wk_commit"].str, "\(c["name"].str)")
+            #expect(WKCommit.matches(c["wk_commit"].b64Data, workspace: ws, epoch: e, wk: wk))
+            #expect(!WKCommit.matches(c["wk_commit"].b64Data, workspace: ws, epoch: e &+ 1, wk: wk))
         }
     }
 

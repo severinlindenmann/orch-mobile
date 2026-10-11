@@ -403,8 +403,7 @@ public actor DropService {
         }
         let parent = document?.descriptor.version ?? 0
         guard parent < Self.maxVersions, document == nil || document?.descriptor.objectKind == "document" else { throw DropError.malformed }
-        let epoch = try await session.currentEpoch()
-        let wk = try await session.dropSealKey(epoch)
+        let (epoch, wk) = try await session.dropSealKey()            // head-based, as the bridge (not the lagging high-water mark)
         try await check()
         let body = try DropUpload.seal(data, metadata: DropMetadata(name: name, mime: mime, size: Int64(data.count), transcript: transcript),
             object: object, workspace: card.workspace, author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig,

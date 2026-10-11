@@ -7,7 +7,7 @@ import OrchTestVectors
 /// the module's own strict parser, which doubles as a check that the parser accepts the contract's own data.
 enum Vectors {
     static let root: JSONValue = {
-        try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max)
+        try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64)
     }()
     static var suite2: JSONValue { root["suites"]["2"] }
 }

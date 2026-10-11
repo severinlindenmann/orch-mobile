@@ -9,7 +9,7 @@ import OrchTestVectors
 /// copies per record (`max(cursor, copies) + 1`); the FakeRelay passes its workspace position counter instead.
 @Suite struct RidStoreVectorTests {
     static let cases: [(suite: String, JSONValue)] = {
-        guard let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max) else { return [] }
+        guard let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64) else { return [] }
         return ["1", "2"].flatMap { suite in
             (root.object?["suites"]?.object?[suite]?.object?["p3"]?.object?["cases"]?.array ?? [])
                 .filter { ["request_replay", "chunk"].contains($0.object?["op"]?.string ?? "") }.map { (suite, $0) }

@@ -128,16 +128,24 @@ import OrchProtocol
         #expect(await w.relay.requestsReceived - sent <= 1)                 // at most the host's own inbox read; no publication
     }
 
-    /// `bad_epoch` from the relay's 2^16 step cap burns the epoch like any refusal; when the host's next epoch is that far above the
-    /// relay's, it alarms and stops instead of running away.
+    /// orch-29 host liveness: the next rotation goes to `min(EHW + 1, committed + 2^16)`; when the clamp stops it, the host raises the
+    /// alarm, keeps the gate up and sends nothing (no publication, nothing burned).
     @Test func anEpochGapOfTwoToTheSixteenAlarmsInsteadOfBurning() async throws {
         let w = try await World.make()
         await w.host.setRelayEpochFloorForTests(1 + MemberList.maxEpochStep)
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) {
+        let sent = await w.relay.requestsReceived
+        await #expect(throws: MembershipPublicationError.alarm) {
             try await w.host.rotate(remaining: w.baseRoster, relay: w.relay, session: w.hostSession)
         }
-        #expect(await w.host.relayEpochFloor == 2 + MemberList.maxEpochStep)   // the refused epoch is burned
+        #expect(await w.host.relayEpochFloor == 1 + MemberList.maxEpochStep)   // nothing was sealed or burned
         #expect(await w.host.publicationAlarm == .epochGap)
+        #expect(await w.host.rotationRequired)                                   // the gate stays up
+        #expect(await w.relay.requestsReceived == sent)
+        // the largest step the clamp allows still publishes
+        let w2 = try await World.make()
+        await w2.host.setRelayEpochFloorForTests(MemberList.maxEpochStep)
+        try await w2.host.rotate(remaining: w2.baseRoster, relay: w2.relay, session: w2.hostSession)
+        #expect(await w2.host.epoch == 1 + MemberList.maxEpochStep)
     }
 
     /// Security regression (#48 delta): a relay answers `bad_epoch` to a rotation whose roster still names device Y, so it saw Y's

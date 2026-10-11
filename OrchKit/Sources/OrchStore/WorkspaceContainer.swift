@@ -80,6 +80,13 @@ public actor WorkspaceContainer {
             // epoch still may not fall below the confirmed epoch), and the send path fetches it at once (`sealingKeyRecovering`).
             "DELETE FROM member_list_head",
         ]),
+        // G2b D2 (orch-relay 491b500): `wk_commit_conflict` stops sealing at THAT epoch only, until a verified list at a higher epoch
+        // arrives. The single durable flag of migration 12 becomes a set of blocked epochs.
+        Migration(version: 13, statements: [
+            "CREATE TABLE sealing_blocked (epoch INTEGER PRIMARY KEY)",
+            "INSERT OR IGNORE INTO sealing_blocked(epoch) SELECT value FROM meta WHERE key='wk_commit_conflict'",
+            "DELETE FROM meta WHERE key='wk_commit_conflict'",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
@@ -154,34 +161,41 @@ public actor WorkspaceContainer {
         !(try await database().query("SELECT 1 FROM request_ids WHERE id=?", [.text(id)])).isEmpty
     }
 
-    /// Records a verified member list's head (`list_seq`, epoch, `H(cj(o))`) if it does not roll back the last one (P3-D6): an
-    /// older `list_seq` is `rollback`, other content under the same `list_seq` is `conflict`, a falling epoch is `epochFell`. The
-    /// identical list again is accepted. First of all (Q10), a list whose `wk_commit` differs from one already held for its epoch
-    /// is `wkCommitConflict`, whatever its sequence: the alarm is recorded durably (the first epoch it was seen at) and nothing
-    /// else is written. An accepted list's commitment is kept for its epoch. Check and write are one transaction.
-    /// `members` are the list's device ids (hex): a later `list_seq` at the head's epoch that drops one of the head's devices is
-    /// `rotationRequired` (a removal needs a new epoch, section 7.2).
-    public func acceptMemberListHead(listSeq: Int64, epoch: Int64, digest: Data, wkCommit: Data, members: [String]) async throws {
+    /// What `acceptMemberListHead` did with a verified list.
+    public enum MemberListHeadResult: Equatable, Sendable { case advanced, noop }
+
+    /// G2b D1/D2 (orch-relay 491b500, vectors `member_list_snapshots`), in this order, in one transaction:
+    /// the same `list_seq` with the same `H(cj(o))` is a no-op (signature bytes are never compared); the same `list_seq` with other
+    /// content is `conflict` (`conflicting_snapshot`, which does not block sealing, even if its `wk_commit` differs); another
+    /// `wk_commit` than the one held for the list's epoch is `wkCommitConflict` and blocks sealing at that epoch (checked BEFORE the
+    /// stale check: a lower `list_seq` with another commitment is WSK-signed proof of two keys at one epoch); then an older `list_seq`
+    /// is `rollback`, a falling epoch `epochFell`, a removal at the same epoch `rotationRequired`. An accepted list becomes the head,
+    /// its epoch's commitment is kept, and a higher epoch lifts every sealing block below it.
+    @discardableResult
+    public func acceptMemberListHead(listSeq: Int64, epoch: Int64, digest: Data, wkCommit: Data, members: [String]) async throws -> MemberListHeadResult {
         let memberText = members.sorted().joined(separator: ",")
-        let conflict: Bool = try await database().transaction { tx in
-            if let held = try tx.query("SELECT wk_commit FROM wk_commits WHERE epoch=?", [.int(epoch)]).first?.blob("wk_commit"), held != wkCommit {
-                try tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('wk_commit_conflict', ?)", [.int(epoch)])
-                return true
+        let outcome: Result<MemberListHeadResult, MemberListHeadError> = try await database().transaction { tx in
+            let head = try tx.query("SELECT list_seq, epoch, digest, members FROM member_list_head WHERE id=1").first
+            if let head, let seq = head.int("list_seq"), let d = head.blob("digest"), listSeq == seq {
+                return d == digest ? .success(.noop) : .failure(.conflict)
             }
-            if let row = try tx.query("SELECT list_seq, epoch, digest, members FROM member_list_head WHERE id=1").first,
-               let seq = row.int("list_seq"), let e = row.int("epoch"), let d = row.blob("digest") {
-                if listSeq < seq { throw MemberListHeadError.rollback }
-                if listSeq == seq, d != digest { throw MemberListHeadError.conflict }
-                if listSeq > seq, epoch < e { throw MemberListHeadError.epochFell }
-                if listSeq > seq, epoch == e, let held = row.text("members"), !held.isEmpty,
-                   !Set(held.split(separator: ",").map(String.init)).isSubset(of: Set(members)) { throw MemberListHeadError.rotationRequired }
+            if let held = try tx.query("SELECT wk_commit FROM wk_commits WHERE epoch=?", [.int(epoch)]).first?.blob("wk_commit"), held != wkCommit {
+                try tx.execute("INSERT OR IGNORE INTO sealing_blocked(epoch) VALUES(?)", [.int(epoch)])
+                return .failure(.wkCommitConflict)
+            }
+            if let head, let seq = head.int("list_seq"), let e = head.int("epoch") {
+                if listSeq < seq { return .failure(.rollback) }
+                if epoch < e { return .failure(.epochFell) }
+                if epoch == e, let held = head.text("members"), !held.isEmpty,
+                   !Set(held.split(separator: ",").map(String.init)).isSubset(of: Set(members)) { return .failure(.rotationRequired) }
             }
             try tx.execute("INSERT OR IGNORE INTO wk_commits(epoch, wk_commit) VALUES(?,?)", [.int(epoch), .blob(wkCommit)])
+            try tx.execute("DELETE FROM sealing_blocked WHERE epoch < ?", [.int(epoch)])
             try tx.execute("INSERT INTO member_list_head(id, list_seq, epoch, digest, members) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET list_seq=excluded.list_seq, epoch=excluded.epoch, digest=excluded.digest, members=excluded.members",
                            [.int(listSeq), .int(epoch), .blob(digest), .text(memberText)])
-            return false
+            return .success(.advanced)
         }
-        if conflict { throw MemberListHeadError.wkCommitConflict }
+        return try outcome.get()
     }
 
     /// The `wk_commit` of a verified list this device accepted at `epoch`, if any.
@@ -189,10 +203,24 @@ public actor WorkspaceContainer {
         try await database().query("SELECT wk_commit FROM wk_commits WHERE epoch=?", [.int(epoch)]).first?.blob("wk_commit")
     }
 
-    /// The local alarm `wk_commit_conflict` (Q10): the first epoch at which two verified lists committed to different keys. Durable;
-    /// while it is set the device seals nothing.
-    public func wkCommitConflictEpoch() async throws -> Int64? {
-        try await database().query("SELECT value FROM meta WHERE key='wk_commit_conflict'").first?.int("value")
+    /// Every held commitment, by epoch (tests and diagnostics).
+    public func wkCommits() async throws -> [Int64: Data] {
+        var out: [Int64: Data] = [:]
+        for r in try await database().query("SELECT epoch, wk_commit FROM wk_commits") { if let e = r.int("epoch"), let c = r.blob("wk_commit") { out[e] = c } }
+        return out
+    }
+
+    /// Epochs at which `wk_commit_conflict` stopped sealing (G2b D2), ascending.
+    public func sealingBlocked() async throws -> [Int64] {
+        try await database().query("SELECT epoch FROM sealing_blocked ORDER BY epoch").compactMap { $0.int("epoch") }
+    }
+
+    /// The full head (G2b D1): `list_seq`, epoch, `H(cj(o))` and the member devices (hex, sorted).
+    public func memberListHeadRecord() async throws -> (listSeq: Int64, epoch: Int64, digest: Data, members: [String])? {
+        guard let row = try await database().query("SELECT list_seq, epoch, digest, members FROM member_list_head WHERE id=1").first,
+              let seq = row.int("list_seq"), let e = row.int("epoch"), let d = row.blob("digest") else { return nil }
+        let m = row.text("members").map { $0.isEmpty ? [] : $0.split(separator: ",").map(String.init) } ?? []
+        return (seq, e, d, m)
     }
 
     public func memberListHead() async throws -> (listSeq: Int64, epoch: Int64)? {
