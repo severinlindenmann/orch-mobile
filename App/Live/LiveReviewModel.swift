@@ -86,11 +86,15 @@ final class LiveReviewModel: QuestionReviewModel {
                 decisionID = status
                 phase = .checking
                 services.startReconcile(workspace: workspace, decisionID: status)
+            } else if services.deviceLocked {
+                // Signing needs the device key: a locked iPhone refuses before anything is signed or stored.
+                phase = .unlockToContinue
             } else {
                 phase = .notSent
             }
         }
-        await services.decisionSettled(workspace: workspace)
+        // While the answer is only being checked the question stays as it was; the settled outcome refreshes it.
+        if phase == .checking { await services.refreshPending() } else { await services.decisionSettled(workspace: workspace) }
     }
 
     private func apply(_ outcome: DecisionOutcome) async {

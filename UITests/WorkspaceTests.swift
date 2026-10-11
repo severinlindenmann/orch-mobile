@@ -40,4 +40,28 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertTrue(header.exists)
         XCTAssertTrue(header.label.contains("Laptop"), header.label)
     }
+
+    @MainActor
+    func testNewTicketIsCreatedOnTheHostOnce() {
+        let app = launch("workspace/laptop/tickets")
+        let add = app.buttons["ws.newTicket"]
+        XCTAssertTrue(add.waitForExistence(timeout: 90))
+        add.tap()
+        let title = app.textFields["ticket.new.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap(); title.typeText("Check the Demo ticket")
+        app.buttons["ticket.new.create"].tap()
+        XCTAssertTrue(app.el("ticket.new.created").waitForExistence(timeout: 60))
+        app.buttons["ticket.new.done"].tap()
+        let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'ticket.' AND label CONTAINS 'Check the Demo ticket'"))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 30))
+        XCTAssertEqual(rows.count, 1)
+    }
+
+    @MainActor
+    func testNewTicketHiddenWithoutOperateScope() {
+        let app = launch("workspace/client-vm/tickets")
+        XCTAssertTrue(app.el("ws.segment.questions").waitForExistence(timeout: 90))
+        XCTAssertFalse(app.buttons["ws.newTicket"].exists)
+    }
 }

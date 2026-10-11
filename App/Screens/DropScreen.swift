@@ -38,6 +38,8 @@ struct DropScreen: View {
                 }
             }
             Section {
+                Label("Drop is simulated in this build: nothing is uploaded or received.", systemImage: "info.circle")
+                    .font(OF.meta).foregroundStyle(OC.demo).accessibilityIdentifier("drop.simulatedBanner")
                 Text("Files and notes expire after 7 days. Links are shown as text and never opened for you.")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                 SimulationNotice()

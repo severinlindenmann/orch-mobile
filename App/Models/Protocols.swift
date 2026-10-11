@@ -30,6 +30,20 @@ protocol WorkspaceModel: AnyObject, Observable {
     func epicProgress(for epicKey: String) -> EpicProgress
     func children(of epicKey: String) -> [Ticket]
     func question(id: String) -> Question?
+    /// Only a workspace this iPhone may operate can take new tickets.
+    var canCreateTickets: Bool { get }
+    /// One `creationID` per exact draft (persisted with it until a verified result): a retry of the same fields creates once.
+    func createTicket(title: String, body: String) async -> TicketCreation
+}
+
+enum TicketCreation: Hashable, Sendable {
+    case created(key: String)
+    case failed(String)
+}
+
+extension WorkspaceModel {
+    var canCreateTickets: Bool { false }
+    func createTicket(title: String, body: String) async -> TicketCreation { .failed("Not available here.") }
 }
 
 @MainActor

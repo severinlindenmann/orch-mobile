@@ -32,4 +32,18 @@ final class MappingTests: XCTestCase {
         XCTAssertTrue(services.workspaces.isEmpty)
         XCTAssertFalse(services.isDemo)
     }
+
+    /// Under the Release configuration (scripts/check-release-flags.sh) the default initialiser must ignore every debug flag.
+    func testDefaultInitIgnoresDebugFlagsInRelease() {
+        let all = ["orch", "--ui-testing", "--demo", "--demo-seed", "--ui-preview", "--push-harness", "--initial-route", "pair",
+                   "--seed-share-quarantine", "--hold-share-import", "--share-demo-targets"]
+        let options = LaunchOptions(arguments: all)
+        #if DEBUG
+        XCTAssertTrue(options.demoSeed && options.uiPreview && options.demo)
+        #else
+        XCTAssertFalse(options.demoSeed || options.uiPreview || options.demo || options.uiTesting || options.pushHarness)
+        XCTAssertNil(options.initialRoute)
+        XCTAssertFalse(options.seedShareQuarantine || options.holdShareImport || options.shareDemoTargets)
+        #endif
+    }
 }

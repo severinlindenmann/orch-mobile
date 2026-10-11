@@ -34,9 +34,11 @@ final class SettingsTests: XCTestCase {
 
     @MainActor
     func testLeftWorkspaceCanBePairedAgainAsNewGeneration() {
-        let app = launch("settings/leave/laptop")
+        let app = launch("settings/workspace/laptop")
+        XCTAssertTrue(app.buttons["settings.leave"].waitForExistence(timeout: 90))
+        app.buttons["settings.leave"].tap()
         let confirm = app.buttons["settings.leave.confirm"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 90))
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         confirm.tap()
         XCTAssertTrue(app.el("settings.leave.done").waitForExistence(timeout: 30))
         app.buttons["settings.leave.close"].tap()

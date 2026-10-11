@@ -7,6 +7,7 @@ struct WorkspaceScreen: View {
     @State private var segment: WorkspaceSegment
     @State private var model: any WorkspaceModel
     @State private var composing = false
+    @State private var newTicket = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     init(services: any AppServices, workspaceID: String, segment: WorkspaceSegment) {
@@ -43,6 +44,7 @@ struct WorkspaceScreen: View {
                 .accessibilityIdentifier("ws.settings")
             }
         }
+        .sheet(isPresented: $newTicket) { NewTicketSheet(model: model) { newTicket = false } }
         .sheet(isPresented: $composing) {
             DropComposeSheet(model: services.drop, preset: workspaceID) {}
         }
@@ -140,6 +142,10 @@ struct WorkspaceScreen: View {
     @ViewBuilder
     private var tickets: some View {
         Section("Tickets") {
+            if model.canCreateTickets {
+                Button { newTicket = true } label: { Label("New ticket", systemImage: "plus") }
+                    .accessibilityIdentifier("ws.newTicket")
+            }
             ForEach(model.tickets) { t in
                 NavigationLink(value: Route.ticket(workspace: workspaceID, key: t.key)) {
                     TicketRow(ticket: t, progress: t.kind == .factoryEpic ? model.epicProgress(for: t.key) : nil)

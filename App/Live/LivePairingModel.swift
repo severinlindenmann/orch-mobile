@@ -124,6 +124,9 @@ final class LivePairingModel: PairingFlowModel {
         case .idle, .parsing: break
         case .connecting: state = .connecting
         case .comparingHost(let code): state = .comparingHost(sas: code)
+        case .waitingPrimary(_, _, let challengeExpired) where challengeExpired:
+            // The challenge ran out: the code is hidden everywhere and nothing can be approved (no deadline is extended).
+            state = .expired
         case .waitingPrimary(let label, let deadlineMs, _):
             state = .waitingPrimary(primaryLabel: label, deadline: runtime.date(forMs: deadlineMs))
         case .comparingPrimary(let code, let label, let expiresMs):
@@ -227,18 +230,22 @@ final class LivePairingModel: PairingFlowModel {
     }
 
     func codeTimeElapses() {
-        guard case .comparingPrimary = state else { return }
-        Task { await services.demoRuntime()?.fastForward(seconds: 125) }
+        guard case .comparingPrimary(_, _, let expires) = state else { return }
+        // Move the shared Demo clock exactly to the signed expiry (plus a second), never past what the coordinator would accept.
+        Task { await services.demoRuntime()?.fastForward(seconds: max(1, Int(expires.timeIntervalSinceNow.rounded(.up)) + 1)) }
     }
 
     // MARK: Panel refresh (the fakes' own screens)
 
     private func startPanelRefresh() {
         panelTask?.cancel()
+        let mine0 = generation
         panelTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, let runtime = await self.services.demoRuntime() else { return }
                 let device = runtime.env.deviceID
+                // The coordinator derives its state from time (a code hides the instant it expires); sample it as well as the stream.
+                if let c = self.coordinator, self.generation == mine0 { self.apply(await c.state, runtime: runtime) }
                 if let host = self.entry?.host {
                     let pending = await host.pendingPairings().first { $0.device == device && $0.state == "pending" }
                     self.demoHostCode = pending?.sas ?? ""

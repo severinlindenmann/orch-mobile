@@ -84,6 +84,34 @@ final class LiveWorkspace: WorkspaceModel {
         services?.snapshotApplied(self)
     }
 
+    // MARK: New ticket
+
+    private struct Draft: Codable, Equatable { var title: String, body: String, id: String }
+
+    private var draftKey: String { "orch.ticket.draft." + workspaceID.hex }
+
+    var canCreateTickets: Bool { info.scopes.contains(.operate) }
+
+    /// The creation ID is persisted with the exact draft; the same fields reuse it, an edit gets a new one, success clears it.
+    func createTicket(title: String, body: String) async -> TicketCreation {
+        let defaults = UserDefaults.standard
+        let saved = defaults.data(forKey: draftKey).flatMap { try? JSONDecoder().decode(Draft.self, from: $0) }
+        let draft = (saved?.title == title && saved?.body == body ? saved : nil)
+            ?? Draft(title: title, body: body, id: SystemEntropy().id16().hex)
+        if let data = try? JSONEncoder().encode(draft) { defaults.set(data, forKey: draftKey) }
+        guard let id = ID16(hex: draft.id) else { return .failed("Could not prepare the ticket.") }
+        do {
+            let ticket = try await api.newTicket(NewTicketSubmission(creationID: id, title: title, body: body, epicKey: nil))
+            defaults.removeObject(forKey: draftKey)
+            await refresh()
+            return .created(key: ticket.key)
+        } catch ViewError.invalidDraft {
+            return .failed("The title or text has characters that cannot be sent. Remove them and try again.")
+        } catch {
+            return .failed("The ticket was not confirmed. Try again; it will not be created twice.")
+        }
+    }
+
     // MARK: WorkspaceModel
 
     var waiting: [Question] { questions.filter(\.isOpen).sorted { $0.created < $1.created } }

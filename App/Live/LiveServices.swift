@@ -236,7 +236,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         reconcileTasks[key]?.cancel()
         reconcileTasks[key] = Task { [weak self] in
             for _ in 0..<6 {
-                do { try await Task.sleep(for: .seconds(4)) } catch { return }
+                do { try await Task.sleep(for: .seconds(self?.options.uiTesting == true ? 20 : 4)) } catch { return }
                 guard let self else { return }
                 if let outcome = try? await workspace.api.reconcile(decisionID: decisionID), outcome != .uncertain {
                     await self.decisionSettled(workspace: workspace)
@@ -280,6 +280,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
     }
 
+    var deviceLocked: Bool { runtime?.lock.isLocked ?? false }
     func unlockDevice() { runtime?.lock.isLocked = false }
 
     // MARK: DropModel (simulated: no Drop service yet)

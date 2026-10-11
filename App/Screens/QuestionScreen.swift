@@ -30,7 +30,8 @@ struct QuestionScreen: View {
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
-                    if let r = q.resolution {
+                    // A submission still being checked is shown as such even if a snapshot already carries the resolution.
+                    if let r = q.resolution, !services.home.pendingDecisions.contains(where: { $0.questionID == q.id }) {
                         resolved(q, r)
                     } else {
                         answers(q, info)
