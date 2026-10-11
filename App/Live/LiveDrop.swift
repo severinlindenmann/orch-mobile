@@ -53,7 +53,7 @@ final class LiveDrop {
         switch error {
         case SQLiteError.busy, TombstoneError.lockFailed: status = "Busy lock: try again"
         case DropError.rollback, DropError.integrity, DropError.malformed, DropStoreError.rollback, Refusal.badSignature, Refusal.malformed, Refusal.conflictingSnapshot,
-             Refusal.staleList, Refusal.staleCard, SessionError.pairAgain, SessionError.grantConflict, SessionError.badResponse, is DropDocument.Fork, is CryptoFailure, is CryptoKitError:
+             Refusal.wkCommitConflict, Refusal.rotationRequired, Refusal.staleList, Refusal.staleCard, SessionError.pairAgain, SessionError.grantConflict, SessionError.badResponse, is DropDocument.Fork, is CryptoFailure, is CryptoKitError:
             alarm = true; status = "Verification alarm"; metadata = [:]; downloads = [:]; previewURL = nil
             for index in rows.indices { rows[index].name = "Blocked item"; rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil; rows[index].verified = false }
             alarmCleanup = Task {
@@ -61,7 +61,7 @@ final class LiveDrop {
                 do { try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max) }
                 catch { status = "Verification alarm: local cleanup needs retry" }
             }
-        case DropError.unavailableKey, SessionError.noKeyForEpoch, SessionError.epochUnavailable: status = "Key unavailable: retry later"
+        case DropError.unavailableKey, SessionError.noKeyForEpoch, SessionError.epochUnavailable, SessionError.wkCommitMismatch: status = "Key unavailable: retry later"
         case DropError.unauthorized, ClientError.host(.forbiddenScope), ClientError.host(.scopeChanged), ClientError.host(.notMember), ClientError.host(.revoked): unauthorized = true; previewURL = nil; status = "Action unavailable"
         default: status = "Unavailable: retry later"
         }
