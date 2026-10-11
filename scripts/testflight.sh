@@ -64,7 +64,7 @@ body() { sed '$d'; }
 code() { tail -1; }
 attach_build() { # build-id: add to internal group "Owner" (create if missing)
   local BUILD_ID=$1 R GROUP_ID
-  R=$(api GET "/v1/apps/$APP_ID/betaGroups?filter%5Bname%5D=$GROUP_NAME&limit=50")
+  R=$(api GET "/v1/apps/$APP_ID/betaGroups?limit=200")  # this endpoint rejects filter[name]; select by name below
   [ "$(echo "$R" | code)" = 200 ] || die "betaGroups query failed"
   GROUP_ID=$(echo "$R" | body | jq -r --arg n "$GROUP_NAME" '[.data[]|select(.attributes.name==$n and .attributes.isInternalGroup==true)][0].id // empty')
   if [ -z "$GROUP_ID" ]; then
