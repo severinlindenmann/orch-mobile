@@ -78,7 +78,7 @@ final class LivePairingModel: PairingFlowModel {
             if let invitation = try? await runtime.createInvitation(scenario: services.pairingScenario) {
                 guard mine == invitationRevision, !Task.isCancelled else { return }
                 demoOfferLink = invitation.link
-                entry = invitation.entry
+                // The new offer is separate from the entry used by the active coordinator.
                 startPanelRefresh()
             }
         }

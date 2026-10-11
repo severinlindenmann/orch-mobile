@@ -51,6 +51,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
     @ObservationIgnored var resetRuntime: (DemoRuntime) async throws -> Void = { try await $0.reset() }
 
+    @ObservationIgnored var finishInterruptedReset: () async throws -> Void = { try await DemoRuntime.finishInterruptedReset() }
+
     func state(for id: String) -> WorkspaceLifecycle { lifecycle[id] ?? .removed }
     func isLive(_ id: String) -> Bool { state(for: id) == .live }
     func canUse(_ id: String) -> Bool { active && isLive(id) }
@@ -82,7 +84,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("orch.ticket.draft.") { defaults.removeObject(forKey: key) }
         if !options.uiTesting, resetFlags.bool(forKey: Keys.resetPending) {
             // A Demo reset was interrupted: finish it first, whether or not Demo was entered.
-            if (try? await DemoRuntime.finishInterruptedReset()) != nil { resetFlags.set(false, forKey: Keys.resetPending) }
+            do {
+                try await finishInterruptedReset()
+                resetFlags.set(false, forKey: Keys.resetPending)
+                resetIncomplete = false
+            } catch {
+                resetIncomplete = true
+            }
         }
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
@@ -535,7 +543,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             for ws in workspaces { await ws.stop() }
             do {
                 if let pending = self.failedReset { try await self.resetRuntime(pending) }
-                else if !self.options.uiTesting { try await DemoRuntime.finishInterruptedReset() }
+                else if !self.options.uiTesting { try await self.finishInterruptedReset() }
                 self.failedReset = nil
                 for id in self.lifecycle.keys { self.transition(id, to: .removed) }
                 self.resetFlags.set(false, forKey: Keys.resetPending)

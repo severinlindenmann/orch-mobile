@@ -119,8 +119,26 @@ final class LiveLifecycleTests: XCTestCase {
         await waitUntil { await gate.entered }
         model.demoNewLink()
         await bounded { await model.waitForInvitation() }
+        XCTAssertFalse(model.demoOfferLink.isEmpty)
         await gate.resume()
         await waitUntil { model.runStarts == 1 }
+        await waitUntil {
+            if case .comparingHost(let sas) = model.state { return !sas.isEmpty && model.demoHostCode == sas }
+            return false
+        }
+        let hostCode = model.demoHostCode
+        let previousOffer = model.demoOfferLink
+        model.demoNewLink()
+        await bounded { await model.waitForInvitation() }
+        XCTAssertNotEqual(model.demoOfferLink, previousOffer)
+        // Let the restarted panel sample the host after the new invitation was created.
+        await bounded { try? await Task.sleep(for: .milliseconds(650)) }
+        XCTAssertEqual(model.demoHostCode, hostCode)
+        model.hostApprove()
+        await waitUntil {
+            if case .waitingPrimary = model.state { return true }
+            return false
+        }
         model.screenClosed()
         services.exitDemo()
         await bounded { await services.waitForReset() }
@@ -192,6 +210,36 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertFalse(services.resetIncomplete)
         XCTAssertEqual(attempts, 2)
         XCTAssertEqual(services.state(for: ws.info.id), .removed)
+    }
+
+    func testFailedLaunchResetRecoveryShowsFailureAndCanRetry() async {
+        let suite = "orch.reset-test.\(UUID().uuidString)"
+        let flags = UserDefaults(suiteName: suite)!
+        let defaults = UserDefaults.standard
+        let previousDemo = defaults.object(forKey: "orch.demo.entered")
+        defaults.set(false, forKey: "orch.demo.entered")
+        defer {
+            flags.removePersistentDomain(forName: suite)
+            if let previousDemo { defaults.set(previousDemo, forKey: "orch.demo.entered") }
+            else { defaults.removeObject(forKey: "orch.demo.entered") }
+        }
+        flags.set(true, forKey: "orch.demo.resetPending")
+        let services = LiveServices(options: .parse(arguments: [], debug: true), resetFlags: flags)
+        var attempts = 0
+        services.finishInterruptedReset = {
+            attempts += 1
+            if attempts == 1 { throw ViewError.offline }
+        }
+        await bounded { await services.boot() }
+        XCTAssertTrue(services.ready)
+        XCTAssertTrue(services.resetIncomplete)
+        XCTAssertTrue(flags.bool(forKey: "orch.demo.resetPending"))
+        XCTAssertEqual(attempts, 1)
+        services.exitDemo()
+        await bounded { await services.waitForReset() }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertFalse(services.resetIncomplete)
+        XCTAssertFalse(flags.bool(forKey: "orch.demo.resetPending"))
     }
 
     func testOverlappingResetsRetryFailedContext() async throws {
