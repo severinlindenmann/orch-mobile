@@ -21,9 +21,8 @@ actor Flag { var v = false; func set() { v = true } }
         let runner = Task { await o.coordinator.run() }
         let done = Flag()
         let canceller = Task { await o.coordinator.cancel(); await done.set() }
-        try await Task.sleep(nanoseconds: 3_000_000_000)   // real time
-        let cancelledInTime = await done.v
-        print("SEC A1: cancel completed within 3s while run() active: \(cancelledInTime)")
+        let cancelledInTime = await eventually("cancel() completes while run() is active", timeoutSeconds: 60) { await done.v }
+        print("SEC A1: cancel completed within 60s while run() active: \(cancelledInTime)")
         runner.cancel()
         _ = await canceller.value
         print("SEC A1: after runner.cancel, vault items: \(o.vaultItems.map(\.purpose))")

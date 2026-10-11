@@ -23,7 +23,9 @@ actor HookGate {
     }
     func release(_ name: String) { holds.remove(name); waiting.removeValue(forKey: name)?.resume() }
     func waitArrived(_ name: String) async {
-        for _ in 0..<200_000 { if arrived.contains(name) { return }; await Task.yield() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        while ContinuousClock.now < deadline { if arrived.contains(name) { return }; await Task.yield() }
+        Issue.record("hook \(name) was not reached within 60 s of real time (arrived: \(arrived))")
     }
 }
 
@@ -90,7 +92,7 @@ extension PairHarness {
                 let poller = Task { await h.coordinator.poll() }
                 await gate.waitArrived(point)
                 let canceller = Task { await h.coordinator.cancel() }
-                for _ in 0..<50 { await Task.yield() }
+                await settleBriefly(yields: 50)
                 #expect(await h.coordinator.state != .cancelled, "\(scenario) \(point): cancel must wait for the installer")
                 await gate.release(point)
                 await poller.value; await canceller.value
@@ -122,7 +124,7 @@ extension PairHarness {
         let poller = Task { await h.coordinator.poll() }
         await gate.waitArrived("install.precommit")
         let dismisser = Task { await h.coordinator.dismiss() }
-        for _ in 0..<50 { await Task.yield() }
+        await settleBriefly(yields: 50)
         await gate.release("install.precommit")
         await poller.value; await dismisser.value
         let wss = try await h.env.index.workspaces()
@@ -273,12 +275,8 @@ extension PairHarness {
         #expect(try await h.completeFirstTime() == .failed(.joiningTimedOut))
         // run() does not spin and does not block cancel; the window ends by itself
         let runner = Task { await h.coordinator.run() }
-        for _ in 0..<50 { await Task.yield() }
-        for _ in 0..<40 {
-            h.clock.advance(milliseconds: 20_000)
-            for _ in 0..<30 { await Task.yield() }
-            if (await h.coordinator.state).isTerminal { break }
-        }
+        let ended = try await h.tickRunLoop(stepMs: 20_000, simCapMs: 800_000, until: { $0.isTerminal })
+        #expect(ended.met, "run() did not end the join window: \(ended.diagnostics)")
         #expect(await h.coordinator.state == .expired(.afterApproval))
         await runner.value
         let wss = try await h.env.index.workspaces()
@@ -608,7 +606,7 @@ extension PairHarness {
         let gate = HookGate(); await gate.hold("resume.row")
         await c.setHook { await gate.hit($0) }
         let resumer = Task { await c.resume(ws: h.host.workspace) }
-        for _ in 0..<20 { await Task.yield() }
+        await gate.waitArrived("resume.row")                          // resume owns the lifecycle and is parked
         await c.cancel()
         await gate.release("resume.row")
         #expect(await resumer.value == .cancelled)
@@ -620,21 +618,36 @@ extension PairHarness {
     }
 
     @Test func concurrentStartAndResumeDoNotSupersedeEachOther() async throws {
-        let h = try await PairHarness.make(.firstTime)
-        _ = try await h.startToHostCode()
-        let c = h.fresh()
-        let other = try await h.rig.newOffer()
-        let link = try h.link(other)
-        async let a = c.resume(ws: h.host.workspace)
-        async let b = c.start(link: link)
-        let (ra, rb) = await (a, b)
-        // exactly one owns the lifecycle; the other returned the current state without touching anything
-        let owned = [ra, rb].filter { $0 == .connecting(origin: DemoRelay.origin) }
-        #expect(owned.count >= 1)
-        let rows = try await h.env.index.pairings()
-        #expect(rows.count == 1)
-        let rec = try #require(h.pairingRecord)
-        #expect(rec.ws == h.host.workspace)
+        // Which of two truly concurrent calls reserves the lifecycle first is a scheduler decision, so each order is forced through a
+        // hook that parks the first caller right after it reserved: the second then runs to completion against a held lifecycle.
+        for resumeFirst in [true, false] {
+            let tag = Comment(rawValue: resumeFirst ? "resume first" : "start first")
+            let h = try await PairHarness.make(.firstTime)
+            _ = try await h.startToHostCode()
+            let c = h.fresh()
+            let link = try h.link(try await h.rig.newOffer())
+            let ws = h.host.workspace
+            let gate = HookGate(); await gate.hold(resumeFirst ? "resume.row" : "start.reserved")
+            await c.setHook { await gate.hit($0) }
+            let first = resumeFirst ? Task { await c.resume(ws: ws) } : Task { await c.start(link: link) }
+            await gate.waitArrived(resumeFirst ? "resume.row" : "start.reserved")
+            // the second caller returns at once, without touching anything: it neither supersedes nor is superseded
+            let second = resumeFirst ? await c.start(link: link) : await c.resume(ws: ws)
+            #expect(second == .parsing, tag)
+            #expect(await c.state == .parsing, tag)
+            await gate.release(resumeFirst ? "resume.row" : "start.reserved")
+            let r = await first.value
+            if resumeFirst {
+                #expect(r == .connecting(origin: DemoRelay.origin), tag)
+            } else {
+                // the offer names the workspace that already has a pairing row: refused, and the stored pairing is untouched
+                #expect(r == .failed(.verification(reason: "pairing_in_progress")), tag)
+            }
+            let rows = try await h.env.index.pairings()
+            #expect(rows.count == 1, tag)
+            let rec = try #require(h.pairingRecord, tag)
+            #expect(rec.ws == ws, tag)
+        }
     }
 
     // MARK: a locked keychain is not a missing record

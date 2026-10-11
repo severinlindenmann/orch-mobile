@@ -20,7 +20,17 @@ actor StateLog {
     }
     private func add(_ s: PairingState) { states.append(s) }
     func stop() { task?.cancel() }
-    func settled() async { for _ in 0..<50 { await Task.yield() } }
+    /// Waits (real-time bound 60 s) until the log has consumed everything the coordinator published, i.e. its last entry is the
+    /// coordinator's current state, then gives a few more yields for anything published after.
+    func settled(_ c: PairingCoordinator) async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        while ContinuousClock.now < deadline {
+            if states.last == (await c.state) { break }
+            await Task.yield()
+        }
+        if states.last != (await c.state) { Issue.record("StateLog did not catch up within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")") }
+        for _ in 0..<10 { await Task.yield() }
+    }
     var showedHostCode: Bool { states.contains { isComparingHost($0) } }
     var showedPrimaryCode: Bool { states.contains { isComparingPrimary($0) } }
 }
@@ -115,7 +125,7 @@ extension PairHarness {
                 // echoWrongKey / linkUsed: the failure comes before any host code
                 final = try await h.drive(until: { $0.isTerminal })
             }
-            await log.settled(); await log.stop()
+            await log.settled(h.coordinator); await log.stop()
             switch plan.outcome {
             case .ready: #expect(isReady(final), "\(name): \(final)")
             case .rejected: #expect(final == .rejected, "\(name): \(final)")
@@ -242,7 +252,7 @@ extension PairHarness {
         let (_, hostCode) = try await h.startToHostCode()
         try await h.hostApproves()
         guard case .alarm(let alarm) = try await h.drive(until: isAlarm) else { Issue.record("no alarm"); return }
-        await log.settled()
+        await log.settled(h.coordinator)
         #expect(alarm.kind == .r1Challenge)
         // the attacker's challenge names another key: the primary has a code, the phone shows none and never did
         let prompt = try #require(await h.primary.openPrompts().first)
@@ -269,7 +279,7 @@ extension PairHarness {
             let offer = try await h.rig.newOffer()
             _ = await h.coordinator.start(link: try h.link(offer))
             guard case .alarm(let a) = try await h.drive(until: isAlarm) else { Issue.record("no alarm"); return }
-            await log.settled()
+            await log.settled(h.coordinator)
             #expect(a.kind == .echoWrongKey && a.instruction == "Reject on your Mac (host)")
             let hc = await log.showedHostCode, pc = await log.showedPrimaryCode
             #expect(!hc && !pc)         // before any SAS
@@ -621,29 +631,20 @@ extension PairHarness {
         let offer = try await h.rig.newOffer()
         _ = await h.coordinator.start(link: try h.link(offer))
         let runner = Task { await h.coordinator.run() }
-        func tick(_ until: (PairingState) -> Bool, steps: Int = 300) async throws -> PairingState {
-            for _ in 0..<steps {
-                let s = await h.coordinator.state
-                if until(s) { return s }
-                try await h.rig.pump()
-                for _ in 0..<100 where h.clock.sleeperCount == 0 { await Task.yield() }
-                h.clock.advance(milliseconds: 1000)
-                for _ in 0..<20 { await Task.yield() }
-            }
-            return await h.coordinator.state
+        // The clock advances only while run() is parked on it; the fakes act between ticks.
+        func tick(pump: Bool = true, _ until: @escaping @Sendable (PairingState) -> Bool) async throws -> PairingState {
+            let r = try await h.tickRunLoop(pump: pump, until: until)
+            if !r.met { Issue.record("run loop did not reach the expected state: \(r.diagnostics)") }
+            return r.state
         }
         guard case .comparingHost = try await tick(isComparingHost) else { Issue.record("no host code"); return }
         try await h.hostApproves()
-        guard case .comparingPrimary(_, _, let expires) = try await tick(isComparingPrimary) else { Issue.record("no cert code"); return }
-        // time passes on the primary's side with nobody acting: the code disappears at expires_ms by itself
-        while h.clock.nowMs < expires - 1500 { h.clock.advance(milliseconds: 1000); for _ in 0..<20 { await Task.yield() } }
-        for _ in 0..<50 { await Task.yield() }
-        h.clock.advance(milliseconds: 2000)
-        for _ in 0..<200 { await Task.yield() }
-        let hidden = await h.coordinator.state
+        guard case .comparingPrimary = try await tick(isComparingPrimary) else { Issue.record("no cert code"); return }
+        // time passes on the primary's side with nobody acting but run(): the code disappears at expires_ms by itself
+        let hidden = try await tick(pump: false, { if case .waitingPrimary(_, _, true) = $0 { return true }; return false })
         guard case .waitingPrimary(_, _, let challengeExpired) = hidden else { Issue.record("code still shown: \(hidden)"); runner.cancel(); return }
         #expect(challengeExpired)
-        await log.settled()
+        await log.settled(h.coordinator)
         let seen = await log.states
         if let i = seen.lastIndex(where: isComparingPrimary) { #expect(seen[(i + 1)...].allSatisfy { !isComparingPrimary($0) }) }
         runner.cancel(); await log.stop()
