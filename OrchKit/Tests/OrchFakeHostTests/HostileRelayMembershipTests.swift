@@ -55,7 +55,7 @@ extension FakeHost {
 
 @Suite struct HostileRelayMembershipTests {
     /// S1: a hostile relay hands the phone the WSK-signed grant of a publication it refused (epoch 2, key K'). The phone keeps it
-    /// unconfirmed; when the committed epoch-2 grant (key K) arrives with its list, K replaces K' instead of locking the phone out.
+    /// unconfirmed; when the committed epoch-2 grant (key K) arrives with its list, the list's wk_commit picks K over K' (Q10).
     @Test func refusedBodysGrantDoesNotPinTheEpoch() async throws {
         let w = try await World.make()
         let hostile = ReplayingTransport(w.transport)
@@ -70,8 +70,65 @@ extension FakeHost {
         #expect(try await phone.session.refreshGrants() == 2)
         let stored = try #require(try w.vault.scoped(to: .demo).get(ws: w.ws.hex, purpose: "wk.2"))
         #expect(stored == (await w.host.wkFor(2)).withUnsafeBytes { Data($0) })
-        // once confirmed, another key for epoch 2 is a conflict again
-        await #expect(throws: SessionError.grantConflict) { try await phone.session.install(epoch: 2, key: SymmetricKey(size: .bits256)) }
+        // once a list commits epoch 2, no other key is ever kept for it
+        await #expect(throws: SessionError.wkCommitMismatch(2)) { try await phone.session.install(epoch: 2, key: SymmetricKey(size: .bits256)) }
+    }
+
+    /// Q10 (formerly the S1 lockout gap): the hostile relay serves the refused key K' in the very refresh that brings the epoch-2
+    /// list. The list's wk_commit names K, so K' is not kept and nothing is sealed (no_key, never a fallback to epoch 1); the next
+    /// honest refresh brings K and the phone seals at epoch 2.
+    @Test func refusedKeyServedWithTheConfirmingListIsNotPinned() async throws {
+        let w = try await World.make()
+        await w.host.setHandler { _ in .response(status: 200, headers: ["content-type": "application/json"], data: Data("ok".utf8)) }
+        let hostile = ReplayingTransport(w.transport)
+        let phone = try await w.makePhone(transport: hostile)
+        let refused = try await w.host.grant(for: w.phone, epoch: 2)
+        await w.host.forgetUncommittedKey(2)
+        try await w.host.rotate(remaining: w.baseRoster, relay: w.relay, session: w.hostSession)
+        let g1 = try await RelayClient(transport: w.transport).grants(workspace: w.ws, session: w.phoneSession).filter {
+            $0.object?["o"]?.object?["epoch"] == .int(1)
+        }
+        hostile.serveGrants(g1 + [refused])
+        #expect(try await phone.session.refreshGrants() == 1)               // the epoch-2 list is held, its key is not
+        #expect(try await phone.container.memberListHead()?.epoch == 2)
+        await #expect(throws: SessionError.noKeyForEpoch(1)) { _ = try await phone.session.exchange(meta: httpGet) }
+        #expect(try await phone.session.pendingRequests().isEmpty)          // nothing was sealed
+        hostile.serveGrants(nil)
+        #expect(try await phone.session.refreshGrants() == 2)
+        let r = try await w.serve(phone) { try await phone.session.exchange(meta: httpGet) }
+        #expect(r.status == 200)
+    }
+
+    /// Q10: two WSK-signed lists at one epoch with different wk_commit raise the durable local alarm; sending stops.
+    @Test func twoCommitmentsAtOneEpochRaiseTheAlarm() async throws {
+        let w = try await World.make()
+        let phone = try await w.makePhone()
+        let forked = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"])], epoch: 1, listSeq: 2,
+                                                 wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
+        await #expect(throws: Refusal.wkCommitConflict) { _ = try await phone.session.acceptMemberList(forked) }
+        #expect(try await phone.session.wkCommitConflictEpoch() == 1)
+        #expect(try await phone.container.memberListHead()?.listSeq == 1)   // nothing else was written
+        await #expect(throws: SessionError.noKeyForEpoch(1)) { _ = try await phone.session.exchange(meta: httpGet) }
+        // an older list_seq with the other commitment is the same alarm (not merely stale_list)
+        let older = try await w.host.memberList([(w.primaryID, World.all)], epoch: 1, listSeq: 1,
+                                                wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
+        await #expect(throws: Refusal.wkCommitConflict) { _ = try await phone.session.acceptMemberList(older) }
+    }
+
+    /// Phone-side enforcement (security review of #46): a later list at the head's epoch that drops a device is refused
+    /// (rotation_required), and a listed person without a member device is other_person, before anything is recorded.
+    @Test func phoneRefusesARemovalWithoutRotationAndAnUnboundPerson() async throws {
+        let w = try await World.make()
+        let phone = try await w.makePhone()
+        let dropped = try await w.host.memberList([(w.phoneID, ["look", "decide"])], epoch: 1, listSeq: 2)
+        await #expect(throws: Refusal.rotationRequired) { _ = try await phone.session.acceptMemberList(dropped) }
+        let unbound = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"])], epoch: 1, listSeq: 2,
+                                                  persons: [ID16.random()])
+        await #expect(throws: Refusal.otherPerson) { _ = try await phone.session.acceptMemberList(unbound) }
+        #expect(try await phone.container.memberListHead()?.listSeq == 1)
+        // with the bump it is a rotation, accepted
+        let rotated = try await w.host.memberList([(w.phoneID, ["look", "decide"])], epoch: 2, listSeq: 2)
+        #expect(try await phone.session.acceptMemberList(rotated).epoch == 2)
     }
 
     /// S2: the phone persists the head of the last list it accepted and refuses a rollback, even at the same epoch.

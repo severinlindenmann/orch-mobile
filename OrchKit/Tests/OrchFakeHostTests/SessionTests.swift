@@ -362,8 +362,8 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         let ids = try w.vault.ids().filter { $0.ws == w.ws.hex }
         #expect(ids.map(\.purpose) == ["wk.1"] && ids.allSatisfy { $0.realm == .demo })
         #expect(try await phone.container.epochHighWater() == 1)
-        // A different key for an installed epoch is a conflict, never a replacement.
-        await #expect(throws: SessionError.grantConflict) { try await phone.session.install(epoch: 1, key: SymmetricKey(size: .bits256)) }
+        // A different key for an installed epoch is refused (the held list commits the installed one), never a replacement.
+        await #expect(throws: SessionError.wkCommitMismatch(1)) { try await phone.session.install(epoch: 1, key: SymmetricKey(size: .bits256)) }
     }
 }
 
