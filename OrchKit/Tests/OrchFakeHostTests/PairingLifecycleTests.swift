@@ -488,7 +488,7 @@ extension PairHarness {
         await gate.release("cert_request.post")
         await #expect(throws: PairingApprovalError.notPending) { try await approver.value }
         #expect(await h.host.pairingState(of: h.phoneID) == "rejected")
-        #expect(await h.relay.pendingCertRequests(primary: h.primary.deviceID).isEmpty)       // revalidated before the post: nothing was asked of the primary
+        #expect(await h.relay.certRequestQueueSize() == 0)       // revalidated before the post: nothing was asked of the primary
         #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
         #expect(await h.noKeyMaterial(for: h.phoneID))
     }

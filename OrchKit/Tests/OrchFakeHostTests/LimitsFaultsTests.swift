@@ -37,7 +37,7 @@ import OrchProtocol
         let e1 = try w.envelope(rid: rid, seq: 3, epoch: 1, stream: offer)
         #expect(try await raw("\(base)/\(offer.hex)/\(rid.hex)", body: e1).status == 400)
         let resp = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer)
-        #expect(try await raw("\(base)/\(offer.hex)/\(rid.hex)", body: resp).status == 400)
+        #expect(try await raw("\(base)/\(offer.hex)/\(rid.hex)", body: resp).status == 401)         // a host answer needs W(g)
         let big = try w.envelope(rid: rid, seq: 4, epoch: 0, stream: offer, payload: 64 * 1024)
         #expect(big.count > 64 * 1024)
         #expect(try await raw("\(base)/\(offer.hex)/\(rid.hex)", body: big).status == 400)
@@ -48,7 +48,7 @@ import OrchProtocol
         // The host answers with its workspace session; the phone polls without a bearer and anyone with the ids can read ciphertext.
         let answer = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
         let posted = try await w.transport.pairingPost(answer, route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid))
-        #expect(posted.status == 400)                                  // still no bearer: pairingPost sends none
+        #expect(posted.status == 401 && errorCode(posted) == "unauthenticated")      // still no bearer: pairingPost sends none
         let bearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
                                                         headers: ["Authorization": "Bearer " + w.hostSession.token], body: answer, clientAddress: "h"))
         #expect(bearer.status == 202)

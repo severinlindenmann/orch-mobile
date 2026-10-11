@@ -14,6 +14,8 @@ public enum PairingScenario: String, CaseIterable, Sendable {
     public enum Outcome: Equatable, Sendable {
         case ready
         case rejected
+        /// The primary's PK-signed rejection reached the phone and verified (`PairingState.denied`).
+        case denied
         case expired(PairingExpiry)
         case alarm(PairingAlarmKind)
         case failed(PairingFailure)
@@ -40,7 +42,7 @@ public enum PairingScenario: String, CaseIterable, Sendable {
         case .echoWrongKey: Plan(hostApproves: false, primaryAction: nil, showsHostCode: false, outcome: .alarm(.echoWrongKey))
         case .otherPerson: Plan(hostApproves: false, primaryAction: nil, showsHostCode: false, outcome: .failed(.otherPerson))
         case .rejectOnHost: Plan(hostApproves: false, primaryAction: nil, showsHostCode: true, outcome: .rejected)
-        case .rejectOnPrimary: Plan(hostApproves: true, primaryAction: false, showsHostCode: true, outcome: .rejected)
+        case .rejectOnPrimary: Plan(hostApproves: true, primaryAction: false, showsHostCode: true, outcome: .denied)
         case .revokeAfter: Plan(hostApproves: true, primaryAction: true, showsHostCode: true, outcome: .ready)
         }
     }

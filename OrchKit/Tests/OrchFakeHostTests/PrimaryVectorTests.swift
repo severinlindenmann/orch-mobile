@@ -39,8 +39,18 @@ extension J { var isNull: Bool { v.isNull } }
             let k = keys ?? phone
             let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: "Severin's iPhone", scopesMax: scopes, offerID: .random())
             let signer = wsk ?? host.wsk
-            return try CertRequest.make(wsk: signer, requestID: id, workspace: ws, person: primary.personID, primary: primaryDevice ?? primary.deviceID,
-                                        primaryKey: primary.deviceKeys.kx, inner: inner, createdMs: createdMs ?? clock.nowMs).json
+            let r = try CertRequest.make(wsk: signer, requestID: id, workspace: ws, person: primary.personID, primary: primaryDevice ?? primary.deviceID,
+                                         primaryKey: primary.deviceKeys.kx, inner: inner, createdMs: createdMs ?? clock.nowMs).json
+            try await enqueue(r)
+            return r
+        }
+
+        /// The host's `POST /v2/persons/{person}/cert-requests`; the relay may refuse it (the primary then refuses it as well).
+        func enqueue(_ r: JSONValue) async throws {
+            let session = try await host.openSession(transport: h.env.transport)
+            _ = try await h.relay.send(WireRequest(method: "POST", target: "/v2/persons/\(primary.personID.hex)/cert-requests",
+                                                   headers: ["authorization": "Bearer " + session.token, "content-type": "application/json"],
+                                                   body: canonicalJSON(.object(["request": r])), clientAddress: "host"))
         }
     }
 
@@ -99,8 +109,8 @@ extension J { var isNull: Bool { v.isNull } }
                 case .failure(let r): #expect(r.rawValue == w["refuse"].str, "\(name)")
                 }
             }
-            // a refused request is open nowhere: no challenge was posted for it
-            if want.allSatisfy({ !$0["refuse"].isNull }) { #expect(await relay.certRequestQueueSize() == 0, "\(name)") }
+            // a refused request gets no challenge (the relay may hold it: it cannot see the sealed inner request)
+            if want.allSatisfy({ !$0["refuse"].isNull }) { #expect(await relay.challengedCertRequestCount() == 0, "\(name)") }
         }
         #expect(ok == 4)         // valid, client hosted, replayed (first), second_open (first)
     }
@@ -151,8 +161,7 @@ extension J { var isNull: Bool { v.isNull } }
         let relay = rig.h.relay
         guard case .success(let p) = await rig.primary.open(request: try await rig.request(), card: rig.card, relay: relay) else { Issue.record("open"); return }
         // the code is over the primary's own challenge, which names exactly the phone's keys and a nonce drawn after them
-        let session = try await rig.host.openSession(transport: rig.h.env.transport)
-        let ch = try #require(try await relay.certChallenge(workspace: rig.ws, requestID: p.requestID, token: session.token))
+        let ch = try #require(await relay.certRecord(p.requestID)?.challenge)
         let checked = try CertChallenge.check(ch, pk: rig.primary.publicKey, workspace: rig.ws, device: rig.phone.deviceID, dkSig: rig.phone.sig, dkKx: rig.phone.kx, nowMs: rig.clock.nowMs)
         #expect(checked.certCode == p.certCode)
         // approval needs the explicit confirmation
@@ -182,9 +191,11 @@ extension PrimaryCertRequestVectorTests.Rig {
         let rid = ID16.random()
         let sealed = try Sealing.seal(to: primary.deviceKeys.kx, recipientID: primary.deviceID, purpose: .certRequest, object: rid, epoch: 0,
                                       plaintext: canonicalJSON(.object(inner)))
-        return try SignedObject.sign([
+        let r = try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "cert_request", "request_id": .string(rid.hex), "workspace_id": .string(ws.hex),
             "person_id": .string(primary.personID.hex), "primary_device_id": .string(primary.deviceID.hex), "created_ms": .int(clock.nowMs),
             "expires_ms": .int(clock.nowMs + CertRequest.lifetimeMs), "sealed": .string(B64U.encode(sealed))], kind: .certRequest, signer: host.wsk).json
+        try await enqueue(r)
+        return r
     }
 }

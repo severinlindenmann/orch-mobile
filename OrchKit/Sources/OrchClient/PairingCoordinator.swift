@@ -672,6 +672,15 @@ public actor PairingCoordinator {
             guard await persist(mine) else { return }
             publish(.joining)
         case .rejected: _ = await finish(.rejected, mine)
+        case .denied(let requestID, let pk):
+            // the wire verified the rejection under a PK matching the link's pin; it must also be the PK and the request this
+            // pairing pinned (the challenge it showed), or it is a substitution
+            guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
+            if let pinned = r.pkPub, pinned != pk.x963 { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
+            if let ch = r.challenge?.object?["o"]?.object, ch.idField("request_id") != requestID {
+                _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return
+            }
+            _ = await finish(.denied, mine)
         case .expired: _ = await finish(.expired(r.certPendingSinceMs != nil ? .certification : .beforeApproval), mine)
         }
     }

@@ -33,6 +33,8 @@ public actor FakePrimary {
     package func ledgerSnapshot() -> PrimaryLedger { ledger }
     var prompts: [ID16: PrimaryPrompt] = [:]
     var refusals: [ID16: Refusal] = [:]
+    var relaySession: (session: RelaySession, expiresMs: Int64)?
+    nonisolated var deviceSigner: SoftwareSigner { sig }
     /// The label the host shows next to "Open orch on ...".
     public nonisolated let label = "Demo Mac"
     let capability: DemoCapability

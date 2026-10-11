@@ -42,6 +42,16 @@ public struct InProcessRelayTransport: RelayTransport {
         try await inner.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session)
     }
     public func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await inner.dropList(query, session: session) }
+    public func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply {
+        try await inner.certRequests(person: person, wait: wait, session: session)
+    }
+    public func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply {
+        try await inner.postCertChallenge(requestID: requestID, body, session: session)
+    }
+    public func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply {
+        try await inner.postCertRejection(requestID: requestID, body, session: session)
+    }
+    public func createAccount(_ body: Data) async throws -> WireReply { try await inner.createAccount(body) }
     public func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply {
         try await inner.dropGet(objectID: objectID, version: version, part: part, session: session)
     }

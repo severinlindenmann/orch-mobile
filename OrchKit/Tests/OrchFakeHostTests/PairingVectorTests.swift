@@ -102,6 +102,7 @@ import OrchTestVectors
                     #expect(e["state"].str == "approved" && scopes == e["scopes"].items.map(\.str) && Int64(epoch) == e["epoch"].i64, "\(name)")
                     #expect(cert.deviceID.hex == e["device_id"].str, "\(name)")
                 case .rejected: #expect(e["state"].str == "rejected", "\(name)")
+                case .denied: Issue.record("\(name): the vectors carry no primary rejection")
                 case .expired: #expect(e["state"].str == "expired", "\(name)")
                 case .refusal(let code, _):
                     #expect(code == e["refusal"].str, "\(name)")

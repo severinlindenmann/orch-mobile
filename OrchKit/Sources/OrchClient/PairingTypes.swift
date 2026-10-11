@@ -96,13 +96,16 @@ public enum PairingState: Sendable, Equatable {
     case ready(JoinedHandle)
     case alarm(PairingAlarm)
     case rejected
+    /// The owner's primary device declined to certify this iPhone. Shown only for a `cert_rejection` that verified under the
+    /// pinned `PK` for this pairing's request; never on the host's word alone.
+    case denied
     case expired(PairingExpiry)
     case failed(PairingFailure)
     case cancelled
 
     public var isTerminal: Bool {
         switch self {
-        case .ready, .alarm, .rejected, .expired, .cancelled: true
+        case .ready, .alarm, .rejected, .denied, .expired, .cancelled: true
         case .failed(let f): f != .joiningTimedOut
         default: false
         }

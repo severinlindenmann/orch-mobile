@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import OrchClient
 import OrchProtocol
@@ -16,6 +17,16 @@ public struct RelayLimits: Sendable {
     public var maxOutstandingChallenges = 1024
     /// Live bearer tokens one device may hold (section 19.1): the next login is 429 `quota_exceeded` until the earliest expires.
     public var maxLiveTokensPerDevice = 8
+    /// Pairing POSTs (device requests and host answers) across all workspaces and addresses per minute (section 19.3: 6 000).
+    public var pairPostsPerMinuteGlobal = 6_000
+    /// Bytes queued in one workspace's pairing mailboxes before a pairing POST is 429 `quota_exceeded`.
+    public var maxQueuedPairBytesPerWorkspace = 4 << 20
+    /// Bytes queued in every mailbox together before a POST is 503 `overloaded` (section 19.4 P3-D17: 256 MiB).
+    public var maxQueuedBytesGlobal = 256 << 20
+    /// Concurrent polls of one principal (an address for pairing polls, a device for queue polls): above it 429 `quota_exceeded`.
+    public var maxConcurrentPollsPerPrincipal = 6
+    /// Concurrent polls of everyone (section 19.4: 4 096): above it 503 `overloaded`.
+    public var maxConcurrentPollsGlobal = 4_096
     public var maxDropVersions = 1024
     public var maxDropBytes = 100 << 20
     public init() {}
@@ -25,6 +36,9 @@ public struct RelayLimits: Sendable {
 /// `CK`, pairing secret, DEK or authority private key (host-api section 5), and route authorization never opens a bridge
 /// envelope. The `publish*`, `putGrant` and `putCardKeyWrap` methods stand in for orch-publish and the host's authenticated
 /// uploads (protocol section 12.1 is not modelled); each runs the relay's full checks.
+/// A reply carried through a `Result` failure (WireReply is not an Error).
+struct WireReplyBox: Error { let reply: WireReply; init(_ r: WireReply) { reply = r } }
+
 public actor FakeRelay: RequestSender {
     private var demoDropRejections = 0
     public nonisolated let context: RealmContext
@@ -75,11 +89,20 @@ public actor FakeRelay: RequestSender {
     private var pairPostsByWS: [ID16: Window] = [:]
     private var pairPostsByAddress: [String: Window] = [:]
     private var pairPollsByAddress: [String: Window] = [:]
-    // The primary's queues (protocol section 8.4): fake relay internals, not phone APIs. Unchanged cert_request / cert_challenge objects.
-    private struct QueuedCertRequest { let request: JSONValue; let requestID: ID16; let workspace: ID16; let expiresMs: Int64 }
-    private var certRequests: [ID16: [QueuedCertRequest]] = [:]            // by primary device id
-    private var certChallenges: [ID16: (workspace: ID16, challenge: JSONValue, expiresMs: Int64)] = [:]   // by request id
-    private var rejectedCertRequests: [ID16: ID16] = [:]                   // request id -> workspace (v0 rejection propagation, gap 22)
+    // The cert_pending queues (P3-D11): one state machine per request (CertQueue), by request id.
+    private var certRecords: [ID16: CertQueue.Record] = [:]
+    // Accounts (P3-D3): person -> account key and the digest of the request that made it; invites by SHA-256 of the code.
+    private var accounts: [ID16: (pk: SigningPublicKey, digest: Data)] = [:]
+    private var invites: [Data: Int64] = [:]
+    // Holder generations (P3-D10) of workspaces whose host took one. A workspace without one takes unfenced host writes (see
+    // `fence`): the FakeHost does not hold yet (host_hold.json stays with the host-only PR2 leftovers).
+    private var holders: [ID16: UInt64] = [:]
+    private var pairPostsGlobal = Window()
+    private var livePolls: [String: Int] = [:]
+    private var livePollsGlobal = 0
+    // Fixture seeds (package scope): a workspace key and owner without a published card, and devices known by person only.
+    private var seededCards: [ID16: (wsk: SigningPublicKey, owner: ID16)] = [:]
+    private var seededDevices: [ID16: (person: ID16, expiresMs: Int64?)] = [:]
     public private(set) var accepted = 0
     private var arrivals: UInt64 = 0
     /// Requests that reached `send`, for tests that prove something was refused before any request.
@@ -107,12 +130,11 @@ public actor FakeRelay: RequestSender {
     public func retire() {
         challenges = [:]; sessions = [:]; owners = [:]; certs = [:]; certInfo = [:]; revoked = []; revocations = [:]
         drops = [:]; claims = [:]; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
-        certRequests = [:]; certChallenges = [:]; rejectedCertRequests = [:]
+        certRecords = [:]; accounts = [:]; invites = [:]; holders = [:]; pairPostsGlobal = Window(); livePolls = [:]; livePollsGlobal = 0
+        seededCards = [:]; seededDevices = [:]
     }
 
     static let expiredChallengeGraceMs: Int64 = 5 * 60_000
-    /// How long the primary's queues (cert request, challenge, rejection) keep an entry past the request's own expiry (host-api section 6: 60 s).
-    static let queueGraceMs: Int64 = 60_000
 
     private func checkLive() throws { try context.generation?.check() }
 
@@ -130,6 +152,16 @@ public actor FakeRelay: RequestSender {
         do { c = try context.admitCertificate(cert, ownerKey: owner, nowMs: wall.nowMs) }
         catch let r as Refusal { throw Self.relayError(r) }
         certs[c.deviceID] = cert; certInfo[c.deviceID] = c
+        completeCertRequests(with: cert, person: person, owner: owner)
+    }
+
+    /// P3-D11: a stored certificate completes every challenged request whose challenge names exactly its two keys, device and
+    /// person (`CertQueue.certificate`); any other request is left as it is.
+    private func completeCertRequests(with cert: JSONValue, person: ID16, owner: SigningPublicKey) {
+        let now = wall.nowMs
+        for (id, var r) in certRecords where r.person == person && r.state == .challenged {
+            if CertQueue.certificate(&r, signed: cert, pk: owner, nowMs: now) == .ok(CertQueue.State.signed.rawValue) { certRecords[id] = r }
+        }
     }
 
     public func publishCard(_ card: JSONValue) throws {
@@ -280,56 +312,7 @@ public actor FakeRelay: RequestSender {
         return s.id
     }
 
-    // MARK: the primary's queues (protocol section 8.4)
-
-    /// The host's `cert_request` for a primary device (a workspace session; the request is signed by `WSK`).
-    public func postCertRequest(_ signed: JSONValue, token: String) throws {
-        try checkLive()
-        let ws = try workspaceSession(token)
-        guard let card = workspaces[ws]?.card else { throw ClientError.relay(RelayRefusal(status: 401, code: .unknownWorkspace)) }
-        let o: [String: JSONValue]
-        do { o = try SignedObject.parse(signed).verify(kind: .certRequest, key: card.wsk) } catch let r as Refusal { throw Self.relayError(r) }
-        guard let rid = o["request_id"]?.string.flatMap({ ID16(hex: $0) }), let primary = o["primary_device_id"]?.string.flatMap({ ID16(hex: $0) }),
-              let w = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }), let exp = o["expires_ms"]?.int else {
-            throw ClientError.relay(RelayRefusal(status: 400, code: .malformed))
-        }
-        guard w == ws else { throw ClientError.relay(RelayRefusal(status: 409, code: .otherWorkspace)) }
-        certRequests[primary, default: []].append(QueuedCertRequest(request: signed, requestID: rid, workspace: ws, expiresMs: exp))
-    }
-
-    /// Requests waiting for a primary device (non-consuming; expired ones are gone).
-    public func pendingCertRequests(primary: ID16) -> [JSONValue] {
-        let now = wall.nowMs
-        return (certRequests[primary] ?? []).filter { now < $0.expiresMs }.map(\.request)
-    }
-
-    /// The primary's `cert_challenge`, signed by `PK` (the relay knows the owner key from the cards and certificates it verified).
-    public func postCertChallenge(_ signed: JSONValue) throws {
-        try checkLive()
-        guard let o = signed.object?["o"]?.object, let person = o["person_id"]?.string.flatMap({ ID16(hex: $0) }), let owner = owners[person],
-              let rid = o["request_id"]?.string.flatMap({ ID16(hex: $0) }), let ws = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }),
-              let exp = o["expires_ms"]?.int else { throw ClientError.relay(RelayRefusal(status: 403, code: .otherPerson)) }
-        do { _ = try SignedObject.parse(signed).verify(kind: .certChallenge, key: owner) } catch let r as Refusal { throw Self.relayError(r) }
-        guard certChallenges[rid] == nil else { throw ClientError.relay(RelayRefusal(status: 401, code: .replay)) }
-        certChallenges[rid] = (ws, signed, exp)
-    }
-
-    /// What the host reads for its request: the primary's challenge, if it was posted.
-    public func certChallenge(workspace: ID16, requestID: ID16, token: String) throws -> JSONValue? {
-        guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
-        guard let c = certChallenges[requestID], c.workspace == workspace else { return nil }
-        return c.challenge
-    }
-
-    /// A human on the primary rejected the request (provisional propagation to the host, gap 22).
-    public func postCertRequestRejected(requestID: ID16) {
-        for (_, list) in certRequests { if let q = list.first(where: { $0.requestID == requestID }) { rejectedCertRequests[requestID] = q.workspace } }
-    }
-
-    public func certRequestRejected(workspace: ID16, requestID: ID16, token: String) throws -> Bool {
-        guard try workspaceSession(token) == workspace else { throw ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated)) }
-        return rejectedCertRequests[requestID] == workspace
-    }
+    // MARK: the cert_pending queues (P3-D11; HTTP routes below)
 
     /// The directory's certificate of a device (what the host polls for after asking the primary).
     public func certificate(device: ID16) -> JSONValue? { certs[device] }
@@ -337,7 +320,10 @@ public actor FakeRelay: RequestSender {
     /// The relay's verified card of a workspace (the primary checks a request against it).
     public func verifiedCard(workspace: ID16) -> VerifiedCard? { workspaces[workspace]?.card }
 
-    public func certRequestQueueSize() -> Int { certRequests.values.reduce(0) { $0 + $1.count } + certChallenges.count }
+    /// Requests the queue holds that are still open (open or challenged and unexpired): what a primary could still act on.
+    public func certRequestQueueSize() -> Int { let now = wall.nowMs; return certRecords.values.filter { $0.isOpen(at: now) }.count }
+    /// The queue's state of one request (tests; the host reads it through `GET /v2/cert-requests/{id}`).
+    public func certRequestState(_ id: ID16) -> String? { certRecords[id].map { CertQueue.view($0, nowMs: wall.nowMs)["state"]?.string ?? "" } }
 
     // MARK: inspection (tests; the relay's own storage, not a client API)
 
@@ -424,11 +410,9 @@ public actor FakeRelay: RequestSender {
         pairPostsByWS = pairPostsByWS.filter { $0.value.isActive(now) }
         pairPostsByAddress = pairPostsByAddress.filter { $0.value.isActive(now) }
         pairPollsByAddress = pairPollsByAddress.filter { $0.value.isActive(now) }
-        // queues of the primary: a request, its challenge and a rejection live as long as the request does (plus the grace of a late read)
-        for (k, v) in certRequests { let keep = v.filter { $0.expiresMs + Self.queueGraceMs > now }; certRequests[k] = keep.isEmpty ? nil : keep }
-        certChallenges = certChallenges.filter { $0.value.expiresMs + Self.queueGraceMs > now }
-        let live = Set(certRequests.values.flatMap { $0.map(\.requestID) })
-        rejectedCertRequests = rejectedCertRequests.filter { live.contains($0.key) }
+        // cert_pending records stay until expires_ms + 60 s, whatever their state (P3-D11)
+        certRecords = certRecords.filter { $0.value.isRetained(at: now) }
+        invites = invites.filter { $0.value > now }
     }
 
     private func routePath(_ target: String) -> String { String(target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? "") }
@@ -487,6 +471,10 @@ public actor FakeRelay: RequestSender {
         case ("POST", 2) where s[0] == "session" && s[1] == "login": return try login(r, query)
         case ("POST", 2) where s[0] == "session" && s[1] == "logout": return logout(r, query)
         case ("POST", 2) where s[0] == "drop" && s[1] == "list": return try dropRoute(r, s, query)
+        case ("POST", 1) where s[0] == "accounts": return account(r, query)
+        case (_, 3) where s[0] == "persons" && s[2] == "cert-requests": return r.method == "POST" ? postCertRequest(r, person: s[1], query) : (r.method == "GET" ? pollCertRequests(r, person: s[1], query) : refuse(404, .notFound))
+        case ("GET", 2) where s[0] == "cert-requests": return certRequestReply(r, id: s[1], query)
+        case ("POST", 3) where s[0] == "cert-requests" && (s[2] == "challenge" || s[2] == "rejection"): return primaryPost(r, id: s[1], kind: s[2], query)
         case (_, 5) where s[0] == "workspaces" && s[2] == "pair": return try await pairing(r, ws: s[1], offer: s[3], rid: s[4], query)
         case (_, 4) where s[0] == "workspaces" && s[2] == "bridge": return try await bridge(r, ws: s[1], rid: s[3], query)
         case ("POST", 3) where s[0] == "workspaces" && s[2] == "rotation-abandon": return abandonRotation(r, workspace: s[1], query: query)
@@ -589,6 +577,30 @@ public actor FakeRelay: RequestSender {
         sessions[token] = Session(kind: kind, id: id, expiresMs: expiresMs)
     }
     package func seedRevoked(_ device: ID16) { revoked.insert(device) }
+    /// A workspace's `WSK` and owner as if its card had been published (the card itself is not needed by the routes seeded).
+    package func seedWorkspaceKey(_ ws: ID16, wsk: SigningPublicKey, owner: ID16) { seededCards[ws] = (wsk, owner) }
+    /// A device of `person` as the directory would know it from a stored certificate (`expiresMs` past = an expired certificate).
+    package func seedDevice(_ device: ID16, person: ID16, expiresMs: Int64? = nil) { seededDevices[device] = (person, expiresMs) }
+    /// The account key the relay trusts for `person` (a different key than the signer's makes its signatures `bad_signature`).
+    package func seedAccount(person: ID16, key: SigningPublicKey, digest: Data = Data()) {
+        owners[person] = key
+        if !digest.isEmpty { accounts[person] = (key, digest) }
+    }
+    package func seedHolder(_ ws: ID16, generation: UInt64) { holders[ws] = generation }
+    package func seedCertRecord(_ r: CertQueue.Record) { certRecords[r.requestID] = r }
+    package func certRecord(_ id: ID16) -> CertQueue.Record? { certRecords[id] }
+    package func challengedCertRequestCount() -> Int { certRecords.values.filter { $0.challenge != nil }.count }
+    package func seedPairResponse(ws: ID16, offer: ID16, rid: ID16, envelope: Data) {
+        let (parsed, _) = parseEnvelope(envelope, direction: .toDevice, maxSize: limits.maxPairEnvelope)
+        guard let parsed else { return }
+        store(BoxKey(ws: ws, device: nil, offer: offer, rid: rid), parsed: parsed, envelope: envelope, response: true)
+    }
+    package func accountKey(_ person: ID16) -> SigningPublicKey? { accounts[person]?.pk }
+
+    /// A single-use invite (the admin CLI's `orch-relay invite create`, P3-D3): the relay keeps only its SHA-256 and expiry.
+    public func createInvite(_ code: String, ttlMs: Int64 = 7 * 24 * 3600 * 1000) {
+        invites[Data(SHA256.hash(data: Data(code.utf8)))] = saturatingAdd(wall.nowMs, ttlMs)
+    }
     package var liveSessionTokens: Set<String> { Set(sessions.keys) }
     package var outstandingChallenges: Set<Data> { Set(challenges.keys) }
 
@@ -653,6 +665,200 @@ public actor FakeRelay: RequestSender {
         guard let d = ID16(hex: device), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
         guard let rec = revocations[d] else { return refuse(404, .notFound) }
         return json(200, ["record": rec])
+    }
+
+
+    // MARK: accounts, the cert_pending queues and their principals (section 19.1, 19.3; P3-D3, P3-D11)
+
+    static let cap16 = 16 << 10
+    static let cap64 = 64 << 10
+
+    /// Strict JSON with exactly `fields` (section 2.3; the caller has checked the route's whole-body cap).
+    private func exactBody(_ r: WireRequest, _ fields: Set<String>) -> [String: JSONValue]? {
+        guard let v = try? StrictJSON.parse(r.body, maxBytes: HostAPI.maxJSONBytes), let o = v.object,
+              o.keys.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { $0 < 0x80 } }), Set(o.keys) == fields else { return nil }
+        return o
+    }
+
+    /// Section 19.6: a signed object of another deployment suite is 400 `wrong_suite`, before any context check.
+    private func otherSuite(_ v: JSONValue?) -> Bool { v.flatMap { SignedObject.suite(of: $0) }.map { $0 != Int64(Suite2.id) } ?? false }
+
+    private func status(of code: RelayRefusal.Code) -> Int {
+        switch code {
+        case .expired: 410
+        case .certExpired: 400
+        case .tooLarge: 413
+        default: RelayRefusal.statuses(of: code).min() ?? 400
+        }
+    }
+
+    private func refuse(_ code: RelayRefusal.Code) -> WireReply {
+        let st = status(of: code)
+        return refuse(st, code, headers: st == 429 || st == 503 ? ["retry-after": String(max(1, limits.retryAfterSeconds))] : [:])
+    }
+
+    /// The card's `WSK` and owner of a workspace (a published card, or a fixture seed).
+    private func cardKeys(_ ws: ID16) -> (wsk: SigningPublicKey, owner: ID16)? {
+        if let c = workspaces[ws]?.card { return (c.wsk, c.ownerPersonID) }
+        return seededCards[ws]
+    }
+
+    /// The person of a device the directory knows and the expiry of its certificate.
+    private func directoryEntry(_ device: ID16) -> (person: ID16, expiresMs: Int64?)? {
+        if let c = certInfo[device] { return (c.personID, c.expiresMs) }
+        return seededDevices[device]
+    }
+
+    /// A current device of `person`: known to the directory for that person, unrevoked, certificate unexpired.
+    private func isCurrentDevice(_ d: ID16, of person: ID16) -> Bool {
+        guard let e = directoryEntry(d), e.person == person, !revoked.contains(d) else { return false }
+        return e.expiresMs.map { wall.nowMs < $0 } ?? true
+    }
+
+    /// A device session re-checked now (section 19.4 P3-D2): 401 without a live token, 403 `not_eligible` for another kind of
+    /// principal, 403 `revoked`, 400 `cert_expired`. Returns the device and its person.
+    private func devicePrincipal(_ r: WireRequest) -> Result<(device: ID16, person: ID16), WireReplyBox> {
+        guard let s = authenticate(r) else { return .failure(WireReplyBox(refuse(401, .unauthenticated))) }
+        guard s.kind == .device else { return .failure(WireReplyBox(refuse(403, .notEligible))) }
+        if revoked.contains(s.id) { return .failure(WireReplyBox(refuse(403, .revoked))) }
+        guard let e = directoryEntry(s.id) else { return .failure(WireReplyBox(refuse(403, .notEligible))) }
+        if let exp = e.expiresMs, wall.nowMs >= exp { return .failure(WireReplyBox(refuse(400, .certExpired))) }
+        return .success((s.id, e.person))
+    }
+
+    /// `Orch-Holder` (P3-D10): once a workspace's host holds a generation, every host write must carry exactly it (409 `fenced`
+    /// for a missing, stale or unparsable one). A workspace whose host never took a hold is not fenced (FakeHost simplification).
+    private func fence(_ r: WireRequest, ws: ID16) -> WireReply? {
+        let h = r.header("orch-holder")
+        if let current = holders[ws] {
+            guard let h, let g = HostAPI.parseDecimal(h), g == current else { return refuse(409, .fenced) }
+            return nil
+        }
+        if let h, HostAPI.parseDecimal(h) == nil { return refuse(400, .malformed) }
+        return nil
+    }
+
+    /// Concurrent polls (section 19.4 P3-D17): refused, never queued or evicted. Pair with `endPoll`.
+    private func beginPoll(_ principal: String) -> WireReply? {
+        if livePollsGlobal >= limits.maxConcurrentPollsGlobal { return refuse(.overloaded) }
+        if livePolls[principal, default: 0] >= limits.maxConcurrentPollsPerPrincipal { rateLimited += 1; return refuse(.quotaExceeded) }
+        livePollsGlobal += 1; livePolls[principal, default: 0] += 1
+        return nil
+    }
+    private func endPoll(_ principal: String) {
+        livePollsGlobal = max(0, livePollsGlobal - 1)
+        let n = (livePolls[principal] ?? 1) - 1
+        livePolls[principal] = n > 0 ? n : nil
+    }
+
+    private func waitQuery(_ query: String?, extra: Set<String> = []) -> [String: String]? {
+        guard let q = queryItems(query, allowed: extra.union(["wait"])) else { return nil }
+        if let w = q["wait"] { guard let v = HostAPI.parseDecimal(w), v <= 25 else { return nil } }
+        return q
+    }
+
+    /// `POST /v2/accounts` (P3-D3): an account from a single-use invite, the first device certificate (`PK`-signed) and a fresh
+    /// login signature by that device. The exact same request again is 200 by digest; the invite and the digest commit together.
+    private func account(_ r: WireRequest, _ query: String?) -> WireReply {
+        if r.body.count > Self.cap64 { return refuse(413, .tooLarge) }
+        guard queryItems(query, allowed: []) != nil, let o = exactBody(r, ["invite", "pk_pub", "device_cert", "challenge", "sig"]) else { return refuse(400, .malformed) }
+        if otherSuite(o["device_cert"]) { return refuse(400, .wrongSuite) }
+        guard let invite = o["invite"]?.string, !invite.isEmpty, invite.utf8.count <= 256,
+              let pk = o["pk_pub"]?.string.flatMap({ B64U.decode($0, length: Suite2.publicKeyLength) }).flatMap({ try? SigningPublicKey(x963: $0) }),
+              let cert = o["device_cert"], cert.object != nil,
+              let challenge = o["challenge"]?.string.flatMap({ B64U.decode($0, length: 32) }),
+              let sig = o["sig"]?.string.flatMap({ B64U.decode($0, length: Suite2.signatureLength) }) else { return refuse(400, .malformed) }
+        let person = Identifiers.personID(pk)
+        let digest = Data(SHA256.hash(data: r.body))
+        if let a = accounts[person], a.digest == digest { return json(200, ["person_id": .string(person.hex)]) }     // exact retry
+        let now = wall.nowMs
+        // the challenge is consumed on every attempt from here on (section 12.2 order: known, unexpired)
+        guard let exp = challenges.removeValue(forKey: challenge) else { return refuse(401, .unknownChallenge) }
+        guard now < exp else { return refuse(401, .expired) }
+        let inviteKey = Data(SHA256.hash(data: Data(invite.utf8)))
+        guard let iexp = invites[inviteKey], now < iexp else { return refuse(403, .notEligible) }
+        let dc: DeviceCertificate
+        do { dc = try DeviceCertificate.verify(cert, personKey: pk, nowMs: now) }
+        catch Refusal.certExpired { return refuse(400, .certExpired) } catch { return refuse(400, .certInvalid) }
+        guard let bytes = try? RelayAuth.signedBytes(origin: origin, challenge: challenge, kind: .device, id: dc.deviceID),
+              Signature.verify(dc.signingKey, signature: sig, message: bytes) else { return refuse(401, .badSignature) }
+        guard accounts[person] == nil, owners[person] == nil || owners[person] == pk else { return refuse(409, .accountExists) }
+        if revoked.contains(dc.deviceID) { return refuse(403, .revoked) }
+        invites[inviteKey] = nil
+        accounts[person] = (pk, digest); owners[person] = pk
+        certs[dc.deviceID] = cert; certInfo[dc.deviceID] = dc
+        return json(200, ["person_id": .string(person.hex)])
+    }
+
+    /// `POST /v2/persons/{person}/cert-requests` (W(g), card owner = person): the host's `cert_request` into the queue.
+    private func postCertRequest(_ r: WireRequest, person p: String, _ query: String?) -> WireReply {
+        if r.body.count > Self.cap64 { return refuse(413, .tooLarge) }
+        guard let person = ID16(hex: p), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
+        guard s.kind == .workspace else { return refuse(403, .notEligible) }
+        if let f = fence(r, ws: s.id) { return f }
+        guard let o = exactBody(r, ["request"]), let request = o["request"] else { return refuse(400, .malformed) }
+        if otherSuite(request) { return refuse(400, .wrongSuite) }
+        guard let card = cardKeys(s.id), card.owner == person else { return refuse(403, .notEligible) }
+        guard owners[person] != nil else { return refuse(403, .otherPerson) }            // no account for the person
+        switch CertQueue.admit(request, wsk: card.wsk, workspace: s.id, owner: person, isAddressee: { isCurrentDevice($0, of: person) },
+                               records: &certRecords, nowMs: wall.nowMs) {
+        case .ok(let id): return json(200, ["request_id": .string(id)])
+        case .refuse(let c): return refuse(c)
+        }
+    }
+
+    /// `GET /v2/persons/{person}/cert-requests?wait=s` (D(p), addressee only): the open requests addressed to this device.
+    private func pollCertRequests(_ r: WireRequest, person p: String, _ query: String?) -> WireReply {
+        guard let person = ID16(hex: p), waitQuery(query) != nil else { return refuse(400, .malformed) }
+        let me: (device: ID16, person: ID16)
+        switch devicePrincipal(r) { case .success(let x): me = x; case .failure(let b): return b.reply }
+        guard me.person == person else { return refuse(403, .notEligible) }
+        let principal = "device:" + me.device.hex
+        if let busy = beginPoll(principal) { return busy }
+        defer { endPoll(principal) }
+        let now = wall.nowMs
+        let mine = certRecords.values.filter { $0.primary == me.device && $0.person == person && $0.isOpen(at: now) }
+            .sorted { $0.requestID.hex < $1.requestID.hex }.map(\.request)
+        return json(200, ["requests": .array(mine)])
+    }
+
+    /// `POST /v2/cert-requests/{id}/challenge` and `/rejection` (D(p), the addressee): verified under the account `PK`.
+    private func primaryPost(_ r: WireRequest, id: String, kind: String, _ query: String?) -> WireReply {
+        if r.body.count > Self.cap16 { return refuse(413, .tooLarge) }
+        guard let rid = ID16(hex: id), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
+        let me: (device: ID16, person: ID16)
+        switch devicePrincipal(r) { case .success(let x): me = x; case .failure(let b): return b.reply }
+        guard let o = exactBody(r, [kind]), let signed = o[kind] else { return refuse(400, .malformed) }
+        if otherSuite(signed) { return refuse(400, .wrongSuite) }
+        let now = wall.nowMs
+        guard var rec = certRecords[rid], rec.isRetained(at: now) else { return refuse(404, .notFound) }
+        guard rec.person == me.person else { return refuse(403, .notEligible) }
+        guard rec.primary == me.device else { return refuse(403, .notForThisDevice) }
+        guard let pk = owners[rec.person] else { return refuse(403, .otherPerson) }
+        let out = kind == "challenge" ? CertQueue.challenge(&rec, signed: signed, pk: pk, nowMs: now) : CertQueue.reject(&rec, signed: signed, pk: pk, nowMs: now)
+        certRecords[rid] = rec                      // an expiry observed here is a state change too
+        switch out {
+        case .ok: return json(200)
+        case .refuse(let c): return refuse(c)
+        }
+    }
+
+    /// `GET /v2/cert-requests/{id}` (W, the requester): `{state, challenge, cert, rejection}`, null when absent.
+    private func certRequestReply(_ r: WireRequest, id: String, _ query: String?) -> WireReply {
+        guard let rid = ID16(hex: id), queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
+        guard let s = authenticate(r) else { return refuse(401, .unauthenticated) }
+        guard s.kind == .workspace else { return refuse(403, .notEligible) }
+        let now = wall.nowMs
+        guard let rec = certRecords[rid], rec.isRetained(at: now) else { return refuse(404, .notFound) }
+        guard rec.workspace == s.id else { return refuse(403, .notEligible) }
+        return json(200, CertQueue.view(rec, nowMs: now))
+    }
+
+    /// Bytes queued in the mailboxes of one workspace's pairing offers, or of every mailbox.
+    private func queuedBytes(pairOf ws: ID16? = nil) -> Int {
+        boxes.filter { ws == nil || ($0.key.ws == ws && $0.key.offer != nil) }.values
+            .reduce(0) { $0 + $1.requests.reduce(0) { $0 + $1.envelope.count } + $1.responses.reduce(0) { $0 + $1.envelope.count } }
     }
 
     // MARK: mailboxes (protocol sections 8.9 and 8.3)
@@ -767,6 +973,8 @@ public actor FakeRelay: RequestSender {
     }
 
     private func pairing(_ r: WireRequest, ws: String, offer: String, rid: String, _ query: String?) async throws -> WireReply {
+        // ORB2 keeps its binary cap and status (section 19.6): 400 `too_large`, before anything is parsed.
+        if r.method == "POST", r.body.count > limits.maxPairEnvelope { return refuse(400, .tooLarge) }
         guard let wsID = ID16(hex: ws), let offerID = ID16(hex: offer), let ridID = ID16(hex: rid) else { return refuse(400, .malformed) }
         // As on the bridge route: a POST's fault delay precedes every check, rate budget and write.
         let a: FaultAction = r.method == "POST" ? try await fault(.beforeQueue, "POST pair") : .none
@@ -775,20 +983,30 @@ public actor FakeRelay: RequestSender {
         switch r.method {
         case "POST":
             guard queryItems(query, allowed: []) != nil else { return refuse(400, .malformed) }
+            // the suite gate precedes context checks; a suite-1 envelope has another layout, so only its first eight bytes are read
+            if r.body.count >= 8, r.body.prefix(4) == Bridge.magic, r.body[r.body.startIndex + 7] != Suite2.id { return refuse(400, .wrongSuite) }
             let session = authenticate(r)
-            // A response is the host's: it needs the workspace session. Everything else is an unauthenticated epoch-0 request.
-            let response = session != nil && session!.kind == .workspace
             if r.header("authorization") != nil && session == nil { return refuse(401, .unauthenticated) }
+            // Direction 2 is the host's answer: it needs the workspace's W(g) session. Direction 1 is an unauthenticated epoch-0 request.
+            let response = r.body.count >= 6 && r.body[r.body.startIndex + 5] == Bridge.Direction.toDevice.rawValue
+            if response {
+                guard let session else { return refuse(401, .unauthenticated) }
+                guard session.kind == .workspace, session.id == wsID else { return refuse(403, .notEligible) }
+                if let f = fence(r, ws: wsID) { return f }
+            }
+            guard pairPostsGlobal.hit(now: now, limit: limits.pairPostsPerMinuteGlobal) else { return limited(now) }
             if !response {
                 guard pairPostsByWS[wsID, default: Window()].hit(now: now, limit: limits.pairPostsPerMinutePerWorkspace),
                       pairPostsByAddress[r.clientAddress, default: Window()].hit(now: now, limit: limits.pairPostsPerMinutePerAddress)
                 else { return limited(now) }
-            } else if session!.id != wsID { return refuse(403, .notForThisDevice) }
+            }
+            if queuedBytes() + r.body.count > limits.maxQueuedBytesGlobal { return refuse(.overloaded) }
+            if queuedBytes(pairOf: wsID) + r.body.count > limits.maxQueuedPairBytesPerWorkspace { rateLimited += 1; return refuse(.quotaExceeded) }
             let (parsed, err) = parseEnvelope(r.body, direction: response ? .toDevice : .toHost, maxSize: limits.maxPairEnvelope)
             if let err { return err }
             let h = parsed!.header
             guard h.workspace == wsID, h.rid == ridID, h.stream == offerID, h.epoch == 0 else { return refuse(400, .malformed) }
-            guard workspaces[wsID]?.card != nil else { return refuse(401, .unknownWorkspace) }
+            guard cardKeys(wsID) != nil else { return refuse(401, .unknownWorkspace) }
             store(key, parsed: parsed!, envelope: r.body, response: response)
             if a == .duplicate {
                 store(key, parsed: parsed!, envelope: r.body, response: response)
@@ -797,9 +1015,13 @@ public actor FakeRelay: RequestSender {
             accepted += 1
             return json(202)
         case "GET":
+            guard let q = waitQuery(query, extra: ["after"]) else { return refuse(400, .malformed) }
+            var after: UInt64?
+            if let s = q["after"] { guard let v = HostAPI.parseDecimal(s) else { return refuse(400, .malformed) }; after = v }
+            let principal = "address:" + r.clientAddress
+            if let busy = beginPoll(principal) { return busy }
+            defer { endPoll(principal) }
             guard pairPollsByAddress[r.clientAddress, default: Window()].hit(now: now, limit: limits.pairPollsPerMinutePerAddress) else { return limited(now) }
-            let (after, ok) = afterCursor(query)
-            guard ok else { return refuse(400, .malformed) }
             let box = live(boxes[key] ?? Box(), now)
             return try await chunkReply(box.responses, rid: ridID, after: after, route: "GET pair")
         default: return refuse(404, .notFound)

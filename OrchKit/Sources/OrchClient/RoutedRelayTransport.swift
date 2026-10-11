@@ -115,6 +115,21 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
 
     public func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/drop/list", query, session: session) }
 
+    public func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply {
+        if let w = wait, !(0...25).contains(w) { throw TransportError.invalidArgument }
+        return try await get("\(R)/persons/\(person.hex)/cert-requests" + (wait.map { "?wait=\($0)" } ?? ""), session: session)
+    }
+
+    public func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply {
+        try await json("POST", "/cert-requests/\(requestID.hex)/challenge", body, session: session)
+    }
+
+    public func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply {
+        try await json("POST", "/cert-requests/\(requestID.hex)/rejection", body, session: session)
+    }
+
+    public func createAccount(_ body: Data) async throws -> WireReply { try await json("POST", "/accounts", body) }
+
     public func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply {
         try await get("\(R)/drop/\(objectID.hex)/versions/\(version)/\(part.rawValue)", session: session)
     }

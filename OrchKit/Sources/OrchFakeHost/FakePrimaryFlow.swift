@@ -32,7 +32,10 @@ extension FakePrimary {
     public func processInbox(relay: FakeRelay) async -> [PrimaryPrompt] {
         try? capability.generation.check()
         var fresh: [PrimaryPrompt] = []
-        for r in await relay.pendingCertRequests(primary: deviceID) {
+        // `GET /v2/persons/{person}/cert-requests` with this device's own session (D(p), addressee only)
+        guard let (client, session) = try? await primarySession(relay: relay),
+              let pending = try? await client.certRequests(person: personID, session: session) else { return [] }
+        for r in pending {
             guard let o = r.object?["o"]?.object, let rid = o["request_id"]?.string.flatMap({ ID16(hex: $0) }), !ledger.seen.contains(rid),
                   refusals[rid] == nil, let ws = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }),
                   let card = await relay.verifiedCard(workspace: ws) else { continue }
@@ -49,7 +52,9 @@ extension FakePrimary {
             try capability.generation.check()
             let accepted = try CertRequest.openAsPrimary(r, card: card, myPerson: personID, me: deviceID, myKey: kxAgreer, ledger: &ledger, nowMs: wall.nowMs)
             let challenge = try ledger.issueChallenge(requestID: accepted.requestID, primaryNonce: entropy.bytes(32), primary: pkSigner, nowMs: wall.nowMs)
-            try await relay.postCertChallenge(challenge.json)
+            // `POST /v2/cert-requests/{id}/challenge` with this device's session; 200 also for an identical resend
+            let (client, session) = try await primarySession(relay: relay)
+            try await client.submitCertChallenge(challenge.json, requestID: accepted.requestID, session: session)
             let code = try Identifiers.certCode(challengeObject: .object(challenge.object))
             let p = PrimaryPrompt(requestID: accepted.requestID, workspace: card.workspace, deviceID: accepted.inner.deviceID, deviceLabel: accepted.inner.label,
                                   certCode: code, clientHostedWarning: accepted.clientHostedWarning, expiresMs: challenge.object["expires_ms"]?.int ?? 0,
@@ -89,13 +94,27 @@ extension FakePrimary {
         return cert.json
     }
 
-    /// The human rejected the code: the request is closed and nothing is ever signed for it. The host is told (v0 propagation).
+    /// The human rejected the code: the request is closed and nothing is ever signed for it. The primary signs a `cert_rejection`
+    /// with `PK` and posts it to the queue with its own device session (P3-D11); the host and the phone verify it under `PK`.
+    /// A lost reply is retried with the identical object: the relay answers 200 for it.
     public func reject(request: ID16, relay: FakeRelay) async throws {
         try capability.generation.check()
         guard prompts[request] != nil else { throw PrimaryError.unknownRequest }
-        ledger.reject(requestID: request)
+        let rejection = try ledger.signRejection(requestID: request, primary: pkSigner)
         prompts[request] = nil
-        await relay.postCertRequestRejected(requestID: request)
+        let (client, session) = try await primarySession(relay: relay)
+        try await client.submitCertRejection(rejection.json, requestID: request, session: session)
+    }
+
+    /// This device's relay session (section 12.2), reused until 30 s before it expires. The primary's own certificate must be in
+    /// the directory (the owner enrolled the primary in person); the bytes go through the client's real routed transport.
+    func primarySession(relay: FakeRelay) async throws -> (RelayClient, RelaySession) {
+        let transport = try RoutedRelayTransport(context: relay.context, origin: relay.origin, sender: relay, clientAddress: "primary")
+        let client = RelayClient(transport: transport)
+        if let s = relaySession, wall.nowMs < s.expiresMs - 30_000 { return (client, s.session) }
+        let opened = try await client.openSession(kind: .device, id: deviceID, signer: deviceSigner)
+        relaySession = (opened.session, opened.expiresMs)
+        return (client, opened.session)
     }
 
     /// The host is the owner's primary device (host-api section 5): after the host's own human approval it certifies locally. The same
