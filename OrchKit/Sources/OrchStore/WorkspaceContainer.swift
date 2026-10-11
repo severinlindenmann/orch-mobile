@@ -75,6 +75,10 @@ public actor WorkspaceContainer {
             // The head list's member devices (sorted lower-case hex, comma-separated), so a later list at the same epoch that drops
             // one is refused on the phone too (`rotation_required`). NULL for a head recorded before this migration.
             "ALTER TABLE member_list_head ADD COLUMN members TEXT",
+            // The pre-Q10 head has no wk_commit and its digest is over a list without one: the host's re-issued list under the same
+            // list_seq would be a permanent `conflicting_snapshot`. Drop it; the next verified list is accepted as a first list (its
+            // epoch still may not fall below the confirmed epoch), and the send path fetches it at once (`sealingKeyRecovering`).
+            "DELETE FROM member_list_head",
         ]),
     ]
 

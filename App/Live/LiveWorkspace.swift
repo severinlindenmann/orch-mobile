@@ -44,6 +44,7 @@ final class LiveWorkspace: WorkspaceModel {
             let stream = await self.api.events()
             guard self.usable, !Task.isCancelled else { return }
             await self.api.start()
+            await self.checkKeyAlarm()
             await self.refresh()
             for await event in stream {
                 if Task.isCancelled { break }
@@ -68,8 +69,26 @@ final class LiveWorkspace: WorkspaceModel {
             guard usable else { return }
             apply(snapshot)
         } catch {
+            noteKeyAlarm(error)
             markOffline()
         }
+    }
+
+    // MARK: Key alarm (Q10)
+
+    static let keyAlarmMessage = "Key alarm: this workspace's keys do not match its member list. Nothing more is sent from this iPhone. Remove the workspace and pair again."
+
+    /// Reads the durable alarm (at launch); it never clears by itself.
+    func checkKeyAlarm() async {
+        if await api.keyAlarm() != nil { info.keyAlarm = Self.keyAlarmMessage }
+    }
+
+    /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
+    @discardableResult
+    func noteKeyAlarm(_ error: any Error) -> Bool {
+        guard WorkspaceKeyAlarm(error: error) != nil else { return false }
+        info.keyAlarm = Self.keyAlarmMessage
+        return true
     }
 
     private func handle(_ event: WorkspaceEvent) {
@@ -136,6 +155,8 @@ final class LiveWorkspace: WorkspaceModel {
             return .created(key: ticket.key)
         } catch ViewError.invalidDraft {
             return .failed("The title or text has characters that cannot be sent. Remove them and try again.")
+        } catch where noteKeyAlarm(error) {
+            return .failed(Self.keyAlarmMessage)
         } catch {
             return .failed("The ticket was not confirmed. Try again; it will not be created twice.")
         }

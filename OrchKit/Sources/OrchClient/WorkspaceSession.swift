@@ -112,8 +112,10 @@ public actor WorkspaceSession {
     public private(set) var verifiedReceiptMs: Int64?
     let cfg: WorkspaceSessionConfig
     private var keys: [UInt32: SymmetricKey] = [:]
-    /// Epochs up to the high-water mark with no usable key in custody (not re-read until something is stored or a list accepted).
+    /// Epochs asked for with no usable key in custody (not re-read until something is stored or a list accepted). Bounded: it only
+    /// holds epochs something asked for, and is cleared beyond `maxAbsentKeys`.
     private var absentKeys: Set<UInt32> = []
+    static let maxAbsentKeys = 64
     private var relay: (session: RelaySession, expiresMs: Int64)?
     /// A bounded number of re-sends of one logical request within a single call (stale epoch, offset, sequence).
     static let maxAttempts = 4
@@ -189,32 +191,51 @@ public actor WorkspaceSession {
     /// additionally needs the head list at exactly this epoch (`sealingKey`).
     public func currentEpoch() async throws -> UInt32 { UInt32(clamping: try await cfg.container.epochHighWater()) }
 
-    /// The keys this device READS with (responses, Drop wraps of older epochs): any WSK-verified grant's key in custody, except one
-    /// that a verified list held for its epoch does not commit (Q10).
-    private func loadKeys() async throws {
-        let hwm = try await currentEpoch()
-        guard hwm >= 1 else { return }
-        for e in 1...hwm where keys[e] == nil && !absentKeys.contains(e) {
-            guard let d = try? cfg.vault.get(ws: cfg.workspace.hex, purpose: wkPurpose(e)), d.count == 32 else { absentKeys.insert(e); continue }
-            let k = SymmetricKey(data: d)
-            if let c = try await cfg.container.wkCommit(epoch: Int64(e)), !WKCommit.matches(c, workspace: cfg.workspace, epoch: e, wk: k) {
-                absentKeys.insert(e); continue
-            }
-            keys[e] = k
+    /// A key this device READS with (responses, Drop wraps of older epochs), loaded lazily per epoch: any WSK-verified grant's key in
+    /// custody at or below the confirmed epoch, except one that a verified list held for its epoch does not commit (Q10).
+    private func readKey(_ e: UInt32) async throws -> SymmetricKey? {
+        guard e >= 1, e <= (try await currentEpoch()) else { return nil }
+        if let k = keys[e] { return k }
+        if absentKeys.contains(e) { return nil }
+        if absentKeys.count >= Self.maxAbsentKeys { absentKeys.removeAll() }
+        guard let d = try? cfg.vault.get(ws: cfg.workspace.hex, purpose: wkPurpose(e)), d.count == 32 else { absentKeys.insert(e); return nil }
+        let k = SymmetricKey(data: d)
+        if let c = try await cfg.container.wkCommit(epoch: Int64(e)), !WKCommit.matches(c, workspace: cfg.workspace, epoch: e, wk: k) {
+            absentKeys.insert(e); return nil
         }
+        keys[e] = k
+        return k
     }
 
     /// Q10 (one `WK` per epoch, ever): the key this device SEALS under. Only the head list's epoch, only once the epoch is current,
-    /// and only a key in custody that the head list's `wk_commit` commits; never while the `wk_commit_conflict` alarm stands.
-    /// Anything else blocks sending (`noKeyForEpoch`): there is no fallback to another key or epoch.
+    /// and only a key in custody that the head list's `wk_commit` commits. While the `wk_commit_conflict` alarm stands this throws
+    /// `Refusal.wkCommitConflict` (re-pair; it never clears by itself); anything else blocks sending with `noKeyForEpoch`. There is
+    /// no fallback to another key or epoch.
     func sealingKey() async throws -> (epoch: UInt32, key: SymmetricKey) {
-        try await loadKeys()
+        if try await cfg.container.wkCommitConflictEpoch() != nil { throw Refusal.wkCommitConflict }
         let epoch = try await currentEpoch()
-        guard epoch >= 1, try await cfg.container.wkCommitConflictEpoch() == nil,
-              let head = try await cfg.container.memberListHead(), head.epoch == Int64(epoch),
-              let commit = try await cfg.container.wkCommit(epoch: Int64(epoch)), let wk = keys[epoch],
+        guard epoch >= 1, let head = try await cfg.container.memberListHead(), head.epoch == Int64(epoch),
+              let commit = try await cfg.container.wkCommit(epoch: Int64(epoch)), let wk = try await readKey(epoch),
               WKCommit.matches(commit, workspace: cfg.workspace, epoch: epoch, wk: wk) else { throw SessionError.noKeyForEpoch(epoch) }
         return (epoch, wk)
+    }
+
+    /// `sealingKey`, with ONE bounded recovery when no committed key is usable: fetch and accept the member list and the grants, then
+    /// try once more. This is what lets a device whose head was reset (migration 12 drops the pre-Q10 head, which has no `wk_commit`)
+    /// or whose grant arrived late send again without waiting for a `stale_epoch` or a Drop fetch.
+    func sealingKeyRecovering() async throws -> (epoch: UInt32, key: SymmetricKey) {
+        do { return try await sealingKey() }
+        catch SessionError.noKeyForEpoch {
+            _ = try await refreshGrants(forceList: true)
+            return try await sealingKey()
+        }
+    }
+
+    /// What blocks this workspace's keys for good until the person re-pairs, if anything: the durable `wk_commit_conflict` alarm. The
+    /// App reads it at launch; a transient `wkCommitMismatch` is reported where it happens.
+    public func keyAlarm() async -> WorkspaceKeyAlarm? {
+        guard let e = try? await cfg.container.wkCommitConflictEpoch() else { return nil }
+        return .conflict(epoch: UInt32(clamping: e))
     }
 
     /// The local alarm `wk_commit_conflict` (Q10): the epoch at which two WSK-verified member lists committed to different keys, if
@@ -257,8 +278,10 @@ public actor WorkspaceSession {
     /// (`store`). The current epoch moves only to an epoch a held verified list commits, with that committed key in custody, never
     /// above the head list: no epoch advance from unsigned data, and a grant uploaded ahead of its list is kept but not used. The
     /// epoch never moves backwards. Fails if no grant verified.
+    /// `forceList` fetches the list even when no grant is above the held head (send-path recovery). If a grant the held list does
+    /// not commit is the reason the head epoch has no usable key, this throws `wkCommitMismatch` instead of returning quietly.
     @discardableResult
-    package func refreshGrants(confirmedEpoch: UInt32? = nil) async throws -> UInt32 {
+    package func refreshGrants(confirmedEpoch: UInt32? = nil, forceList: Bool = false) async throws -> UInt32 {
         try await ensureCurrent()
         let raw: [JSONValue] = try await withRelay { s in
             try await RelayClient(transport: cfg.transport).grants(workspace: cfg.workspace, session: s)
@@ -272,14 +295,15 @@ public actor WorkspaceSession {
         if verified.isEmpty, let e = firstError { throw e }
         guard let top = verified.map(\.epoch).max() else { return try await currentEpoch() }
         let held = try await cfg.container.memberListHead()?.epoch ?? 0
-        if Int64(max(top, confirmedEpoch ?? 0)) > held {
+        if forceList || Int64(max(top, confirmedEpoch ?? 0)) > held {
             let list = try await withRelay { s in try await RelayClient(transport: cfg.transport).memberList(workspace: cfg.workspace, session: s) }
             _ = try await acceptMemberList(list)
         }
-        var stored: [UInt32] = []
+        var stored: [UInt32] = [], mismatched: Set<UInt32> = []
         for v in verified {
             do { try await store(epoch: v.epoch, key: v.wk); stored.append(v.epoch) }
-            catch let e as SessionError where e == .grantConflict || e == .wkCommitMismatch(v.epoch) { continue }   // not kept; the list decides
+            catch SessionError.grantConflict { continue }                                   // not kept; a list will decide
+            catch SessionError.wkCommitMismatch(let e) { mismatched.insert(e) }             // not kept; surfaced below if it matters
         }
         let head = try await cfg.container.memberListHead()?.epoch ?? 0
         for e in stored.sorted(by: >) where Int64(e) <= head {
@@ -288,7 +312,9 @@ public actor WorkspaceSession {
             try await cfg.container.raiseEpochHighWater(Int64(e))
             break
         }
-        return try await currentEpoch()
+        let now = try await currentEpoch()
+        if Int64(now) < head, head <= Int64(UInt32.max), mismatched.contains(UInt32(head)) { throw SessionError.wkCommitMismatch(UInt32(head)) }
+        return now
     }
 
     /// Every member list this device acts on goes through here: the signature with the pinned `WSK`, this workspace, an epoch not
@@ -431,7 +457,7 @@ public actor WorkspaceSession {
         try Task.checkCancellation()
         try await ensureCurrent()
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
-        let (epoch, wk) = try await sealingKey()
+        let (epoch, wk) = try await sealingKeyRecovering()
         let offset = try await clockOffsetMs()
         let now = cfg.wall.nowMs
         let (ws, dev, identity, entropy, hook) = (cfg.workspace, cfg.deviceID, cfg.identity, cfg.entropy, crashHook)
@@ -533,16 +559,20 @@ public actor WorkspaceSession {
 
     // MARK: response validation (protocol 8.8)
 
-    package func context() async throws -> Bridge.DeviceContext {
-        try await loadKeys()
-        return Bridge.DeviceContext(workspace: cfg.workspace, device: cfg.deviceID, wsk: cfg.wsk, wk: keys, offsetMs: try await clockOffsetMs())
+    /// The device context with the read keys of `epochs` (loaded lazily, Q10-checked).
+    package func context(epochs: Set<UInt32>) async throws -> Bridge.DeviceContext {
+        var wk: [UInt32: SymmetricKey] = [:]
+        for e in epochs { if let k = try await readKey(e) { wk[e] = k } }
+        return Bridge.DeviceContext(workspace: cfg.workspace, device: cfg.deviceID, wsk: cfg.wsk, wk: wk, offsetMs: try await clockOffsetMs())
     }
 
     /// Section 8.8 for one chunk against this session's own keys, pin and offset, with an explicit pending table.
     package func check(response envelope: Data, mailbox: Bridge.MailboxPosition, pending: [ID16: Bridge.PendingRequest], nowMs: Int64)
         async throws -> (outcome: Bridge.ResponseOutcome, pending: [ID16: Bridge.PendingRequest]) {
         try await ensureCurrent()
-        return Bridge.checkResponse(envelope, context: try await context(), pending: pending, mailbox: mailbox, nowMs: nowMs)
+        var epochs = Set(pending.values.map(\.epoch))
+        if let h = try? Bridge.Parts(envelope: envelope).header { epochs.insert(h.epoch) }
+        return Bridge.checkResponse(envelope, context: try await context(epochs: epochs), pending: pending, mailbox: mailbox, nowMs: nowMs)
     }
 
     // MARK: exchange
@@ -1202,15 +1232,15 @@ extension WorkspaceSession {
     package func dropRelaySession() async throws -> RelaySession { try await ensureCurrent(); return try await relaySession() }
     /// A key to READ a Drop wrap of `epoch` with (any verified grant's, checked against a held `wk_commit`).
     package func dropKey(_ epoch: UInt32) async throws -> SymmetricKey {
-        try await ensureCurrent(); try await loadKeys()
-        guard let key = keys[epoch] else { throw SessionError.noKeyForEpoch(epoch) }
+        try await ensureCurrent()
+        guard let key = try await readKey(epoch) else { throw SessionError.noKeyForEpoch(epoch) }
         return key
     }
 
     /// The key to SEAL a new Drop wrap under: the same rule as the bridge (`sealingKey`), at exactly `epoch`.
     package func dropSealKey(_ epoch: UInt32) async throws -> SymmetricKey {
         try await ensureCurrent()
-        let s = try await sealingKey()
+        let s = try await sealingKeyRecovering()
         guard s.epoch == epoch else { throw SessionError.noKeyForEpoch(epoch) }
         return s.key
     }

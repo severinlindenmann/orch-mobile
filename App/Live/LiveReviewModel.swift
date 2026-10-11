@@ -50,7 +50,7 @@ final class LiveReviewModel: QuestionReviewModel {
             return true
         } catch {
             guard workspace.usable, mine == token else { return false }
-            load = .failed(Self.readFailure)
+            load = .failed(workspace.noteKeyAlarm(error) ? LiveWorkspace.keyAlarmMessage : Self.readFailure)
             return false
         }
     }
@@ -82,6 +82,7 @@ final class LiveReviewModel: QuestionReviewModel {
         } catch ViewError.invalidReview {
             phase = .invalidated
         } catch {
+            workspace.noteKeyAlarm(error)
             // Post-persist failures leave a stored submission that must be reconciled; pre-persist ones signed nothing.
             if let status = await services.storedDecision(workspace: workspace, questionID: questionID) {
                 decisionID = status

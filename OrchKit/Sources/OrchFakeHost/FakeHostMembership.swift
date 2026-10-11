@@ -10,6 +10,16 @@ import OrchProtocol
 public enum MembershipPublicationError: Error, Equatable, Sendable {
     /// The relay holds a list this host did not publish (or acceptance cannot be established): surfaced, never assumed (section 19.7).
     case conflict
+    /// The host stopped publishing (`FakeHost.publicationAlarm`): nothing more is sealed or sent until an operator intervenes.
+    case alarm
+}
+
+/// Why a host stopped publishing membership (Q10 liveness): retrying would only burn epochs toward the relay's `2^16` step cap.
+public enum MembershipPublicationAlarm: Equatable, Sendable {
+    /// `FakeHost.maxConsecutiveBurns` publications in a row were refused (a deterministic refusal, a host bug or a hostile relay).
+    case burnLimit
+    /// The next epoch is `2^16` or more above the relay's: an honest relay refuses it (`bad_epoch`) forever.
+    case epochGap
 }
 
 extension FakeHost {
@@ -62,8 +72,13 @@ extension FakeHost {
         return .object(body)
     }
 
-    /// Builds and persists the next publication (`list_seq + 1`). `WK_e` must already be persisted (`wk(e)` creates it).
+    /// Refusals in a row that may burn an epoch before the host raises `publicationAlarm` and stops.
+    static let maxConsecutiveBurns = 8
+
+    /// Builds and persists the next publication (`list_seq + 1`). `WK_e` must already be persisted (`wk(e)` creates it). Refused
+    /// while the publication alarm stands.
     func preparePublication(roster: [(DemoKeys, [String])], epoch e: UInt32, wraps: [DemoKeys]) throws -> PendingPublication {
+        guard publicationAlarm == nil else { throw MembershipPublicationError.alarm }
         let body = try membershipBody(roster: roster, epoch: e, listSeq: listSeq + 1, wraps: wraps)
         guard let list = body.object?["member_list"] else { throw Refusal.malformed }
         let p = PendingPublication(raw: try canonicalJSON(body), memberList: list, listSeq: listSeq + 1, epoch: e, roster: roster,
@@ -129,7 +144,17 @@ extension FakeHost {
             return try await sendPending(relay: relay, session: session)
         }
         discardRefused(p, code: r.code)
+        if r.code == .badEpoch { await checkEpochGap(relay: relay, session: session) }
         throw failure
+    }
+
+    /// After `bad_epoch` (never a burn): read the relay's signed list. A newer list than any this host used sets the floors (as in
+    /// reconciliation); if the next epoch would still be `2^16` or more above the relay's, no publication can ever pass: alarm.
+    private func checkEpochGap(relay: FakeRelay, session: RelaySession) async {
+        guard let raw = try? await relayMemberList(relay: relay, session: session), let other = try? MemberList.verify(raw, wsk: wskPublic) else { return }
+        if other.listSeq > listSeq { listSeq = other.listSeq; relayEpochFloor = max(relayEpochFloor, other.epoch) }
+        let base = max(epoch, relayEpochFloor)
+        if base >= other.epoch, UInt64(base - other.epoch) >= UInt64(MemberList.maxEpochStep) { publicationAlarm = .epochGap }
     }
 
     /// The refused publication with the same `member_list` and grants and fixed card-key wraps: re-wrapped at this host's card
@@ -173,6 +198,7 @@ extension FakeHost {
     private func installCommitted(_ p: PendingPublication) {
         pendingPublication = nil
         listSeq = max(listSeq, p.listSeq)
+        consecutiveBurns = 0
         relayEpochFloor = 0                          // the relay now holds this host's list
         if p.epoch != epoch { installEpoch(p.epoch) }
         // A member revoked or removed while these bytes were in flight is not re-added locally; the gate stays up and the next
@@ -183,16 +209,20 @@ extension FakeHost {
     /// The relay saw these bytes and refused them (or holds another list). Q10, one `WK` per epoch, ever: an epoch above the current
     /// one is burned, never resealed. Its key stays as a retained, never-activated key (it answers a section 8.5 `stale_epoch` to a
     /// phone that sealed under it), the next publication's `list_seq` and epoch go above this one's (`listSeq` floor `p.listSeq`, epoch
-    /// floor `p.epoch`, so a rotation goes to `floor + 1`), and nothing sealed to the refused roster is ever activated. A refusal of
-    /// an addition at the current epoch because a member's certificate is revoked or invalid means grants of the current `WK` went out
-    /// to it: the gate goes up and the next pump rotates.
+    /// floor `p.epoch`, so a rotation goes to `floor + 1`), and nothing sealed to the refused roster is ever activated. Two limits keep
+    /// a deterministic refusal from burning epochs forever: `bad_epoch` (the relay's step cap) never burns (the epoch was never
+    /// usable; its retained key is reused, never resealed), and after `maxConsecutiveBurns` refusals the host raises
+    /// `publicationAlarm` and stops. A refused body at the CURRENT epoch that carried grants of the current `WK` to a device that is
+    /// not a committed member (whatever the code) raises the gate: the next pump rotates, so that key is never used again.
     private func discardRefused(_ p: PendingPublication, code: RelayRefusal.Code?) {
         pendingPublication = nil
         listSeq = max(listSeq, p.listSeq)
-        if p.epoch > epoch {
+        if p.epoch > epoch, code != .badEpoch {
             if let k = wks[p.epoch] { core.keys[p.epoch] = k }
             relayEpochFloor = max(relayEpochFloor, p.epoch)
-        } else if p.epoch == epoch, let code, [.revoked, .certInvalid, .certExpired].contains(code) {
+            consecutiveBurns += 1
+            if consecutiveBurns >= Self.maxConsecutiveBurns { publicationAlarm = .burnLimit }
+        } else if p.epoch == epoch, p.roster.contains(where: { roster[$0.0.deviceID] == nil }) {
             rotationRequired = true
         }
     }

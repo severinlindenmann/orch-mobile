@@ -49,5 +49,7 @@ sha256: `d1ee18aef4cf488b2bc58fe512b94e699f4b7c810e5bf1e405559369ff54b184`
   `wk_commit` and the `wk_commit` label. Until then the copied 386a6cb lists predate `wk_commit`: the tests add it (a deterministic
   test key per epoch, re-signed by `wsk_a`; OrchRelayFixtureTests/PreG2b.swift, MembershipVectorTests.preG2b) and one case
   whose outcome Q10 changes is a `caseOverrides` entry (SkipList.swift).
+- The generator is not run in CI: regenerate by hand after editing it (`python3 scripts/gen-local-g2b-vectors.py >
+  OrchKit/Tests/OrchTestVectors/local_g2b_vectors.json`); the snapshot cases also run through `WorkspaceSession.acceptMemberList`.
 - TODO(G2b): re-copy vectors_v2.json and http_fixtures from orch-relay, delete local_g2b_vectors.json, the PreG2b shim, the
   `q10Outcomes` table and the `.g2b` override, and send the fixture bodies unchanged again.

@@ -93,4 +93,53 @@ import OrchProtocol
         let phone = try await w.makePhone()
         #expect(try await phone.session.currentEpoch() == 4)
     }
+
+    /// A same-epoch addition refused for ANY reason (here `scope_exceeded`) carried a grant of the current WK to a device that is not a
+    /// committed member: the gate goes up and the next pump rotates.
+    @Test func anyRefusedSameEpochAdditionForcesARotation() async throws {
+        let w = try await World.make()
+        let keys = try await newDevice(w)                                   // certified for ["look"] only
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .scopeExceeded))) {
+            try await w.host.publishMembership(roster: w.baseRoster + [(keys, ["look", "decide"])], epoch: 1, wraps: [], relay: w.relay, session: w.hostSession)
+        }
+        #expect(await w.host.rotationRequired)
+        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        #expect(await w.host.epoch == 2)
+        #expect(await w.relay.memberListEpoch(workspace: w.ws) == 2)
+    }
+
+    /// A deterministic refusal must not burn epochs forever: after `maxConsecutiveBurns` refused publications the host raises its
+    /// publication alarm and stops sending (no request reaches the relay any more).
+    @Test func consecutiveBurnsStopAtTheAlarm() async throws {
+        let w = try await World.make()
+        let keys = try await newDevice(w)
+        // a rotation whose roster asks more than the certificate allows: refused (scope_exceeded) on every attempt
+        await #expect(throws: (any Error).self) {
+            try await w.host.rotate(remaining: [(keys, ["look", "decide"])], relay: w.relay, session: w.hostSession)
+        }
+        for _ in 0..<(FakeHost.maxConsecutiveBurns + 3) {
+            _ = try await rotationRetry(w, milliseconds: 1_600) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+        }
+        #expect(await w.host.publicationAlarm == .burnLimit)
+        #expect(await w.host.relayEpochFloor == UInt32(FakeHost.maxConsecutiveBurns) + 1)
+        #expect(await w.relay.memberListEpoch(workspace: w.ws) == 1)
+        let sent = await w.relay.requestsReceived
+        _ = try await rotationRetry(w, milliseconds: 1_600) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+        #expect(await w.relay.requestsReceived - sent <= 1)                 // at most the host's own inbox read; no publication
+    }
+
+    /// `bad_epoch` from the relay's 2^16 step cap never burns; when the host's next epoch is that far above the relay's, it alarms.
+    @Test func anEpochGapOfTwoToTheSixteenAlarmsInsteadOfBurning() async throws {
+        let w = try await World.make()
+        await w.host.setRelayEpochFloorForTests(1 + MemberList.maxEpochStep)
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) {
+            try await w.host.rotate(remaining: w.baseRoster, relay: w.relay, session: w.hostSession)
+        }
+        #expect(await w.host.relayEpochFloor == 1 + MemberList.maxEpochStep)   // not raised: nothing burned
+        #expect(await w.host.publicationAlarm == .epochGap)
+    }
+}
+
+extension FakeHost {
+    func setRelayEpochFloorForTests(_ e: UInt32) { relayEpochFloor = e }
 }
