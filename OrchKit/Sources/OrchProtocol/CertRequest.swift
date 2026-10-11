@@ -114,6 +114,18 @@ public struct PrimaryLedger: Equatable, Sendable {
         return cert
     }
 
+    /// The human rejected the request on the primary (P3-D11): closes it like `reject(requestID:)` and returns the PK-signed
+    /// `cert_rejection` the relay queue takes. Only for a request this primary accepted; never after it signed a certificate
+    /// (`already_signed`). Asking again for a rejected request signs the identical object again (an idempotent resubmission).
+    package mutating func signRejection(requestID: ID16, primary: some Signer) throws -> SignedObject {
+        guard let a = accepted[requestID] else { throw Refusal.unknownRequest }
+        guard !signed.contains(requestID) else { throw Refusal.alreadySigned }
+        guard Identifiers.personID(primary.publicKey) == a.person else { throw Refusal.otherPerson }
+        let s = try CertRejection.sign(requestID: requestID, workspace: a.workspace, person: a.person, primary: primary)
+        reject(requestID: requestID)
+        return s
+    }
+
     mutating func record(_ a: Accepted, requestID: ID16) {
         seen.insert(requestID)
         open[a.workspace] = OpenRequest(requestID: requestID, expiresMs: a.expiresMs)
@@ -206,6 +218,48 @@ public enum CertChallenge {
         guard dev == device, sig == dkSig.x963, kx == dkKx.x963 else { throw CertChallengeDrop.notMyKey }
         guard nowMs < expires else { throw CertChallengeDrop.challengeExpired }
         return (o, try Identifiers.certCode(challengeObject: .object(o)))
+    }
+}
+
+/// The primary's PK-signed rejection of a cert request (P3-D11, section 8.4):
+/// `{"o": {v, suite, kind: "cert_rejection", request_id, workspace_id, person_id}, "sig": Sign(PK, "orch/v2/sig/cert-rejection|" || cj(o))}`.
+/// Only `PK` can sign one, so neither the host nor the relay can forge "your primary said no".
+public enum CertRejection {
+    static let fields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id"]
+
+    package static func sign(requestID: ID16, workspace: ID16, person: ID16, primary: some Signer) throws -> SignedObject {
+        try SignedObject.sign(["v": 2, "suite": 2, "kind": "cert_rejection", "request_id": .string(requestID.hex),
+                               "workspace_id": .string(workspace.hex), "person_id": .string(person.hex)],
+                              kind: .certRejection, signer: primary)
+    }
+
+    public struct Verified: Equatable, Sendable {
+        public let requestID: ID16
+        public let workspace: ID16
+        public let person: ID16
+    }
+
+    /// The signature under `pk` (`bad_signature`), then the exact field set (`malformed`). Nothing else: callers bind the
+    /// identifiers to their own context (`check(_:pk:request:)` for the relay, `CertRejectionDrop` for the phone).
+    public static func verify(_ signed: JSONValue, pk: SigningPublicKey) throws -> Verified {
+        let o: [String: JSONValue]
+        do { o = try SignedObject.parse(signed).verify(kind: .certRejection, key: pk) }
+        catch Refusal.malformed { throw Refusal.malformed }
+        catch { throw Refusal.badSignature }
+        guard o.hasExactly(fields), let rid = o.id16("request_id"), let ws = o.id16("workspace_id"), let person = o.id16("person_id")
+        else { throw Refusal.malformed }
+        return Verified(requestID: rid, workspace: ws, person: person)
+    }
+
+    /// The relay's check against the stored request object (P3-D11, vectors `p3` op `rejection`), in order: signature,
+    /// field set, `person_id` = the request's and `person_id(pk)` (`other_person`), `workspace_id` (`other_workspace`),
+    /// `request_id` (`not_for_this_device`).
+    public static func check(_ signed: JSONValue, pk: SigningPublicKey, request: [String: JSONValue]) throws -> Verified {
+        let v = try verify(signed, pk: pk)
+        guard v.person == Identifiers.personID(pk), v.person == request.id16("person_id") else { throw Refusal.otherPerson }
+        guard v.workspace == request.id16("workspace_id") else { throw Refusal.otherWorkspace }
+        guard v.requestID == request.id16("request_id") else { throw Refusal.notForThisDevice }
+        return v
     }
 }
 

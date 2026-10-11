@@ -32,6 +32,7 @@ public enum Label {
     public static let sigCardWSK = "orch/v2/sig/card-wsk|"
     public static let sigWSDelegation = "orch/v2/sig/ws-delegation|"
     public static let sigCertChallenge = "orch/v2/sig/cert-challenge|"
+    public static let sigCertRejection = "orch/v2/sig/cert-rejection|"
     public static let sigPush = "orch/v2/sig/push|"
     public static let sigDecision = "orch/v2/sig/decision|"
     public static let sigMemberList = "orch/v2/sig/member-list|"
