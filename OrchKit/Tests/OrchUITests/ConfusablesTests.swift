@@ -101,7 +101,6 @@ import Testing
         for p in pairs {
             #expect(refused(p), "\(p)")
             #expect(strictMarked(p[1]), "\(p[1])")
-            #expect(SafeText.strictOptionLabels(p))
         }
         #expect(SafeText.optionRefusal(["Don't", "Don\u{2019}t"]) == .ambiguous)
         #expect(SafeText.optionRefusal(["Deploy - prod", "Deploy \u{2013} prod"]) == .ambiguous)
@@ -146,7 +145,7 @@ import Testing
                       "Ap\u{200D}prove", "Approve\u{E0041}", "Approve\u{FE00}", "Ap\u{00AD}prove", "Approve\u{200B}"] {
             #expect(SafeText.optionRefusal(["Reject", spoof]) != nil, "\(spoof)")
             #expect(strictMarked(spoof), "\(spoof)")
-            #expect(marked(spoof), "prose: \(spoof)")
+            if spoof != "Approve\u{00B2}" { #expect(marked(spoof), "prose: \(spoof)") }   // "m²" is fine in prose
         }
     }
 
@@ -156,16 +155,92 @@ import Testing
         #expect(!strictMarked("Yes, ship it (v2.1)"))
     }
 
-    @Test func localisedSingleScriptExceptionIsConservative() {
-        #expect(SafeText.optionRefusal(["\u{0414}\u{0430}", "\u{041D}\u{0435}\u{0442}"]) == nil)      // Да / Нет
-        #expect(!SafeText.strictOptionLabels(["\u{0414}\u{0430}", "\u{041D}\u{0435}\u{0442}"]))
-        #expect(SafeText.optionRefusal(["\u{662F}", "\u{5426}"]) == nil)                              // 是 / 否
-        #expect(SafeText.optionRefusal(["\u{0414}\u{0430}", "Yes"]) == .nonStandard)                 // mixed with Latin
-        #expect(SafeText.optionRefusal(["\u{043E}\u{043A}", "\u{041D}\u{0435}\u{0442}"]) != nil)      // ок reads as Latin
-        #expect(SafeText.optionRefusal(["\u{039D}\u{03B1}\u{03B9}", "\u{038C}\u{03C7}\u{03B9}"]) != nil) // Ναι reads as Latin
-        #expect(SafeText.optionRefusal(["\u{0414}\u{0430}", "\u{03CC}\u{03C7}\u{03B9}"]) != nil)      // two scripts
-        #expect(SafeText.optionRefusal(["\u{05DB}\u{05DF}", "\u{05DC}\u{05D0}"]) != nil)             // RTL never qualifies
-        #expect(SafeText.optionRefusal(["\u{05DF}\u{05DF}"]) != nil)
+    @Test func localisedAnswerSetsAreRefusedForNow() {
+        // D2: no single-script exception until a stricter test exists ("Сапсеӏ"/"Ассерт" and "вуе"/"Нет" qualified before).
+        for set in [["\u{0414}\u{0430}", "\u{041D}\u{0435}\u{0442}"], ["\u{662F}", "\u{5426}"],
+                    ["\u{0421}\u{0430}\u{043F}\u{0441}\u{0435}\u{04CF}", "\u{0410}\u{0441}\u{0441}\u{0435}\u{0440}\u{0442}"],
+                    ["\u{0432}\u{0443}\u{0435}", "\u{041D}\u{0435}\u{0442}"], ["\u{05DB}\u{05DF}", "\u{05DC}\u{05D0}"]] {
+            #expect(SafeText.optionRefusal(set) == .nonStandard, "\(set)")
+            #expect(set.allSatisfy { strictMarked($0) })
+        }
+    }
+
+    @Test func latin1LettersAllowedAccentsFoldInSkeleton() {
+        #expect(SafeText.optionRefusal(["Übernehmen", "Später", "Señal", "Straße"]) == nil)
+        #expect(!strictMarked("Übernehmen"))
+        #expect(SafeText.optionRefusal(["Cafe", "Café"]) == .ambiguous)
+        #expect(SafeText.optionRefusal(["Resume", "R\u{00E9}sum\u{00E9}"]) == .ambiguous)
+        #expect(SafeText.optionRefusal(["2 × 3", "6"]) == .nonStandard)
+        #expect(SafeText.optionRefusal(["6 ÷ 3", "6"]) == .nonStandard)
+        #expect(SafeText.optionRefusal(["Yes", "No ~ maybe {x} [y] <z> `q` \\ ^ $ * = @ |"]) == nil)   // all printable ASCII
+    }
+
+    /// Scanner: "parser-differential / fail-open allowlist". The allowlist runs per scalar on the exact signed string.
+    @Test func allowlistIsPerScalarNotPerGrapheme() {
+        for spoof in ["o\u{0338}k", "Cafe\u{0301}", "A\u{20DD}pprove", "Yes\u{FE0F}", "OK\u{1F44D}\u{1F3FD}",
+                      "Dev\u{1F468}\u{200D}\u{1F4BB}", "1\u{FE0F}\u{20E3}", "Approve\u{0300}", "\u{0041}\u{030A}"] {
+            #expect(SafeText.optionRefusal([spoof, "Reject"]) == .nonStandard, "\(spoof.unicodeScalars.map { String($0.value, radix: 16) })")
+            #expect(strictMarked(spoof))
+        }
+        // Swift String == is canonical equivalence: "Café" == "Cafe\u{301}". The check must not inherit it.
+        #expect("Caf\u{00E9}" == "Cafe\u{0301}")
+        #expect(SafeText.optionRefusal(["Caf\u{00E9}", "Reject"]) == nil)
+        #expect(SafeText.optionRefusal(["Cafe\u{0301}", "Reject"]) == .nonStandard)
+        #expect(SafeText.optionRefusal(["Caf\u{00E9}", "Cafe\u{0301}"]) != nil)
+        // The marker names the exact combining scalar the signature covers.
+        #expect(SafeText.markers(in: "Cafe\u{0301}", strictLabel: true) == ["⟨character U+0301⟩"])
+    }
+
+    @Test func refusalMessagesAndIdentifiers() {
+        #expect(SafeText.OptionRefusal.nonStandard.message ==
+                "This question's answers contain non-standard characters, so orch won't sign them here. Answer on your Mac, or ask the agent to use plain text.")
+        #expect(SafeText.OptionRefusal.ambiguous.message == "Two answers look the same on this iPhone. Answer on your Mac.")
+        #expect(SafeText.OptionRefusal.nonStandard.questionIdentifier == "question.nonStandard")
+        #expect(SafeText.OptionRefusal.ambiguous.questionIdentifier == "question.ambiguous")
+    }
+
+    @Test func markersNeverChangeTheSignedText() {
+        // Look-alike markers are inserted between pieces; the text pieces rebuild the exact signed scalars.
+        for s in ["\u{0410}\u{0441}\u{0441}\u{0435}\u{0440}\u{0442}", "Dep\u{3163}oy", "Caf\u{00E9}", "Cafe\u{0301}",
+                  "\u{2C9E}\u{2C94} \u{05E9} 10 20", "x\u{0430}\u{0301}pp \u{FF21} \u{212A}"] {
+            for strict in [false, true] {
+                let rebuilt = SafeText.pieces(s, strictLabel: strict).compactMap { if case .text(let t) = $0 { t } else { nil } }.joined()
+                #expect(Array(rebuilt.unicodeScalars) == Array(s.unicodeScalars), "\(s) strict=\(strict)")
+            }
+        }
+    }
+
+    @Test func tunedProseFalsePositives() {
+        #expect(!marked("Объединить PR 12?"))
+        #expect(!marked("Area: 12 m², add ½ cup, orch™"))
+        #expect(!marked("Dosya kap\u{0131}s\u{0131} a\u{00E7}\u{0131}k m\u{0131}?"))
+        // RTL: only the words directly next to the digits are marked, not every RTL word on the line.
+        #expect(SafeText.markers(in: "\u{0647}\u{0644} \u{0646}\u{0646}\u{0634}\u{0631} 12 \u{0627}\u{0644}\u{0622}\u{0646} \u{0631}\u{062C}\u{0627}\u{0621}").count == 2)
+        #expect(!marked("\u{0647}\u{0644} \u{0646}\u{0646}\u{0634}\u{0631} \u{0627}\u{0644}\u{0622}\u{0646}"))
+    }
+
+    @Test func letterlikeAndHangulExtensions() {
+        #expect(SafeText.markers(in: "\u{212A}eep") == ["⟨letterlike U+212A⟩"])
+        #expect(marked("\u{2126}"))
+        #expect(marked("Reply \u{212A} now"))
+        #expect(SafeText.optionRefusal(["Keep", "\u{212A}eep"]) != nil)
+        #expect(SafeText.markers(in: "\u{A960}\u{D7B0}", strictLabel: true) == ["⟨CJK U+A960⟩", "⟨CJK U+D7B0⟩"])
+    }
+
+    @Test func longHostTextStaysLinear() {
+        let unit = "Approve \u{0430}pprove \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442} \u{05E9} 10 \u{4E00}x "
+        func build(_ sep: String) -> String {
+            var s = ""
+            while s.utf8.count < 64 * 1024 { s += unit + sep }
+            return s
+        }
+        for text in [build(""), build("\n")] {
+            let clock = ContinuousClock()
+            let elapsed = clock.measure { _ = SafeText.pieces(text) }
+            // Quadratic per-line scans took seconds here; linear is ~tens of ms even in debug. Generous bound for CI.
+            #expect(elapsed < .seconds(2), "\(elapsed)")
+            #expect(SafeText.hasUnsafe(text))
+        }
     }
 
     @Test func ordinaryParagraphsStayUnmarked() {

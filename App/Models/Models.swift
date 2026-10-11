@@ -178,15 +178,24 @@ struct ReviewValue: Hashable, Sendable {
     /// Bumped each time the question is re-read after `question_changed`.
     let revision: Int
     var isDemo = false
+    /// Non-nil: the sheet refuses to sign (look-alike answers, or answers outside the plain-label allowlist). Computed once.
+    let optionsRefusal: SafeText.OptionRefusal?
+    /// Computed once: the sheet body reads it on every pass and host text can be long.
+    let hasUnsafeContent: Bool
 
-    var isHosted: Bool { clientHosted || hostedBy != nil }
-    /// Non-nil: the sheet refuses to sign (look-alike answers, or answers outside the plain-label allowlist).
-    var optionsRefusal: SafeText.OptionRefusal? { SafeText.optionRefusal(options.map(\.label)) }
-    var strictLabels: Bool { SafeText.strictOptionLabels(options.map(\.label)) }
-    var hasUnsafeContent: Bool {
-        SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label, strictLabel: strictLabels) }
+    init(workspaceID: String, workspaceName: String, hue: Int, clientHosted: Bool, hostedBy: String?, questionID: String,
+         ticket: String, text: String, optionID: String, optionLabel: String, options: [QuestionOption], contentHash: String,
+         revision: Int, isDemo: Bool = false) {
+        self.workspaceID = workspaceID; self.workspaceName = workspaceName; self.hue = hue; self.clientHosted = clientHosted
+        self.hostedBy = hostedBy; self.questionID = questionID; self.ticket = ticket; self.text = text; self.optionID = optionID
+        self.optionLabel = optionLabel; self.options = options; self.contentHash = contentHash; self.revision = revision
+        self.isDemo = isDemo
+        optionsRefusal = SafeText.optionRefusal(options.map(\.label))
+        hasUnsafeContent = SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label, strictLabel: true) }
             || SafeText.hasUnsafe(workspaceName) || hostedBy.map { SafeText.hasUnsafe($0) } == true
     }
+
+    var isHosted: Bool { clientHosted || hostedBy != nil }
 }
 
 /// Opaque session-issued review: the only thing `decide` would accept. Views never see it.

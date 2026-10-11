@@ -164,27 +164,28 @@ public enum SafeText {
         public var message: String {
             switch self {
             case .ambiguous: "Two answers look the same on this iPhone. Answer on your Mac."
-            case .nonStandard: "This question's answers contain non-standard characters, so orch won't sign them. Ask the agent to use plain text."
+            case .nonStandard:
+                "This question's answers contain non-standard characters, so orch won't sign them here. Answer on your Mac, or ask the agent to use plain text."
+            }
+        }
+
+        /// Accessibility identifier of the notice on the question screen (the sign sheet uses "sign.refused" for both).
+        public var questionIdentifier: String {
+            switch self {
+            case .ambiguous: "question.ambiguous"
+            case .nonStandard: "question.nonStandard"
             }
         }
     }
 
-    /// Option labels are what the user taps and signs, so they fail closed: plain ASCII letters, digits, space and
-    /// `.,:;!?'"()-/&+%#_` only, unless every label is in one non-Latin left-to-right script (`localisedOptions`).
+    /// Option labels are what the user taps and signs, so they fail closed. Checked on the exact signed strings, per
+    /// Unicode scalar, without normalisation: printable ASCII and precomposed Latin-1 letters only (`Confusables.isPlainLabelScalar`);
+    /// localised answer sets are refused for now (gaps.md). Labels are always rendered with `strictLabel: true`.
     public static func optionRefusal(_ labels: [String]) -> OptionRefusal? {
         if hasAmbiguousOptions(labels) { return .ambiguous }
-        if strictOptionLabels(labels), labels.contains(where: { $0.unicodeScalars.contains { !Confusables.isPlainLabelScalar($0) } }) {
-            return .nonStandard
-        }
+        if labels.contains(where: { $0.unicodeScalars.contains { !Confusables.isPlainLabelScalar($0) } }) { return .nonStandard }
         return nil
     }
-
-    /// The localisation exception (conservative UTS #39 single-script check): all labels in exactly one non-Latin,
-    /// left-to-right script, nothing mixed in, and no word that reads as Latin ("ок", "Ναι" do not qualify).
-    public static func localisedOptions(_ labels: [String]) -> Bool { Confusables.isSingleScriptSet(labels) }
-
-    /// Whether the labels of this set are rendered with strict markers (everything but the localisation exception).
-    public static func strictOptionLabels(_ labels: [String]) -> Bool { !localisedOptions(labels) }
 
     public enum Style: Sendable { case signing, prose }
 
@@ -228,7 +229,7 @@ public struct SafeTextView: View {
     private let text: String
     private let style: SafeText.Style
     private let strictLabel: Bool
-    /// `strictLabel`: an option label rendered under `SafeText.strictOptionLabels` (every non-plain scalar marked).
+    /// `strictLabel`: an option label (every scalar outside the option-label allowlist marked).
     public init(_ text: String, style: SafeText.Style = .signing, strictLabel: Bool = false) {
         self.text = text; self.style = style; self.strictLabel = strictLabel
     }

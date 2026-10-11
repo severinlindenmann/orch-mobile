@@ -248,3 +248,18 @@ before any relay operation. Suspension before sealing completes leaves no partia
   and check it on the phone. Until then the `denied` attribution is not hardened against a malicious host.
 - **Q4 §8.3 answer addition.** `{"state":"rejected","wsk_pub","pk_pub","rejection"}` must land in protocol-v2 §8.3 and in the
   orch-core host before real use; until then only FakeHost sends it and older devices ignore the two fields.
+
+## Signing surface: look-alike characters (PR #49)
+
+- **Localised answer sets are refused on the phone.** Option labels are checked per Unicode scalar on the exact signed
+  strings: printable ASCII and precomposed Latin-1 letters (U+00C0–U+00FF except × ÷) only. Anything else (Cyrillic,
+  Greek, CJK, Hebrew answers, combining marks, emoji, invisible characters) is marked and the question is answered on the
+  Mac. A single-script exception (UTS #39 "single script") was tried and dropped: sets such as "Сапсеӏ"/"Ассерт" or
+  "вуе"/"Нет" passed it. Needs a stricter test (full confusables.txt, whole-script confusables) before it returns. Fix by: orch-mobile.
+- **Skeleton is partial.** A compact subset of confusables.txt plus NFKD and dropped combining marks; "Cafe"/"Café" collide
+  on purpose (fail closed). Unknown look-alikes in labels are still refused by the allowlist.
+- **Question prose is marked, not refused, and the heuristics are best effort.** Accepted false positives: short
+  Cyrillic/Greek/Hebrew words that read as Latin ("ок", "Ассерт") when no other prose in that script is on the line; a
+  right-to-left word directly next to digits or Latin. Accepted false negatives: Turkish dotless ı (U+0131), superscript and
+  subscript digits, vulgar fractions, ™ and ℠ are not marked in prose ("m²", "½"); Cyrillic/Greek words that do not read as
+  Latin are not marked next to Latin ("Объединить PR 12?"). Fix by: orch-mobile (full UTS #39 data if this proves too loose).

@@ -74,7 +74,7 @@ struct QuestionScreen: View {
                 icon: { Image(systemName: "checkmark.circle.fill") }
                 .font(OF.body).foregroundStyle(OC.ok)
             if let label = r.answerLabel(in: q.options) {
-                SafeTextView(label, strictLabel: SafeText.strictOptionLabels(q.options.map(\.label)))
+                SafeTextView(label, strictLabel: true)
             } else {
                 Text(verbatim: Resolution.unknownAnswer).font(OF.meta).foregroundStyle(OC.textMuted)
                     .accessibilityIdentifier("question.resolution.unknownAnswer")
@@ -89,13 +89,12 @@ struct QuestionScreen: View {
         let pending = services.home.pendingDecisions.first { $0.questionID == q.id }
         let labels = q.options.map(\.label)
         let refusal = SafeText.optionRefusal(labels)
-        let strict = SafeText.strictOptionLabels(labels)
         let block = info.answerBlock
         if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
         if pending != nil {
             VStack(alignment: .leading, spacing: OS.s2) {
                 Text("You submitted").font(OF.meta).foregroundStyle(OC.textMuted)
-                SafeTextView(pending?.optionLabel ?? "", strictLabel: strict).accessibilityIdentifier("question.pending.answer")
+                SafeTextView(pending?.optionLabel ?? "", strictLabel: true).accessibilityIdentifier("question.pending.answer")
                 Button { startSigning(pending?.optionID ?? "") } label: {
                     Label("Checking whether your answer was received", systemImage: "clock.arrow.circlepath")
                 }
@@ -104,7 +103,7 @@ struct QuestionScreen: View {
         } else {
             Text("Choose an answer").font(OF.section)
             ForEach(q.options) { option in
-                Button { startSigning(option.id) } label: { SafeTextView(option.label, strictLabel: strict) }
+                Button { startSigning(option.id) } label: { SafeTextView(option.label, strictLabel: true) }
                     .buttonStyle(OrchOptionButtonStyle())
                     .disabled(block != nil || refusal != nil)
                     .accessibilityIdentifier("question.option.\(option.id)")
@@ -114,7 +113,7 @@ struct QuestionScreen: View {
             if let refusal {
                 Label { Text(verbatim: refusal.message) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
                     .font(OF.meta).foregroundStyle(OC.warn)
-                    .accessibilityIdentifier(refusal == .ambiguous ? "question.ambiguous" : "question.nonStandard")
+                    .accessibilityIdentifier(refusal.questionIdentifier)
             }
         }
     }
@@ -180,7 +179,7 @@ struct SignSheet: View {
                 .background(OC.surface2, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
-                    SafeTextView(review.optionLabel, strictLabel: review.strictLabels).accessibilityIdentifier("sign.answer")
+                    SafeTextView(review.optionLabel, strictLabel: true).accessibilityIdentifier("sign.answer")
                 }
                 .padding(OS.s4).orchCard()
                 if review.hasUnsafeContent {
