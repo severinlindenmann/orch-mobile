@@ -75,8 +75,8 @@ import OrchProtocol
         for i in 0..<4 {
             let rid = ID16.fresh(UInt8(40 + i))
             let env = try w.envelope(rid: rid, seq: 1, epoch: 0, stream: offer)
-            let target = "/mobile/host-api/0/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)"
-            tasks.append(Task { try await relay.send(WireRequest(method: "POST", target: target, headers: ["Orch-Host-API": "0"], body: env, clientAddress: "198.51.100.7")) })
+            let target = "/v2/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)"
+            tasks.append(Task { try await relay.send(WireRequest(method: "POST", target: target, headers: [:], body: env, clientAddress: "198.51.100.7")) })
         }
         guard await waitForSleepers(w, 4) else { tasks.forEach { $0.cancel() }; return }
         w.clock.advance(by: .seconds(1))

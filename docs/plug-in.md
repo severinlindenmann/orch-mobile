@@ -19,7 +19,7 @@ The current `App/HomeScreen.swift` constructs `PreviewWorld`; it is a UI simulat
 Slice 2a supplies the bridge engine, but its defaultHostHandler returns not_found for http;
 the host-view schemas below are requirements from host API §2, not implemented snapshot evidence.
 `OrchClient` has the wire adapter, but WorkspaceSession and PairingCoordinator are branch evidence.
-`FakeRelay.swift` currently returns 501 `not_implemented` for push and Drop routes.
+`FakeRelay.swift` answers 404 `not_found` for push registration (not in protocol-v2 §19 yet); its Drop routes work.
 `OrchShareStaging` is absent locally; the current share extension is a disabled placeholder.
 Completing these integrations and connecting the screens remains necessary before a sender swap works.
 
@@ -67,19 +67,21 @@ The routed initializer is package-scoped: a production factory inside OrchKit is
 
 ## B. Relay route contract
 
-`R = /mobile/host-api/0`; all rows under R are **provisional v0** HTTP routes.
-Every request has `Orch-Host-API: 0`; adapter JSON below implicitly includes `host_api:0`.
-Signed v2 objects, pairing meta, decisions and §14 refusal meta must not gain that adapter field.
+`R = /v2` (protocol-v2 §19). Relay requests and responses have no `Orch-Host-API` header and no `host_api` field:
+JSON field sets are exact and strict (§2.3), errors are §14 `{"error": code, ...}`, `Retry-After` is integer delta-seconds.
+(`host_api:0` inside bridge-tunnelled HOST views, `/v2/snapshot` and friends, is not a relay route and is unchanged.)
+Rows marked "not in §19" (session logout aside, push, Drop) are still provisional pending orch-4e.
 `D` = device bearer; `H` = workspace/host bearer; `–` = no bearer.
-`J` = 2 MiB local adapter JSON cap, not an upstream wire rule. `B` = 60 s mailbox retention.
+`J` = 2 MiB local JSON cap, not an upstream wire rule. `B` = 60 s mailbox retention.
 `chunks` means `{chunks:[{id,idx,last,stream,envelope:b64u(ORB2)}]}`; validate against the header.
 `after` is an optional strict unsigned decimal chunk index, absent before chunk 0; polls do not consume.
 Sources for every row: host API §§1,3,4 and `RoutedRelayTransport.swift`, `HostAPI.swift`, `FakeRelay.swift`.
 
 | Method | Path | Auth | Request → response | Refusals/errors | Limits; authority |
 |---|---|---|---|---|---|
-| POST | R/session/challenge | – | `{}` → 200 `{challenge:b64u32,expires_ms}` | 400 malformed/unsupported_host_api; 429 rate_limited | J; 60 s challenge; §12.2, route provisional v0 |
-| POST | R/session/login | – | `{challenge,kind:"device" or "workspace",id,sig:b64u64}` → 200 `{token,expires_ms}` | 400 malformed/cert_invalid/cert_expired; 401 bad_signature/unknown_challenge/expired; 403 revoked | J; consumed challenge, 15 min session; §12.2, provisional v0 |
+| POST | R/session/challenge | – | `{}` → 200 `{challenge:b64u32,expires_ms}` | 400 malformed; 413 too_large; 429 rate_limited | 16 KiB; 60 s challenge; §12.2, §19.1 |
+| POST | R/session/login | – | `{challenge,kind:"device" or "workspace",id,sig:b64u64}` → 200 `{token,expires_ms}` | 400 malformed/cert_invalid/cert_expired; 401 bad_signature/unknown_challenge/expired; 403 revoked; 429 quota_exceeded (8 live tokens/device) | 16 KiB; consumed challenge, 15 min session; §12.2, §19.1 |
+| POST | R/session/logout | D or H | `{}` → 200 `{}` | 400 malformed; 413 too_large; 401 unauthenticated (no bearer) | 16 KiB; idempotent, 200 for unknown/expired token; §19.1; FakeRelay only, no phone call yet |
 | POST | R/workspaces/{ws}/pair/{offer}/{rid} | – request; H response | raw epoch-0 ORB2 → 202 `{}` | 400 malformed/wrong_suite; 401 unauthenticated/unknown_workspace; 403 not_for_this_device; 429 rate_limited | 64 KiB envelope; B; §8.3/8.9, provisional v0 |
 | GET | R/workspaces/{ws}/pair/{offer}/{rid}[?after=N] | – | empty → 200 chunks | 400 malformed; 429 rate_limited | J; B; 120 polls/min/address; §8.9, provisional v0 |
 | POST | R/workspaces/{ws}/bridge/{rid} | D request; H response | raw ORB2 → 202 `{}` | 400 malformed/wrong_suite; 401 unauthenticated; 403 not_eligible/not_for_this_device/revoked; 429 quota_exceeded | 1 MiB request / 256 KiB chunk; B; §8.9, provisional v0 |
@@ -89,22 +91,23 @@ Sources for every row: host API §§1,3,4 and `RoutedRelayTransport.swift`, `Hos
 | GET | R/workspaces/{ws}/card | D, current member | empty → 200 `{card:signedCard}` | same fetch errors | J; sealed part ≤64 KiB locally; §7.1, provisional v0 |
 | GET | R/workspaces/{ws}/card-key?card_seq=N | D, current member | empty → 200 `{workspace_id,device_id,card_seq,sealed:b64u}` | same fetch errors | J; seq ≥1, session recipient only; §5.3 purpose card, provisional v0 |
 | GET | R/devices/{device}/revocation | – | empty → 200 `{record:PK-signedRevocation}` | 400 malformed; 404 not_found; rate policy to agree | J; §6.2; public signed record, provisional v0 |
-| POST | R/push/register | D, current member, valid cert | `{workspace_id,registration_id,env,topic,token:b64u}` → 200 `{registration_id,registered:true}` | 400 malformed; 401 unauthenticated; 403 revoked/not_eligible/not_for_this_device | J; env sandbox/production/demo; gaps 14–16, provisional v0; currently 501 |
-| POST | R/push/unregister | D, registration owner | `{workspace_id,registration_id:id or null}` → 200 `{registration_id,registered:false}` | 400 malformed; 401 unauthenticated; 403 revoked/not_for_this_device | J; null removes this device's registrations for ws; provisional v0; currently 501 |
-| PUT | /drop/{id}/versions | D with eligible write scope | If-Match decimal + `{descriptor,wraps,blob:b64uORD2}` → 200 `{version}` | 428 precondition_required; 409 version_conflict with current/head_hash; 403 not_eligible; §14 validation errors | §10.6 path/CAS; JSON and initial create provisional v0; cap unresolved; currently 501 |
-| POST | R/drop/list | D with eligible read scope | `{workspace_id,direction:"received" or "sending"}` → 200 `{objects:[{descriptor,wraps}]}` | 401 unauthenticated; 403 not_eligible; malformed input | J; pagination/large lists open; §10 objects, provisional v0; currently 501 |
-| GET | R/drop/{id}/versions/{version}/descriptor | D, authorized recipient | empty → 200 `{descriptor}` | 401 unauthenticated; 403 not_eligible; absence policy open | J; §10, provisional v0; currently 501 |
-| GET | R/drop/{id}/versions/{version}/wraps | D, authorized recipient | empty → 200 `{wraps:[]}` | same Drop read errors | J; local wrap ≤1 KiB; §10.3, provisional v0; currently 501 |
-| GET | R/drop/{id}/versions/{version}/blob | D, authorized recipient | empty → raw ORD2 + version header | same Drop read errors | agree streaming cap; local codec memory cap 256 MiB; §10.2, provisional v0; currently 501 |
+| POST | R/push/register | D, current member, valid cert | `{workspace_id,registration_id,env,topic,token:b64u}` → 200 `{registration_id,registered:true}` | 400 malformed; 401 unauthenticated; 403 revoked/not_eligible/not_for_this_device | J; env sandbox/production/demo; gaps 14–16, provisional v0 (not in §19: orch-4e) |
+| POST | R/push/unregister | D, registration owner | `{workspace_id,registration_id:id or null}` → 200 `{registration_id,registered:false}` | 400 malformed; 401 unauthenticated; 403 revoked/not_for_this_device | J; null removes this device's registrations for ws; provisional v0 (not in §19: orch-4e) |
+| PUT | /drop/{id}/versions | D with eligible write scope | If-Match decimal + `{descriptor,wraps,blob:b64uORD2}` → 200 `{version}` | 428 precondition_required; 409 version_conflict with current/head_hash; 403 not_eligible; §14 validation errors | §10.6 path/CAS; JSON and initial create provisional v0; cap unresolved (not in §19: orch-4e) |
+| POST | R/drop/list | D with eligible read scope | `{workspace_id,direction:"received" or "sending"}` → 200 `{objects:[{descriptor,wraps}]}` | 401 unauthenticated; 403 not_eligible; malformed input | J; pagination/large lists open; §10 objects, provisional v0 (not in §19: orch-4e) |
+| GET | R/drop/{id}/versions/{version}/descriptor | D, authorized recipient | empty → 200 `{descriptor}` | 401 unauthenticated; 403 not_eligible; absence policy open | J; §10, provisional v0 (not in §19: orch-4e) |
+| GET | R/drop/{id}/versions/{version}/wraps | D, authorized recipient | empty → 200 `{wraps:[]}` | same Drop read errors | J; local wrap ≤1 KiB; §10.3, provisional v0 (not in §19: orch-4e) |
+| GET | R/drop/{id}/versions/{version}/blob | D, authorized recipient | empty → raw ORD2 + version header | same Drop read errors | agree streaming cap; local codec memory cap 256 MiB; §10.2, provisional v0 (not in §19: orch-4e) |
 | POST | /drop/{id}/claim | H only | existing §10.5 signed claim → existing §10.5 result | §10.5/§14 validation, not_eligible/already_claimed | protocol route; no phone transport method; no invented v0 body |
 
-Common adapter failures are versioned JSON: 400 `unsupported_host_api`, 401 `unauthenticated`,
-404 `not_found`, 429 `rate_limited`/`quota_exceeded`, 501 `not_implemented`.
-Protocol relay errors have no `host_api`; `RelayRefusal.expectedStatus` fixes each §14 status/code pair.
+Every relay failure is §14 `{"error": code}` (plus only that code's documented fields); `RelayRefusal.statuses(of:)` fixes the
+status/code pairs (including §19.6's `unauthenticated`, `not_found`, `too_large` 413, `overloaded` 503, `quota_exceeded`,
+`fenced`, `grant_conflict`, `wrap_conflict`, `chunk_conflict`, `retry_exhausted`, `account_exists`, ...); any other pair is a bad reply.
+`Retry-After` (429/503) is parsed as integer delta-seconds only and never assumed to be 5 s.
 Sealed host errors belong inside ORB2, not in those HTTP bodies. HTTP 202 means queued, never accepted.
 An empty chunks array means no answer yet. Do not interpret silence as approval or a signed refusal.
 
-Pair POST limits are 60/min/workspace and 60/min/address; Retry-After defaults to 5 s in the fake.
+Pair POST limits are 60/min/workspace and 60/min/address; the fake's Retry-After defaults to 5 s but is configurable (never assumed by the client).
 Bridge quota defaults to 128 live mailboxes per device/workspace. Both are provisional v0 limits.
 Expire ciphertext by receipt time, never by last read; remove empty mailboxes and idle rate windows.
 Challenge cap 1024 is global in the fake; real P3 needs per-address fairness and dummy-key signature
@@ -346,7 +349,7 @@ primaryOffline, linkUsed, r1Attack, echoWrongKey, otherPerson, rejectOnHost, rej
 Run vectors independently on P2/P3: branch `testBridgeHostCases`, `testResultingStateOfEveryHostCase`,
 `testPairHostCases`, `testPairAnswerVectors`, `testPrimaryCertRequestVectors`, `testPrimaryOpenCases`.
 Keep realm/reset, parser, custody, UI and NSE unit tests local too; they do not become server tests merely
-by changing a transport. Push/Drop 501 stubs cannot substantiate a remote contract yet (P2/T1).
+by changing a transport. The missing push route (Drop is faked) cannot substantiate a remote contract yet (P2/T1).
 
 Add these **provisional P3 e2e scenarios**, separate from the Demo-only iPhone session:
 1. HTTPS transport: bad trust/ATS failure, all redirects, oversized/chunked/error responses,

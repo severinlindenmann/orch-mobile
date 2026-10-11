@@ -184,8 +184,11 @@ import OrchTestVectors
         #expect(pendingIDs.count + supportedIDs.count == FixtureCoverage.expectedCaseCount)
     }
 
-    /// PR1 changes no behaviour: nothing is replayable yet. A PR that enables a file must edit this number with the skip list.
-    @Test func replayableSetMatchesPRStage() { #expect(FixtureCoverage.replayable.isEmpty) }   // PR2+ edit the expected set here with the skip list
+    /// PR2 enables exactly the three session files. A PR that enables more must edit this set with the skip list.
+    @Test func replayableSetMatchesPRStage() {
+        #expect(FixtureCoverage.replayable == ["session_challenge.json", "session_login.json", "session_logout.json"])
+        #expect(FixtureCoverage.pending.filter { $0.value == .pr2 }.keys.sorted() == ["host_hold.json", "host_poll.json"])
+    }
 
     @Test func everyPRHasWork() {
         for pr in FixtureCoverage.PR.allCases { #expect(FixtureCoverage.pending.values.contains(pr), "\(pr.rawValue)") }

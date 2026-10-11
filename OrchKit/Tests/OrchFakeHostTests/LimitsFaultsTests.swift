@@ -9,13 +9,13 @@ import OrchProtocol
 @Suite struct LimitsFaultsTests {
     func pairPost(_ w: World, offer: ID16, rid: ID16, address: String = "198.51.100.7", seq: UInt64 = 1, ws: ID16? = nil) async throws -> WireReply {
         let env = try w.envelope(workspace: ws, rid: rid, seq: seq, epoch: 0, stream: offer)
-        return try await w.relay.send(WireRequest(method: "POST", target: "/mobile/host-api/0/workspaces/\((ws ?? w.ws).hex)/pair/\(offer.hex)/\(rid.hex)",
-                                                  headers: ["Orch-Host-API": "0"], body: env, clientAddress: address))
+        return try await w.relay.send(WireRequest(method: "POST", target: "/v2/workspaces/\((ws ?? w.ws).hex)/pair/\(offer.hex)/\(rid.hex)",
+                                                  headers: [:], body: env, clientAddress: address))
     }
 
     func pairPoll(_ w: World, offer: ID16, rid: ID16, address: String = "198.51.100.7") async throws -> WireReply {
-        try await w.relay.send(WireRequest(method: "GET", target: "/mobile/host-api/0/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)",
-                                           headers: ["Orch-Host-API": "0"], clientAddress: address))
+        try await w.relay.send(WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)",
+                                           headers: [:], clientAddress: address))
     }
 
     // MARK: pairing route and limits
@@ -27,12 +27,12 @@ import OrchProtocol
         // route != header
         let env = try w.envelope(rid: rid, seq: 2, epoch: 0, stream: offer)
         func raw(_ target: String, body: Data) async throws -> WireReply {
-            try await w.relay.send(WireRequest(method: "POST", target: target, headers: ["Orch-Host-API": "0"], body: body, clientAddress: "x"))
+            try await w.relay.send(WireRequest(method: "POST", target: target, headers: [:], body: body, clientAddress: "x"))
         }
-        let base = "/mobile/host-api/0/workspaces/\(w.ws.hex)/pair"
+        let base = "/v2/workspaces/\(w.ws.hex)/pair"
         #expect(try await raw("\(base)/\(ID16.fresh(0x73).hex)/\(rid.hex)", body: env).status == 400)          // offer != stream
         #expect(try await raw("\(base)/\(offer.hex)/\(ID16.fresh(0x74).hex)", body: env).status == 400)        // rid != header rid
-        #expect(try await raw("/mobile/host-api/0/workspaces/\(ID16.fresh(0x75).hex)/pair/\(offer.hex)/\(rid.hex)", body: env).status == 400)   // ws
+        #expect(try await raw("/v2/workspaces/\(ID16.fresh(0x75).hex)/pair/\(offer.hex)/\(rid.hex)", body: env).status == 400)   // ws
         // epoch 1 on the pairing route; direction 2 without the host session; oversize (64 KiB)
         let e1 = try w.envelope(rid: rid, seq: 3, epoch: 1, stream: offer)
         #expect(try await raw("\(base)/\(offer.hex)/\(rid.hex)", body: e1).status == 400)
@@ -50,7 +50,7 @@ import OrchProtocol
         let posted = try await w.transport.pairingPost(answer, route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid))
         #expect(posted.status == 400)                                  // still no bearer: pairingPost sends none
         let bearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)",
-                                                        headers: ["Orch-Host-API": "0", "Authorization": "Bearer " + w.hostSession.token], body: answer, clientAddress: "h"))
+                                                        headers: ["Authorization": "Bearer " + w.hostSession.token], body: answer, clientAddress: "h"))
         #expect(bearer.status == 202)
         let polled = try chunkList(try await w.transport.pairingPoll(route: PairRoute(workspaceID: w.ws, offerID: offer, requestID: rid), after: nil))
         #expect(polled.count == 1 && polled[0].idx == 0 && polled[0].last && polled[0].envelope == answer)
@@ -59,7 +59,7 @@ import OrchProtocol
         let pending = try await w.relay.pendingPairRequests(workspace: w.ws, offer: offer, token: w.hostSession.token)
         #expect(pending.count == 1 && pending[0].rid == rid)
         // A bad bearer on the pairing route is refused rather than treated as anonymous.
-        let badBearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)", headers: ["Orch-Host-API": "0", "Authorization": "Bearer zzz"],
+        let badBearer = try await w.relay.send(WireRequest(method: "POST", target: "\(base)/\(offer.hex)/\(rid.hex)", headers: ["Authorization": "Bearer zzz"],
                                                            body: try w.envelope(rid: rid, seq: 9, epoch: 0, stream: offer), clientAddress: "h"))
         #expect(badBearer.status == 401)
     }
@@ -70,8 +70,8 @@ import OrchProtocol
         let offer = ID16.fresh(0x81)
         for i in 0..<5 { #expect(try await pairPost(w, offer: offer, rid: ID16.fresh(UInt8(i + 1)), address: "a\(i)", seq: 1).status == 202) }
         let limited = try await pairPost(w, offer: offer, rid: ID16.fresh(0x20), address: "fresh")
-        #expect(limited.status == 429 && errorCode(limited) == "rate_limited" && limited.header("Retry-After") == "5" && hostAPI(limited) == .int(0))
-        #expect(HostAPI.failure(of: limited) == .adapter(.rateLimited(retryAfter: 5)))
+        #expect(limited.status == 429 && errorCode(limited) == "rate_limited" && limited.header("Retry-After") == "5" && hostAPI(limited) == nil)
+        #expect(HostAPI.failure(of: limited) == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 5)))
         // A limited request stores nothing; the window frees on the injected clock, not the real one.
         #expect(try await w.relay.pendingPairRequests(workspace: w.ws, offer: offer, token: w.hostSession.token).count == 5)
         w.clock.advance(milliseconds: 59_999)
@@ -129,7 +129,7 @@ import OrchProtocol
         for n in 1...3 { #expect(try await post(UInt8(n)).status == 202) }
         let over = try await post(4)
         #expect(over.status == 429 && errorCode(over) == "quota_exceeded" && over.header("retry-after") == "5")
-        #expect(HostAPI.failure(of: over) == .adapter(.quotaExceeded))
+        #expect(HostAPI.failure(of: over) == .relay(RelayRefusal(status: 429, code: .quotaExceeded, retryAfter: 5)))
         // A re-send into an existing mailbox does not count again.
         #expect(try await post(2).status == 202)
         #expect(await w.relay.liveMailboxCount(workspace: w.ws, device: w.phoneID) == 3)
@@ -152,7 +152,7 @@ import OrchProtocol
     }
 
     @Test func faultDropAfterCommitKeepsTheRequestAndRetryIsIdempotent() async throws {
-        let faults = ScriptedFaults().enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "POST /mobile/host-api/0/workspaces")
+        let faults = ScriptedFaults().enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "POST /v2/workspaces")
         let w = try await World.make(faults: faults)
         let rid = ID16.fresh(0xA2)
         let route = BridgeRoute(workspaceID: w.ws, requestID: rid)

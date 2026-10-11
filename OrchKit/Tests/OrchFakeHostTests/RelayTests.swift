@@ -19,7 +19,7 @@ import OrchProtocol
         // The header's device is the session's device, the route matches the header, the mailbox id is the rid.
         let ok = try await t.bridgePost(try w.envelope(rid: rid), route: route, session: w.phoneSession)
         #expect(ok.status == 202)
-        #expect(hostAPI(ok) == .int(0) && ok.body == HostAPI.json())
+        #expect(hostAPI(ok) == nil && ok.body == HostAPI.json())
 
         // Another device's id in the header, with this device's session.
         let spoof = try await t.bridgePost(try w.envelope(device: w.primaryID, rid: rid, seq: 2), route: route, session: w.phoneSession)
@@ -38,7 +38,7 @@ import OrchProtocol
         #expect(r4.status == 400)
         // No bearer, and a bearer that is not ours.
         let r5 = try await t.bridgePost(try w.envelope(rid: rid), route: route, session: RelaySession(token: "nope"))
-        #expect(r5.status == 401 && errorCode(r5) == "unauthenticated" && hostAPI(r5) == .int(0))
+        #expect(r5.status == 401 && errorCode(r5) == "unauthenticated" && hostAPI(r5) == nil)
         // Suite 1 header and a damaged magic.
         var bad = try w.envelope(rid: rid, seq: 7); bad[7] = 1
         #expect(errorCode(try await t.bridgePost(bad, route: route, session: w.phoneSession)) == "wrong_suite")
@@ -50,7 +50,7 @@ import OrchProtocol
         // Request mailbox visible to the host only, by workspace session; only the good request is in it.
         let pending = try await w.relay.pendingRequests(workspace: w.ws, token: w.hostSession.token)
         #expect(pending.count == 1 && pending[0].device == w.phoneID && pending[0].rid == rid)
-        await #expect(throws: ClientError.adapter(.unauthenticated)) { _ = try await w.relay.pendingRequests(workspace: w.ws, token: w.phoneSession.token) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))) { _ = try await w.relay.pendingRequests(workspace: w.ws, token: w.phoneSession.token) }
 
         // A device that is not in the member list cannot even queue; a removed or revoked one neither.
         let stranger = SoftwareSigner(), strangerKX = SoftwareKeyAgreer()
@@ -100,8 +100,8 @@ import OrchProtocol
         #expect(try await after(UInt64.max) == [])
         // Raw bad cursors are malformed, not silently zero.
         for q in ["after=01", "after=-1", "after=18446744073709551616", "after=", "after=1&after=2", "x=1", "after=%31"] {
-            let raw = try WireRequest(method: "GET", target: "/mobile/host-api/0/workspaces/\(w.ws.hex)/bridge/\(rid.hex)?\(q)",
-                                      headers: ["Orch-Host-API": "0", "Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
+            let raw = try WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/bridge/\(rid.hex)?\(q)",
+                                      headers: ["Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
             #expect(try await w.relay.send(raw).status == 400, "\(q)")
         }
         // The mailbox belongs to the device it is addressed to: a second authenticated member polling the same rid sees nothing,
@@ -115,7 +115,7 @@ import OrchProtocol
         #expect(try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: second.session)).isEmpty)
         #expect(try await after(nil).count == 4)
         // Neither may read the host's session routes.
-        await #expect(throws: ClientError.adapter(.unauthenticated)) { _ = try await w.relay.pendingRequests(workspace: w.ws, token: second.session.token) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))) { _ = try await w.relay.pendingRequests(workspace: w.ws, token: second.session.token) }
         // Body lifetime: 60 s after receipt the sealed bodies are gone, and the empty list means nothing, not approval.
         w.clock.advance(milliseconds: 59_999)
         #expect(try await after(nil).count == 4)
@@ -141,33 +141,33 @@ import OrchProtocol
 
     // MARK: version boundary
 
-    @Test func testAdapterVersionRejected() async throws {
+    @Test func testNoAdapterVersionOnTheWire() async throws {
         let w = try await World.make()
-        func raw(_ method: String, _ path: String, header: String?, body: Data = Data(), bearer: String? = nil) async throws -> WireReply {
-            var h: [String: String] = [:]
-            if let header { h["Orch-Host-API"] = header }
+        func raw(_ method: String, _ path: String, headers: [String: String] = [:], body: Data = Data(), bearer: String? = nil) async throws -> WireReply {
+            var h = headers
             if let bearer { h["Authorization"] = "Bearer " + bearer }
             return try await w.relay.send(WireRequest(method: method, target: path, headers: h, body: body, clientAddress: "a"))
         }
-        let R = "/mobile/host-api/0"
-        for header in [nil, "1", "00", "", "0,1", "-0"] as [String?] {
-            let r = try await raw("POST", R + "/session/challenge", header: header, body: HostAPI.json())
-            #expect(r.status == 400 && errorCode(r) == "unsupported_host_api" && hostAPI(r) == .int(0), "\(String(describing: header)) \(r.status) \(String(decoding: r.body, as: UTF8.self))")
+        let R = "/v2"
+        // The v2 request is `{}` and the reply carries no adapter version; a stale `Orch-Host-API` header is not parsed at all.
+        for headers in [[:], ["Orch-Host-API": "0"], ["Orch-Host-API": "1"]] as [[String: String]] {
+            let r = try await raw("POST", R + "/session/challenge", headers: headers, body: HostAPI.json())
+            #expect(r.status == 200 && hostAPI(r) == nil, "\(headers)")
         }
-        let g = try await raw("GET", "\(R)/workspaces/\(w.ws.hex)/card", header: "1", bearer: w.phoneSession.token)
-        #expect(g.status == 400 && errorCode(g) == "unsupported_host_api")
-        // Body version: any other value, a string, a float, or none.
-        for body in [#"{"host_api":1}"#, #"{"host_api":"0"}"#, #"{"host_api":null}"#] {
-            let r = try await raw("POST", R + "/session/challenge", header: "0", body: Data(body.utf8))
-            #expect(r.status == 400 && errorCode(r) == "unsupported_host_api", "\(body)")
+        // A `host_api` field in a request is an unknown field: strict route parsing refuses it, in section 14 form.
+        for body in [#"{"host_api":0}"#, #"{"host_api":1}"#, #"{"x":1}"#, "[]", ""] {
+            let r = try await raw("POST", R + "/session/challenge", body: Data(body.utf8))
+            #expect(r.status == 400 && errorCode(r) == "malformed" && hostAPI(r) == nil, "\(body)")
         }
-        #expect(try await raw("POST", R + "/session/challenge", header: "0", body: Data("{}".utf8)).status == 400)
-        #expect(try await raw("POST", R + "/session/challenge", header: "0", body: HostAPI.json()).status == 200)
-        // A different base version is not a route.
-        let v1 = try await raw("POST", "/mobile/host-api/1/session/challenge", header: "0", body: HostAPI.json())
-        #expect(v1.status == 404)
+        // The old spelling is not a route.
+        for old in ["/mobile/host-api/0/session/challenge", "/mobile/host-api/1/session/challenge"] {
+            let r = try await raw("POST", old, headers: ["Orch-Host-API": "0"], body: Data(#"{"host_api":0}"#.utf8))
+            #expect(r.status == 404 && errorCode(r) == "not_found" && hostAPI(r) == nil, Comment(rawValue: old))
+        }
+        let g = try await raw("GET", "\(R)/workspaces/\(w.ws.hex)/card", bearer: w.phoneSession.token)
+        #expect(g.status == 200 && hostAPI(g) == nil)
         // Nothing here ever leaked host_api into a section 14 refusal.
-        let m = try await raw("POST", R + "/session/login", header: "0", body: HostAPI.json(["challenge": 1]))
+        let m = try await raw("POST", R + "/session/login", body: HostAPI.json(["challenge": 1]))
         #expect(errorCode(m) == "malformed" && hostAPI(m) == nil)
     }
 
@@ -178,8 +178,8 @@ import OrchProtocol
         let before = await w.relay.requestsReceived
         // Even a hand-built request is refused by the relay.
         for q in ["epoch=0", "epoch=00", "epoch=-1", "epoch=4294967296", "epoch=", "epoch=1&epoch=1", "other=1"] {
-            let raw = try WireRequest(method: "GET", target: "/mobile/host-api/0/workspaces/\(w.ws.hex)/grants?\(q)",
-                                      headers: ["Orch-Host-API": "0", "Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
+            let raw = try WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/grants?\(q)",
+                                      headers: ["Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
             #expect(try await w.relay.send(raw).status == 400, "\(q)")
         }
         _ = before
@@ -188,7 +188,7 @@ import OrchProtocol
         await #expect(throws: ClientError.relay(RelayRefusal(status: 400, code: .malformed))) { try await w.relay.putGrant(zero, token: w.hostSession.token) }
         // Epoch 1 is served; asking for epoch 2 is a clean not_found.
         #expect(try await c.grants(workspace: w.ws, epoch: 1, session: w.phoneSession).count == 1)
-        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await c.grants(workspace: w.ws, epoch: 2, session: w.phoneSession) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.grants(workspace: w.ws, epoch: 2, session: w.phoneSession) }
         #expect(try await c.grants(workspace: w.ws, session: w.phoneSession).count == 1)
     }
 
@@ -262,7 +262,7 @@ import OrchProtocol
         let withRevoked = try await w.host.memberList([(w.primaryID, World.all), (w.phoneID, ["look", "decide"]), (keys.deviceID, ["look"])], epoch: 1, listSeq: 2)
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { try await relay.publishMemberList(withRevoked, token: w.hostSession.token) }
         // a device session is not a workspace session
-        await #expect(throws: ClientError.adapter(.unauthenticated)) { try await relay.publishMemberList(withRevoked, token: w.phoneSession.token) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 401, code: .unauthenticated))) { try await relay.publishMemberList(withRevoked, token: w.phoneSession.token) }
         // a certificate of another person is other_person
         let other = SoftwareSigner()
         await relay.registerOwner(other.publicKey)
@@ -350,10 +350,10 @@ import OrchProtocol
         let g = try WKGrant.open(grants[0], wsk: w.host.wskPublic, workspace: w.ws, device: w.phoneID, deviceKey: w.env.device.kx)
         #expect(g.epoch == 1)
         // Missing wrap and unknown sequence are clean 404s; a malformed sequence is a 400.
-        await #expect(throws: ClientError.adapter(.notFound)) { _ = try await c.cardKey(workspace: w.ws, cardSequence: 2, session: w.phoneSession) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.cardKey(workspace: w.ws, cardSequence: 2, session: w.phoneSession) }
         for q in ["card_seq=0", "card_seq=01", "card_seq=4294967296", "card_seq=", ""] {
-            let raw = try WireRequest(method: "GET", target: "/mobile/host-api/0/workspaces/\(w.ws.hex)/card-key" + (q.isEmpty ? "" : "?" + q),
-                                      headers: ["Orch-Host-API": "0", "Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
+            let raw = try WireRequest(method: "GET", target: "/v2/workspaces/\(w.ws.hex)/card-key" + (q.isEmpty ? "" : "?" + q),
+                                      headers: ["Authorization": "Bearer " + w.phoneSession.token], clientAddress: "a")
             #expect(try await w.relay.send(raw).status == 400, "\(q)")
         }
         // A workspace the device is not in.
@@ -362,7 +362,7 @@ import OrchProtocol
         }
         // Exact reply shape of card-key.
         let raw = try await w.transport.cardKey(workspaceID: w.ws, cardSequence: 1, session: w.phoneSession)
-        #expect(Set(try json(raw).keys) == ["host_api", "workspace_id", "device_id", "card_seq", "sealed"])
+        #expect(Set(try json(raw).keys) == ["workspace_id", "device_id", "card_seq", "sealed"])
     }
 
     @Test func noGrantOrCardKeyForAnUncertifiedDevice() async throws {

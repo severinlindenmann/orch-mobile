@@ -43,7 +43,7 @@ extension FakeHost {
         let record = try DropWrap.wrapWithSecret(kind: .wk, secret: wk, target: workspace, keyVersion: epoch, object: object, version: version, dek: dek)
         let claim = try DropClaim.make(wsk: wsk, object: object, workspace: workspace, wrap: record)
         return try await relay.send(WireRequest(method: "POST", target: "/drop/\(object.hex)/claim",
-            headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"], body: canonicalJSON(claim.json), clientAddress: "fake-host"))
+            headers: ["authorization": "Bearer \(session.token)"], body: canonicalJSON(claim.json), clientAddress: "fake-host"))
     }
 
     private func openDropKey(_ wraps: [DropWrapRecord], descriptor: DropDescriptor) -> SymmetricKey? {

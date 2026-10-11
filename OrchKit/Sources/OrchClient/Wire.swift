@@ -59,7 +59,7 @@ public struct WireReply: Sendable, Equatable {
 /// One request as HTTP carries it. The in-process relay parses the target itself, exactly as a server would.
 public struct WireRequest: Sendable, Equatable, CustomStringConvertible {
     public let method: String
-    /// Path and optional query, e.g. `/mobile/host-api/0/workspaces/<ws>/grants?epoch=2`.
+    /// Path and optional query, e.g. `/v2/workspaces/<ws>/grants?epoch=2`.
     public let target: String
     public let headers: [String: String]
     public let body: Data

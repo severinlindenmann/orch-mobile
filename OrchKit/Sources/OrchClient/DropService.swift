@@ -166,7 +166,7 @@ public actor DropService {
     private func parse(_ reply: WireReply, fields: Set<String>, status: Int = 200) throws -> [String: JSONValue] {
         _ = try HostAPI.expect(reply, status: status)
         guard let o = try StrictJSON.parse(reply.body, maxBytes: 8 << 20).object,
-              Set(o.keys) == fields.union(["host_api"]), o["host_api"] == 0 else { throw DropError.malformed }
+              Set(o.keys) == fields else { throw DropError.malformed }
         return o
     }
     private func membership(operate: Bool = false) async throws -> MemberList {
@@ -248,7 +248,7 @@ public actor DropService {
         try requireAvailable()
         try await purgeExpiredDownloads()
         let members = try await membership(), s = try await auth()
-        let query: JSONValue = ["host_api": 0, "workspace_id": .string(card.workspace.hex), "direction": .string(direction.rawValue)]
+        let query: JSONValue = ["workspace_id": .string(card.workspace.hex), "direction": .string(direction.rawValue)]
         try requireAvailable()
         let o = try parse(await session.cfg.transport.dropList(canonicalJSON(query), session: s), fields: ["objects"])
         guard let rows = o["objects"]?.array, rows.count <= 1024 else { throw DropError.tooLarge }
@@ -581,7 +581,7 @@ public actor DropService {
         let members = try await membership(operate: true)
         let s = try await auth()
         guard let o = try StrictJSON.parse(body, maxBytes: 36 << 20).object,
-              Set(o.keys) == ["host_api", "descriptor", "wraps", "blob"], o["host_api"] == 0,
+              Set(o.keys) == ["descriptor", "wraps", "blob"],
               let signed = o["descriptor"], let wraps = o["wraps"]?.array, wraps.count <= 1024,
               let blobText = o["blob"]?.string, let expectedBlob = B64U.decode(blobText), expectedBlob.count <= 26 << 20 else { throw DropError.malformed }
         let descriptor = try verify(signed, members: members)
@@ -777,7 +777,7 @@ package enum DropUpload {
         var wraps = [try DropWrap.wrapToKey(kind: .wxk, to: wxk, target: workspace, keyVersion: wxkVersion, object: object, version: version, dek: dek),
                      try DropWrap.wrapWithSecret(kind: .wk, secret: wk, target: workspace, keyVersion: epoch, object: object, version: version, dek: dek)]
         if let sender { wraps.append(try DropWrap.wrapToKey(kind: .device, to: sender, target: author, keyVersion: 0, object: object, version: version, dek: dek)) }
-        return try canonicalJSON(["host_api": 0, "descriptor": SignedObject.sign(raw, kind: .dropObject, signer: signer).json,
+        return try canonicalJSON(["descriptor": SignedObject.sign(raw, kind: .dropObject, signer: signer).json,
                                   "wraps": .array(wraps.map(\.json)), "blob": .string(B64U.encode(blob))])
     }
 }

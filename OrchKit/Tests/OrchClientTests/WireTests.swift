@@ -66,9 +66,9 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         _ = try await t.grants(workspaceID: ws, epoch: nil, session: session)
         _ = try await t.grants(workspaceID: ws, epoch: UInt32.max, session: session)
         #expect(s.requests.map(\.target) == [
-            "/mobile/host-api/0/workspaces/\(ws.hex)/grants?epoch=1",
-            "/mobile/host-api/0/workspaces/\(ws.hex)/grants",
-            "/mobile/host-api/0/workspaces/\(ws.hex)/grants?epoch=4294967295"])
+            "/v2/workspaces/\(ws.hex)/grants?epoch=1",
+            "/v2/workspaces/\(ws.hex)/grants",
+            "/v2/workspaces/\(ws.hex)/grants?epoch=4294967295"])
     }
 
     @Test func testPollCursorUInt64() async throws {
@@ -77,7 +77,7 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         for cursor: UInt64? in [nil, 0, 1, UInt64(UInt32.max), UInt64(UInt32.max) + 1, (1 << 53) - 1, UInt64.max] {
             _ = try await t.bridgePoll(route: route, after: cursor, session: session)
         }
-        let base = "/mobile/host-api/0/workspaces/\(ws.hex)/bridge/\(rid.hex)"
+        let base = "/v2/workspaces/\(ws.hex)/bridge/\(rid.hex)"
         #expect(s.requests.map(\.target) == [base, base + "?after=0", base + "?after=1", base + "?after=4294967295",
                                              base + "?after=4294967296", base + "?after=9007199254740991",
                                              base + "?after=18446744073709551615"])
@@ -92,34 +92,30 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         #expect(HostAPI.parseDecimal("0") == 0)
     }
 
-    @Test func testAdapterVersionRejected() async throws {
-        // Every request announces version 0.
+    @Test func noAdapterVersionOnTheRelayWire() async throws {
+        // No request announces an adapter version: no `Orch-Host-API` header, no `host_api` body field (protocol-v2 section 19).
         let (t, s) = try routed()
         _ = try await t.challenge()
         _ = try await t.card(workspaceID: ws, session: session)
         _ = try await t.dropPut(objectID: rid, ifMatch: 0, body: Data(), session: session)
-        #expect(s.requests.allSatisfy { $0.header("Orch-Host-API") == "0" })
-        #expect(s.requests[0].body == (try canonicalJSON(["host_api": 0])))
-        // Replies: any other version (or none) is refused; no negotiation, no fallback.
-        for body in [#"{"host_api":1,"chunks":[]}"#, #"{"chunks":[]}"#, #"{"host_api":"0","chunks":[]}"#, #"{"host_api":0.0,"chunks":[]}"#] {
-            #expect(throws: AdapterError.self) { try HostAPI.chunks(Data(body.utf8)) }
+        #expect(s.requests.allSatisfy { $0.header("Orch-Host-API") == nil })
+        #expect(s.requests[0].body == (try canonicalJSON([:])))
+        #expect(s.requests[0].target == "/v2/session/challenge")
+        // Replies: strict section 2.3 JSON with the exact field set, nothing else.
+        for body in [#"{"host_api":0,"chunks":[]}"#, #"{}"#, #"{"chunks":[],"extra":1}"#, #"{"chunks":0.0}"#, #"[]"#, "x"] {
+            #expect(throws: ClientError.badReply, "\(body)") { try HostAPI.chunks(Data(body.utf8)) }
         }
-        #expect(throws: AdapterError.unsupportedHostAPI) { try HostAPI.chunks(Data(#"{"host_api":1,"chunks":[]}"#.utf8)) }
-        #expect(try HostAPI.chunks(Data(#"{"host_api":0,"chunks":[]}"#.utf8)).isEmpty)
-        // Unknown extra fields in a v0 reply are refused.
-        #expect(throws: AdapterError.badReply) { try HostAPI.chunks(Data(#"{"host_api":0,"chunks":[],"extra":1}"#.utf8)) }
-        // HTTP 400 unsupported_host_api is an adapter error, not a protocol refusal.
-        let r = try WireReply(status: 400, body: Data(#"{"host_api":0,"error":"unsupported_host_api"}"#.utf8))
-        #expect(HostAPI.failure(of: r) == .adapter(.unsupportedHostAPI))
-        // A section 14 refusal never carries host_api, and a body that claims both is not trusted as a refusal.
+        #expect(try HostAPI.chunks(Data(#"{"chunks":[]}"#.utf8)).isEmpty)
+        // A refusal is `{"error": code}` plus its documented fields only: an adapter field is not trusted.
         let m = try WireReply(status: 400, body: Data(#"{"error":"malformed"}"#.utf8))
         #expect(HostAPI.failure(of: m) == .relay(RelayRefusal(status: 400, code: .malformed)))
-        let bad = try WireReply(status: 400, body: Data(#"{"host_api":0,"error":"malformed"}"#.utf8))
-        #expect(HostAPI.failure(of: bad) == .adapter(.badReply))
+        for bad in [#"{"host_api":0,"error":"malformed"}"#, #"{"error":"malformed","extra":1}"#, #"{"error":"unsupported_host_api"}"#, #"{"error":1}"#, "{}"] {
+            #expect(HostAPI.failure(of: try WireReply(status: 400, body: Data(bad.utf8))) == .badReply, "\(bad)")
+        }
         let nonJSON = try WireReply(status: 502, body: Data("<html>bad gateway</html>".utf8))
-        #expect(HostAPI.failure(of: nonJSON) == .adapter(.badReply))
+        #expect(HostAPI.failure(of: nonJSON) == .badReply)
         #expect(HostAPI.failure(of: try WireReply(status: 429, headers: ["Retry-After": "5"],
-                                                  body: Data(#"{"host_api":0,"error":"rate_limited"}"#.utf8))) == .adapter(.rateLimited(retryAfter: 5)))
+                                                  body: Data(#"{"error":"rate_limited"}"#.utf8))) == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 5)))
     }
 
     @Test func relayRefusalsAndHostRefusalsAreDifferentTypes() {
@@ -128,52 +124,63 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         let host: ClientError = .host(.revoked)
         #expect(relay != host)
         for code in RelayRefusal.Code.allCases {
-            let st = RelayRefusal.expectedStatus(of: code)
-            let r = try! WireReply(status: st, body: Data("{\"error\":\"\(code.rawValue)\"}".utf8))
-            #expect(HostAPI.failure(of: r) == .relay(RelayRefusal(status: st, code: code)))
+            let allowed = RelayRefusal.statuses(of: code)
+            #expect(!allowed.isEmpty)
+            for st in allowed {
+                // stale_epoch carries its `epoch` hint; every other code is just `{"error": code}`
+                let body = code == .staleEpoch ? #"{"error":"stale_epoch","epoch":3}"# : "{\"error\":\"\(code.rawValue)\"}"
+                let r = try! WireReply(status: st, body: Data(body.utf8))
+                #expect(HostAPI.failure(of: r) == .relay(RelayRefusal(status: st, code: code, epoch: code == .staleEpoch ? 3 : nil)), "\(code) at \(st)")
+            }
             // The same code under any other status is not a section 14 refusal.
-            for other in [200, 400, 401, 403, 409, 428, 500, 502] where other != st {
+            for other in [200, 400, 401, 403, 404, 409, 410, 413, 428, 429, 500, 502, 503] where !allowed.contains(other) {
                 let w = try! WireReply(status: other, body: Data("{\"error\":\"\(code.rawValue)\"}".utf8))
-                #expect(HostAPI.failure(of: w) == .adapter(.badReply), "\(code) at \(other)")
+                #expect(HostAPI.failure(of: w) == .badReply, "\(code) at \(other)")
             }
         }
     }
 
-    @Test func adapterErrorsMapOnlyTheirOwnStatusCodePairs() throws {
+    @Test func section19RefusalCodesAndStatusPairs() throws {
         func f(_ status: Int, _ code: String, retry: String? = nil) throws -> ClientError {
             HostAPI.failure(of: try WireReply(status: status, headers: retry.map { ["Retry-After": $0] } ?? [:],
                                               body: HostAPI.json(["error": .string(code)])))
         }
-        #expect(try f(400, "unsupported_host_api") == .adapter(.unsupportedHostAPI))
-        #expect(try f(401, "unauthenticated") == .adapter(.unauthenticated))
-        #expect(try f(404, "not_found") == .adapter(.notFound))
-        #expect(try f(429, "rate_limited", retry: "5") == .adapter(.rateLimited(retryAfter: 5)))
-        #expect(try f(429, "quota_exceeded") == .adapter(.quotaExceeded))
-        #expect(try f(501, "not_implemented") == .adapter(.notImplemented))
-        // The reviewer's cases: a family mismatch is a bad reply, not a trusted adapter error.
-        #expect(try f(403, "unauthenticated") == .adapter(.badReply))
-        #expect(try f(500, "not_found") == .adapter(.badReply))
-        #expect(try f(200, "rate_limited") == .adapter(.badReply))
-        #expect(try f(500, "revoked") == .adapter(.badReply))
-        let relay500 = try WireReply(status: 500, body: try canonicalJSON(["error": .string("revoked")]))
-        #expect(HostAPI.failure(of: relay500) == .adapter(.badReply))
+        let pairs: [(Int, String)] = [(401, "unauthenticated"), (404, "not_found"), (413, "too_large"), (400, "too_large"), (503, "overloaded"),
+                                      (429, "quota_exceeded"), (409, "account_exists"), (409, "fenced"), (409, "grant_conflict"), (409, "wrap_conflict"),
+                                      (409, "chunk_conflict"), (409, "retry_exhausted"), (409, "holder_conflict"), (410, "expired"), (401, "expired")]
+        for (st, code) in pairs {
+            guard case .relay(let r) = try f(st, code) else { Issue.record("\(st) \(code)"); continue }
+            #expect(r.status == st && r.code.rawValue == code)
+        }
+        // Family mismatches and the retired adapter codes are bad replies.
+        #expect(try f(403, "unauthenticated") == .badReply)
+        #expect(try f(500, "not_found") == .badReply)
+        #expect(try f(200, "rate_limited") == .badReply)
+        #expect(try f(400, "unsupported_host_api") == .badReply)
+        #expect(try f(501, "not_implemented") == .badReply)
+        // Retry-After is carried by 429 and 503 only.
+        #expect(try f(503, "overloaded", retry: "7") == .relay(RelayRefusal(status: 503, code: .overloaded, retryAfter: 7)))
+        #expect(try f(409, "fenced", retry: "7") == .relay(RelayRefusal(status: 409, code: .fenced)))
+        // stale_epoch: `epoch` is the only extra field and must be a protocol epoch.
+        let se = try WireReply(status: 409, body: Data(#"{"error":"stale_epoch","epoch":0}"#.utf8))
+        #expect(HostAPI.failure(of: se) == .badReply)
     }
 
     @Test func retryAfterIsAStrictDecimalClampedToOneThroughAnHour() throws {
         func retry(_ h: String?) throws -> ClientError {
             HostAPI.failure(of: try WireReply(status: 429, headers: h.map { ["Retry-After": $0] } ?? [:], body: HostAPI.json(["error": .string("rate_limited")])))
         }
-        #expect(try retry("5") == .adapter(.rateLimited(retryAfter: 5)))
-        #expect(try retry("1") == .adapter(.rateLimited(retryAfter: 1)))
-        #expect(try retry("3600") == .adapter(.rateLimited(retryAfter: 3600)))
-        #expect(try retry("0") == .adapter(.rateLimited(retryAfter: 1)))
-        #expect(try retry("3601") == .adapter(.rateLimited(retryAfter: 3600)))
-        #expect(try retry("18446744073709551615") == .adapter(.rateLimited(retryAfter: 3600)))
+        #expect(try retry("5") == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 5)))
+        #expect(try retry("1") == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 1)))
+        #expect(try retry("3600") == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 3600)))
+        #expect(try retry("0") == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 1)))
+        #expect(try retry("3601") == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 3600)))
+        #expect(try retry("18446744073709551615") == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: 3600)))
         // Not delta-seconds: no hint at all, never a negative, signed, fractional, padded, hex or date value.
         for bad in ["-99999999", "+5", "5.0", "05", "0x10", "1e3", "5 6", "99999999999999999999999", "Wed, 21 Oct 2026 07:28:00 GMT", ""] {
-            #expect(try retry(bad) == .adapter(.rateLimited(retryAfter: nil)), "\(bad)")
+            #expect(try retry(bad) == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: nil)), "\(bad)")
         }
-        #expect(try retry(nil) == .adapter(.rateLimited(retryAfter: nil)))
+        #expect(try retry(nil) == .relay(RelayRefusal(status: 429, code: .rateLimited, retryAfter: nil)))
     }
 
     @Test func theBearerNeverAppearsInTextualRenderings() {
@@ -225,7 +232,7 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
 
     @Test func routesMatchHostAPI() async throws {
         let (t, s) = try routed()
-        let R = "/mobile/host-api/0"
+        let R = "/v2"
         _ = try await t.challenge(); _ = try await t.login(Data())
         _ = try await t.pairingPost(Data([1]), route: PairRoute(workspaceID: ws, offerID: rid, requestID: ws))
         _ = try await t.bridgePost(Data([1]), route: BridgeRoute(workspaceID: ws, requestID: rid), session: session)

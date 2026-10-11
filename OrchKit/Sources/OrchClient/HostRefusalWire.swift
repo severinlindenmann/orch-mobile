@@ -7,6 +7,7 @@ public extension HostRefusal {
     var code: String {
         switch self {
         case .malformed: "malformed"
+        case .notVisible: "not_visible"
         case .notMember: "not_member"
         case .revoked: "revoked"
         case .badSignature: "bad_signature"
@@ -50,6 +51,7 @@ public extension HostRefusal {
         func none(_ r: HostRefusal) -> HostRefusal? { rest.isEmpty ? r : nil }
         switch code {
         case "malformed": guard let r = none(.malformed) else { return nil }; self = r
+        case "not_visible": guard let r = none(.notVisible) else { return nil }; self = r
         case "not_member": guard let r = none(.notMember) else { return nil }; self = r
         case "revoked": guard let r = none(.revoked) else { return nil }; self = r
         case "bad_signature": guard let r = none(.badSignature) else { return nil }; self = r

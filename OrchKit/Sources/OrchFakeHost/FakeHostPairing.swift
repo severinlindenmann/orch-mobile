@@ -239,7 +239,7 @@ extension FakeHost {
             for chunk in await process(envelope: item.envelope, mailbox: item.rid) {
                 // the response is posted with the workspace session; a lost post is a lost answer (the phone re-sends)
                 let target = "\(HostAPI.base)/workspaces/\(workspace.hex)/pair/\(item.offer.hex)/\(item.rid.hex)"
-                if let req = try? WireRequest(method: "POST", target: target, headers: [HostAPI.versionHeader: "0", "authorization": "Bearer " + session.token],
+                if let req = try? WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token],
                                               body: chunk, clientAddress: "host") {
                     _ = try? await relay.send(req)
                 }
