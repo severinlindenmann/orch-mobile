@@ -155,7 +155,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
 
     func snapshotApplied(_ ws: LiveWorkspace) {
         Task {
-            if let ms = await ws.api.verifiedReceiptMs(), let runtime { lastChecked = runtime.date(forMs: ms) } else { lastChecked = Date() }
+            if let ms = await ws.api.verifiedReceiptMs, let runtime { lastChecked = runtime.date(forMs: ms) } else { lastChecked = Date() }
         }
     }
 
@@ -203,13 +203,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
 
     func storedDecision(workspace: LiveWorkspace, questionID: String) async -> ID16? {
         guard let qid = ID16(hex: questionID) else { return nil }
-        return await workspace.api.pendingDecisions().first { $0.questionID == qid }?.decisionID
+        return (try? await workspace.api.pendingDecisions())?.first { $0.questionID == qid }?.decisionID
     }
 
     func refreshPending(reconcile: Bool = false) async {
         var out: [DecisionStatus] = []
         for ws in live {
-            for d in await ws.api.pendingDecisions() {
+            // A store error is not an empty list: keep what is shown until the next read succeeds.
+            guard let statuses = try? await ws.api.pendingDecisions() else { return }
+            for d in statuses {
                 let q = ws.question(id: d.questionID.hex)
                 let key = d.questionID.hex + "/" + d.optionID
                 let review = submitted[key] ?? ReviewValue(
@@ -217,7 +219,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel {
                     hostedBy: ws.info.hostedBy, questionID: d.questionID.hex, ticket: q?.ticket ?? "", text: q?.text ?? "",
                     optionID: d.optionID, optionLabel: q?.options.first { $0.id == d.optionID }?.label ?? d.optionID,
                     options: q?.options ?? [], contentHash: q?.contentHash ?? "", revision: 0, isDemo: isDemo)
-                let outcome: DecisionOutcomeState = switch d.state { case .pending: .pending; case .uncertain: .uncertain; case .resolved: .resolved }
+                let outcome: DecisionOutcomeState = d.state == .uncertain ? .uncertain : .pending
                 out.append(DecisionStatus(decisionID: d.decisionID.hex, questionID: d.questionID.hex, workspaceID: ws.info.id,
                                           optionID: d.optionID, optionLabel: review.optionLabel, review: review, outcome: outcome))
                 if reconcile { startReconcile(workspace: ws, decisionID: d.decisionID) }

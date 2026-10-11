@@ -28,6 +28,7 @@ final class LiveWorkspace: WorkspaceModel {
         guard eventTask == nil else { return }
         eventTask = Task { [weak self] in
             guard let self else { return }
+            await self.api.start()
             await self.refresh()
             let stream = await self.api.events()
             for await event in stream {

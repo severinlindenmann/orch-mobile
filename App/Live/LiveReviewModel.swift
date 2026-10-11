@@ -45,11 +45,12 @@ final class LiveReviewModel: QuestionReviewModel {
             issued = r
             review = Mapping.reviewValue(r, info: workspace.info, optionID: optionID, revision: revision, isDemo: services.isDemo)
             load = .loaded
+            // A closed question is a successful read: show who answered and what, and never arm.
+            if let resolution = r.question.resolution { phase = .alreadyAnswered(by: resolution.byDeviceLabel, at: Mapping.date(resolution.atMs)) }
             return true
         } catch {
             guard mine == token else { return false }
-            if case ViewError.closed = error { load = .failed("This question was already answered. Nothing was signed.") }
-            else { load = .failed(Self.readFailure) }
+            load = .failed(Self.readFailure)
             return false
         }
     }
