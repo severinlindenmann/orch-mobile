@@ -51,6 +51,8 @@ final class ShareModel {
     private(set) var targets: [ShareTarget] = []
     var destination: String?
     var note = ""
+    /// Short non-sensitive reason shown with the unreadable state (support evidence; no paths or names).
+    private(set) var unreadableReason = ""
     let summary: [String]
 
     private let providers: [NSItemProvider]
@@ -68,7 +70,7 @@ final class ShareModel {
     /// Reads the destinations index; unreadable or empty means nothing is retained and nothing can be saved.
     func start() {
         guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.io.severin.orch.share") else {
-            phase = .unreadable; return
+            unreadableReason = "no app group container"; phase = .unreadable; return
         }
         let area = ShareArea(shareGroupRoot: root)
         self.area = area
@@ -77,7 +79,7 @@ final class ShareModel {
             targets = try ShareTargetIndex.load(from: area)
             phase = .choosing
         } catch ShareError.noWorkspaces { phase = .noWorkspaces }
-        catch { phase = .unreadable }
+        catch { unreadableReason = "index: \(error)"; phase = .unreadable }
     }
 
     var canSave: Bool { phase == .choosing && destination != nil && !providers.isEmpty }
@@ -178,7 +180,7 @@ private struct ShareComposeView: View {
         case .noWorkspaces:
             Message(text: "Open orch and pair a workspace", detail: "Then share again. Nothing was saved.", id: "share.status.none")
         case .unreadable:
-            Message(text: "orch can't read its workspaces", detail: "Open orch and try again. Nothing was saved.", id: "share.status.unreadable")
+            Message(text: "orch can't read its workspaces", detail: "Open orch and try again. Nothing was saved.\n(\(model.unreadableReason))", id: "share.status.unreadable")
         case .saved:
             Message(text: "Saved. Open orch to send.", detail: nil, id: "share.status.saved")
         case .failed(let text):
@@ -195,7 +197,7 @@ private struct ShareComposeView: View {
                         } label: {
                             HStack {
                                 Capsule().fill(OC.wsHues[abs(t.hue) % OC.wsHues.count]).frame(width: 4, height: 24)
-                                Text(verbatim: SafeText.inline(t.name, limit: 40)).foregroundStyle(OC.text)
+                                Text(verbatim: SafeText.inline(t.name, limit: 40) + (t.realm == "demo" ? " (Demo)" : "")).foregroundStyle(OC.text)
                                 Spacer()
                                 if model.destination == t.id { Image(systemName: "checkmark").foregroundStyle(OC.brand) }
                             }

@@ -137,6 +137,7 @@ Decision IDs refer to [docs/decisions.md](../../docs/decisions.md); gaps/issues 
 
 12. **Share from Photos, Files and Safari** — about 2 minutes.
     In each of those apps, use Share and find orch (look under More if necessary).
+    Note: a newly installed third-party share extension may first appear only under “More” (tap “More” at the end of the share sheet's app row, or “Edit Actions” at the bottom of the sheet) and must be switched on there; after that it stays in the row.
     Choose a Demo destination, add a short note, then “Save to send”. Expect “Saved. Open orch to send.”
     Tap “Done”, open orch and check one import per saved share in Sending, under the chosen destination.
     For Safari, confirm the URL is stored as text; orch should not fetch or open it by itself.

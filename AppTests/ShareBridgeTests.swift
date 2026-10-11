@@ -85,12 +85,17 @@ final class ShareBridgeTests: XCTestCase {
         XCTAssertTrue(world.items(.sending).contains { $0.id.hasPrefix("share-") && $0.workspaceID == "laptop" })
     }
 
-    func testDemoWorkspacesAreNotOfferedToTheExtensionByDefault() async throws {
+    func testDemoWorkspacesAreOfferedAndNeverClaimedByALiveApp() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-\(UUID().uuidString)")
         let world = PreviewWorld(demo: true)
         let bridge = try XCTUnwrap(ShareBridge.make(world: world, override: root))
         bridge.publishTargets()
-        XCTAssertThrowsError(try ShareTargetIndex.load(from: ShareArea(shareGroupRoot: root)))
+        let offered = try ShareTargetIndex.load(from: ShareArea(shareGroupRoot: root))
+        XCTAssertFalse(offered.isEmpty)
+        XCTAssertTrue(offered.allSatisfy { $0.realm == "demo" })
+        let withheld = try XCTUnwrap(ShareBridge.make(world: PreviewWorld(demo: true), override: root.appendingPathComponent("w"), publishDemo: false))
+        withheld.publishTargets()
+        XCTAssertThrowsError(try ShareTargetIndex.load(from: ShareArea(shareGroupRoot: root.appendingPathComponent("w"))))
         // A Demo-realm job staged anyway is neither claimed nor quarantined by a live-realm app.
         let live = PreviewWorld(demo: false)
         let liveBridge = try XCTUnwrap(ShareBridge.make(world: live, override: root))
@@ -98,7 +103,7 @@ final class ShareBridgeTests: XCTestCase {
         let s = try StagingSession(area: ShareArea(shareGroupRoot: root), target: t)
         try s.add(.text("x")); try s.commit(note: nil)
         liveBridge.refresh(); await liveBridge.waitForRefresh()
-        XCTAssertEqual(ShareInbox(area: ShareArea(shareGroupRoot: root)).peekReady().count, 1)
+        // The live app retires the stale Demo destinations (tombstone) and never imports the Demo job.
         XCTAssertTrue(live.items(.sending).isEmpty)
     }
 

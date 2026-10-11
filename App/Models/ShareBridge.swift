@@ -30,7 +30,8 @@ final class ShareBridge {
 
     let inbox: ShareInbox
     private let world: any ShareWorld
-    /// Demo workspaces are never offered to the extension unless a DEBUG UI test asks for it.
+    /// Demo workspaces are offered (the extension labels the realm) only while Demo is the active realm; claims are realm-checked, so a
+    /// Demo-realm job is never imported by a live app. Pass false to withhold them.
     private let publishDemo: Bool
     /// Published destinations by preview workspace id (also the live set used to claim).
     private var published: [String: ShareTarget] = [:]
@@ -45,7 +46,7 @@ final class ShareBridge {
     func waitForRefresh() async { await task?.value }
     private(set) var lastPurge: (removed: Int, failed: Int) = (0, 0)
 
-    init(area: ShareArea, world: any ShareWorld, publishDemo: Bool = false) {
+    init(area: ShareArea, world: any ShareWorld, publishDemo: Bool = true) {
         inbox = ShareInbox(area: area)
         self.world = world
         self.publishDemo = publishDemo
@@ -56,7 +57,7 @@ final class ShareBridge {
     }
 
     /// nil when the App Group container is unavailable (unit tests, unsigned builds): sharing is simply off.
-    static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = false) -> ShareBridge? {
+    static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = true) -> ShareBridge? {
         guard let root = root ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return nil }
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }

@@ -90,10 +90,13 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
-            NSExtensionActivationRule:
-              NSExtensionActivationSupportsText: true
-              NSExtensionActivationSupportsWebURLWithMaxCount: 1
-              NSExtensionActivationSupportsFileWithMaxCount: 5
+            # A dictionary rule ANDs its keys (a bare URL from Safari lacks text; Photos items are images/movies), so one OR'd predicate.
+            # Covers everything ProviderStager imports: files/images/movies (public.data), URLs, text. Max 5 attachments (ShareLimits).
+            NSExtensionActivationRule: >-
+              SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
+              ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text").@count >= 1).@count >= 1
     dependencies:
       - package: OrchKit
         products: [OrchUI, OrchCoordination, OrchShareStaging]

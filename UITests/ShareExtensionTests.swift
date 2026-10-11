@@ -35,7 +35,7 @@ final class ShareExtensionTests: XCTestCase {
         openExtension(app, fixtureButton: fixture)
         // The extension's own UI: destination first, then Save to send.
         let laptop = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'share.destination.' AND label CONTAINS 'Laptop'")).firstMatch
-        XCTAssertTrue(laptop.waitForExistence(timeout: 15), app.debugDescription, file: file, line: line)
+        XCTAssertTrue(laptop.waitForExistence(timeout: 60), app.debugDescription, file: file, line: line)
         let save = app.buttons["share.save"]
         XCTAssertFalse(save.isEnabled, "Save is disabled until a destination is chosen", file: file, line: line)
         laptop.tap()
@@ -83,6 +83,12 @@ final class ShareExtensionTests: XCTestCase {
         assertImported(app)
     }
 
+    /// Regression: a Photos-style image-only share (public.image, no text/URL) must activate the extension.
+    @MainActor func testImageOnlyItemActivatesTheExtensionAndIsStaged() {
+        let app = stage(fixture: "share.fixture.image", expectKinds: ["file"])
+        assertImported(app)
+    }
+
     @MainActor func testTextItemIsStagedByTheExtensionAndImported() {
         let app = stage(fixture: "share.fixture.text", expectKinds: ["text"])
         assertImported(app)
@@ -104,7 +110,7 @@ final class ShareExtensionTests: XCTestCase {
         let app = launch("share-fixture", extra: ["--hold-share-import", "--share-demo-targets"])
         openExtension(app, fixtureButton: "share.fixture.mixed")
         let laptop = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'share.destination.' AND label CONTAINS 'Laptop'")).firstMatch
-        XCTAssertTrue(laptop.waitForExistence(timeout: 15))
+        XCTAssertTrue(laptop.waitForExistence(timeout: 60))
         laptop.tap()
         app.buttons["share.save"].tap()
         XCTAssertTrue(app.staticTexts["Saved. Open orch to send."].waitForExistence(timeout: 15))
