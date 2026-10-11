@@ -863,7 +863,7 @@ extension FakeRelay {
         guard dropVisible(v, session) else { return refuse(403, .notEligible) }
         switch path[4] {
         case "descriptor": return json(200, ["descriptor": v.descriptor])
-        case "wraps": return json(200, ["wraps": .array(v.wraps.map(\.json))])
+        case "wraps": return json(200, ["wraps": .array(v.wraps.map(\.json)), "claimed_by": claims[id].map { .string($0.hex) } ?? .null])
         case "blob": return try WireReply(status: 200, headers: [HostAPI.versionHeader: "0"], body: v.blob)
         default: return adapterError(404, "not_found")
         }
@@ -880,7 +880,8 @@ extension FakeRelay {
 
     func putRewrap(_ wrap: DropWrapRecord, token: String) throws {
         let ws = try workspaceSession(token)
-        _ = try rewrapSource(object: wrap.object, version: wrap.version, workspace: ws, token: token)
+        let (descriptor, _) = try rewrapSource(object: wrap.object, version: wrap.version, workspace: ws, token: token)
+        guard descriptor.recipients != .inbox || claims[wrap.object] == ws else { throw DropError.unavailableKey }
         guard wrap.targetKind == .wk, wrap.target == ws, wrap.keyVersion == workspaces[ws]?.list?.epoch else { throw Refusal.malformed }
         let i = Int(wrap.version) - 1
         drops[wrap.object]?[i].wraps.removeAll { $0.targetKind == .wk && $0.target == ws && $0.keyVersion == wrap.keyVersion }

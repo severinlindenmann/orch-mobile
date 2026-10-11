@@ -47,6 +47,9 @@ public actor WorkspaceContainer {
             "CREATE TABLE drop_uploads (object TEXT NOT NULL, version INTEGER NOT NULL, body BLOB NOT NULL, done INTEGER NOT NULL, PRIMARY KEY(object,version))",
             "CREATE TABLE drop_imports (job TEXT NOT NULL, item INTEGER NOT NULL, object TEXT NOT NULL, PRIMARY KEY(job,item))",
         ]),
+        Migration(version: 6, statements: [
+            "ALTER TABLE drop_uploads ADD COLUMN failure TEXT",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {

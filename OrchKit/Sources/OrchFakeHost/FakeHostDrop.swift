@@ -7,9 +7,13 @@ extension FakeHost {
     func handleDropRewrap(_ request: HostRequest) async -> HostReply {
         guard let o = request.meta.object, Set(o.keys) == ["op", "object_id", "version"], request.data.isEmpty,
               let object = o["object_id"]?.string.flatMap(ID16.init(hex:)), let n = o["version"]?.int, n > 0, n <= UInt32.max,
-              request.scopes.contains("look"), let ctx = bridgeRelay else { return .refuse(.malformed) }
+              request.scopes.contains(o["op"] == "drop_claim" ? "operate" : "look"), let ctx = bridgeRelay else { return .refuse(.malformed) }
         do {
-            try await rewrapDrop(object: object, version: UInt32(n), relay: ctx.relay, session: ctx.session)
+            if o["op"] == "drop_claim" {
+                _ = try HostAPI.expect(await claimDrop(object: object, version: UInt32(n), relay: ctx.relay, session: ctx.session))
+            } else {
+                try await rewrapDrop(object: object, version: UInt32(n), relay: ctx.relay, session: ctx.session)
+            }
             return .response(status: 200, headers: [:], data: HostAPI.json())
         } catch { return .refuse(.forbiddenScope) }
     }
@@ -20,38 +24,37 @@ extension FakeHost {
         let startEpoch = epoch
         let (descriptor, wraps) = try await relay.rewrapSource(object: object, version: version, workspace: workspace, token: session.token)
         guard epoch == startEpoch, !rotationRequired else { throw Refusal.badEpoch }
-        var dek: SymmetricKey?
-        for wrap in wraps where wrap.target == workspace {
-            if wrap.targetKind == .wk, let old = wks[wrap.keyVersion] { dek = try DropWrap.unwrap(wrap, with: .wk(old)); break }
-            if wrap.targetKind == .wxk, wrap.keyVersion == 1 { dek = try DropWrap.unwrap(wrap, agreement: wxk) }
-        }
+        let dek = openDropKey(wraps, descriptor: descriptor)
         guard let dek, DropKeys.dekCommit(object: object, version: version, dek: dek) == descriptor.dekCommit else { throw DropError.integrity }
         let wrap = try DropWrap.wrapWithSecret(kind: .wk, secret: current, target: workspace, keyVersion: epoch, object: object, version: version, dek: dek)
-        if descriptor.recipients == .inbox {
-            let claim = try DropClaim.make(wsk: wsk, object: object, workspace: workspace, wrap: wrap)
-            let reply = try await relay.send(WireRequest(method: "POST", target: "/drop/\(object.hex)/claim",
-                headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"], body: canonicalJSON(claim.json), clientAddress: "fake-host"))
-            _ = try HostAPI.expect(reply)
-        } else {
-            try await relay.putRewrap(wrap, token: session.token)
-        }
+        // The descriptor remains inbox after claim; relay claim state is authoritative.
+        try await relay.putRewrap(wrap, token: session.token)
     }
 
     /// Claim signatures and DEKs stay on the host. The relay serializes competing claims.
     public func claimDrop(object: ID16, version: UInt32, relay: FakeRelay, session: RelaySession) async throws -> WireReply {
         try capability.generation.check()
         guard !rotationRequired, let wk = wks[epoch] else { throw DropError.unauthorized }
+        let startEpoch = epoch
         let (d, wraps) = try await relay.rewrapSource(object: object, version: version, workspace: workspace, token: session.token)
-        var opened: SymmetricKey?
-        for wrap in wraps where wrap.target == workspace {
-            if wrap.targetKind == .wxk { opened = try DropWrap.unwrap(wrap, agreement: wxk); break }
-            if wrap.targetKind == .wk, let old = wks[wrap.keyVersion] { opened = try DropWrap.unwrap(wrap, with: .wk(old)); break }
-        }
+        guard epoch == startEpoch, !rotationRequired else { throw Refusal.badEpoch }
+        let opened = openDropKey(wraps, descriptor: d)
         guard let dek = opened, DropKeys.dekCommit(object: object, version: version, dek: dek) == d.dekCommit else { throw DropError.integrity }
         let record = try DropWrap.wrapWithSecret(kind: .wk, secret: wk, target: workspace, keyVersion: epoch, object: object, version: version, dek: dek)
         let claim = try DropClaim.make(wsk: wsk, object: object, workspace: workspace, wrap: record)
         return try await relay.send(WireRequest(method: "POST", target: "/drop/\(object.hex)/claim",
             headers: [HostAPI.versionHeader: "0", "authorization": "Bearer \(session.token)"], body: canonicalJSON(claim.json), clientAddress: "fake-host"))
+    }
+
+    private func openDropKey(_ wraps: [DropWrapRecord], descriptor: DropDescriptor) -> SymmetricKey? {
+        for wrap in wraps where wrap.target == workspace {
+            let key: SymmetricKey?
+            if wrap.targetKind == .wk, let old = wks[wrap.keyVersion] { key = try? DropWrap.unwrap(wrap, with: .wk(old)) }
+            else if wrap.targetKind == .wxk, wrap.keyVersion == 1 { key = try? DropWrap.unwrap(wrap, agreement: wxk) }
+            else { continue }
+            if let key, DropKeys.dekCommit(object: descriptor.object, version: descriptor.version, dek: key) == descriptor.dekCommit { return key }
+        }
+        return nil
     }
 
     /// Real §10 fixtures, uploaded through the same protocol route as phone files.
@@ -99,7 +102,7 @@ extension FakeHost {
         }
         if isClientHosted, let body = dropSeedBodies?.first {
             let d = try DropDescriptor(object: StrictJSON.parse(body, maxBytes: 36 << 20).object!["descriptor"]!.object!["o"]!.object!)
-            try await rewrapDrop(object: d.object, version: d.version, relay: relay, session: session)
+            _ = try HostAPI.expect(await claimDrop(object: d.object, version: d.version, relay: relay, session: session))
         }
     }
 }

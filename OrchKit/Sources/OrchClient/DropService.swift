@@ -7,6 +7,15 @@ import OrchStore
 
 public enum DropError: Error, Equatable, Sendable {
     case malformed, unauthorized, expired, integrity, rollback, conflict, tooLarge, unavailableKey
+    case uploadRejected(status: Int)
+    case versionConflict(current: UInt32)
+
+    fileprivate var terminalUpload: Bool {
+        switch self {
+        case .conflict, .versionConflict, .expired, .uploadRejected: true
+        default: false
+        }
+    }
 }
 
 /// A descriptor is exposed only after author, workspace and document-chain verification.
@@ -16,11 +25,30 @@ public struct DropObject: Sendable, Equatable {
     public let wraps: [DropWrapRecord]
 }
 
+public struct DropDownload: Sendable, Equatable {
+    public let url: URL
+    public let metadata: DropMetadata
+}
+
+public struct DropUploadFailure: Sendable, Equatable {
+    public let object: ID16
+    public let version: UInt32
+    public let reason: String
+}
+
+public struct DropUploadResult: Sendable {
+    public let object: ID16
+    public let version: UInt32
+    public let result: Result<DropObject, any Error>
+}
+
 /// Workspace-scoped Drop client. Other-device certificates must be verified by the caller against
 /// the workspace owner before being supplied; membership is checked against a signed member list.
 public actor DropService {
     public enum Direction: String, Sendable { case received, sending }
     public enum Kind: String, Sendable { case file, document }
+    private var imports: [String: Task<[DropObject], Error>] = [:]
+    private var uploads: [String: Task<DropObject, Error>] = [:]
     let session: WorkspaceSession
     let card: VerifiedCard
     let certificates: [ID16: DeviceCertificate]
@@ -46,12 +74,16 @@ public actor DropService {
               Set(o.keys) == fields.union(["host_api"]), o["host_api"] == 0 else { throw DropError.malformed }
         return o
     }
-    private func membership() async throws -> MemberList {
+    private func membership(operate: Bool = false) async throws -> MemberList {
         let s = try await auth()
         let raw = try await RelayClient(transport: session.cfg.transport).memberList(workspace: card.workspace, session: s)
         let list = try MemberList.verify(raw, wsk: card.wsk)
-        guard list.workspace == card.workspace, list.members.contains(where: { $0.deviceID == session.cfg.deviceID && ($0.scopeStrings?.contains("look") ?? false) }) else { throw DropError.unauthorized }
+        guard list.workspace == card.workspace, list.members.contains(where: { $0.deviceID == session.cfg.deviceID && ($0.scopeStrings?.contains(operate ? "operate" : "look") ?? false) }) else { throw DropError.unauthorized }
         guard list.epoch >= (try await session.currentEpoch()) else { throw DropError.rollback }
+        if list.epoch > (try await session.currentEpoch()) {
+            _ = try await session.refreshGrants(confirmedEpoch: list.epoch)
+        }
+        guard list.epoch == (try await session.currentEpoch()) else { throw DropError.unavailableKey }
         try await check()
         return list
     }
@@ -125,6 +157,16 @@ public actor DropService {
     /// Imports only this generation's claimed destination. The SQLite item mapping survives crashes;
     /// plaintext is deleted only after every item's durable upload has been confirmed by read-back.
     public func importShareJob(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
+        guard job.manifest.realm == session.cfg.context.realm.rawValue, job.manifest.ws == card.workspace.hex,
+              job.manifest.generation == session.generation else { throw DropError.unauthorized }
+        if let task = imports[job.manifest.jobID] { return try await task.value }
+        let task = Task { try await self.performImport(job, inbox: inbox) }
+        imports[job.manifest.jobID] = task
+        defer { imports[job.manifest.jobID] = nil }
+        return try await task.value
+    }
+
+    private func performImport(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
         try await check()
         guard job.manifest.realm.utf8.elementsEqual(session.cfg.context.realm.rawValue.utf8),
               job.manifest.ws.utf8.elementsEqual(card.workspace.hex.utf8), job.manifest.generation == session.generation else { throw DropError.unauthorized }
@@ -151,7 +193,7 @@ public actor DropService {
     /// Fresh DEK per version. The exact sealed upload is durable before the first PUT.
     private func sendData(_ data: Data, name: String, mime: String, transcript: String?,
                      expiresMs: Int64?, document: DropObject?, chosenObject: ID16?, kind: Kind = .file) async throws -> DropObject {
-        try await check()
+        _ = try await membership(operate: true)
         guard data.count <= Self.maxPlaintextBytes else { throw DropError.tooLarge }
         let now = session.cfg.wall.nowMs
         let expiry = expiresMs ?? DropUpload.addMs(now, 604800000)
@@ -169,65 +211,174 @@ public actor DropService {
             wxk: card.wxk, wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: wk, epoch: epoch,
             now: now, expiry: expiry, parent: document?.descriptor, kind: kind.rawValue)
         let db = try await session.cfg.container.database()
-        try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,?,?,0)", [.text(object.hex), .int(Int64(parent + 1)), .blob(body)])
-        return try await upload(object: object, version: parent + 1, body: body)
+        let winner: Data = try await db.transaction { tx in
+            try tx.execute("INSERT OR IGNORE INTO drop_uploads(object,version,body,done) VALUES(?,?,?,0)", [.text(object.hex), .int(Int64(parent + 1)), .blob(body)])
+            guard let stored = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(parent + 1))]).first?.blob("body") else { throw DropError.malformed }
+            if chosenObject == nil && stored != body { throw DropError.conflict }
+            return stored
+        }
+        return try await upload(object: object, version: parent + 1, body: winner)
     }
 
-    /// Retry durable uploads without resealing or allocating a different object.
-    public func resumeUploads() async throws -> [DropObject] {
+    /// Recover every pending row independently; stale uncommitted bodies get a fresh DEK.
+    public func resumeUploads() async throws -> [DropUploadResult] {
         try await check()
         let rows = try await session.cfg.container.database().query("SELECT object,version,body FROM drop_uploads WHERE done=0")
-        var result: [DropObject] = []
+        var result: [DropUploadResult] = []
         for row in rows {
             guard let id = row.text("object").flatMap(ID16.init(hex:)), let n = row.int("version"), n > 0, n <= UInt32.max, let body = row.blob("body") else { throw DropError.malformed }
-            result.append(try await upload(object: id, version: UInt32(n), body: body))
+            do { result.append(DropUploadResult(object: id, version: UInt32(n), result: .success(try await upload(object: id, version: UInt32(n), body: body)))) }
+            catch { result.append(DropUploadResult(object: id, version: UInt32(n), result: .failure(error))) }
         }
         return result
     }
     private func upload(object: ID16, version: UInt32, body: Data) async throws -> DropObject {
+        let key = "\(object.hex):\(version)"
+        if let task = uploads[key] { return try await task.value }
+        let task = Task {
+            do { return try await self.performUpload(object: object, version: version, body: body) }
+            catch {
+                if let e = error as? DropError, e.terminalUpload {
+                    try await self.session.cfg.container.database().execute("UPDATE drop_uploads SET done=2,failure=? WHERE object=? AND version=?", [.text(String(describing: e)), .text(object.hex), .int(Int64(version))])
+                }
+                throw error
+            }
+        }
+        uploads[key] = task
+        defer { uploads[key] = nil }
+        return try await task.value
+    }
+
+    /// Terminal outcomes survive restart and remain visible until explicitly resolved.
+    public func failedUploads() async throws -> [DropUploadFailure] {
+        try await check()
+        let rows = try await session.cfg.container.database().query("SELECT object,version,failure FROM drop_uploads WHERE done=2")
+        return try rows.map { row in
+            guard let id = row.text("object").flatMap(ID16.init(hex:)), let n = row.int("version"), n > 0, n <= UInt32.max else { throw DropError.malformed }
+            return DropUploadFailure(object: id, version: UInt32(n), reason: row.text("failure") ?? "failed")
+        }
+    }
+
+    /// Explicitly retry a terminal row; conflict bytes are never overwritten automatically.
+    public func retryUpload(object: ID16, version: UInt32) async throws -> DropObject {
+        let db = try await session.cfg.container.database()
+        guard let body = try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") else { throw DropError.malformed }
+        try await db.execute("UPDATE drop_uploads SET done=0,failure=NULL WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
+        return try await upload(object: object, version: version, body: body)
+    }
+
+    public func discardUpload(object: ID16, version: UInt32) async throws {
+        if let task = uploads["\(object.hex):\(version)"] { _ = try? await task.value }
+        try await session.cfg.container.database().execute("DELETE FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
+    }
+
+    /// Explicit abandonment also removes staged plaintext and its item mappings.
+    public func discardShareJob(_ job: StagedJob, inbox: ShareInbox) async throws {
+        if let task = imports[job.manifest.jobID] { _ = try? await task.value }
+        guard job.manifest.ws == card.workspace.hex, job.manifest.generation == session.generation,
+              job.manifest.realm == session.cfg.context.realm.rawValue else { throw DropError.unauthorized }
+        let db = try await session.cfg.container.database()
+        let rows = try await db.query("SELECT object FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)])
+        for row in rows { if let id = row.text("object").flatMap(ID16.init(hex:)) { try await discardUpload(object: id, version: 1) } }
+        try await db.execute("DELETE FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)])
+        inbox.complete(job)
+    }
+
+    private func performUpload(object: ID16, version: UInt32, body: Data) async throws -> DropObject {
+        let members = try await membership(operate: true)
         let s = try await auth()
         guard let o = try StrictJSON.parse(body, maxBytes: 36 << 20).object,
               Set(o.keys) == ["host_api", "descriptor", "wraps", "blob"], o["host_api"] == 0,
               let signed = o["descriptor"], let wraps = o["wraps"]?.array, wraps.count <= 1024,
               let blobText = o["blob"]?.string, let expectedBlob = B64U.decode(blobText), expectedBlob.count <= 26 << 20 else { throw DropError.malformed }
+        let descriptor = try verify(signed, members: members)
+        let existing = try await get(object, version, .descriptor)
+        if existing.status == 404 {
+            let records = try wraps.map(DropWrapRecord.init(json:))
+            if records.contains(where: { $0.targetKind == .wk && $0.target == card.workspace && $0.keyVersion < members.epoch }) {
+                guard let dek = try await openKey(records, descriptor: descriptor) else { throw DropError.unavailableKey }
+                let metadata = try DropMetadata.open(sealed: descriptor.meta, dek: dek, object: object, version: version)
+                let plaintext = try DropBlob.decrypt(dek: dek, object: object, version: version, blob: expectedBlob, maxBytes: 26 << 20)
+                var parent: DropDescriptor?
+                if version > 1 {
+                    let previous = try parse(await get(object, version - 1, .descriptor), fields: ["descriptor"])
+                    parent = try verify(previous["descriptor"]!, members: members)
+                    guard try DropDescriptor.parentHash(of: parent!.raw) == descriptor.parentHash else { throw DropError.conflict }
+                }
+                guard let expiry = descriptor.expiresMs, expiry > session.cfg.wall.nowMs else { throw DropError.expired }
+                let fresh = try DropUpload.seal(plaintext, metadata: metadata, object: object, workspace: card.workspace,
+                    author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig, wxk: card.wxk,
+                    wxkVersion: card.wxkVersion, sender: session.cfg.identity.publicKeys.kx, wk: await session.dropKey(members.epoch),
+                    epoch: members.epoch, now: session.cfg.wall.nowMs, expiry: expiry, parent: parent, kind: descriptor.objectKind)
+                let db = try await session.cfg.container.database()
+                let winner: Data = try await db.transaction { tx in
+                    try tx.execute("UPDATE drop_uploads SET body=? WHERE object=? AND version=? AND body=?", [.blob(fresh), .text(object.hex), .int(Int64(version)), .blob(body)])
+                    guard let saved = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") else { throw DropError.malformed }
+                    return saved
+                }
+                return try await performUpload(object: object, version: version, body: winner)
+            }
+            guard descriptor.expiresMs.map({ $0 > session.cfg.wall.nowMs }) ?? true else { throw DropError.expired }
+        } else if existing.status != 200 { _ = try HostAPI.expect(existing) }
+        var conflictCurrent: UInt32?
+        let stale = try wraps.map(DropWrapRecord.init(json:)).contains { $0.targetKind == .wk && $0.keyVersion < members.epoch }
         do {
-            let reply = try await session.cfg.transport.dropPut(objectID: object, ifMatch: version - 1, body: body, session: s)
-            if reply.status != 409 { _ = try parse(reply, fields: ["version"], status: 201) }
+            if existing.status == 404 || !stale {
+                let reply = try await session.cfg.transport.dropPut(objectID: object, ifMatch: version - 1, body: body, session: s)
+                if reply.status == 409, let n = try StrictJSON.parse(reply.body).object?["current"]?.int, n >= 0, n <= UInt32.max { conflictCurrent = UInt32(n) }
+                if (400..<500).contains(reply.status), reply.status != 409, reply.status != 429 { throw DropError.uploadRejected(status: reply.status) }
+                if reply.status != 409 { _ = try parse(reply, fields: ["version"], status: 201) }
+            }
         } catch let error as TransportError {
             if error != .disconnected { throw error }
         }
         // Always read back: a lost 201 or a stale retry is successful only for these exact committed bytes.
-        let committed = try parse(await get(object, version, .descriptor), fields: ["descriptor"])
+        let readBack = try await get(object, version, .descriptor)
+        if readBack.status == 404, let conflictCurrent { throw DropError.versionConflict(current: conflictCurrent) }
+        let committed = try parse(readBack, fields: ["descriptor"])
         let blob = try await get(object, version, .blob)
         _ = try HostAPI.expect(blob)
         guard try canonicalJSON(committed["descriptor"]!) == canonicalJSON(signed),
-              expectedBlob == blob.body else { throw DropError.conflict }
+              expectedBlob == blob.body else {
+            if let conflictCurrent { throw DropError.versionConflict(current: conflictCurrent) }
+            throw DropError.conflict
+        }
         let result = try await verified(signed, wraps: wraps, members: membership())
-        try await session.cfg.container.database().execute("UPDATE drop_uploads SET done=1 WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
+        try await session.cfg.container.database().execute("UPDATE drop_uploads SET done=1,failure=NULL WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
         return result
     }
 
     /// The phone asks the host to claim; only the host signs the §10.5 claim.
     public func claim(_ object: DropObject) async throws {
         guard object.descriptor.recipients == .inbox else { throw DropError.malformed }
-        _ = try await verified(object.signed, wraps: object.wraps.map(\.json), members: membership())
-        let response = try await session.exchange(meta: ["op": "drop_rewrap", "object_id": .string(object.descriptor.object.hex),
+        _ = try await verified(object.signed, wraps: object.wraps.map(\.json), members: membership(operate: true))
+        let response = try await session.exchange(meta: ["op": "drop_claim", "object_id": .string(object.descriptor.object.hex),
                                                         "version": .int(Int64(object.descriptor.version))])
         guard response.status == 200 else { throw DropError.conflict }
         try await check()
     }
 
     public func download(_ object: DropObject) async throws -> URL {
+        try await downloadVerified(object).url
+    }
+
+    public func downloadVerified(_ object: DropObject) async throws -> DropDownload {
         let members = try await membership()
         let current = try await verified(object.signed, wraps: object.wraps.map(\.json), members: members)
         let d = current.descriptor
         var wraps = current.wraps
+        if d.recipients == .inbox {
+            let state = try parse(await get(d.object, d.version, .wraps), fields: ["wraps", "claimed_by"])
+            guard state["claimed_by"] == .string(card.workspace.hex) else { throw DropError.unavailableKey }
+            guard let raw = state["wraps"]?.array, raw.count <= 1024 else { throw DropError.malformed }
+            wraps = try raw.map(DropWrapRecord.init(json:))
+        }
         var dek = try await openKey(wraps, descriptor: d)
         if dek == nil {
             let response = try await session.exchange(meta: ["op": "drop_rewrap", "object_id": .string(d.object.hex), "version": .int(Int64(d.version))])
             guard response.status == 200 else { throw DropError.unavailableKey }
             _ = try await session.refreshGrants()
-            let o = try parse(await get(d.object, d.version, .wraps), fields: ["wraps"])
+            let o = try parse(await get(d.object, d.version, .wraps), fields: ["wraps", "claimed_by"])
             guard let raw = o["wraps"]?.array, raw.count <= 1024 else { throw DropError.malformed }
             wraps = try raw.map(DropWrapRecord.init(json:))
             dek = try await openKey(wraps, descriptor: d)
@@ -240,18 +391,18 @@ public actor DropService {
         let plaintext = try DropBlob.decrypt(dek: dek, object: d.object, version: d.version, blob: blob.body, maxBytes: 26 << 20)
         guard metadata.size == plaintext.count, plaintext.count <= Self.maxPlaintextBytes else { throw DropError.integrity }
         try await check()
-        return try await session.cfg.container.writeDrop(plaintext, object: d.object.hex, version: d.version)
+        return DropDownload(url: try await session.cfg.container.writeDrop(plaintext, object: d.object.hex, version: d.version), metadata: metadata)
     }
     private func openKey(_ wraps: [DropWrapRecord], descriptor d: DropDescriptor) async throws -> SymmetricKey? {
         for w in wraps {
             guard w.object == d.object, w.version == d.version else { throw DropError.integrity }
             let key: SymmetricKey?
             if w.targetKind == .device, w.target == session.cfg.deviceID, w.keyVersion == 0 {
-                key = try DropWrap.unwrap(w, agreement: session.cfg.identity.kx)
+                key = try? DropWrap.unwrap(w, agreement: session.cfg.identity.kx)
             } else if w.targetKind == .wk, w.target == card.workspace, let wk = try? await session.dropKey(w.keyVersion) {
-                key = try DropWrap.unwrap(w, with: .wk(wk))
+                key = try? DropWrap.unwrap(w, with: .wk(wk))
             } else { continue }
-            guard let key, DropKeys.dekCommit(object: d.object, version: d.version, dek: key) == d.dekCommit else { throw DropError.integrity }
+            guard let key, DropKeys.dekCommit(object: d.object, version: d.version, dek: key) == d.dekCommit else { continue }
             return key
         }
         return nil
