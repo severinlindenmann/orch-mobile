@@ -186,7 +186,7 @@ public actor DropService {
     }
 
     /// Imports only this generation's claimed destination. The SQLite item mapping survives crashes;
-    /// plaintext is deleted only after every item's durable upload has been confirmed by read-back.
+    /// plaintext is deleted after every non-abandoned item is confirmed by read-back.
     public func importShareJob(_ job: StagedJob, inbox: ShareInbox) async throws -> [DropObject] {
         guard job.manifest.realm == session.cfg.context.realm.rawValue, job.manifest.ws == card.workspace.hex,
               job.manifest.generation == session.generation else { throw DropError.unauthorized }
@@ -212,9 +212,14 @@ public actor DropService {
             let fresh = session.cfg.entropy.id16()
             try await db.execute("INSERT OR IGNORE INTO drop_imports(job,item,object) VALUES(?,?,?)", [.text(job.manifest.jobID), .int(Int64(i)), .text(fresh.hex)])
             guard let id = try await db.query("SELECT object FROM drop_imports WHERE job=? AND item=?", [.text(job.manifest.jobID), .int(Int64(i))]).first?.text("object").flatMap(ID16.init(hex:)) else { throw DropError.malformed }
+            if try await !db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.importAbandonmentKey(id))]).isEmpty { continue }
+            do {
             let data = try inbox.contents(of: item, in: job)
             result.append(try await sendData(data, name: item.name, mime: item.kind == .url ? "text/uri-list" : (item.kind == .text ? "text/plain" : "application/octet-stream"),
                 transcript: job.manifest.note, expiresMs: nil, document: nil, chosenObject: id))
+            } catch DropError.abandoned {
+                guard try await !db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.importAbandonmentKey(id))]).isEmpty else { throw DropError.abandoned }
+            }
         }
         try await check()
         inbox.complete(job)
