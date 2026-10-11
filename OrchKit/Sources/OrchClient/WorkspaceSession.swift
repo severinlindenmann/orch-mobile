@@ -681,6 +681,8 @@ public actor WorkspaceSession {
         case staleEpochHint(RelayRefusal)
         /// 410 `expired`: the relay no longer knows the rid. Its outcome cannot be known from the bridge.
         case expired
+        /// 409 `rid_conflict` from the RELAY: it holds other bytes for this rid (after a same-rid re-seal, the first copy).
+        case ridConflict(RelayRefusal)
     }
 
     private func drive(_ start: Row, isResend: Bool) async throws -> BridgeResponse {
@@ -711,6 +713,12 @@ public actor WorkspaceSession {
                 continue
             case .expired:
                 try await markUncertain(row.rid); throw SessionError.uncertain(logical: row.logical)
+            case .ridConflict(let r):
+                // After a same-rid re-seal the relay saying it holds the FIRST copy is the host's rid_conflict one hop earlier:
+                // the relay misbehaved (or queued it after all). Keep the ORIGINAL attempt, uncertain, so its answer can verify.
+                guard let o = original else { throw ClientError.relay(r) }
+                try await restoreUncertain(o)
+                throw SessionError.uncertain(logical: row.logical)
             case .accepted, .throttled, .exhausted:
                 break
             }
@@ -818,6 +826,7 @@ public actor WorkspaceSession {
         case (409, .retryExhausted): return .exhausted
         case (409, .staleEpoch): return .staleEpochHint(r)
         case (410, .expired): return .expired
+        case (409, .ridConflict): return .ridConflict(r)
         default: throw ClientError.relay(r)
         }
     }
