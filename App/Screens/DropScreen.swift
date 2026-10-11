@@ -97,9 +97,9 @@ struct DropScreen: View {
         }
         .scrollContentBackground(.hidden)
         .background(OC.bg)
-        // Pinned above the list so the current transfer status is always on screen (rows taller than before would otherwise
+        // Pinned below the list (not above, so a late status never shifts the segmented control) so the current transfer status is always on screen (rows taller than before would otherwise
         // scroll it out of the lazy list).
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if let status = model.dropStatus {
                 Text(verbatim: status).font(OF.meta).foregroundStyle(OC.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
