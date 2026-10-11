@@ -34,6 +34,8 @@ final class ShareBridge {
     private let publishDemo: Bool
     /// Published destinations by preview workspace id (also the live set used to claim).
     private var published: [String: ShareTarget] = [:]
+    /// Retain identities even when scope/lifecycle prevents offering a workspace to the extension.
+    private var tracked: [String: ShareTarget] = [:]
     private var listed: Set<String> = []
     private var attempted: Set<String> = []
     private func key(_ job: StagedJob) -> String { "\(job.manifest.realm)/\(job.manifest.ws)/\(job.manifest.generation)/\(job.manifest.jobID)" }
@@ -79,10 +81,12 @@ final class ShareBridge {
     /// Journal before changing local workspace state; a failed tombstone keeps the workspace in place.
     private func prepareRemoval(_ id: String) -> Bool {
         do {
-            let hex = world.shareIdentity(of: id)?.ws ?? Self.wsHex(id)
-            let generation = try published[id]?.generation ?? ((inbox.area.coordination.records()
+            let identity = world.shareIdentity(of: id)
+            let target = tracked[id] ?? published[id]
+            let hex = identity?.ws ?? target?.ws ?? Self.wsHex(id)
+            let generation = try identity?.generation ?? target?.generation ?? ((inbox.area.coordination.records()
                 .filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0) + 1)
-            let record = TombstoneRecord(realm: published[id]?.realm ?? realm, ws: hex, generation: generation)
+            let record = TombstoneRecord(realm: target?.realm ?? realm, ws: hex, generation: generation)
             try inbox.recordRemoval(record)
             try inbox.area.coordination.write(record)
             return true
@@ -96,12 +100,15 @@ final class ShareBridge {
         do { try inbox.replayRemovals() } catch { return }
         guard let tombstones = try? coordination.records() else { return }
         var next: [String: ShareTarget] = [:]
-        if !world.isDemo || publishDemo {
-            for ws in world.workspaces where world.eligibleShareDestination(ws.id) {
-                let identity = world.shareIdentity(of: ws.id)
-                let hex = identity?.ws ?? Self.wsHex(ws.id)
-                let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
-                next[ws.id] = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
+        var nextTracked: [String: ShareTarget] = [:]
+        for ws in world.workspaces {
+            let identity = world.shareIdentity(of: ws.id)
+            let hex = identity?.ws ?? Self.wsHex(ws.id)
+            let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
+            let target = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
+            nextTracked[ws.id] = target
+            if (!world.isDemo || publishDemo) && world.eligibleShareDestination(ws.id) {
+                next[ws.id] = target
             }
         }
         // Include the persisted index so a process restart cannot lose an unpublished removal.
@@ -114,6 +121,7 @@ final class ShareBridge {
             }
             try inbox.replayRemovals()
         } catch { return }
+        tracked = nextTracked
         published = next
         listed = Set(next.keys)
         try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] }, to: area)

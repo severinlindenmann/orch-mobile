@@ -109,6 +109,10 @@ final class ShareBridgeTests: XCTestCase {
         let file = area.shareDir.appendingPathComponent("tombstones.json")
         try Data("{broken".utf8).write(to: file)   // the write now throws .corrupt
         _ = await world.leave(workspaceID: "client-vm", simulateOffline: false)
+        // Leave itself must journal the unoffered workspace before the tombstone write fails.
+        XCTAssertEqual(try bridge.inbox.pendingRemovals(), [
+            TombstoneRecord(realm: "demo", ws: ShareBridge.wsHex("client-vm"), generation: 1)
+        ])
         bridge.publishTargets()
         XCTAssertEqual(bridge.unfinishedRemovals, 1)
         XCTAssertTrue(world.workspaces.contains { $0.id == "client-vm" })
