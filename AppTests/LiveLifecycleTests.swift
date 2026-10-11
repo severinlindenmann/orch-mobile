@@ -1,0 +1,244 @@
+import XCTest
+import OrchClient
+import OrchProtocol
+import OrchPush
+import OrchStore
+@testable import Orch
+
+private actor Suspension {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var entered = false
+    func wait() async { entered = true; await withCheckedContinuation { continuation = $0 } }
+    func resume() { continuation?.resume(); continuation = nil }
+}
+
+private actor WorkspaceStub: WorkspaceAPI {
+    let suspension = Suspension()
+    var foreground: [Bool] = []
+    var submissions: [ID16] = []
+    var reviews = 0
+    var verifiedReceiptMs: Int64? { nil }
+    func start() {}
+    func setForeground(_ value: Bool) { foreground.append(value) }
+    func refreshViews() async { await suspension.wait() }
+    func invalidateReviews() {}
+    func reconcile(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
+    func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
+    func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
+    func decide(_ review: QuestionReview, optionID: String) throws -> DecisionOutcome { throw ViewError.offline }
+    func pendingDecisions() -> [OrchClient.DecisionStatus] { [] }
+    func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket {
+        // Host accepted this ID; the reply was lost.
+        submissions.append(draft.creationID)
+        throw ViewError.offline
+    }
+    func events() -> AsyncStream<WorkspaceEvent> { AsyncStream { $0.finish() } }
+}
+
+private actor NotificationRecorder: DemoNotificationBackend {
+    let suspension = Suspension()
+    var delivered: [String] = ["demo/other/keep"]
+    var pending: [String] = ["demo/other/keep"]
+    func schedule(_ presentation: PushPresentation, identifier: String) async {
+        await suspension.wait()
+        delivered.append(identifier); pending.append(identifier)
+    }
+    func removeDelivered(identifiers: [String]) {
+        delivered.removeAll { identifiers.contains($0) }; pending.removeAll { identifiers.contains($0) }
+    }
+    func purge(workspace: String?) {
+        let prefix = workspace.map { "demo/\($0)/" } ?? "demo/"
+        delivered.removeAll { $0.hasPrefix(prefix) }; pending.removeAll { $0.hasPrefix(prefix) }
+    }
+}
+
+@MainActor
+final class LiveLifecycleTests: XCTestCase {
+    private let options = LaunchOptions.parse(arguments: ["--ui-testing"], debug: true)
+    private func workspace(_ services: LiveServices, api: WorkspaceStub = WorkspaceStub()) -> LiveWorkspace {
+        let id = SystemEntropy().id16()
+        let info = WorkspaceInfo(id: id.hex, name: "Test", host: "Mac", hue: 0, hostedBy: nil, clientHosted: false,
+                                 scopes: [.look, .operate, .decide], connection: .online, primaryLabel: "Mac", notificationsOn: true)
+        let ws = LiveWorkspace(workspaceID: id, generation: 1, api: api, info: info)
+        services.register(ws)
+        return ws
+    }
+    private func waitUntil(_ predicate: () async -> Bool) async {
+        for _ in 0..<1000 {
+            if await predicate() { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for suspension")
+    }
+
+    func testFailedRemovalThenForegroundStaysQuarantined() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let api = WorkspaceStub()
+        let ws = workspace(services, api: api)
+        let staleReview = LiveReviewModel(services: services, workspace: ws, questionID: SystemEntropy().id16().hex, optionID: "a")
+        services.wipeWorkspace = { _, _ in throw ViewError.offline }
+        let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertTrue(report.incomplete)
+        services.setActive(true)
+        await services.waitForLifecycle()
+        let foreground = await api.foreground
+        XCTAssertFalse(foreground.contains(true))
+        XCTAssertEqual(ws.info.lifecycle, .removalIncomplete)
+        XCTAssertEqual(services.workspaces.first?.lifecycle, .removalIncomplete)
+        XCTAssertFalse(ws.canCreateTickets)
+        let review = services.review(workspaceID: ws.info.id, questionID: "q", optionID: "a")
+        await review.loadReview()
+        await staleReview.loadReview()
+        let reads = await api.reviews
+        XCTAssertEqual(reads, 0)
+        _ = await ws.createTicket(title: "Refused", body: "")
+        let submissions = await api.submissions
+        XCTAssertTrue(submissions.isEmpty)
+        services.exitDemo(); await services.waitForReset()
+    }
+
+    func testBackgroundDoesNotWaitForSuspendedRefresh() async {
+        let services = LiveServices(options: options)
+        let api = WorkspaceStub()
+        let ws = workspace(services, api: api)
+        services.setActive(true)
+        await waitUntil { await api.suspension.entered }
+        services.setActive(false)
+        await services.waitForLifecycle()
+        let states = await api.foreground
+        XCTAssertEqual(states, [true, false])
+        XCTAssertFalse(ws.canCreateTickets)
+        await api.suspension.resume()
+    }
+
+    func testSecondResetRetriesFirstFailedRuntime() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let ws = workspace(services)
+        var attempts = 0
+        services.resetRuntime = { retained in
+            XCTAssertTrue(retained === runtime)
+            attempts += 1
+            if attempts == 1 { throw ViewError.offline }
+            try await retained.reset()
+        }
+        services.exitDemo(); await services.waitForReset()
+        XCTAssertNil(services.runtime)
+        XCTAssertEqual(services.state(for: ws.info.id), .removalIncomplete)
+        services.exitDemo(); await services.waitForReset()
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(services.state(for: ws.info.id), .removed)
+    }
+
+    func testOverlappingResetsRetryFailedContext() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let gate = Suspension()
+        var attempts = 0
+        services.resetRuntime = { retained in
+            XCTAssertTrue(retained === runtime)
+            attempts += 1
+            if attempts == 1 {
+                await gate.wait()
+                throw ViewError.offline
+            }
+            try await retained.reset()
+        }
+        services.exitDemo()
+        await waitUntil { await gate.entered }
+        services.exitDemo()
+        await gate.resume()
+        await services.waitForReset()
+        XCTAssertEqual(attempts, 2)
+        XCTAssertNil(services.runtime)
+    }
+
+    func testDraftWriteFailureAndLostResponseRetry() async throws {
+        let services = LiveServices(options: options)
+        let api = WorkspaceStub()
+        let ws = workspace(services, api: api)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        _ = await ws.createTicket(title: "Ticket", body: "Body")
+        let absent = await api.submissions
+        XCTAssertTrue(absent.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path), "stale drafts must not recreate wiped directories")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+        // A present directory is insufficient if the draft write fails.
+        try FileManager.default.createDirectory(at: ws.draftURL!, withIntermediateDirectories: false)
+        _ = await ws.createTicket(title: "Ticket", body: "Body")
+        let failed = await api.submissions
+        XCTAssertTrue(failed.isEmpty)
+        try FileManager.default.removeItem(at: ws.draftURL!)
+        _ = await ws.createTicket(title: "Ticket", body: "Body")
+        // Recreate the model, proving the retry ID comes from disk rather than memory.
+        let reopened = LiveWorkspace(workspaceID: ws.workspaceID, generation: 1, api: api, info: ws.info)
+        reopened.services = services; reopened.draftURL = ws.draftURL
+        _ = await reopened.createTicket(title: "Ticket", body: "Body")
+        let ids = await api.submissions
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(Set(ids).count, 1)
+    }
+
+    func testCloseDuringDemoNewLinkDoesNotStartPanel() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        let model = LivePairingModel(services: services, start: nil)
+        let gate = Suspension()
+        model.beforeInvitation = { await gate.wait() }
+        model.demoNewLink()
+        await waitUntil { await gate.entered }
+        model.screenClosed()
+        await gate.resume()
+        await model.waitForInvitation()
+        XCTAssertEqual(model.panelStarts, 0)
+        XCTAssertEqual(model.demoOfferLink, "")
+        services.exitDemo(); await services.waitForReset()
+    }
+
+    func testLeaveDrainsSchedulingAndPurgesBothNotificationQueues() async throws {
+        let backend = NotificationRecorder()
+        let notifications = DemoNotifications(backend: backend)
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true, notifications: notifications)
+        let services = LiveServices(options: options, runtime: runtime)
+        let ws = workspace(services)
+        try await runtime.env.index.addWorkspace(ws: ws.info.id, generation: ws.generation)
+        let schedule = Task { await notifications.schedule(.generic, identifier: "test", workspace: ws.info.id) }
+        await waitUntil { await backend.suspension.entered }
+        var completed = false
+        let leave = Task {
+            let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+            completed = true
+            return report
+        }
+        await waitUntil { services.state(for: ws.info.id) == .removing }
+        XCTAssertFalse(completed)
+        await backend.suspension.resume()
+        await schedule.value
+        let report = await leave.value
+        XCTAssertFalse(report.incomplete)
+        ws.draftURL = runtime.draftURL(workspace: ws.workspaceID)
+        _ = await ws.createTicket(title: "Stale model", body: "Must not be written")
+        XCTAssertFalse(ws.canCreateTickets)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ws.draftURL!.deletingLastPathComponent().path))
+        let delivered = await backend.delivered
+        let pending = await backend.pending
+        XCTAssertEqual(delivered, ["demo/other/keep"])
+        XCTAssertEqual(pending, ["demo/other/keep"])
+        await notifications.schedule(.generic, identifier: "late", workspace: ws.info.id)
+        let after = await backend.pending
+        XCTAssertEqual(after, pending)
+        services.exitDemo(); await services.waitForReset()
+    }
+
+    func testUnavailableRuntimeAndUnknownWorkspaceLeaveAreIncomplete() async {
+        let services = LiveServices(options: options)
+        let ws = workspace(services)
+        let missingRuntime = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        let unknown = await services.leave(workspaceID: "unknown", simulateOffline: false)
+        XCTAssertTrue(missingRuntime.incomplete)
+        XCTAssertTrue(unknown.incomplete)
+    }
+}

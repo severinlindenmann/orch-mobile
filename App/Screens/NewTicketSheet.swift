@@ -33,7 +33,7 @@ struct NewTicketSheet: View {
                     }
                     Section {
                         Button(error == nil ? "Create ticket" : "Try again") { Task { await send() } }
-                            .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || sending)
+                            .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || sending || !model.canCreateTickets)
                             .accessibilityIdentifier("ticket.new.create")
                     } footer: {
                         Text("The ticket is created on the host. Trying again with the same text never creates it twice.")

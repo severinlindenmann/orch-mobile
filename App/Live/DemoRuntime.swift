@@ -40,6 +40,7 @@ final class DemoRuntime {
         let entry: Entry
     }
 
+    let notifications: DemoNotifications
     let clock: TestClock
     let faults: ScriptedFaults
     let lock: SimulatedLock
@@ -58,7 +59,8 @@ final class DemoRuntime {
     var deviceLabel = "Demo iPhone"
 
     private init(clock: TestClock, faults: ScriptedFaults, lock: SimulatedLock, keys: SecretVault, push: SecretVault, custody: any DeviceKeyCustody,
-                 env: DemoEnvironment, primary: FakePrimary) {
+                 env: DemoEnvironment, primary: FakePrimary, notifications: DemoNotifications) {
+        self.notifications = notifications
         self.clock = clock; self.faults = faults; self.lock = lock; keysVault = keys; pushVault = push; self.custody = custody; self.env = env; self.primary = primary
     }
 
@@ -95,12 +97,13 @@ final class DemoRuntime {
         #endif
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: try layout(temporary: false), custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
+        await SystemDemoNotifications().purge(workspace: nil)
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
     }
 
     /// Builds a fresh Demo environment. The fakes' authority keys exist only in memory (decision P3), so a Demo realm left by an earlier
     /// launch cannot be served any more: it is wiped through the real reset path first.
-    static func boot(temporaryStorage: Bool) async throws -> DemoRuntime {
+    static func boot(temporaryStorage: Bool, notifications: DemoNotifications = DemoNotifications()) async throws -> DemoRuntime {
         let lock = SimulatedLock()
         let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend(lock: lock)
         let keys = SecretVault(group: .keys, backend: backend)
@@ -113,10 +116,11 @@ final class DemoRuntime {
         let layout = try layout(temporary: temporaryStorage)
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
+        await SystemDemoNotifications().purge(workspace: nil)
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
         let faults = ScriptedFaults()
         let env = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: faults)
-        let runtime = DemoRuntime(clock: clock, faults: faults, lock: lock, keys: keys, push: push, custody: custody, env: env, primary: DemoSetup.makeAuthority(env))
+        let runtime = DemoRuntime(clock: clock, faults: faults, lock: lock, keys: keys, push: push, custody: custody, env: env, primary: DemoSetup.makeAuthority(env), notifications: notifications)
         runtime.startTicker()
         return runtime
     }
@@ -125,6 +129,7 @@ final class DemoRuntime {
     /// Demo device keys and Demo vault items removed). Only the Demo realm.
     func reset() async throws {
         ticker?.cancel(); ticker = nil
+        await notifications.purge()
         try await DemoSetup.reset(env, custody: custody, vaults: [keysVault, pushVault])
     }
 
@@ -210,7 +215,7 @@ final class DemoRuntime {
     // MARK: Wipe (Leave)
 
     func wipe(workspace: ID16, generation: Int64) async throws {
-        let wipe = LocalWipe(index: env.index, hooks: DemoWipeHooks(keys: keysVault.scoped(to: .demo), push: pushVault.scoped(to: .demo)))
+        let wipe = LocalWipe(index: env.index, hooks: DemoWipeHooks(keys: keysVault.scoped(to: .demo), push: pushVault.scoped(to: .demo), notifications: notifications))
         do { try await wipe.wipe(ws: workspace.hex, generation: generation) }
         catch {
             // A tombstoned, half-finished wipe resumes from its persisted phase. Only a finished wipe of THIS workspace counts: a wipe that
@@ -233,11 +238,11 @@ final class DemoRuntime {
 
     /// Seals a push as the host would and runs it through the same processor the notification extension uses, ending in a local,
     /// labelled-as-simulated notification (decision A12).
-    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String, scheduler: any LocalNotificationScheduling) async -> PushSimulator.Result? {
+    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String) async -> PushSimulator.Result? {
         guard let entry = entries[workspace], let sealed = try? await entry.host.demoSealPush(kind: "question", id: "demo-" + UUID().uuidString, label: label) else { return nil }
         let keys = await entry.host.demoPushKeys()
         guard let material = try? PushMaterial(generation: generation, name: name, wsk: entry.host.wskPublic, kPush: [keys.epoch: keys.kPush]) else { return nil }
-        let sim = PushSimulator(materials: [workspace: material], scheduler: scheduler, now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
+        let sim = PushSimulator(materials: [workspace: material], scheduler: ScopedDemoNotifications(owner: notifications, workspace: workspace.hex), now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
         return await sim.simulate(sealed: sealed)
     }
 }
@@ -245,6 +250,9 @@ final class DemoRuntime {
 struct DemoWipeHooks: WipeHooks {
     let keys: RealmVault
     let push: RealmVault
+    let notifications: DemoNotifications
+    func quiesce(realm: String, ws: String) async throws { await notifications.purge(workspace: ws) }
+    func purgeNotifications(realm: String, ws: String) async throws { await notifications.purge(workspace: ws) }
     func purgeSecrets(realm: String, ws: String) async throws {
         try keys.wipe(ws: ws)
         try push.wipe(ws: ws)

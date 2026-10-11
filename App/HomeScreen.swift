@@ -305,6 +305,7 @@ struct WorkspaceCard: View {
                     }
                 }
                 ConnectionChip(state: ws.connection)
+                if let message = ws.lifecycle.message { Text(verbatim: message).font(OF.meta).foregroundStyle(OC.textMuted) }
             }
             .padding(.vertical, OS.s5)
             .padding(.trailing, OS.s5)

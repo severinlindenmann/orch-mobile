@@ -22,6 +22,10 @@ final class LivePairingModel: PairingFlowModel {
     @ObservationIgnored private var coordinator: PairingCoordinator?
     @ObservationIgnored private var entry: DemoRuntime.Entry?
     @ObservationIgnored private var stateTask: Task<Void, Never>?
+    @ObservationIgnored private var invitationTask: Task<Void, Never>?
+    @ObservationIgnored private var beginTask: Task<Void, Never>?
+    @ObservationIgnored var beforeInvitation: (() async -> Void)?
+    @ObservationIgnored private(set) var panelStarts = 0
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var panelTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
@@ -48,7 +52,8 @@ final class LivePairingModel: PairingFlowModel {
         generation += 1
         let mine = generation
         state = .connecting
-        Task {
+        invitationTask?.cancel()
+        invitationTask = Task {
             guard let runtime = await services.demoRuntime(), mine == generation else { return }
             do {
                 let invitation = try await runtime.createInvitation(scenario: services.pairingScenario)
@@ -60,9 +65,14 @@ final class LivePairingModel: PairingFlowModel {
 
     /// The host panel's "new pairing link": what the Remote tab on the Mac would show.
     func demoNewLink() {
-        Task {
-            guard let runtime = await services.demoRuntime() else { return }
+        invitationTask?.cancel()
+        generation += 1
+        let mine = generation
+        invitationTask = Task {
+            guard let runtime = await services.demoRuntime(), mine == generation, !Task.isCancelled else { return }
+            await beforeInvitation?()
             if let invitation = try? await runtime.createInvitation(scenario: services.pairingScenario) {
+                guard mine == generation, !Task.isCancelled else { return }
                 demoOfferLink = invitation.link
                 entry = invitation.entry
                 startPanelRefresh()
@@ -70,19 +80,23 @@ final class LivePairingModel: PairingFlowModel {
         }
     }
 
+    func waitForInvitation() async { await invitationTask?.value }
+
     private func begin(link: PairingLink) {
         generation += 1
         let mine = generation
         state = .connecting
         joinedReported = false
         rejectedBy = .rejectedOnHost
-        Task {
+        beginTask?.cancel()
+        beginTask = Task {
             guard let runtime = await services.demoRuntime(), mine == generation else { return }
             entry = runtime.entry(for: link.workspace)
             let coordinator = runtime.makeCoordinator()
             self.coordinator = coordinator
             startPanelRefresh()
             let stream = await coordinator.states()
+            guard mine == generation, !Task.isCancelled else { return }
             stateTask?.cancel()
             stateTask = Task { [weak self] in
                 for await s in stream {
@@ -103,14 +117,14 @@ final class LivePairingModel: PairingFlowModel {
     /// The pairing screen disappeared. An unfinished pairing is cancelled (nothing keeps running for a screen nobody sees); after a
     /// join only this model's own observers stop, never the coordinator or the joined workspace.
     func screenClosed() {
-        if case .ready = state { panelTask?.cancel(); stateTask?.cancel(); return }
         cancel()
     }
 
     func cancel() {
+        generation += 1
+        invitationTask?.cancel(); beginTask?.cancel()
         // After a join the pairing is over: Cancel/Close must never reach the joined workspace through the coordinator.
         if case .ready = state { panelTask?.cancel(); stateTask?.cancel(); return }
-        generation += 1
         stateTask?.cancel(); runTask?.cancel(); panelTask?.cancel()
         let coordinator = self.coordinator
         self.coordinator = nil
@@ -190,7 +204,8 @@ final class LivePairingModel: PairingFlowModel {
     func hostReject() {
         guard case .comparingHost = state, let host = entry?.host else { return }
         rejectedBy = .rejectedOnHost
-        Task {
+        beginTask?.cancel()
+        beginTask = Task {
             guard let runtime = await services.demoRuntime() else { return }
             try? await host.rejectPairing(device: runtime.env.deviceID)
         }
@@ -252,11 +267,12 @@ final class LivePairingModel: PairingFlowModel {
     // MARK: Panel refresh (the fakes' own screens)
 
     private func startPanelRefresh() {
+        panelStarts += 1
         panelTask?.cancel()
         let mine0 = generation
         panelTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, let runtime = await self.services.demoRuntime() else { return }
+                guard let self, let runtime = await self.services.demoRuntime(), self.generation == mine0, !Task.isCancelled else { return }
                 let device = runtime.env.deviceID
                 // The coordinator derives its state from time (a code hides the instant it expires); sample it as well as the stream.
                 if let c = self.coordinator, self.generation == mine0 {

@@ -9,8 +9,13 @@ import OrchProtocol
 final class LiveWorkspace: WorkspaceModel {
     let workspaceID: ID16
     let generation: Int64
-    @ObservationIgnored let api: BridgeWorkspaceAPI
-    private(set) var info: WorkspaceInfo
+    @ObservationIgnored let api: any WorkspaceAPI
+    private var storedInfo: WorkspaceInfo
+    var info: WorkspaceInfo {
+        get { var value = storedInfo; value.lifecycle = services?.state(for: value.id) ?? .removed; return value }
+        set { storedInfo = newValue }
+    }
+    var usable: Bool { services?.canUse(storedInfo.id) == true }
     private(set) var questions: [Question] = []
     private(set) var allTickets: [Ticket] = []
     private(set) var loaded = false
@@ -18,18 +23,19 @@ final class LiveWorkspace: WorkspaceModel {
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var offlineSince: Date?
 
-    init(workspaceID: ID16, generation: Int64, api: BridgeWorkspaceAPI, info: WorkspaceInfo) {
-        self.workspaceID = workspaceID; self.generation = generation; self.api = api; self.info = info
+    init(workspaceID: ID16, generation: Int64, api: any WorkspaceAPI, info: WorkspaceInfo) {
+        self.workspaceID = workspaceID; self.generation = generation; self.api = api; self.storedInfo = info
     }
 
     // MARK: Lifecycle
 
     func start() {
-        guard eventTask == nil else { return }
+        guard usable, eventTask == nil else { return }
         eventTask = Task { [weak self] in
             guard let self else { return }
             // Subscribe first so the replayed cached snapshot and later events are not missed.
             let stream = await self.api.events()
+            guard self.usable, !Task.isCancelled else { return }
             await self.api.start()
             await self.refresh()
             for await event in stream {
@@ -48,8 +54,10 @@ final class LiveWorkspace: WorkspaceModel {
     func setNotifications(_ on: Bool) { info.notificationsOn = on }
 
     func refresh() async {
+        guard usable else { return }
         do {
             let snapshot = try await api.snapshot()
+            guard usable else { return }
             apply(snapshot)
         } catch {
             markOffline()
@@ -57,6 +65,7 @@ final class LiveWorkspace: WorkspaceModel {
     }
 
     private func handle(_ event: WorkspaceEvent) {
+        guard usable else { return }
         switch event {
         case .snapshot(let s): apply(s)
         case .connection(let c):
@@ -96,20 +105,21 @@ final class LiveWorkspace: WorkspaceModel {
         guard let url = draftURL, let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(Draft.self, from: data)
     }
-    private func saveDraft(_ d: Draft) {
-        guard let url = draftURL, let data = try? JSONEncoder().encode(d) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+    private func saveDraft(_ d: Draft) throws {
+        guard canCreateTickets, let url = draftURL,
+              FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) else { throw ViewError.invalidDraft }
+        try JSONEncoder().encode(d).write(to: url, options: [.atomic, .completeFileProtection])
     }
 
-    var canCreateTickets: Bool { info.scopes.contains(.operate) }
+    var canCreateTickets: Bool { usable && info.scopes.contains(.operate) }
 
     /// The creation ID is persisted with the exact draft; the same fields reuse it, an edit gets a new one, success clears it.
     func createTicket(title: String, body: String) async -> TicketCreation {
+        guard canCreateTickets else { return .failed("This workspace is unavailable.") }
         let saved = loadDraft()
         let draft = (saved?.title == title && saved?.body == body ? saved : nil)
             ?? Draft(title: title, body: body, id: SystemEntropy().id16().hex)
-        saveDraft(draft)
+        do { try saveDraft(draft) } catch { return .failed("Could not save the ticket draft. Nothing was sent. Try again.") }
         guard let id = ID16(hex: draft.id) else { return .failed("Could not prepare the ticket.") }
         do {
             let ticket = try await api.newTicket(NewTicketSubmission(creationID: id, title: title, body: body, epicKey: nil))
@@ -125,7 +135,7 @@ final class LiveWorkspace: WorkspaceModel {
 
     // MARK: WorkspaceModel
 
-    var waiting: [Question] { questions.filter(\.isOpen).sorted { $0.created < $1.created } }
+    var waiting: [Question] { guard usable else { return [] }; return questions.filter(\.isOpen).sorted { $0.created < $1.created } }
     var answered: [Question] {
         questions.filter { !$0.isOpen }.sorted { ($0.resolution?.at ?? .distantPast) > ($1.resolution?.at ?? .distantPast) }
     }
@@ -145,7 +155,7 @@ final class RemovedWorkspaceModel: WorkspaceModel {
     let info: WorkspaceInfo
     init(id: String) {
         info = WorkspaceInfo(id: id, name: "Removed", host: "", hue: 5, hostedBy: nil, clientHosted: false, scopes: [],
-                             connection: .online, primaryLabel: "", notificationsOn: false)
+                             connection: .online, primaryLabel: "", lifecycle: .removed, notificationsOn: false)
     }
     var waiting: [Question] { [] }
     var answered: [Question] { [] }

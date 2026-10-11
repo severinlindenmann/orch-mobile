@@ -37,10 +37,10 @@ final class LiveReviewModel: QuestionReviewModel {
 
     /// Reads the question afresh and keeps the issued review. False when nothing signable was issued.
     private func issue(revision: Int, mine: Int) async -> Bool {
-        guard let qid = ID16(hex: questionID) else { load = .failed(Self.readFailure); return false }
+        guard workspace.usable, let qid = ID16(hex: questionID) else { load = .failed(Self.readFailure); return false }
         do {
             let r = try await workspace.api.review(questionID: qid)
-            guard mine == token else { return false }
+            guard workspace.usable, mine == token else { return false }
             guard r.question.options.contains(where: { $0.id == optionID }) else { load = .failed(Self.readFailure); return false }
             issued = r
             review = Mapping.reviewValue(r, info: workspace.info, optionID: optionID, revision: revision, isDemo: services.isDemo)
@@ -49,7 +49,7 @@ final class LiveReviewModel: QuestionReviewModel {
             if let resolution = r.question.resolution { phase = .alreadyAnswered(by: resolution.byDeviceLabel, at: Mapping.date(resolution.atMs)) }
             return true
         } catch {
-            guard mine == token else { return false }
+            guard workspace.usable, mine == token else { return false }
             load = .failed(Self.readFailure)
             return false
         }
@@ -65,11 +65,12 @@ final class LiveReviewModel: QuestionReviewModel {
     }
 
     func sign() async {
-        guard phase == .ready, let issued, let review, !review.optionsAmbiguous else { return }
+        guard workspace.usable, phase == .ready, let issued, let review, !review.optionsAmbiguous else { return }
         phase = .sending
         self.issued = nil              // one review, one signature: it is consumed by this call
         services.recordSubmission(review)
         await services.applyDemoSignControl(workspace: workspace, questionID: questionID, optionID: optionID)
+        guard workspace.usable else { phase = .invalidated; return }
         do {
             let outcome = try await workspace.api.decide(issued, optionID: optionID)
             await apply(outcome)
@@ -123,7 +124,7 @@ final class LiveReviewModel: QuestionReviewModel {
 
     /// Reconciles the stored decision. It never calls `decide` again and never builds a review.
     func checkWhetherReceived() async {
-        guard phase == .checking else { return }
+        guard workspace.usable, phase == .checking else { return }
         let id: ID16?
         if let decisionID { id = decisionID } else { id = await services.storedDecision(workspace: workspace, questionID: questionID) }
         guard let id else { return }

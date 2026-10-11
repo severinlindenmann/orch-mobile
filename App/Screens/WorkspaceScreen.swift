@@ -56,6 +56,7 @@ struct WorkspaceScreen: View {
                             clientHosted: model.info.clientHosted)
             AdaptiveStack {
                 ConnectionChip(state: model.info.connection)
+                if let message = model.info.lifecycle.message { Text(verbatim: message).font(OF.meta).foregroundStyle(OC.textMuted) }
                 Text(verbatim: model.info.displayHost).font(OF.meta).foregroundStyle(OC.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }

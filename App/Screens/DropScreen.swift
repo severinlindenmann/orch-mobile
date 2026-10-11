@@ -111,7 +111,7 @@ struct DropItemScreen: View {
                     Section("Choose another destination") {
                         Text("The workspace this was meant for was removed from this iPhone. Nothing was sent. It is kept here until you pick where it goes, or it expires.")
                             .font(OF.meta).foregroundStyle(OC.textMuted)
-                        ForEach(model.workspaces) { ws in
+                        ForEach(model.workspaces.filter { $0.lifecycle == .live }) { ws in
                             Button { model.redirectQuarantined(id: item.id, to: ws.id) } label: {
                                 HStack {
                                     WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())
@@ -162,7 +162,7 @@ struct DropComposeSheet: View {
     }
 
     private var total: Int { attachments.reduce(0) { $0 + $1.bytes } }
-    private var canSend: Bool { destination != nil && (!attachments.isEmpty || !note.isEmpty) }
+    private var canSend: Bool { model.workspaces.contains { $0.id == destination && $0.lifecycle == .live } && (!attachments.isEmpty || !note.isEmpty) }
 
     var body: some View {
         NavigationStack {
@@ -173,7 +173,7 @@ struct DropComposeSheet: View {
                         .accessibilityIdentifier("drop.demoLabel")
                 }
                 Section("1. Send to") {
-                    ForEach(model.workspaces) { ws in
+                    ForEach(model.workspaces.filter { $0.lifecycle == .live }) { ws in
                         Button { destination = ws.id } label: {
                             HStack {
                                 WorkspaceRail(color: ws.color).frame(height: 24).clipShape(Capsule())

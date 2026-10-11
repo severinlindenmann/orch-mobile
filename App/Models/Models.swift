@@ -12,6 +12,18 @@ enum ConnectionState: Hashable, Sendable {
     case reconciling
 }
 
+enum WorkspaceLifecycle: Hashable, Sendable {
+    case live, removing, removalIncomplete, removed
+    var message: String? {
+        switch self {
+        case .live: nil
+        case .removing: "Removing from this iPhone…"
+        case .removalIncomplete: "Removal incomplete. Retry Leave in workspace settings."
+        case .removed: "Removed from this iPhone."
+        }
+    }
+}
+
 struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     let id: String
     var name: String
@@ -23,6 +35,7 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var scopes: Set<Scope>
     var connection: ConnectionState
     var primaryLabel: String
+    var lifecycle: WorkspaceLifecycle = .live
     var notificationsOn: Bool
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
@@ -217,7 +230,13 @@ enum SignOutcome: String, CaseIterable, Hashable, Sendable {
     case accepted, alreadyAnswered, questionChanged, uncertain, locked, custodyUnavailable, loadFails
 
     /// What the Demo can really do to the next answer (the fake host or the lock); `custodyUnavailable` stays preview-only.
-    static var liveCases: [SignOutcome] { [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .locked, .loadFails] }
+    static var liveCases: [SignOutcome] {
+        #if targetEnvironment(simulator)
+        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .locked, .loadFails]
+        #else
+        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .loadFails]
+        #endif
+    }
 
     var title: String {
         switch self {
