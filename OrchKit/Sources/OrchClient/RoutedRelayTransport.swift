@@ -97,6 +97,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         return try await get("\(R)/workspaces/\(workspaceID.hex)/card-key?card_seq=\(cardSequence)", session: session)
     }
 
+    public func logout(session: RelaySession) async throws -> WireReply { try await json("POST", "/session/logout", HostAPI.json(), session: session) }
+
     public func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/register", body, session: session) }
     public func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/unregister", body, session: session) }
 

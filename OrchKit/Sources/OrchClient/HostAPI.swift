@@ -165,13 +165,19 @@ public struct RelayRefusal: Error, Equatable, Sendable {
     }
     public let status: Int
     public let code: Code
-    /// `Retry-After` in whole seconds (429 and 503 only), nil when absent or not integer delta-seconds.
+    /// `Retry-After` in whole seconds (429 and 503 only), clamped to 1...3600; nil when absent or not integer delta-seconds.
     public let retryAfter: Int?
     /// The unsigned `stale_epoch` hint (`epoch`). A hint only: never trusted as a host refusal.
     public let epoch: UInt32?
+    /// `version_conflict`: the stored version (`current`). `stale_timestamp`: the relay clock (`server_ms`).
+    public let current: UInt32?
+    public let serverMs: Int64?
+    /// `already_claimed`: the claiming workspace, nil when the relay sent null.
+    public let claimedBy: ID16?
 
-    public init(status: Int, code: Code, retryAfter: Int? = nil, epoch: UInt32? = nil) {
+    public init(status: Int, code: Code, retryAfter: Int? = nil, epoch: UInt32? = nil, current: UInt32? = nil, serverMs: Int64? = nil, claimedBy: ID16? = nil) {
         self.status = status; self.code = code; self.retryAfter = retryAfter; self.epoch = epoch
+        self.current = current; self.serverMs = serverMs; self.claimedBy = claimedBy
     }
 
     /// The protocol section 14 / 19.6 table: the HTTP statuses each code may carry. Most have one; `cert_expired` is 400 for
@@ -207,16 +213,32 @@ public struct RelayRefusal: Error, Equatable, Sendable {
         }
     }
 
-    /// Strict: a known code with a status it may carry and exactly its documented fields.
+    /// Strict: a known code with a status it may carry and exactly its documented fields: those section 14 lists for the code are
+    /// required and type-checked, anything else is refused.
     init?(status: Int, code: String, fields: [String: JSONValue], retryAfter: Int? = nil) {
         guard let c = Code(rawValue: code), Self.statuses(of: c).contains(status),
-              fields["error"] != nil, Set(fields.keys).isSubset(of: Set(["error"]).union(Self.extraFields(of: c))) else { return nil }
-        var epoch: UInt32?
-        if c == .staleEpoch {
+              Set(fields.keys) == Set(["error"]).union(Self.extraFields(of: c)) else { return nil }
+        var epoch: UInt32?, current: UInt32?, serverMs: Int64?, claimedBy: ID16?
+        switch c {
+        case .staleEpoch:
             guard let e = fields["epoch"]?.int, e >= 1, e <= Int64(UInt32.max) else { return nil }
             epoch = UInt32(e)
+        case .versionConflict:
+            guard let n = fields["current"]?.int, n >= 0, n <= Int64(UInt32.max) else { return nil }
+            current = UInt32(n)
+        case .staleTimestamp:
+            guard let m = fields["server_ms"]?.int, m >= 0 else { return nil }
+            serverMs = m
+        case .alreadyClaimed:
+            switch fields["claimed_by"] {
+            case .some(.null): break
+            case .some(.string(let h)): guard let id = ID16(hex: h) else { return nil }; claimedBy = id
+            default: return nil
+            }
+        default: break
         }
-        self.init(status: status, code: c, retryAfter: (status == 429 || status == 503) ? retryAfter : nil, epoch: epoch)
+        self.init(status: status, code: c, retryAfter: (status == 429 || status == 503) ? retryAfter : nil, epoch: epoch,
+                  current: current, serverMs: serverMs, claimedBy: claimedBy)
     }
 }
 

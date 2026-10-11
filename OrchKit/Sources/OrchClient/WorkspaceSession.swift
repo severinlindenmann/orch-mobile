@@ -929,7 +929,7 @@ extension WorkspaceSession {
                     delay = lastRevision == s.revision ? min(delay * 2, 60) : 15
                     lastRevision = s.revision
                     emit(.snapshot(s)); emit(.connection(.online))
-                } catch ClientError.relay(let r) where r.code == .rateLimited {
+                } catch ClientError.relay(let r) where r.status == 429 || r.status == 503 {
                     delay = max(min(delay * 2, 60), Int64(r.retryAfter ?? 0)); emit(.connection(.offline))
                 } catch { if Task.isCancelled { return }; delay = min(delay * 2, 60); emit(.connection(.offline)) }
             } else { delay = 60 }

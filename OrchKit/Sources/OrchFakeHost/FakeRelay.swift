@@ -65,7 +65,6 @@ public actor FakeRelay: RequestSender {
     private var claims: [ID16: ID16] = [:]
     private var challenges: [Data: Int64] = [:]
     private var sessions: [String: Session] = [:]
-    private var loginDirectory: [ID16: (key: SigningPublicKey, verdict: RelayRefusal.Code?)] = [:]
     private var owners: [ID16: SigningPublicKey] = [:]
     private var certs: [ID16: JSONValue] = [:]
     private var certInfo: [ID16: DeviceCertificate] = [:]
@@ -106,7 +105,7 @@ public actor FakeRelay: RequestSender {
     /// Reset: every table, session and mailbox is dropped. Work suspended in a fault delay refuses on resumption (the
     /// generation is invalid), so nothing it was about to write ever lands. The caller has already invalidated the generation.
     public func retire() {
-        challenges = [:]; sessions = [:]; loginDirectory = [:]; owners = [:]; certs = [:]; certInfo = [:]; revoked = []; revocations = [:]
+        challenges = [:]; sessions = [:]; owners = [:]; certs = [:]; certInfo = [:]; revoked = []; revocations = [:]
         drops = [:]; claims = [:]; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
         certRequests = [:]; certChallenges = [:]; rejectedCertRequests = [:]
     }
@@ -516,7 +515,11 @@ public actor FakeRelay: RequestSender {
         guard queryItems(query, allowed: []) != nil, let o = body(r, fields: []), o.isEmpty else { return refuse(400, .malformed) }
         let now = wall.nowMs
         challenges = challenges.filter { $0.value > now }
-        if challenges.count >= limits.maxOutstandingChallenges { return limited(now) }
+        if challenges.count >= limits.maxOutstandingChallenges {
+            // the cap frees when the earliest outstanding challenge expires: Retry-After is that remaining time, rounded up
+            rateLimited += 1
+            return refuse(429, .rateLimited, headers: retryAfter(untilMs: challenges.values.min() ?? now, now: now))
+        }
         let c = entropy.bytes(32)
         let expires = now + RelayAuth.challengeMs
         challenges[c] = expires
@@ -535,8 +538,7 @@ public actor FakeRelay: RequestSender {
         }
         let now = wall.nowMs
         let k: RelayAuth.Kind? = kind.utf8.elementsEqual("device".utf8) ? .device : (kind.utf8.elementsEqual("workspace".utf8) ? .workspace : nil)
-        let seeded = k == .device ? loginDirectory[id] : nil
-        let pub: SigningPublicKey? = seeded?.key ?? (k == .device ? certInfo[id]?.signingKey : (k == .workspace ? workspaces[id]?.card?.wsk : nil))
+        let pub: SigningPublicKey? = k == .device ? certInfo[id]?.signingKey : (k == .workspace ? workspaces[id]?.card?.wsk : nil)
         let result: (status: Int, error: String?)
         if let pub {
             let rr = RelayAuth.check(challenges: &challenges, origin: origin, challenge: challenge, kind: kind, id: id, signature: sig, pub: pub, nowMs: now)
@@ -554,11 +556,8 @@ public actor FakeRelay: RequestSender {
             // A revoked device gets no session (it reads its revocation record on the session-less route); neither does an expired
             // or invalid certificate. Revocation is only revealed to the holder of the key: the signature has already verified.
             if revoked.contains(id) { return refuse(403, .revoked) }
-            if let verdict = seeded?.verdict { return refuse(400, verdict) }
-            if seeded == nil {
-                do { _ = try DeviceCertificate.verify(certs[id]!, personKey: owners[certInfo[id]!.personID]!, nowMs: now, revoked: []) }
-                catch let e as Refusal { let st = Self.relayError(e); if case .relay(let rr) = st { return refuse(rr.status, rr.code) } }
-            }
+            do { _ = try DeviceCertificate.verify(certs[id]!, personKey: owners[certInfo[id]!.personID]!, nowMs: now, revoked: []) }
+            catch let e as Refusal { let st = Self.relayError(e); if case .relay(let rr) = st { return refuse(rr.status, rr.code) } }
             // At most eight live tokens per device (section 19.1): a ninth login is refused until the earliest expires. The
             // challenge is consumed and no existing token is touched.
             let live = sessions.values.filter { $0.kind == .device && $0.id == id && $0.expiresMs > now }
@@ -585,11 +584,6 @@ public actor FakeRelay: RequestSender {
 
     // MARK: test seeding (package scope: the fixture replay states preconditions the relay would otherwise reach by history)
 
-    /// The directory's verdict on a device at login: its signing key, and optionally a certificate refusal (`cert_expired` or
-    /// `cert_invalid`) standing in for a certificate the relay would have judged. Replaces the certificate lookup for that device.
-    package func seedLoginDirectory(device: ID16, key: SigningPublicKey, verdict: RelayRefusal.Code? = nil) {
-        loginDirectory[device] = (key, verdict)
-    }
     package func seedChallenge(_ challenge: Data, expiresMs: Int64) { challenges[challenge] = expiresMs }
     package func seedSession(token: String, kind: RelayAuth.Kind, id: ID16, expiresMs: Int64) {
         sessions[token] = Session(kind: kind, id: id, expiresMs: expiresMs)
@@ -904,6 +898,7 @@ extension FakeRelay {
             var fields: [String: JSONValue] = [:]
             if let e = result.error { fields["error"] = .string(e) }
             if let by = result.claimedBy { fields["claimed_by"] = .string(by.hex) }
+            else if result.error == "already_claimed" { fields["claimed_by"] = .null }      // section 14: `claimed_by` is always present
             return result.status == 200 ? json(200, fields) : try WireReply(status: result.status, body: canonicalJSON(.object(fields)))
         }
         guard path.count == 5, path[2] == "versions", r.method == "GET", let n = HostAPI.parseDecimal(path[3]), n > 0,

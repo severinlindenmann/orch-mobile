@@ -127,10 +127,23 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
             let allowed = RelayRefusal.statuses(of: code)
             #expect(!allowed.isEmpty)
             for st in allowed {
-                // stale_epoch carries its `epoch` hint; every other code is just `{"error": code}`
-                let body = code == .staleEpoch ? #"{"error":"stale_epoch","epoch":3}"# : "{\"error\":\"\(code.rawValue)\"}"
-                let r = try! WireReply(status: st, body: Data(body.utf8))
-                #expect(HostAPI.failure(of: r) == .relay(RelayRefusal(status: st, code: code, epoch: code == .staleEpoch ? 3 : nil)), "\(code) at \(st)")
+                // section 14 fields: required for these codes, absent for every other
+                var extra = ""
+                var want = RelayRefusal(status: st, code: code)
+                switch code {
+                case .staleEpoch: extra = #","epoch":3"#; want = RelayRefusal(status: st, code: code, epoch: 3)
+                case .versionConflict: extra = #","current":4"#; want = RelayRefusal(status: st, code: code, current: 4)
+                case .staleTimestamp: extra = #","server_ms":5"#; want = RelayRefusal(status: st, code: code, serverMs: 5)
+                case .alreadyClaimed: extra = #","claimed_by":null"#
+                default: break
+                }
+                let r = try! WireReply(status: st, body: Data("{\"error\":\"\(code.rawValue)\"\(extra)}".utf8))
+                #expect(HostAPI.failure(of: r) == .relay(want), "\(code) at \(st)")
+                if !extra.isEmpty {
+                    // missing or mistyped documented fields are not a refusal
+                    let bare = try! WireReply(status: st, body: Data("{\"error\":\"\(code.rawValue)\"}".utf8))
+                    #expect(HostAPI.failure(of: bare) == .badReply, "\(code) without its fields")
+                }
             }
             // The same code under any other status is not a section 14 refusal.
             for other in [200, 400, 401, 403, 404, 409, 410, 413, 428, 429, 500, 502, 503] where !allowed.contains(other) {
@@ -162,8 +175,13 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
         #expect(try f(503, "overloaded", retry: "7") == .relay(RelayRefusal(status: 503, code: .overloaded, retryAfter: 7)))
         #expect(try f(409, "fenced", retry: "7") == .relay(RelayRefusal(status: 409, code: .fenced)))
         // stale_epoch: `epoch` is the only extra field and must be a protocol epoch.
-        let se = try WireReply(status: 409, body: Data(#"{"error":"stale_epoch","epoch":0}"#.utf8))
-        #expect(HostAPI.failure(of: se) == .badReply)
+        for bad in [#"{"error":"stale_epoch","epoch":0}"#, #"{"error":"version_conflict","current":-1}"#, #"{"error":"version_conflict","current":"1"}"#,
+                    #"{"error":"already_claimed","claimed_by":"xyz"}"#, #"{"error":"already_claimed"}"#] {
+            #expect(HostAPI.failure(of: try WireReply(status: 409, body: Data(bad.utf8))) == .badReply, "\(bad)")
+        }
+        #expect(HostAPI.failure(of: try WireReply(status: 401, body: Data(#"{"error":"stale_timestamp","server_ms":-1}"#.utf8))) == .badReply)
+        let claimed = try WireReply(status: 409, body: Data(#"{"error":"already_claimed","claimed_by":"00000000000000000000000000000001"}"#.utf8))
+        #expect(HostAPI.failure(of: claimed) == .relay(RelayRefusal(status: 409, code: .alreadyClaimed, claimedBy: ID16(hex: "00000000000000000000000000000001"))))
     }
 
     @Test func retryAfterIsAStrictDecimalClampedToOneThroughAnHour() throws {

@@ -619,7 +619,7 @@ public actor DropService {
                 try await requireActiveUpload(object, version)
                 try await check()
                 let reply = try await session.cfg.transport.dropPut(objectID: object, ifMatch: version - 1, body: body, session: s)
-                if reply.status == 409, let n = try StrictJSON.parse(reply.body).object?["current"]?.int, n >= 0, n <= UInt32.max { conflictCurrent = UInt32(n) }
+                if reply.status == 409, case .relay(let refusal) = HostAPI.failure(of: reply), refusal.code == .versionConflict { conflictCurrent = refusal.current }
                 if (400..<500).contains(reply.status), reply.status != 409, reply.status != 429 { throw DropError.uploadRejected(status: reply.status) }
                 if reply.status != 409 { _ = try parse(reply, fields: ["version"], status: 201) }
             }
