@@ -133,7 +133,7 @@ extension FakeHost {
         try await rotation.value
         let chunks = await revocation.value
         let reply = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
-        #expect(reply.meta.object?["status"] == .int(200))
+        #expect(reply.meta == HostRefusal.alreadyDone(status: "completed").meta)    // old-epoch reply after its rotation (orch-29 Q12)
         #expect(calls.value == 2)
         #expect(await w.host.epoch == 3)
         #expect(await w.host.rotationRequired == false)

@@ -216,7 +216,7 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
 - **Verified metadata:** `downloadVerified` returns a Sendable `DropDownload` containing a URL and authenticated `DropMetadata` (name, MIME, plaintext size, transcript); the URL-only convenience API remains. DEKs stay private. Bad AEAD/DEK-commit candidates are skipped so a poisoned wrap cannot mask a later valid wrap.
 - **F4 deferred — chain request amplification:** each list still verifies complete chains, up to 1,024 rows × 1,024 versions. A persistent descriptor cache plus a per-call fetch budget needs an incremental chain acceptance transaction and a pagination/partial-list contract; simply trusting cached author checks would bypass current-member fail-closed authorization. This fix round preserves complete verification; the hostile-relay request amplification remains open.
 - **F6 deferred — response buffering:** JSON/blob limits still apply after a `WireReply` has buffered its body. A transport-level streaming response budget needs a bounded sender contract (including cancellation and Content-Length handling) across live and in-process senders; parser limits alone cannot fix this. Add per-route limits, with signed content length plus framing slack for blobs, before live Drop rollout.
-- **Residual rotation race (security review, low):** a rotation landing between `performUpload`'s membership check and the PUT can still commit content under the previous WK, because the relay does not check epochs on PUT; a relay serving a stale signed member list has the same effect. Needs a relay-side check (reject a PUT whose member WK wrap is older than the current list epoch) or a list freshness field — upstream protocol item.
+- **Residual rotation race (security review, low):** a rotation landing between `performUpload`'s membership check and the PUT can still commit content under the previous WK, because the relay does not check epochs on PUT; a relay serving a stale signed member list has the same effect. Needs a relay-side check (reject a PUT whose member WK wrap is older than the current list epoch) or a list freshness field — upstream protocol item. The bridge now has the relay-side half for requests (PR5): a new rid at a stale epoch is 409 `stale_epoch`, an unsigned hint the phone answers with a bounded refetch of the signed list and grants (3/min, then 20/40/60 s) and never by raising its epoch. A Drop PUT refusal with the same hint could reuse that path; protocol-v2 §19 has no Drop routes yet (orch-4e).
 - **Read availability during grant lag (low):** read paths refresh membership too; a newer list arriving before this device's grant makes `list`/`download` fail with `unavailableKey` until the grant lands. Consider relaxing epoch equality for look-only reads.
 - **Real host must gate rewrap on `claimed_by`:** in the fake only the relay's `putRewrap` refuses an unclaimed inbox; `FakeHost.rewrapDrop` does not check claim state itself. The real host must check it (defence in depth).
 - **F7 done — app foreground purge and recovery wired — plaintext expiry:** `drop_heads` persists the downloaded version, signed object expiry, and local `downloaded_at`. Plaintext expires at the earlier of the signed expiry (if any) and 7 days after download, including documents with null `expires_ms`; withholding newer versions cannot extend that local deadline. Re-download after purge starts a new local retention period without clearing the verified head. Drop list/download and the public foreground hook `purgeExpiredDownloads()` remove expired files, superseded versions, and untracked legacy files and downloads without a recorded download time. Verified newer heads purge older plaintext immediately. Publication checks the current head and expiry inside the same SQLite transaction used by cleanup, under the tombstone lock, and atomically replaces the file. HookGate/fake-clock tests cover signed expiry, the 7-day document cap, re-download, restart, newer versions, and preview publication races. After serialized foreground activation the app purges every non-removed workspace directly through WorkspaceContainer, independently of Drop authorization, alarm, and service validity, before resuming network work. Workspace alarms purge all downloads with `nowMs: .max`; row verification warnings block only the offending row, purge cached plaintext, and keep valid neighbors usable. Drop open and preview reuse also purge; active previews use the persisted local deadline on the Demo clock. Cleanup runs on these entry points; relay expiry alone does not delete local plaintext while the app is inactive.
@@ -248,3 +248,45 @@ before any relay operation. Suspension before sealing completes leaves no partia
   and check it on the phone. Until then the `denied` attribution is not hardened against a malicious host.
 - **Q4 §8.3 answer addition.** `{"state":"rejected","wsk_pub","pk_pub","rejection"}` must land in protocol-v2 §8.3 and in the
   orch-core host before real use; until then only FakeHost sends it and older devices ignore the two fields.
+
+## PR5 bridge delivery (protocol-v2 §19.3, §19.6)
+
+The FakeRelay implements P3-D8/D9/D22 as the reference `relay_bridge_request` / `relay_bridge_chunk` (replayed against
+all 60 `p3.cases` request_replay/chunk vectors; ordering re-checked against orch-relay 813b0fe: post rates charged after
+the replay checks, host chunks per (workspace, target device)) and the three bridge fixture files replay byte-exact. The
+phone keeps polling the same rid after 202/429, treats the relay's `stale_epoch` as an unsigned hint and surfaces
+`retry_exhausted` for an explicit "Send again" (host API §1). orch-29's answers (2026-10-11) as implemented:
+
+- **No new rid (Q13, decided):** applies to relay-level outcomes only (202, 429, `retry_exhausted`, transport). A new rid is
+  allowed after host-signed "not run" refusals (`stale_epoch`, first `stale_timestamp`, `stale_sequence`), for ops idempotent
+  by logical id, and for side-effect-free reads. Slice-3 decision reconciliation (an `uncertain` decision whose question is
+  verifiably still open re-sends the SAME stored signed decision op in a new envelope; the host dedups by `decision_id`)
+  stays as is, pending orch-29's Q3 confirmation (security F3).
+- **`retry_exhausted`:** the attempt's `uncertain` state and the `exhausted:<logical>` marker commit in ONE transaction;
+  automatic reconciliation and restart recovery only read the question (security F1 regression test). The App shows "Your
+  answer was not delivered" with "Send again" (`question.sendAgain`), which calls `retry(decisionID:)`.
+- **Relay `stale_epoch` hint (Q14, bounded after orch-29's challenge):** the phone refetches the signed list and grants
+  (bounded) and re-seals under the SAME rid only when the signed list confirms a newer epoch (otherwise `awaitingSignedEpoch`,
+  still pending) and only within 240 s of the first copy (`resealWindowMs`); later it ends `uncertain` and reconciles. If the
+  host answers `rid_conflict` (a relay delivered the first copy anyway), the relay misbehaved: `uncertain`, with the ORIGINAL
+  attempt (bytes, seq, epoch) kept so an answer to it can still verify. (A crash between the re-seal and that answer leaves
+  the re-sealed attempt instead.) A new rid is taken automatically only after a host-signed "not run" refusal; stable `idem`
+  keys are mandatory before more mutating bridge ops ship (Q14(2), G5 with orch-52).
+- **Limiter (Q3, decided):** only the relay hint counts; ≤ 3 starts per sliding 60 s, then 20/40/60 s, cap 60; reset after
+  120 s without a hint or on a verified list with a higher epoch; in memory.
+- **`not_visible` (Q2, decided):** sealed, terminal and definite: a decision ends `notApplied` ("not applied"), never uncertain
+  and never re-sent; other ops surface `ClientError.host(.notVisible)`.
+- **Revocation reply (Q12, confirmed narrowed):** the host posts it only after the rotation commits; it is sealed under the
+  request's old epoch, where P3-D22 admits only `LAST|REFUSAL`, so the FakeHost answers `already_done` with a whitelisted
+  outcome (`completed`|`failed`|`unknown`; the phone refuses any other `status`). The reply is advisory: "revoked" comes only
+  from the signed list at the higher epoch without the device (test S3 asserts both); 202 never means completed, and a removed
+  target is promised no terminal reply.
+- **Open, HOLD (Q11):** an answer chunk expires after 60 s and P3-D22 never resurrects it, so a resend after that gets no
+  answer although the rid lives 900 s and the phone's resend window is 300 s (`resendWindowMs` = 900 s minus a 600 s
+  margin); the phone ends `uncertain` and reconciles by state. orch-29 confirmed a bounded re-store of the exact stored chunk
+  (relay G3); the phone side waits for it. Note for then: a replayed `stale_timestamp` carries the OLD `host_ms`, so the device
+  must compute its clock offset from the time of its first send, not of the replay.
+- **Fake-only modelling.** `Retry-After` for storage caps and 503 is the fake's configurable value (the fixtures show 20); the
+  fake answers long polls at once (only the limit knobs refuse); holder generations are seeded (the FakeHost does not
+  `hold`) and acknowledge via `pendingRequests(after:)`. The FakeHost tolerates (and counts) only a re-sealed REFUSAL chunk
+  that the relay refuses as `chunk_conflict`; any other refused chunk fails the pass.
