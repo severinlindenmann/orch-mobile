@@ -29,6 +29,12 @@ func openCoordinationLock(_ path: String, relativeTo directory: Int32 = AT_FDCWD
 public enum CoordinationFiles {
     public enum FileError: Error, Equatable, Sendable { case io(String) }
 
+    /// Stable replay lock shared by the push writer and workspace wipe.
+    public static func replayLockURL(pushDir: URL, realm: String, workspace: String) -> URL {
+        pushDir.appendingPathComponent("locks", isDirectory: true).appendingPathComponent(realm, isDirectory: true)
+            .appendingPathComponent("\(workspace).lock")
+    }
+
     /// Temp file in the same directory, optional fsync, rename over the target, directory fsync.
     /// `durable: false` skips both fsyncs (best-effort writes on a deadline, such as the expiry marker).
     public static func atomicWrite(_ data: Data, to url: URL, dir: URL, durable: Bool = true) throws {
