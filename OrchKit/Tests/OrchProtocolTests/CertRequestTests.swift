@@ -104,21 +104,27 @@ import Testing
             PairingAttemptContext(workspace: workspace, offer: chO["offer_id"].id, device: device, dkSig: dkSig, dkKx: dkKx, attempt: chO["attempt"].str,
                                   earlierAttempts: [], acceptedRequestID: nil)
         }
-        let ok = try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 1_790_000_000_000)
+        // contexts hoisted out of the #expect closures (the Xcode 16.4 type checker)
+        let mine = ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx)
+        let otherWS = ctx(workspace: .random(), device: dev, dkSig: phoneSig, dkKx: phoneKx)
+        let otherDevice = ctx(workspace: ws, device: .random(), dkSig: phoneSig, dkKx: phoneKx)
+        let otherSig = ctx(workspace: ws, device: dev, dkSig: s2["keys"]["laptop.sig"]["pub"].sigPub, dkKx: phoneKx)
+        let challenge = cr["challenge"], attackChallenge = cr["attack_challenge"], strangerPK = SoftwareSigner().publicKey
+        let ok = try CertChallenge.check(challenge, pk: pk.publicKey, attempt: mine, nowMs: 1_790_000_000_000)
         #expect(ok.certCode == cr["cert_code"].str)
         // the R1 attack: a challenge that names another key raises the alarm
         let attack = CertChallengeDrop.notMyKey
-        #expect(throws: attack) { try CertChallenge.check(cr["attack_challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 1_790_000_000_000) }
+        #expect(throws: attack) { try CertChallenge.check(attackChallenge, pk: pk.publicKey, attempt: mine, nowMs: 1_790_000_000_000) }
         #expect(attack.raisesAlarm && !CertChallengeDrop.challengeExpired.raisesAlarm)
-        #expect(throws: CertChallengeDrop.challengeExpired) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 1_790_000_600_000) }
-        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(cr["challenge"], pk: SoftwareSigner().publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
-        #expect(throws: CertChallengeDrop.notForThisWorkspace) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: .random(), device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
-        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: .random(), dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
-        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(cr["challenge"], pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: s2["keys"]["laptop.sig"]["pub"].sigPub, dkKx: phoneKx), nowMs: 0) }
+        #expect(throws: CertChallengeDrop.challengeExpired) { try CertChallenge.check(challenge, pk: pk.publicKey, attempt: mine, nowMs: 1_790_000_600_000) }
+        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(challenge, pk: strangerPK, attempt: mine, nowMs: 0) }
+        #expect(throws: CertChallengeDrop.notForThisWorkspace) { try CertChallenge.check(challenge, pk: pk.publicKey, attempt: otherWS, nowMs: 0) }
+        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(challenge, pk: pk.publicKey, attempt: otherDevice, nowMs: 0) }
+        #expect(throws: CertChallengeDrop.notMyKey) { try CertChallenge.check(challenge, pk: pk.publicKey, attempt: otherSig, nowMs: 0) }
         // a challenge signed under another kind's label, or with an extra field, is not a challenge
         var extra = cr["challenge"]["o"].object!; extra["x"] = 1
         let resigned = try SignedObject.sign(extra, kind: .certChallenge, signer: pk)
-        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(resigned.json, pk: pk.publicKey, attempt: ctx(workspace: ws, device: dev, dkSig: phoneSig, dkKx: phoneKx), nowMs: 0) }
+        #expect(throws: CertChallengeDrop.challengeSignature) { try CertChallenge.check(resigned.json, pk: pk.publicKey, attempt: mine, nowMs: 0) }
         // the certificate: exactly the keys of the stored challenge, once
         let want = cr["signed_cert"]["ok"]["o"]
         let cert = try ledger.signCertificate(requestID: accepted.requestID, labelSealed: want["label_sealed"].b64Data, createdMs: want["created_ms"].i64,

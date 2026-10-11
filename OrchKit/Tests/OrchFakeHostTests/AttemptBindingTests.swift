@@ -102,3 +102,67 @@ import OrchProtocol
         #expect(s == .failed(.verification(reason: "fresh_keys_unavailable")))
     }
 }
+
+/// The rejected-form rules end to end through PairingCoordinator (PR #58 review F1; the reviewer's PoCs): the coordinator turns the
+/// wire's verdicts into the right terminal state. orch-29 (2026-10-11): the rejection path is the challenge path, expired first.
+@Suite struct RejectionThroughTheCoordinatorTests {
+    static func seedEarlier(_ h: PairHarness, device: ID16, hash: Data) throws {
+        // the seeded attempt becomes `last`; the pairing's own start then moves it to the earlier attempts
+        _ = try AttemptMemory.begin(vault: h.vault.scoped(to: .demo), device: device, dkHash: hash, nowMs: h.clock.nowMs)
+    }
+    static func toComparing(_ h: PairHarness) async throws {
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        _ = try await h.drive(until: isComparingPrimary)
+    }
+
+    @Test func anExpiredForeignRejectionIsUnattributedWithoutTheAlarm() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        try await Self.toComparing(h)
+        let r = try await PrimaryRejectionTests.rejection(h, device: .random(), expiresMs: h.clock.nowMs - 1)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: r)
+        #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
+    }
+
+    @Test func anEarlierDeviceWithAnotherKeyHashRaisesTheAlarm() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let dev = ID16.random(), hash = Data(repeating: 7, count: 32), other = Data(repeating: 8, count: 32)
+        try Self.seedEarlier(h, device: dev, hash: hash)
+        try await Self.toComparing(h)
+        let r = try await PrimaryRejectionTests.rejection(h, device: dev, dkHash: other)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: r)
+        let s = try await h.drive(until: { $0.isTerminal })
+        guard case .alarm(let a) = s else { Issue.record("\(s)"); return }
+        #expect(a.kind == .foreignRejection)
+    }
+
+    @Test func aRejectionOfAnEarlierAttemptIsUnattributedWithoutTheAlarm() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let dev = ID16.random(), hash = Data(repeating: 7, count: 32)
+        try Self.seedEarlier(h, device: dev, hash: hash)
+        try await Self.toComparing(h)
+        let r = try await PrimaryRejectionTests.rejection(h, device: dev, dkHash: hash)
+        await h.host.forceRelayedRejection(device: h.phoneID, rejection: r)
+        #expect(try await h.drive(until: { $0.isTerminal }) == .rejected)
+    }
+}
+
+/// A pairing record of the pre-amendment shape (no attempt, no dk_hash) does not decode, and a restart drops that pairing and its
+/// secrets (Sonnet review): pairings in flight under the old shape are discarded; there are no shipped installs.
+@Suite struct PreAmendmentRecordTests {
+    @Test func anOldShapeRecordIsDiscardedOnResume() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        _ = await h.coordinator.start(link: try h.link(try await h.rig.newOffer()))
+        let r = try #require(h.pairingRecord)
+        var o = try #require(try StrictJSON.parse(try r.encode(), maxBytes: 1 << 20).object)
+        o["attempt"] = nil; o["dk_hash"] = nil
+        let old = try canonicalJSON(.object(o))
+        #expect(PairingRecord.decode(old) == nil)
+        try h.vault.scoped(to: .demo).put(old, ws: h.host.workspace.hex, purpose: "pairing")
+        let fresh = h.fresh()
+        let s = await fresh.resume(ws: h.host.workspace)
+        #expect(s == .failed(.custody), "\(s)")
+        #expect(h.vaultItems.isEmpty, "the old record and its secrets are gone")
+        #expect(try await h.env.index.pairings().isEmpty)
+    }
+}

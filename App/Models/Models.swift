@@ -294,6 +294,8 @@ enum PairingRefusal: String, Hashable, Sendable {
     case refused
     case rejectedOnHost, rejectedOnPrimary, linkUsed, otherPerson, invalidLink, relayNotConnected, timedOut
     case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
+    /// Fresh keys could not be drawn for this attempt (G3b): another pairing may use the current ones, or that could not be confirmed.
+    case keysInUse
 }
 
 enum PairingState: Hashable, Sendable {

@@ -227,6 +227,7 @@ struct PairingScreen: View {
         case .alreadyMember: "This workspace is already on this iPhone"
         case .clockWrong: "This iPhone's clock is wrong"
         case .couldNotVerify: "The workspace could not be verified"
+        case .keysInUse: "This iPhone's keys may be in use"
         case .keysUnavailable: "This iPhone's keys are not available"
         }
     }
@@ -244,6 +245,7 @@ struct PairingScreen: View {
         case .alreadyMember: "Nothing was changed. Remove the workspace from this iPhone first if you want to pair it again."
         case .clockWrong: "Set the date and time on this iPhone to automatic, then start again."
         case .couldNotVerify: "Nothing was added. Make a new link on your Mac and try again."
+        case .keysInUse: "orch couldn't confirm that no other pairing is using these keys. Finish or cancel any other pairing, then try again."
         case .keysUnavailable: "Nothing was added. Unlock this iPhone and try again."
         }
     }

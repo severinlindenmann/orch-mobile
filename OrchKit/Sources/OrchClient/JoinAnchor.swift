@@ -16,10 +16,12 @@ public struct JoinAnchor: Equatable, Sendable {
             if v.isNull { return .some(nil) }
             guard let o = v.object, Set(o.keys) == ["n", "hash"], o.keys.count == 2, let n = o["n"]?.int, n >= 0, n <= maxSafeInt,
                   let h = o["hash"]?.string, h.utf8.count == 71, h.hasPrefix("sha256:"),
-                  h.utf8.dropFirst(7).allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) else { return nil }
+                  h.utf8.dropFirst(7).allSatisfy(isLowerHex) else { return nil }
             return .some(Baseline(n: n, hash: h))
         }
         var json: JSONValue { ["n": .int(n), "hash": .string(hash)] }
+
+        private static func isLowerHex(_ b: UInt8) -> Bool { (b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x66) }
     }
 
     public var epoch: UInt32

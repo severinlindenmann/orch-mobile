@@ -190,6 +190,7 @@ final class LivePairingModel: PairingFlowModel {
             case .realm: state = .refused(.invalidLink)
             case .hostRefused: state = .refused(.rejectedOnHost)
             case .clockWrong: state = .refused(.clockWrong)
+            case .verification(let reason) where reason == "fresh_keys_unavailable": state = .refused(.keysInUse)
             case .verification: state = .refused(.couldNotVerify)
             case .joiningTimedOut: state = .refused(.timedOut)
             case .alreadyMember: state = .refused(.alreadyMember)

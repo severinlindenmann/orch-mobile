@@ -250,12 +250,24 @@ before any relay operation. Suspension before sealing completes leaves no partia
   seven checks and is attributed to the pinned owner key.
 - **Q4 §8.3 answer forms: resolved.** The two `rejected` forms are exact in protocol-v2 §8.3; any other shape is an unattributed
   refusal (`not_a_pairing_answer`). The orch-core host must still produce them (host requirement, orch-core).
-- **Open (fail-closed choices, to confirm with orch-relay):** (1) a phone whose current uncertified keys are still used by another live
-  pairing refuses a new attempt (`fresh_keys_unavailable`) rather than reuse them; (2) an expired stored certificate is treated as
-  uncertified (fresh keys, the old certificate dropped) when nothing else uses the keys; (3) a long-form rejection naming a foreign
-  device raises a distinct `foreign_rejection` alarm (shown as the substitution alarm); (4) a host's short-form `rejected` is shown
-  as the unattributed "The pairing was refused", not "Not approved on your Mac", outside the Demo host panel's own reject.
-
+- **Fail-closed readings, confirmed by orch-29 (2026-10-11):**
+  1. A phone whose current uncertified keys another live pairing still uses (or whose index cannot confirm otherwise) refuses a
+     new attempt (`fresh_keys_unavailable`, App: "This iPhone's keys may be in use") rather than reuse them.
+  2. An expired stored certificate is treated as uncertified: fresh keys, the old certificate dropped, when nothing else uses the keys.
+  3. A long-form rejection naming a foreign device raises a distinct `foreign_rejection` alarm (shown as the substitution alarm).
+  4. A host's short-form `rejected` shows the unattributed "The pairing was refused", not "Not approved on your Mac", outside the
+     Demo host panel's own reject.
+  5. An unreadable attempt memory counts as empty, so an object of an earlier attempt then raises the alarm (the spec's rule).
+  6. The FakeHost's held list (a Demo scenario) is anchored at the next `list_seq`, so the phone retries `below_anchor` until it
+     is published.
+  Clarification (orch-29): the rejection path is the challenge path. When the device or keys are not this attempt's own, an
+  expired object is dropped silently FIRST, then one naming an own earlier attempt (both `device_id` AND `dk_hash`) is
+  `stale_attempt`, and only the rest alarm; a short form with extra fields is `not_a_pairing_answer`. Coordinator-level tests:
+  `RejectionThroughTheCoordinatorTests`.
+- **Open question for orch-29:** above the anchor's `list_seq` the phone takes the list's scopes as the spec says, unbounded by the
+  certificate's `scopes_max`. Should they be bounded by `scopes_max`? Behaviour unchanged until answered.
+- **Pre-amendment pairing records** (no `attempt`/`dk_hash`) no longer decode: pairings in flight under the old shape are discarded on
+  restart (`PreAmendmentRecordTests`). There are no shipped installs.
 ## Notification purge owed (before the live realm ships)
 A Demo notification purge that times out is recorded as owed and retried on the next boot (`SystemDemoNotifications.setOwed`/`retryOwedPurges`). Demo accepts that. Before the live realm ships, a live Leave must report "incomplete"/pending while a notification purge is still owed for that workspace instead of reporting done.
 
