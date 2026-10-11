@@ -89,9 +89,9 @@ extension FakeHost {
         let task = Task {
             defer { rotation = nil }
             while !pendingRotations.isEmpty {
-                // Real monotonic backoff also bounds retries when the demo wall clock is stationary.
+                // A5: retry scheduling uses the relay's injected monotonic clock.
                 if rotationFailures > 0 {
-                    try await Task.sleep(for: .milliseconds(100 * (1 << min(rotationFailures - 1, 4))))
+                    try await pendingRotations[0].relay.clock.sleep(for: .milliseconds(100 * (1 << min(rotationFailures - 1, 4))))
                 }
                 await refreshPendingRotations()
                 let pending = pendingRotations[0]

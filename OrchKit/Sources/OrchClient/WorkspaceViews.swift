@@ -7,12 +7,24 @@ public protocol WorkspaceAPI: Sendable {
     func setForeground(_ value: Bool) async
     func refreshViews() async
     func invalidateReviews() async
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     func reconcile(decisionID: ID16) async throws -> DecisionOutcome
     var verifiedReceiptMs: Int64? { get async }
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     func snapshot() async throws -> WorkspaceSnapshot
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     func review(questionID: ID16) async throws -> QuestionReview
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     func decide(_ review: QuestionReview, optionID: String) async throws -> DecisionOutcome
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     func pendingDecisions() async throws -> [DecisionStatus]
+    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
+    ///   Retry when coordination is available; this error does not confirm removal.
     func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket
     func events() async -> AsyncStream<WorkspaceEvent>
 }

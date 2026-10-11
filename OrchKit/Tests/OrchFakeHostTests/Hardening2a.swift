@@ -679,7 +679,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(opened.data.isEmpty)
         #expect(counter.value == 0)
         await w.host.setPublishHook(nil)
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         #expect(await w.host.rotationRequired == false)
         #expect(await w.host.epoch == 3)
         let state = await w.host.coreState()
@@ -737,7 +737,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(c2.count == 1 && m2 == unknownRefusal.meta && counter.value == 0)
         // next pump retries; once it succeeds the epoch moves and requests work at epoch 3
         fail.value = false
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         let rr2 = await w.host.rotationRequired, ep2 = await w.host.epoch
         #expect(!rr2 && ep2 == 3)
         let (e3, h3) = try await w.sealedRequest(rid: ID16.fresh(0x65), seq: 3, epoch: 3)
@@ -756,7 +756,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         _ = await w.host.process(envelope: e1, mailbox: h1.rid)
         fail.value = false
         let (e2, h2) = try await w.sealedRequest(rid: ID16.fresh(0x67), seq: 2, meta: ["op": "revocation", "record": record])
-        let c = await w.host.process(envelope: e2, mailbox: h2.rid)
+        let c = try await rotationRetry(w) { await w.host.process(envelope: e2, mailbox: h2.rid) }
         let mc = try openChunk(c[0], wk: await w.host.wkFor(1)).meta
         #expect(mc.object?["status"] == .int(200))
         let rr3 = await w.host.rotationRequired, ep3 = await w.host.epoch

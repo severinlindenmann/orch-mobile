@@ -85,7 +85,7 @@ import OrchProtocol
         gate.open()
         if fail { await #expect(throws: TestCrash.self) { try await rotation.value } }
         else { try await rotation.value }
-        let chunks = await revocation.value
+        let chunks = if fail { try await rotationRetry(w) { await revocation.value } } else { await revocation.value }
         let reply = try openChunk(#require(chunks.first), wk: await w.host.wkFor(1))
         if fail {
             #expect(reply.meta.object?["status"] == .int(200))
@@ -131,7 +131,7 @@ import OrchProtocol
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: 2) == false)
         if revokeAt == "host" { await w.host.markRevoked(w.phoneID) }
         else { try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID)) }
-        _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
+        _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         let final = await w.host.epoch
         #expect(final == 3)
         #expect(await w.host.wkFor(final).withUnsafeBytes { Data($0) } != fetched.wk.withUnsafeBytes { Data($0) })
@@ -166,13 +166,15 @@ import OrchProtocol
             #expect(await w.host.rotationRequired)
             #expect(await w.host.epoch == 1)
             #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: UInt32(attempt + 1)) == false)
-            if attempt < failures { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+            if attempt < failures { _ = try await rotationRetry(w, milliseconds: Int64(100 * (1 << (attempt - 1)))) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) } }
         }
         if removal == "host" { await w.host.markRevoked(w.phoneID) }
         if removal == "relay" { try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID)) }
         if removal == "queued" {
-            try await w.host.rotate(remaining: [(w.primary.deviceKeys, World.all)], relay: w.relay, session: w.hostSession)
-        } else { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
+            try await rotationRetry(w, milliseconds: Int64(100 * (1 << (failures - 1)))) {
+                try await w.host.rotate(remaining: [(w.primary.deviceKeys, World.all)], relay: w.relay, session: w.hostSession)
+            }
+        } else { _ = try await rotationRetry(w, milliseconds: Int64(100 * (1 << (failures - 1)))) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) } }
         let final = await w.host.epoch
         #expect(final == UInt32(failures + 2))
         #expect(await w.host.rotationRequired == false)

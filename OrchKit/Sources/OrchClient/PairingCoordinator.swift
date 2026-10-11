@@ -21,6 +21,8 @@ public actor PairingCoordinator {
     private var record: PairingRecord?
     private var identity: DeviceIdentity?
     private var current: PairingState = .idle
+    /// Observation barrier for tests; time-derived changes need not have been published yet.
+    internal var lastPublishedState: PairingState { current }
     private var alarmRow: PairingAlarm?
     private var token = 0
     private var busy = false

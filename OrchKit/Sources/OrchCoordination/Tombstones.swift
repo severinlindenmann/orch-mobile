@@ -54,8 +54,8 @@ public struct TombstoneCoordination: Sendable {
         var unknown = false
         for dir in directories {
             do {
-                let records = try Self.withLocks([dir][...], exclusive: false, create: false, deadline: Date()) {
-                    try Self.readUnlocked(dir: dir)
+                let records = try Self.withLocks([dir][...], exclusive: false, create: false, deadline: Date()) { fds in
+                    try Self.readUnlocked(fd: fds[dir])
                 }
                 if Self.covers(records, realm, ws, generation) { return .removed }
             } catch { unknown = true }
@@ -80,9 +80,9 @@ public struct TombstoneCoordination: Sendable {
     /// without running `body`. Extensions on a deadline use it; nil waits as long as it takes.
     public func ifNotRemoved<T>(realm: String, ws: String, generation: Int64, timeout: TimeInterval? = nil, _ body: () throws -> T) throws -> T? {
         let deadline = timeout.map { Date().addingTimeInterval($0) }
-        return try Self.withLocks(directories.sorted { $0.path < $1.path }[...], exclusive: false, create: true, deadline: deadline) { () throws -> T? in
+        return try Self.withLocks(directories.sorted { $0.path < $1.path }[...], exclusive: false, create: true, deadline: deadline) { fds -> T? in
             for dir in directories {
-                guard let records = try? Self.readUnlocked(dir: dir) else { return nil }
+                guard let records = try? Self.readUnlocked(fd: fds[dir]) else { return nil }
                 if Self.covers(records, realm, ws, generation) { return nil }
             }
             return try body()
@@ -101,38 +101,40 @@ public struct TombstoneCoordination: Sendable {
 
     public func write(_ new: [TombstoneRecord]) throws {
         for dir in directories {
-            try Self.withLocks([dir][...], exclusive: true, create: true) {
+            try Self.withLocks([dir][...], exclusive: true, create: true) { fds in
                 var records: [TombstoneRecord]
-                do { records = try Self.readUnlocked(dir: dir) }
+                do { records = try Self.readUnlocked(fd: fds[dir]) }
                 catch is DecodingError { throw TombstoneError.corrupt(file: dir.appendingPathComponent(Self.fileName).path) }
                 let before = records.count
                 for r in new where !records.contains(r) { records.append(r) }
                 if records.count == before { return }
-                try CoordinationFiles.atomicWrite(JSONEncoder().encode(records), to: dir.appendingPathComponent(Self.fileName), dir: dir)
+                try TombstoneFS.write(JSONEncoder().encode(records), dir: fds[dir]!, name: Self.fileName)
             }
         }
     }
 
     /// Repair/launch path: under the same exclusive lock, atomically replace each file with the complete
     /// authoritative set (union with any readable existing records). A corrupt file is first COPIED aside
-    /// (`tombstones.json.corrupt-<ts>`, diagnosis only); the replacement is an atomic rename, so readers see
+    /// (`tombstones.json.corrupt-<uuid>`, diagnosis only); the replacement is an atomic rename, so readers see
     /// either the old (failing-closed) file or the complete new one, never a missing file.
     public func republish(complete: [TombstoneRecord]) throws {
         for dir in directories {
-            try Self.withLocks([dir][...], exclusive: true, create: true) {
-                let file = dir.appendingPathComponent(Self.fileName)
+            try Self.withLocks([dir][...], exclusive: true, create: true) { fds in
+                let fd = fds[dir]!
+                let data = try TombstoneFS.read(fd, Self.fileName)
+                var corrupt = false
                 var records: [TombstoneRecord]
-                do { records = try Self.readUnlocked(dir: dir) }
+                do { records = try data.map { try JSONDecoder().decode([TombstoneRecord].self, from: $0) } ?? [] }
                 catch is DecodingError {
-                    let aside = dir.appendingPathComponent("\(Self.fileName).corrupt-\(Int(Date().timeIntervalSince1970))")
-                    try? FileManager.default.removeItem(at: aside)
-                    try FileManager.default.copyItem(at: file, to: aside)
+                    corrupt = true
+                    // Copy the bytes already read from the verified descriptor, never reopen by path.
+                    try TombstoneFS.write(data!, dir: fd, name: "\(Self.fileName).corrupt-\(UUID().uuidString)")
                     records = []
                 }
                 let before = records
                 for r in complete where !records.contains(r) { records.append(r) }
-                if records == before && FileManager.default.fileExists(atPath: file.path) { return }
-                try JSONEncoder().encode(records).write(to: file, options: .atomic)
+                if !corrupt && records == before && data != nil { return }
+                try TombstoneFS.write(JSONEncoder().encode(records), dir: fd, name: Self.fileName)
             }
         }
     }
@@ -142,33 +144,41 @@ public struct TombstoneCoordination: Sendable {
     }
 
     private static func read(dir: URL) throws -> [TombstoneRecord] {
-        try withLocks([dir][...], exclusive: false, create: false) { try readUnlocked(dir: dir) }
+        try withLocks([dir][...], exclusive: false, create: false) { fds in try readUnlocked(fd: fds[dir]) }
     }
 
     /// Caller must hold the lock (flock on a second descriptor would self-deadlock).
     /// Missing file (ENOENT) is empty; every other failure throws.
-    private static func readUnlocked(dir: URL) throws -> [TombstoneRecord] {
-        let url = dir.appendingPathComponent(fileName)
-        let data: Data
-        do { data = try Data(contentsOf: url) }
-        catch let e as NSError where e.domain == NSCocoaErrorDomain && e.code == NSFileReadNoSuchFileError { return [] }
-        catch let e as NSError where e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT) { return [] }
+    private static func readUnlocked(fd: Int32?) throws -> [TombstoneRecord] {
+        guard let fd, let data = try TombstoneFS.read(fd, fileName) else { return [] }
         return try JSONDecoder().decode([TombstoneRecord].self, from: data)
     }
 
-    /// Takes the lock files in the given order (callers sort) and runs `body` while holding all of them.
+    /// Keep each verified directory open until its lock and all fd-relative operations finish.
     /// Readers never create directories: a missing directory simply means no tombstones.
-    private static func withLocks<T>(_ dirs: ArraySlice<URL>, exclusive: Bool, create: Bool, deadline: Date? = nil, _ body: () throws -> T) throws -> T {
-        guard let dir = dirs.first else { return try body() }
-        if create { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
-        let path = dir.appendingPathComponent(lockName).path
-        // O_NOFOLLOW: a planted symlink must not redirect O_CREAT to another file.
-        let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        if fd < 0 {
-            if errno == ENOENT && !create { return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, body) }
-            throw TombstoneError.lockFailed(errno)
+    private static func withLocks<T>(_ dirs: ArraySlice<URL>, exclusive: Bool, create: Bool, deadline: Date? = nil,
+                                     fds: [URL: Int32] = [:], _ body: ([URL: Int32]) throws -> T) throws -> T {
+        guard let dir = dirs.first else { return try body(fds) }
+        var directory = open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if directory < 0, errno == ENOENT, create {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            directory = open(dir.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
+        guard directory >= 0 else {
+            if errno == ENOENT && !create {
+                return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, fds: fds, body)
+            }
+            throw TombstoneError.io("directory open: \(errno)")
+        }
+        defer { close(directory) }
+        var st = stat()
+        guard fstat(directory, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
+            throw TombstoneError.io("not a directory")
+        }
+        let fd = openat(directory, lockName, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw TombstoneError.lockFailed(errno) }
         defer { close(fd) }
+        try TombstoneFS.regular(fd)
         let op = exclusive ? LOCK_EX : LOCK_SH
         if let deadline {
             while flock(fd, op | LOCK_NB) != 0 {
@@ -179,6 +189,7 @@ public struct TombstoneCoordination: Sendable {
             guard flock(fd, op) == 0 else { throw TombstoneError.lockFailed(errno) }
         }
         defer { flock(fd, LOCK_UN) }
-        return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, body)
+        var held = fds; held[dir] = directory
+        return try withLocks(dirs.dropFirst(), exclusive: exclusive, create: create, deadline: deadline, fds: held, body)
     }
 }
