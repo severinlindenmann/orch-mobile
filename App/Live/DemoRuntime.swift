@@ -82,6 +82,22 @@ final class DemoRuntime {
                                realm: Realm.demo.rawValue)
     }
 
+    /// Finishes a Demo reset that was interrupted (the app was killed mid-reset): same real reset path, nothing kept running.
+    static func finishInterruptedReset() async throws {
+        let lock = SimulatedLock()
+        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend(lock: lock)
+        let keys = SecretVault(group: .keys, backend: backend)
+        let push = SecretVault(group: .push, backend: backend)
+        #if targetEnvironment(simulator)
+        let custody = DefaultCustody.make(vault: keys, lock: lock)
+        #else
+        let custody = DefaultCustody.make(vault: keys)
+        #endif
+        let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
+        let stale = try await DemoSetup.setup(layout: try layout(temporary: false), custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
+        try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
+    }
+
     /// Builds a fresh Demo environment. The fakes' authority keys exist only in memory (decision P3), so a Demo realm left by an earlier
     /// launch cannot be served any more: it is wiped through the real reset path first.
     static func boot(temporaryStorage: Bool) async throws -> DemoRuntime {
@@ -194,9 +210,23 @@ final class DemoRuntime {
     // MARK: Wipe (Leave)
 
     func wipe(workspace: ID16, generation: Int64) async throws {
-        let hooks = DemoWipeHooks(keys: keysVault.scoped(to: .demo), push: pushVault.scoped(to: .demo))
-        try await LocalWipe(index: env.index, hooks: hooks).wipe(ws: workspace.hex, generation: generation)
+        let wipe = LocalWipe(index: env.index, hooks: DemoWipeHooks(keys: keysVault.scoped(to: .demo), push: pushVault.scoped(to: .demo)))
+        do { try await wipe.wipe(ws: workspace.hex, generation: generation) }
+        catch {
+            // A tombstoned, half-finished wipe resumes from its persisted phase. Only a finished wipe of THIS workspace counts: a wipe that
+            // failed before its tombstone was recorded has nothing to resume, so the original error stands.
+            try await wipe.resumePendingWipes()
+            let finished = try await env.index.tombstones().contains {
+                $0.record.ws == workspace.hex && $0.record.generation >= generation && $0.phase >= LocalWipe.donePhase
+            }
+            guard finished else { throw error }
+        }
         forget(workspace)
+    }
+
+    /// Where a workspace keeps its unsent new-ticket draft: inside its own directory, which the local wipe deletes.
+    func draftURL(workspace: ID16) -> URL? {
+        try? env.layout.wsDir(workspace.hex).appendingPathComponent("ticket-draft.json")
     }
 
     // MARK: Demo push

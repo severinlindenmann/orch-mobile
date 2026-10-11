@@ -12,7 +12,7 @@ import UserNotifications
 /// or signing.
 @MainActor @Observable
 final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, ShareWorld {
-    private enum Keys { static let demo = "orch.demo.entered" }
+    private enum Keys { static let demo = "orch.demo.entered"; static let resetPending = "orch.demo.resetPending" }
 
     let options: LaunchOptions
     private(set) var ready = false
@@ -32,7 +32,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     @ObservationIgnored private var resetTask: Task<Void, Never>?
     @ObservationIgnored private var bootTask: Task<DemoRuntime?, Never>?
     @ObservationIgnored private var submitted: [String: ReviewValue] = [:]
+    /// Keyed "<workspace hex>/<decision hex>"; an entry is removed when its task ends.
     @ObservationIgnored private var reconcileTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var reconcileSerials: [String: Int] = [:]
+    @ObservationIgnored private var reconcileSerial = 0
+    @ObservationIgnored private var lifecycleTask: Task<Void, Never>?
+    @ObservationIgnored private var demoLockRelease: Task<Void, Never>?
+    /// Workspaces whose local wipe did not finish: still listed, never reported as removed until a retried Leave completes.
+    private(set) var removalIncomplete: Set<String> = []
 
     init(options: LaunchOptions) { self.options = options }
 
@@ -40,7 +47,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     func boot() async {
         guard !ready else { return }
-        let persisted = !options.uiTesting && UserDefaults.standard.bool(forKey: Keys.demo)
+        let defaults = UserDefaults.standard
+        // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("orch.ticket.draft.") { defaults.removeObject(forKey: key) }
+        if !options.uiTesting, defaults.bool(forKey: Keys.resetPending) {
+            // A Demo reset was interrupted: finish it first, whether or not Demo was entered.
+            if (try? await DemoRuntime.finishInterruptedReset()) != nil { defaults.set(false, forKey: Keys.resetPending) }
+        }
+        let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
         if options.demoSeed, isDemo { await seedDemoWorkspaces() }
         ready = true
@@ -50,6 +64,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private func startDemo() async -> DemoRuntime? {
         if let bootTask { return await bootTask.value }
         await resetTask?.value
+        // Another caller may have booted (or started booting) while the reset was awaited.
+        if let bootTask { return await bootTask.value }
         if let runtime { return runtime }
         let task = Task { () -> DemoRuntime? in
             do { return try await DemoRuntime.boot(temporaryStorage: self.options.uiTesting) } catch { return nil }
@@ -83,7 +99,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             let deadline = Date().addingTimeInterval(90)
             var done = false
             while !done, Date() < deadline {
-                try? await Task.sleep(for: .milliseconds(100))
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { model.cancel(); return }
                 switch model.state {
                 case .comparingHost where !model.demoHostCode.isEmpty: model.hostApprove()
                 case .waitingPrimary: model.primaryOpenRequest()
@@ -145,6 +161,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             scopes: Mapping.scopes(j.scopes), connection: .online, primaryLabel: "Demo Mac", notificationsOn: true)
         let ws = LiveWorkspace(workspaceID: j.workspace, generation: j.generation, api: BridgeWorkspaceAPI(session: j.session), info: info)
         ws.services = self
+        ws.draftURL = runtime?.draftURL(workspace: j.workspace)
         live.append(ws)
         if let kind { dropItems += DemoContent.drop(kind, workspaceID: info.id, now: Date()) }
         ws.start()
@@ -163,14 +180,17 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
-        for ws in live {
-            let api = ws.api
-            Task {
+        // One serial chain: lifecycle changes reach every API in the order they happened.
+        let previous = lifecycleTask
+        let apis = live.map(\.api)
+        lifecycleTask = Task { [weak self] in
+            await previous?.value
+            for api in apis {
                 await api.setForeground(active)
                 if active { await api.refreshViews() }
             }
+            if active { await self?.refreshPending(reconcile: true) }
         }
-        if active { Task { await refreshPending(reconcile: true) } }
     }
 
     // MARK: HomeModel
@@ -232,9 +252,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Bounded background reconciliation while the app runs; the state stays visible on Home. It reconciles the stored decision only.
     func startReconcile(workspace: LiveWorkspace, decisionID: ID16) {
-        let key = decisionID.hex
+        let key = workspace.workspaceID.hex + "/" + decisionID.hex
         reconcileTasks[key]?.cancel()
+        reconcileSerial += 1
+        let serial = reconcileSerial
+        reconcileSerials[key] = serial
         reconcileTasks[key] = Task { [weak self] in
+            // Remove this task's own entry when it ends (finished, settled or cancelled), never a newer one under the same key.
+            defer { self?.reconcileEnded(key: key, serial: serial) }
             for _ in 0..<6 {
                 do { try await Task.sleep(for: .seconds(self?.options.uiTesting == true ? 20 : 4)) } catch { return }
                 guard let self else { return }
@@ -247,6 +272,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         Task { await refreshPending() }
     }
 
+    private func reconcileEnded(key: String, serial: Int) {
+        guard reconcileSerials[key] == serial else { return }
+        reconcileTasks[key] = nil
+        reconcileSerials[key] = nil
+    }
+
     func decisionSettled(workspace: LiveWorkspace) async {
         await workspace.refresh()
         await refreshPending()
@@ -254,10 +285,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     // MARK: Demo controls (real host behaviour, one shot)
 
-    func applyDemoReadControl(workspace: LiveWorkspace) async {
-        guard signOutcome == .loadFails, let host = runtime?.entry(for: workspace.workspaceID)?.host else { return }
+    /// True once when "Review fails to load" is armed: the next review read is treated as failed (nothing is signed or stored).
+    func takeDemoReadFailure() -> Bool {
+        guard isDemo, signOutcome == .loadFails else { return false }
         signOutcome = .accepted
-        await host.demoFailNextRead()
+        return true
     }
 
     func applyDemoSignControl(workspace: LiveWorkspace, questionID: String, optionID: String) async {
@@ -275,13 +307,18 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         case .uncertain:
             await host.demoLoseNextDecisionResponse(faults: runtime.faults)
         case .locked:
+            // The simulated phone is locked for this attempt; it unlocks by itself a few seconds later (the person unlocking it).
             runtime.lock.isLocked = true
+            demoLockRelease?.cancel()
+            demoLockRelease = Task { [weak runtime] in
+                try? await Task.sleep(for: .seconds(2))
+                runtime?.lock.isLocked = false
+            }
         default: break
         }
     }
 
     var deviceLocked: Bool { runtime?.lock.isLocked ?? false }
-    func unlockDevice() { runtime?.lock.isLocked = false }
 
     // MARK: DropModel (simulated: no Drop service yet)
 
@@ -378,11 +415,21 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
         let name = ws.info.name
         // The share outbox journals the removal first; a failed journal keeps the workspace in place.
-        guard beforeWorkspaceRemoval?(workspaceID) != false else { return LeaveReport(workspaceName: name, server: .pendingOffline) }
+        guard beforeWorkspaceRemoval?(workspaceID) != false else {
+            return LeaveReport(workspaceName: name, server: .pendingOffline, incomplete: true)
+        }
         let canDeregister = ws.info.scopes.contains(.operate)
         await ws.stop()
-        reconcileTasks.values.forEach { $0.cancel() }
-        do { try await runtime?.wipe(workspace: ws.workspaceID, generation: ws.generation) } catch {}
+        let prefix = ws.workspaceID.hex + "/"
+        for (key, task) in reconcileTasks where key.hasPrefix(prefix) { task.cancel(); reconcileTasks[key] = nil; reconcileSerials[key] = nil }
+        do { try await runtime?.wipe(workspace: ws.workspaceID, generation: ws.generation) }
+        catch {
+            // Never report success on a failed wipe: the workspace stays listed, stopped and marked "removal incomplete"; Leave again
+            // resumes the persisted wipe (LocalWipe.resumePendingWipes). A half-wiped workspace is not restarted.
+            removalIncomplete.insert(workspaceID)
+            return LeaveReport(workspaceName: name, server: .pendingOffline, incomplete: true)
+        }
+        removalIncomplete.remove(workspaceID)
         live.removeAll { $0.info.id == workspaceID }
         dropItems.removeAll { $0.workspaceID == workspaceID }
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
@@ -398,7 +445,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private func teardown(thenDemo: Bool) {
         let old = runtime
         let workspaces = live
-        runtime = nil; live = []; dropItems = []; pendingDecisions = []; submitted = [:]
+        runtime = nil; live = []; dropItems = []; pendingDecisions = []; submitted = [:]; removalIncomplete = []
+        reconcileTasks.values.forEach { $0.cancel() }
+        reconcileTasks = [:]; reconcileSerials = [:]
+        lifecycleTask?.cancel(); demoLockRelease?.cancel()
+        if !options.uiTesting { UserDefaults.standard.set(true, forKey: Keys.resetPending) }
         isDemo = false
         deviceLabel = thenDemo ? deviceLabel : "iPhone"
         if !options.uiTesting { UserDefaults.standard.set(false, forKey: Keys.demo) }
@@ -406,7 +457,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         resetTask = Task { [weak self] in
             await previous?.value
             for ws in workspaces { await ws.stop() }
-            try? await old?.reset()
+            if (try? await old?.reset()) != nil || old == nil {
+                if self?.options.uiTesting == false { UserDefaults.standard.set(false, forKey: Keys.resetPending) }
+            }
             if thenDemo { await self?.startDemoAfterReset() }
         }
     }

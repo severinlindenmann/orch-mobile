@@ -27,16 +27,12 @@ final class LivePairingModel: PairingFlowModel {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var rejectedBy: PairingRefusal = .rejectedOnHost
     @ObservationIgnored private var joinedReported = false
+    /// Counts every state the stream delivered: a sampled state read before a newer streamed one is dropped.
+    @ObservationIgnored private var streamSeq = 0
 
     init(services: LiveServices, start: PairingState?) {
         self.services = services
         if let start, case .entry = start { state = .entry }
-    }
-
-    deinit {
-        MainActor.assumeIsolated {
-            stateTask?.cancel(); runTask?.cancel(); panelTask?.cancel()
-        }
     }
 
     // MARK: Entry
@@ -91,6 +87,7 @@ final class LivePairingModel: PairingFlowModel {
             stateTask = Task { [weak self] in
                 for await s in stream {
                     guard let self, !Task.isCancelled, self.generation == mine else { return }
+                    self.streamSeq += 1
                     self.apply(s, runtime: runtime)
                 }
             }
@@ -103,7 +100,16 @@ final class LivePairingModel: PairingFlowModel {
         }
     }
 
+    /// The pairing screen disappeared. An unfinished pairing is cancelled (nothing keeps running for a screen nobody sees); after a
+    /// join only this model's own observers stop, never the coordinator or the joined workspace.
+    func screenClosed() {
+        if case .ready = state { panelTask?.cancel(); stateTask?.cancel(); return }
+        cancel()
+    }
+
     func cancel() {
+        // After a join the pairing is over: Cancel/Close must never reach the joined workspace through the coordinator.
+        if case .ready = state { panelTask?.cancel(); stateTask?.cancel(); return }
         generation += 1
         stateTask?.cancel(); runTask?.cancel(); panelTask?.cancel()
         let coordinator = self.coordinator
@@ -114,6 +120,13 @@ final class LivePairingModel: PairingFlowModel {
         Task {
             await coordinator?.cancel()
             await coordinator?.dismiss()
+        }
+    }
+
+    private var isTerminalState: Bool {
+        switch state {
+        case .ready, .alarm, .refused, .expired: true
+        default: false
         }
     }
 
@@ -137,6 +150,7 @@ final class LivePairingModel: PairingFlowModel {
                 joinedReported = true
                 services.workspaceJoined(handle)
             }
+            panelTask?.cancel()
             state = .ready(workspaceName: handle.joined.name)
         case .alarm(let alarm):
             switch alarm.kind {
@@ -245,7 +259,12 @@ final class LivePairingModel: PairingFlowModel {
                 guard let self, let runtime = await self.services.demoRuntime() else { return }
                 let device = runtime.env.deviceID
                 // The coordinator derives its state from time (a code hides the instant it expires); sample it as well as the stream.
-                if let c = self.coordinator, self.generation == mine0 { self.apply(await c.state, runtime: runtime) }
+                if let c = self.coordinator, self.generation == mine0 {
+                    let seq = self.streamSeq
+                    let sampled = await c.state
+                    // A newer streamed state wins over this older sample, and a terminal state is never overwritten.
+                    if seq == self.streamSeq, self.generation == mine0, !self.isTerminalState { self.apply(sampled, runtime: runtime) }
+                }
                 if let host = self.entry?.host {
                     let pending = await host.pendingPairings().first { $0.device == device && $0.state == "pending" }
                     self.demoHostCode = pending?.sas ?? ""

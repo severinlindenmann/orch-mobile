@@ -33,6 +33,7 @@ struct PairingScreen: View {
                 }
             }
         }
+        .onDisappear { model.screenClosed() }
         .sheet(isPresented: $showScan) { ScanPlaceholder() }
         .sheet(isPresented: $showHostPanel) { DemoHostPanel(model: model) }
         .sheet(isPresented: $showPrimaryPanel) { DemoPrimaryPanel(model: model) }
@@ -361,9 +362,10 @@ struct DemoPrimaryPanel: View {
                         Button("Let 10 minutes pass (primary offline)") { model.primaryTimeElapses(); dismiss() }
                             .accessibilityIdentifier("demo.primaryPanel.elapse")
                     }
-                case .comparingPrimary(_, let code, _):
+                case .comparingPrimary:
+                    // The primary's own screen: the code its fake derived, never the phone's.
                     Section("Primary shows") {
-                        Text(verbatim: code).font(OF.code).kerning(6).accessibilityIdentifier("demo.primaryPanel.code")
+                        Text(verbatim: model.demoPrimaryCertCode).font(OF.code).kerning(6).accessibilityIdentifier("demo.primaryPanel.code")
                     }
                     Section {
                         Toggle("I compared the codes", isOn: $compared).accessibilityIdentifier("demo.primaryPanel.compared")
@@ -371,7 +373,7 @@ struct DemoPrimaryPanel: View {
                             .buttonStyle(.orchDanger)
                             .accessibilityIdentifier("demo.primaryPanel.reject")
                         Button { model.primaryApprove(); dismiss() } label: { Text("Approve") }
-                            .buttonStyle(.orchProminent).disabled(!compared)
+                            .buttonStyle(.orchProminent).disabled(!compared || model.demoPrimaryCertCode.isEmpty)
                             .accessibilityIdentifier("demo.primaryPanel.approve")
                         Button("Let the code expire") { model.codeTimeElapses() }
                             .accessibilityIdentifier("demo.primaryPanel.expire")

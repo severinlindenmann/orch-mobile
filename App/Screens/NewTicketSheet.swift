@@ -16,7 +16,7 @@ struct NewTicketSheet: View {
             Form {
                 if let created {
                     Section {
-                        Label { Text(verbatim: "Created \(created)") } icon: { Image(systemName: "checkmark.circle.fill") }
+                        Label { Text(verbatim: "Created \(SafeText.inline(created, limit: 24))") } icon: { Image(systemName: "checkmark.circle.fill") }
                             .foregroundStyle(OC.ok).accessibilityIdentifier("ticket.new.created")
                         Button("Done", action: onClose).accessibilityIdentifier("ticket.new.done")
                     }

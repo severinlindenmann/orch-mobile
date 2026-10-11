@@ -82,6 +82,8 @@ protocol PairingFlowModel: AnyObject, Observable {
     /// Demo host panel: a new single-use pairing link, to paste on the entry screen.
     func demoNewLink()
     func cancel()
+    /// The screen went away: an unfinished pairing is cancelled; after a join nothing reaches the coordinator or the joined workspace.
+    func screenClosed()
     func hostApprove()
     func hostReject()
     func primaryOpenRequest()
@@ -137,6 +139,10 @@ protocol AppServices: AnyObject {
     /// Debug routes and Demo aliases ("laptop", "q1") to the real ids; unknown input maps to itself.
     func resolveWorkspace(_ raw: String) -> String?
     func resolveQuestion(_ raw: String) -> (workspaceID: String, questionID: String)?
+}
+
+extension PairingFlowModel {
+    func screenClosed() {}
 }
 
 extension AppServices {

@@ -13,8 +13,10 @@ struct HomeScreen: View {
     private let options: LaunchOptions
     @Environment(\.colorScheme) private var scheme
 
-    init(services: any AppServices, options: LaunchOptions) {
-        let initial = InitialRouteParser.parse(options.initialRoute, services: services)
+    /// `initial` is the route parsed once by the caller; parsing here would re-apply its side effects (a Demo sign outcome) every time a
+    /// parent body re-evaluates and recreates this view.
+    init(services: any AppServices, options: LaunchOptions, initial parsed: InitialRoute? = nil) {
+        let initial = parsed ?? InitialRouteParser.parse(options.initialRoute, services: services)
         self.services = services
         self.options = options
         _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0, publishDemo: options.shareDemoTargets) })

@@ -28,6 +28,8 @@ struct OrchApp: App {
 struct AppRoot: View {
     let options: LaunchOptions
     @State private var services: LiveServices
+    /// Parsed exactly once, after boot: a route's side effects (e.g. the Demo sign outcome) must not repeat on every body pass.
+    @State private var initial: InitialRoute?
 
     init(options: LaunchOptions) {
         self.options = options
@@ -36,13 +38,16 @@ struct AppRoot: View {
 
     var body: some View {
         Group {
-            if services.ready {
-                HomeScreen(services: services, options: options)
+            if services.ready, let initial {
+                HomeScreen(services: services, options: options, initial: initial)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(OC.bg)
                     .accessibilityIdentifier("app.starting")
             }
         }
-        .task { await services.boot() }
+        .task {
+            await services.boot()
+            if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: services) }
+        }
     }
 }

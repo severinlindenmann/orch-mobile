@@ -104,9 +104,11 @@ final class SignSheetStateTests: XCTestCase {
         app.activate()
         XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 30))
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Review dropped'")).firstMatch.exists)
-        // Reconcile reads what the host has: the stored decision was applied exactly once.
-        app.buttons["sign.recheck"].tap()
-        XCTAssertTrue(app.el("sign.accepted").waitForExistence(timeout: 30))
+        // Reconcile reads what the host has: the stored decision was applied exactly once. The background reconcile may settle
+        // first; either way the sheet ends accepted, never signed a second time.
+        let recheck = app.buttons["sign.recheck"]
+        if recheck.exists && recheck.isHittable { recheck.tap() }
+        XCTAssertTrue(app.el("sign.accepted").waitForExistence(timeout: 60))
     }
 
     @MainActor

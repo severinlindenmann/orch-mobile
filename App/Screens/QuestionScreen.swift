@@ -73,8 +73,11 @@ struct QuestionScreen: View {
             Label { Text(verbatim: "Answered by \(SafeText.inline(r.byDeviceLabel, limit: 40)) · \(Fmt.relative(r.at))") }
                 icon: { Image(systemName: "checkmark.circle.fill") }
                 .font(OF.body).foregroundStyle(OC.ok)
-            if let label = q.options.first(where: { $0.id == r.optionID })?.label {
+            if let label = r.answerLabel(in: q.options) {
                 SafeTextView(label)
+            } else {
+                Text(verbatim: Resolution.unknownAnswer).font(OF.meta).foregroundStyle(OC.textMuted)
+                    .accessibilityIdentifier("question.resolution.unknownAnswer")
             }
         }
         .accessibilityElement(children: .combine)

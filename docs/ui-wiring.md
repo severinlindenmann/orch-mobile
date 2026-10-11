@@ -60,5 +60,9 @@ removing the prior attempt. Returned fields must match the saved UTF-8 bytes.
 Live in Demo: pairing (PairingCoordinator), Home/Workspace/Questions/Tickets (BridgeWorkspaceAPI snapshots and events), signing
 (QuestionReview + decide), pending/uncertain decisions and reconcile, new tickets (one persisted creationID per exact draft),
 Leave (LocalWipe), Reset/Leave Demo (DemoSetup.reset), Demo push (PushSimulator), share destinations/import (ShareBridge via ShareWorld).
-Simulated: Drop (no Drop service yet; labelled in the UI), terminal. Demo authority keys are in memory only (P3), so a Demo realm
+Simulated: Drop (no Drop service yet; labelled in the UI), terminal, and two Demo sign controls: "Review fails to load" fails the
+next review read in the app (nothing is signed or stored), and "Locked" locks the simulated device key for one attempt and releases it
+by itself after 2 s (the person unlocking the phone; retrying never unlocks anything). Ticket drafts live in the workspace directory
+and go with the local wipe; a failed wipe is reported as "removal incomplete" and never as removed. An interrupted Demo reset is
+finished at the next launch. Demo authority keys are in memory only (P3), so a Demo realm
 left by an earlier launch is wiped at boot rather than resumed. Release ignores every debug flag (scripts/check-release-flags.sh).

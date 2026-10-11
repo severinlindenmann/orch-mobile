@@ -43,6 +43,12 @@ struct Resolution: Hashable, Sendable {
     let at: Date
 }
 
+extension Resolution {
+    /// Shown when the host's recorded answer names no option this question has (or none at all).
+    static let unknownAnswer = "The recorded answer can't be shown."
+    func answerLabel(in options: [QuestionOption]) -> String? { options.first { $0.id == optionID }?.label }
+}
+
 struct Question: Identifiable, Hashable, Sendable {
     let id: String
     let workspaceID: String
@@ -280,6 +286,8 @@ enum LeaveServerStatus: Hashable, Sendable {
 struct LeaveReport: Hashable, Sendable {
     let workspaceName: String
     let server: LeaveServerStatus
+    /// The local wipe did not finish: the workspace is still listed and nothing is reported as removed. Leave can be tried again.
+    var incomplete = false
 }
 
 enum NotificationStatus: String, Hashable, Sendable { case notAsked, allowed, denied }

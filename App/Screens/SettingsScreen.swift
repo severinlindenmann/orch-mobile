@@ -124,13 +124,19 @@ struct WorkspaceSettingsScreen: View {
                         }
                     }
                 }
+                if let report, report.incomplete {
+                    Section {
+                        Label("Removal incomplete. This workspace is still on this iPhone. Try again.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(OC.warn).accessibilityIdentifier("settings.leave.incomplete")
+                    }
+                }
                 Section {
                     Button("Remove from this iPhone", role: .destructive) { confirm = true }
                         .accessibilityIdentifier("settings.leave")
                 } footer: {
                     Text("Removing a workspace only affects this iPhone. To cut off a lost device, revoke it on your primary.")
                 }
-            } else if let report {
+            } else if let report, !report.incomplete {
                 Section {
                     Label("Removed from this iPhone", systemImage: "checkmark.circle.fill").foregroundStyle(OC.ok)
                         .accessibilityIdentifier("settings.leave.done")

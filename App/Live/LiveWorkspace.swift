@@ -28,9 +28,10 @@ final class LiveWorkspace: WorkspaceModel {
         guard eventTask == nil else { return }
         eventTask = Task { [weak self] in
             guard let self else { return }
+            // Subscribe first so the replayed cached snapshot and later events are not missed.
+            let stream = await self.api.events()
             await self.api.start()
             await self.refresh()
-            let stream = await self.api.events()
             for await event in stream {
                 if Task.isCancelled { break }
                 self.handle(event)
@@ -88,21 +89,31 @@ final class LiveWorkspace: WorkspaceModel {
 
     private struct Draft: Codable, Equatable { var title: String, body: String, id: String }
 
-    private var draftKey: String { "orch.ticket.draft." + workspaceID.hex }
+    /// The draft lives in the workspace's own directory, so the local wipe removes it with everything else (U9).
+    @ObservationIgnored var draftURL: URL?
+
+    private func loadDraft() -> Draft? {
+        guard let url = draftURL, let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Draft.self, from: data)
+    }
+    private func saveDraft(_ d: Draft) {
+        guard let url = draftURL, let data = try? JSONEncoder().encode(d) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+    }
 
     var canCreateTickets: Bool { info.scopes.contains(.operate) }
 
     /// The creation ID is persisted with the exact draft; the same fields reuse it, an edit gets a new one, success clears it.
     func createTicket(title: String, body: String) async -> TicketCreation {
-        let defaults = UserDefaults.standard
-        let saved = defaults.data(forKey: draftKey).flatMap { try? JSONDecoder().decode(Draft.self, from: $0) }
+        let saved = loadDraft()
         let draft = (saved?.title == title && saved?.body == body ? saved : nil)
             ?? Draft(title: title, body: body, id: SystemEntropy().id16().hex)
-        if let data = try? JSONEncoder().encode(draft) { defaults.set(data, forKey: draftKey) }
+        saveDraft(draft)
         guard let id = ID16(hex: draft.id) else { return .failed("Could not prepare the ticket.") }
         do {
             let ticket = try await api.newTicket(NewTicketSubmission(creationID: id, title: title, body: body, epicKey: nil))
-            defaults.removeObject(forKey: draftKey)
+            if let url = draftURL { try? FileManager.default.removeItem(at: url) }
             await refresh()
             return .created(key: ticket.key)
         } catch ViewError.invalidDraft {

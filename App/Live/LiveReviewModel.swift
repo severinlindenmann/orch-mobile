@@ -60,7 +60,7 @@ final class LiveReviewModel: QuestionReviewModel {
         token += 1
         let mine = token
         load = .loading
-        await services.applyDemoReadControl(workspace: workspace)
+        if services.takeDemoReadFailure() { load = .failed(Self.readFailure); return }
         _ = await issue(revision: 0, mine: mine)
     }
 
@@ -150,11 +150,14 @@ final class LiveReviewModel: QuestionReviewModel {
 
     func retryAfterUnlock() {
         guard phase == .unlockToContinue else { return }
-        services.unlockDevice()
         token += 1
         let mine = token
         phase = .rereading
         Task {
+            // The person unlocks the phone (Demo: the simulated lock releases by itself); a new review is read only after that.
+            var waited = 0
+            while services.deviceLocked, waited < 100 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+            guard mine == token, phase == .rereading else { return }
             let ok = await issue(revision: (review?.revision ?? 0) + 1, mine: mine)
             guard mine == token, phase == .rereading else { return }
             phase = ok ? .ready : .invalidated

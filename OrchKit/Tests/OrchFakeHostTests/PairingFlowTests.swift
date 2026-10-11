@@ -621,6 +621,23 @@ extension PairHarness {
         for _ in 0..<20 { await restarted.poll(); h.clock.advance(milliseconds: 1000); if isReady(await restarted.state) { break } }
         #expect(isReady(await restarted.state))
     }
+
+    /// The pairing screen's Cancel/Close after a join reaches the coordinator as cancel() then dismiss(): neither may touch the joined
+    /// workspace (its index row, profile, keys).
+    @Test func testCancelAndDismissAfterReadyKeepTheJoinedWorkspace() async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let final = try await h.completeFirstTime()
+        guard case .ready(let handle) = final else { Issue.record("not ready: \(final)"); return }
+        let ws = h.host.workspace
+        let keysBefore = h.vaultItems
+        #expect(!keysBefore.isEmpty)
+        await h.coordinator.cancel()
+        await h.coordinator.dismiss()
+        #expect(try await h.env.index.workspaces().contains { $0.ws == ws.hex })
+        #expect(try await h.env.index.profile(ws: ws.hex) != nil)
+        #expect(Set(h.vaultItems) == Set(keysBefore))
+        #expect(try await h.env.index.isRemoved(ws: ws.hex, generation: handle.joined.generation) == false)
+    }
 }
 
 @Suite struct PairingLoopTests {
