@@ -28,6 +28,9 @@ struct SystemDemoNotifications: DemoNotificationBackend {
     func schedule(_ presentation: PushPresentation, identifier: String) async {
         await UNUserNotificationScheduler().schedule(presentation, identifier: identifier)
     }
+    func schedule(_ presentation: PushPresentation, identifier: String, delay: TimeInterval) async {
+        await UNUserNotificationScheduler().schedule(presentation, identifier: identifier, delay: delay)
+    }
     func removeDelivered(identifiers: [String]) async {
         await UNUserNotificationScheduler().removeDelivered(identifiers: identifiers)
     }
@@ -126,11 +129,11 @@ actor DemoNotifications {
     /// Schedules issued before `task` finishes wait for it. The task is bounded (one shared purge deadline).
     func hold(until task: Task<Void, Never>) { gate = task }
 
-    func schedule(_ presentation: PushPresentation, identifier: String, workspace: String) async {
+    func schedule(_ presentation: PushPresentation, identifier: String, workspace: String, delay: TimeInterval = 1) async {
         if let gate { await gate.value }
         guard !retired, !closed.contains(workspace) else { return }
         let key = UUID()
-        let task = Task { await backend.schedule(presentation, identifier: "demo/\(workspace)/\(identifier)") }
+        let task = Task { await backend.schedule(presentation, identifier: "demo/\(workspace)/\(identifier)", delay: delay) }
         tasks[key] = (workspace, task)
         await task.value
         tasks[key] = nil
@@ -154,6 +157,9 @@ struct ScopedDemoNotifications: LocalNotificationScheduling {
     let workspace: String
     func schedule(_ presentation: PushPresentation, identifier: String) async {
         await owner.schedule(presentation, identifier: identifier, workspace: workspace)
+    }
+    func schedule(_ presentation: PushPresentation, identifier: String, delay: TimeInterval) async {
+        await owner.schedule(presentation, identifier: identifier, workspace: workspace, delay: delay)
     }
     func removeDelivered(identifiers: [String]) async { await owner.remove(identifiers, workspace: workspace) }
 }

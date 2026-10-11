@@ -126,6 +126,15 @@ protocol SettingsModel: AnyObject, Observable {
     /// Demo: the host seals a push, the PushSimulator turns it into a local notification labelled as simulated. Result text for the UI.
     var demoPushResult: String? { get }
     func demoSendPush(workspaceID: String)
+    /// Settings -> Demo controls: asks for permission if needed, then schedules a delayed Demo question notification.
+    func demoSendNotification() async
+    func refreshNotificationStatus() async
+    func openNotificationSettings()
+    /// Permission, APNs environment and registration outcome as one line (no secrets).
+    var pushDiagnostics: String { get }
+    /// Locally removed workspaces whose server-side cleanup is still pending (retried when online).
+    var pendingServerCleanups: [PendingServerCleanup] { get }
+    func retryServerCleanup() async
     /// Leave = "Remove from this iPhone": local wipe first, server cleanup reported separately (U9).
     func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport
     func resetThisiPhone()

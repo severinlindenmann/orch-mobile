@@ -164,6 +164,11 @@ public actor FakeHost {
     var streamOpen: [ID16: (device: ID16, epoch: UInt32, next: UInt64)] = [:]
     /// Streams a rotation already ended; their handlers' late answers are discarded.
     var streamEnded: Set<ID16> = []
+    /// Requests whose handler is running now (no interim answer for their copies).
+    var running: Set<ID16> = []
+    /// The exact chunks first posted for each rid, kept while the rid lives (re-posted byte for byte, never re-sealed).
+    struct SentKey: Hashable { let rid: ID16; let request: Data }
+    var sentAnswers: [SentKey: (chunks: [Data], atMs: Int64)] = [:]
     /// Host chunks the relay refused and this host tolerated (rid, code): tests assert where they happen.
     package var relayRefusedChunks: [(rid: ID16, code: RelayRefusal.Code)] = []
     /// Chunks the host must post that no request is waiting on (rotation ending open streams).

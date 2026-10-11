@@ -18,7 +18,7 @@ enum FixtureCoverage {
         /// F1 ticket log routes (genesis, baselines, checkpoints, proofs, staging, transitions): host and relay; the phone has no
         /// client for them yet (gaps.md #25).
         case f1 = "F1 ticket log / checkpoints"
-        /// Q11 exact-bytes re-store of an expired identical chunk (orch-relay d3816ea): implemented in a later change.
+        /// Q11 exact-bytes re-store of an expired identical chunk (orch-relay d3816ea, P3-D27).
         case q11 = "Q11 exact-bytes re-store"
     }
 
@@ -31,16 +31,14 @@ enum FixtureCoverage {
     ]
 
     /// PRs whose files are all replayable now.
-    static let done: Set<PR> = [.pr3, .pr4, .pr5]
+    static let done: Set<PR> = [.pr3, .pr4, .pr5, .q11]
 
     /// Per-case overrides (case id -> PR), for cases whose enabling PR differs from the rest of their file. An override wins over
-    /// `replayable`: the case is pending even though its file replays. The G2b copy pins every membership outcome; the two Q11 bridge
-    /// cases wait for the Q11 change.
-    static let caseOverrides: [String: PR] = ["bridge_host_post.json#expired_identical_chunk_restored": .q11,
-                                              "bridge_host_post.json#refusal_409_retry_exhausted": .q11]
+    /// `replayable`: the case is pending even though its file replays. None now (the Q11 bridge cases replay).
+    static let caseOverrides: [String: PR] = [:]
 
-    /// Vector groups (not HTTP fixtures) that no test runs yet, by the stage that will: `p3.restore` (34 per suite) is Q11.
-    static let pendingVectorGroups: [String: PR] = ["p3.restore": .q11]
+    /// Vector groups (not HTTP fixtures) that no test runs yet, by the stage that will. None now (`p3.restore`: RidStoreVectorTests).
+    static let pendingVectorGroups: [String: PR] = [:]
 
     /// Fixture files whose cases the FakeRelay replays today (all cases of the file; see RelayReplayTests).
     static let replayable: Set<String> = ["session_challenge.json", "session_login.json", "session_logout.json",
