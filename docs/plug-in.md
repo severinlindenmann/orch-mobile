@@ -117,8 +117,9 @@ Pair POST limits are 60/min/workspace and 60/min/address; the fake's Retry-After
 Bridge quota defaults to 128 live mailboxes per device/workspace. Both are provisional v0 limits.
 Bridge delivery follows §19.3/§19.6 (host API §1, "Bridge delivery"): one replay record per device rid for 900 s
 from first receipt, coalescing of live undelivered copies, requeue at most once per 10 s (429 with the rest of the
-interval) and 8 times (then terminal 409 `retry_exhausted`), and P3-D22 for host chunks (410 for an unknown rid, no
-TTL refresh, no resurrection). The phone keeps polling the same rid after 202/429, never reissues under a new rid on its
+interval) and 8 times (then terminal 409 `retry_exhausted`), and P3-D22/D27 for host chunks (410 for an unknown rid, no
+TTL refresh for a live duplicate, re-store of exact stored bytes only, bounded: 900 s from first receipt, 8 per chunk).
+A host must keep its exact response-envelope bytes before the first POST and re-post only those. The phone keeps polling the same rid after 202/429, never reissues under a new rid on its
 own, treats `stale_epoch` as an unsigned hint (bounded signed list/grant refetch, 3/min then 20/40/60 s; same-rid re-seal) and surfaces
 `retry_exhausted` for an explicit user retry. The FakeRelay's acknowledged cursor is `pendingRequests(after:)`;
 P3's real host uses `host/hold` + `host/poll` (P3-D10), which the phone never calls.
@@ -192,7 +193,7 @@ Implement exact question/hash/option/resolution and ticket schemas in host API �
 Verify detached §13 decisions before atomic compare-and-set; persist immutable decision_id/answer.
 A changed hash requires `question_changed`; a competing decision returns `already_answered` who/when.
 Provide authoritative question reads to reconcile lost responses by decision_id AND answer.
-Slice 2a permits byte-identical resend only within 300 s (900 s minus 600 s margin), using the larger
+The phone starts a byte-identical resend only within ~240 s (900 s minus 660 s margin, orch-29 Q11), using the larger
 of monotonic and persisted wall age; afterward mark uncertain and reconcile without silently re-signing.
 This is stricter than host API §2's broad 900 s description; use branch behavior until reconciled.
 For new_ticket, persist `(device_id,creation_id,canonical request,ticket)` atomically and indefinitely

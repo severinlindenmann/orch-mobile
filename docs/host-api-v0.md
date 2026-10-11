@@ -167,8 +167,12 @@ undelivered (above the host's acknowledged cursor); otherwise it is requeued at 
 header epoch is not the current list epoch is 409 `stale_epoch {"epoch"}`, an unsigned hint; a known
 rid skips the epoch check. Host chunks need a known, unexpired rid (else 410 `expired`), the request's
 epoch (an old epoch only as `LAST|REFUSAL` or a byte-identical stored replay, else 409 `stale_epoch`);
-other bytes at a stored index are 409 `chunk_conflict`; a stored replay never refreshes a TTL or
-resurrects an expired body. The phone (`WorkspaceSession`):
+other bytes at a stored index are 409 `chunk_conflict`; a live duplicate never refreshes a TTL. An
+expired chunk is stored again only from the host's EXACT stored bytes (P3-D27, Q11): a fresh 60 s
+within the record, current epoch or `LAST|REFUSAL` only (old-epoch data: a no-op 202), until 900 s
+after the rid's first receipt (410) and at most 8 times per chunk (409 `retry_exhausted`). Hosts keep
+the exact response bytes before the first POST and re-post only those; a copy of a request whose
+handler still runs gets no interim answer. The phone (`WorkspaceSession`):
 - after 202 or 429 keeps polling the SAME rid and never reissues under a new rid; with no answer the
   request stays pending (`noResponse`, or the 429 refusal) and `resend` sends the same bytes (a 503
   queued nothing: surfaced at once, still pending);
@@ -261,8 +265,9 @@ Changed question receives `question_changed` with content_hash; fetch again and 
 Persist immutable review, decision_id, answer, detached signature and envelope before the first send.
 After a lost response, first resend the stored envelope byte-for-byte with the same rid/seq/salt;
 the host replays its recorded response while the rid record lives (received_at + 900 s, §8.6 step 5).
-Under protocol-v2 the relay delivers that replay only while the original answer chunk lives (60 s):
-an expired chunk is never resurrected (P3-D22), so a later resend gets no answer and ends `uncertain`.
+Under protocol-v2 the host re-posts the exact stored answer bytes and the relay stores an expired chunk
+again (P3-D27, bounded); the phone starts its last automatic resend by ~240 s after the first send
+(later: `uncertain`) and takes a `stale_timestamp` offset against the time of its first send.
 On `already_done(unknown)`, unknown-rid `stale_timestamp`, or expiry of that 900-second window, fetch
 the question: matching resolution decision_id AND answer confirms acceptance; another resolution
 shows who/when; open permits resending only the same detached signed decision in a fresh envelope
