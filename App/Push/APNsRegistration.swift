@@ -127,13 +127,15 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     }
 
     /// Without this iOS shows nothing while orch is in the foreground (the owner's "test notifications showed nothing").
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-                                            withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void) {
+    /// The async form: its signature is identical in the Xcode 16.4 and newer SDKs (the completion-handler form's
+    /// Sendable annotation differs between them and fails to compile on CI).
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         // Defense in depth: nothing from a removed or quarantined workspace is shown, even if it was scheduled earlier.
         if PresentationGate.isBlocked(thread: notification.request.content.threadIdentifier, identifier: notification.request.identifier) {
-            completionHandler([]); return
+            return []
         }
-        completionHandler([.banner, .list, .sound])
+        return [.banner, .list, .sound]
     }
 
     /// Set by the session layer later: called with the token when it changed (re-register every workspace).
