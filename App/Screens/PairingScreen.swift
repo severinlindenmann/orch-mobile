@@ -49,7 +49,7 @@ struct PairingScreen: View {
         case .entry, .connecting: 1
         case .comparingHost, .waitingPrimary, .comparingPrimary: 2
         case .joining, .ready: 3
-        case .expired, .alarm, .refused: nil
+        case .expired, .alarm, .refused, .denied: nil
         }
     }
 
@@ -147,7 +147,7 @@ struct PairingScreen: View {
             VStack(spacing: OS.s4) {
                 step(icon: "hand.raised", title: "Your primary device said no",
                      text: "Nothing was added. Your primary device declined to sign this iPhone. Start again on your Mac if that was a mistake.",
-                     id: "pair.denied")
+                     id: "pair.denied", tint: OC.danger)
                 closeButton
             }
         case .refused(let reason):
