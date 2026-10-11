@@ -120,9 +120,10 @@ public actor WorkspaceSession {
     /// A bounded number of re-sends of one logical request within a single call (stale epoch, offset, sequence).
     static let maxAttempts = 4
     static let hostWindowMs: Int64 = 900_000
-    /// A byte-identical re-send is only made while the host surely still holds the rid record: the host's 900 s window minus
-    /// this margin (clock skew between the two walls, polling and queue delays). Later than that it is `uncertain`, not re-sent.
-    static let resendSafetyMarginMs: Int64 = 600_000
+    /// A byte-identical re-send is only STARTED while the host surely still holds the rid record and the relay may still store its
+    /// answer again: by ~240 s after the first send (orch-29 Q11, best effort), i.e. the host's 900 s window minus this margin
+    /// (clock skew between the two walls, polling and queue delays). Later than that it is `uncertain`, not re-sent.
+    static let resendSafetyMarginMs: Int64 = 660_000
     static var resendWindowMs: Int64 { hostWindowMs - resendSafetyMarginMs }
     /// A same-rid re-seal after the relay's unsigned `stale_epoch` hint is made only this soon after the first copy (orch-29 Q14):
     /// later, a copy a lying relay held could still be delivered after the re-seal, so the request is reconciled instead.
@@ -680,6 +681,8 @@ public actor WorkspaceSession {
         case staleEpochHint(RelayRefusal)
         /// 410 `expired`: the relay no longer knows the rid. Its outcome cannot be known from the bridge.
         case expired
+        /// 409 `rid_conflict` from the RELAY: it holds other bytes for this rid (after a same-rid re-seal, the first copy).
+        case ridConflict(RelayRefusal)
     }
 
     private func drive(_ start: Row, isResend: Bool) async throws -> BridgeResponse {
@@ -710,6 +713,12 @@ public actor WorkspaceSession {
                 continue
             case .expired:
                 try await markUncertain(row.rid); throw SessionError.uncertain(logical: row.logical)
+            case .ridConflict(let r):
+                // After a same-rid re-seal the relay saying it holds the FIRST copy is the host's rid_conflict one hop earlier:
+                // the relay misbehaved (or queued it after all). Keep the ORIGINAL attempt, uncertain, so its answer can verify.
+                guard let o = original else { throw ClientError.relay(r) }
+                try await restoreUncertain(o)
+                throw SessionError.uncertain(logical: row.logical)
             case .accepted, .throttled, .exhausted:
                 break
             }
@@ -817,6 +826,7 @@ public actor WorkspaceSession {
         case (409, .retryExhausted): return .exhausted
         case (409, .staleEpoch): return .staleEpochHint(r)
         case (410, .expired): return .expired
+        case (409, .ridConflict): return .ridConflict(r)
         default: throw ClientError.relay(r)
         }
     }
@@ -846,7 +856,14 @@ public actor WorkspaceSession {
                     table = newTable
                     advanced = true
                     try await resetPinFailures()            // a verified host answer ends the run of failures
-                    if let off = a.offsetMs { try await setOffset(off) }
+                    if a.offsetMs != nil {
+                        // Q11: a host's stored stale_timestamp may be re-posted (and re-stored) long after it was sealed, still
+                        // carrying the host_ms of the FIRST receipt, so the offset is taken against the time of the first send.
+                        guard let hostMs = a.meta.object?["host_ms"]?.int else { throw SessionError.badResponse }
+                        let off = hostMs.subtractingReportingOverflow(row.createdMs)
+                        guard !off.overflow, abs(off.partialValue) <= Bridge.maxOffsetMs else { throw SessionError.badResponse }
+                        try await setOffset(off.partialValue)
+                    }
                     if a.clockWrong { throw SessionError.badResponse }
                     if a.refusal {
                         guard a.last, let refusal = HostRefusal(meta: a.meta) else { throw SessionError.badResponse }

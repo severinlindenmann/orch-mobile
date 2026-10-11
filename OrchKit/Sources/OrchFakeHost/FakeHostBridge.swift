@@ -217,7 +217,12 @@ extension FakeHost {
     package func takeOutbox() -> [(rid: ID16, chunk: Data)] { let o = outbox; outbox = []; return o }
 
     /// Simulates a host that ran a request and lost the record of its answer: a re-send gets `already_done(unknown)`.
-    package func forgetOutcome(rid: ID16) { core.rids[rid]?.outcome = nil }
+    /// The exact chunks first posted for this request (rid and request bytes), if any.
+    private func keptAnswer(_ rid: ID16, _ envelope: Data) -> [Data]? {
+        sentAnswers[SentKey(rid: rid, request: RidStore.digest(envelope))]?.chunks
+    }
+
+    package func forgetOutcome(rid: ID16) { core.rids[rid]?.outcome = nil; sentAnswers = sentAnswers.filter { $0.key.rid != rid } }
 
     package func setResponseSigner(_ s: SoftwareSigner?) { responseSigner = s }
 
@@ -234,8 +239,15 @@ extension FakeHost {
         let now = wall.nowMs
         switch core.check(envelope, mailbox: mailbox, nowMs: now) {
         case .drop: return []
-        case .refuse(let r, let h): return (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
+        case .refuse(let r, let h):
+            // A copy of a request whose handler is still running: no interim `already_done(unknown)` (it would take index 0 from
+            // the real answer, orch-29 Q11). Silence; the real answer follows.
+            if case .alreadyDone(status: "unknown") = r, running.contains(h.rid) { return [] }
+            // A recorded refusal answered again (after the §8.6 device checks, which are never replaced): the exact bytes sent.
+            if !r.isDeviceCheck, let kept = keptAnswer(h.rid, envelope) { return kept }
+            return (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
         case .replay(let chunks, let h):
+            if let kept = keptAnswer(h.rid, envelope) { return kept }      // Q11: the exact bytes first posted, never re-sealed
             if rotationRequired {
                 return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
             }
@@ -249,7 +261,9 @@ extension FakeHost {
                 streamOpen[h.rid] = nil
                 return (try? respond(to: h, meta: HostRefusal.alreadyDone(status: "unknown").meta, data: Data(), refusal: true)) ?? []
             }
+            running.insert(h.rid)
             let reply = await run(a)
+            running.remove(h.rid)
             // A non-stream handler may finish while grants are suspended, with epoch and membership still unchanged.
             // Refuse immediately; streams wait for their terminal stale_epoch chunk and revocation waits for its own rotation.
             if rotationRequired && !isRevocation && !h.flagSet.contains(.stream) {
@@ -389,6 +403,14 @@ extension FakeHost {
         for item in inbox {
             lastArrival = max(lastArrival, item.arrival)          // claimed: a concurrent pass never runs it twice
             let chunks = await process(envelope: item.envelope, mailbox: item.rid)
+            // Q11 (orch-29): the exact response-envelope bytes are kept BEFORE the first POST and only those are ever re-posted, so
+            // the relay can store an expired answer again (P3-D27) and never sees other bytes for an index.
+            let now = wall.nowMs
+            sentAnswers = sentAnswers.filter { now - $0.value.atMs < core.limits.ridRetentionMs }
+            // Keyed by the request's exact bytes too: another envelope under the same rid (a same-rid re-seal) gets its own answer.
+            // `process` substitutes them only when it answers a known request again, after the §8.6 device checks.
+            let answerKey = SentKey(rid: item.rid, request: RidStore.digest(item.envelope))
+            if sentAnswers[answerKey] == nil, !chunks.isEmpty { sentAnswers[answerKey] = (chunks, now) }
             for c in chunks {
                 let r = try await postBridgeChunk(c, rid: item.rid, relay: relay, session: session)
                 guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
@@ -430,4 +452,14 @@ extension FakeHost {
 extension FakeHost {
     /// The roster as published (device keys and scopes).
     public func rosterEntries() -> [(DemoKeys, [String])] { roster.values.map { ($0.keys, $0.scopes) } }
+}
+
+private extension HostRefusal {
+    /// §8.6 step 4 (and a different request under a known rid): decided afresh for every copy, never a stored answer.
+    var isDeviceCheck: Bool {
+        switch self {
+        case .revoked, .notMember, .badSignature, .ridConflict: true
+        default: false
+        }
+    }
 }

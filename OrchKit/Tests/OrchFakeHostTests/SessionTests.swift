@@ -159,9 +159,10 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         #expect(stored.count > Bridge.overhead)
     }
 
-    @Test func anExpiredAnswerIsNotResurrectedAndNothingIsReSigned() async throws {
-        // Protocol-v2 section 19.6 / P3-D22: once the host's answer chunk expired (60 s) the relay keeps only its digest; the host's
-        // byte-identical replay for a requeued copy is a no-op. The device keeps polling the same rid and never mints a new one.
+    @Test func anExpiredAnswerIsStoredAgainFromTheHostsExactBytes() async throws {
+        // Q11 (P3-D27, orch-relay d3816ea): once the host's answer chunk expired (60 s) the relay keeps its digest; the host re-posts
+        // the EXACT bytes it kept for the requeued copy, the relay stores them again for 60 s, and the same rid gets its answer.
+        // The handler does not run again and nothing is re-signed.
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
         let counter = Counter()
@@ -174,12 +175,14 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
         w.clock.advance(milliseconds: 61_000); phone.clock.advance(milliseconds: 61_000)
         let seq = try await s.nextSeq()
-        await #expect(throws: SessionError.noResponse(rid: p.rid)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
+        let r = try await w.serve(phone) { try await s.resend(rid: p.rid) }
+        #expect(r.data == Data("done".utf8))
         let seqAfter = try await s.nextSeq()
         #expect(counter.value == 1 && seqAfter == seq)
-        #expect(try await s.pendingRequests().map(\.rid) == [p.rid])                          // still the same rid, still pending
         let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: p.rid))
-        #expect(record.requeues == 1 && record.chunks[0]?.envelope == nil)
+        let chunk = try #require(record.chunks[0])
+        #expect(record.requeues == 1)
+        #expect(chunk.restores == 1)
     }
 
     @Test func testExpiredOrUnknownRidReconcilesByQuestion() async throws {

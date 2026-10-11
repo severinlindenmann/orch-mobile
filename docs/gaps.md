@@ -301,11 +301,21 @@ phone keeps polling the same rid after 202/429, treats the relay's `stale_epoch`
   outcome (`completed`|`failed`|`unknown`; the phone refuses any other `status`). The reply is advisory: "revoked" comes only
   from the signed list at the higher epoch without the device (test S3 asserts both); 202 never means completed, and a removed
   target is promised no terminal reply.
-- **Open, HOLD (Q11):** an answer chunk expires after 60 s and P3-D22 never resurrects it, so a resend after that gets no
-  answer although the rid lives 900 s and the phone's resend window is 300 s (`resendWindowMs` = 900 s minus a 600 s
-  margin); the phone ends `uncertain` and reconciles by state. orch-29 confirmed a bounded re-store of the exact stored chunk
-  (relay G3); the phone side waits for it. Note for then: a replayed `stale_timestamp` carries the OLD `host_ms`, so the device
-  must compute its clock offset from the time of its first send, not of the replay.
+- **Done (Q11, orch-relay d3816ea, P3-D27):** the relay stores an expired chunk again only from the host's EXACT stored bytes,
+  for a fresh 60 s (never past the record), at the current epoch or as `LAST|REFUSAL` (old-epoch data is a free no-op),
+  until 900 s after the rid's first receipt (then 410) and at most 8 times per chunk (then 409 `retry_exhausted`); order:
+  fencing, eligibility, `chunk_conflict`, live duplicate (free), epoch, deadline, cap, then budgets. Removing or revoking a
+  device exhausts its chunks' re-store counts. The FakeHost keeps the exact answer bytes per (rid, request bytes) before the
+  first POST and re-posts only those, and sends no interim `already_done(unknown)` while a handler runs. The phone starts its
+  last automatic resend by ~240 s after the first send (`resendWindowMs` = 900 s minus a 660 s margin; later: `uncertain`)
+  and takes a `stale_timestamp` clock offset against the time of its FIRST send (a re-posted refusal keeps its old `host_ms`).
+  Replayed: all 34 `p3.restore` cases per suite and the two Q11 `bridge_host_post` fixtures.
+  Pairing answers are never stored again: the relay keeps each answer's digest for 900 s, so an identical re-post is a
+  stored replay (202) and other bytes are 409 `chunk_conflict`. The FakeHost substitutes its kept bytes only when it answers
+  a known request again, after the §8.6 device checks (a revoked device gets the refusal, never the old answer).
+- **Relay `rid_conflict` after a same-rid re-seal:** handled like the host's: the original attempt is restored, `uncertain`.
+- **No UI test for "Send again":** the Demo cannot produce a relay `retry_exhausted`, so the button is covered by the model
+  test (`ReviewModelTests`) and the session tests only.
 - **Fake-only modelling.** `Retry-After` for storage caps and 503 is the fake's configurable value (the fixtures show 20); the
   fake answers long polls at once (only the limit knobs refuse); holder generations are seeded (the FakeHost does not
   `hold`) and acknowledge via `pendingRequests(after:)`. The FakeHost tolerates (and counts) only a re-sealed REFUSAL chunk
