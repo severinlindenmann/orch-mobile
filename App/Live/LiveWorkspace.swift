@@ -76,7 +76,7 @@ final class LiveWorkspace: WorkspaceModel {
 
     // MARK: Key alarm (Q10)
 
-    static let keyAlarmMessage = "Key alarm: this workspace's keys do not match its member list. Nothing more is sent from this iPhone. Remove the workspace and pair again."
+    static let keyAlarmMessage = "Key alarm: this workspace published two different keys for the same version, so orch has stopped sending to it. It clears when your Mac issues a new key. If it stays, remove the workspace and pair again."
 
     /// Reads the durable alarm (at launch); it never clears by itself.
     func checkKeyAlarm() async {

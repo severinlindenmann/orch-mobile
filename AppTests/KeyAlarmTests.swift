@@ -46,6 +46,7 @@ final class KeyAlarmTests: XCTestCase {
         XCTAssertEqual(ws.info.keyAlarm, LiveWorkspace.keyAlarmMessage)
         XCTAssertEqual(ws.info.answerBlock, LiveWorkspace.keyAlarmMessage)
         XCTAssertTrue(LiveWorkspace.keyAlarmMessage.contains("pair again"))
+        XCTAssertTrue(LiveWorkspace.keyAlarmMessage.contains("clears when your Mac issues a new key"))
         XCTAssertFalse(LiveWorkspace.keyAlarmMessage.localizedCaseInsensitiveContains("retry"))
     }
 
