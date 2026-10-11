@@ -202,6 +202,8 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
   after the last read to handle a concurrent answer or content edit. Both preflight
   and resealing preserve the reviewed bytes; neither updates an answer silently.
 
+- Before live/relay push ships, the notification service extension must check the workspace tombstone file before presenting anything. Push material for a `removalIncomplete` workspace survives until wipe phase 3 (`purgeSecrets`); possession of that material alone must not permit notification presentation.
+
 ## Slice 5 additions
 
 - **Workspace Drop scope (provisional v0):** `look` permits listing, downloading and `drop_rewrap`; `operate` permits device-authored PUT and explicit `drop_claim`. The client verifies the pinned workspace WSK or a caller-supplied, owner-verified device certificate plus the signed current member list. There is no certificate-directory route in v0: unknown device authors fail closed. Removed authors likewise fail closed until a historical authorization-proof contract exists. This slice implements workspace spaces; personal/shared-space composition and scoped-agent enrollment remain outside the mobile adapter.

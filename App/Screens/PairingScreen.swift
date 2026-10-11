@@ -33,6 +33,7 @@ struct PairingScreen: View {
                 }
             }
         }
+        .onDisappear { model.screenClosed() }
         .sheet(isPresented: $showScan) { ScanPlaceholder() }
         .sheet(isPresented: $showHostPanel) { DemoHostPanel(model: model) }
         .sheet(isPresented: $showPrimaryPanel) { DemoPrimaryPanel(model: model) }
@@ -214,6 +215,10 @@ struct PairingScreen: View {
         case .invalidLink: "This isn't an orch pairing link"
         case .relayNotConnected: "The relay isn't connected"
         case .timedOut: "No answer in time"
+        case .alreadyMember: "This workspace is already on this iPhone"
+        case .clockWrong: "This iPhone's clock is wrong"
+        case .couldNotVerify: "The workspace could not be verified"
+        case .keysUnavailable: "This iPhone's keys are not available"
         }
     }
 
@@ -226,6 +231,10 @@ struct PairingScreen: View {
         case .invalidLink: "The link is not valid, or it was cut off. Copy it again."
         case .relayNotConnected: "The relay isn't connected in this build. Try the Demo to see how pairing works."
         case .timedOut: "Nobody answered. Start again on your Mac."
+        case .alreadyMember: "Nothing was changed. Remove the workspace from this iPhone first if you want to pair it again."
+        case .clockWrong: "Set the date and time on this iPhone to automatic, then start again."
+        case .couldNotVerify: "Nothing was added. Make a new link on your Mac and try again."
+        case .keysUnavailable: "Nothing was added. Unlock this iPhone and try again."
         }
     }
 
@@ -236,7 +245,7 @@ struct PairingScreen: View {
         if model.isDemo {
             VStack(alignment: .leading, spacing: OS.s2) {
                 Divider()
-                Text("Demo: simulated Mac and primary. Nothing leaves this iPhone.")
+                Text("Demo: the real pairing runs against a simulated Mac and primary on this iPhone.")
                     .font(OF.meta).foregroundStyle(OC.demo)
                     .padding(.horizontal, OS.s4)
                     .accessibilityIdentifier("demo.bar.label")
@@ -312,6 +321,15 @@ struct DemoHostPanel: View {
                 } else {
                     Section { Text("No pairing request is waiting on the host.").foregroundStyle(OC.textMuted) }
                 }
+                Section("Remote tab on the host") {
+                    Button("New pairing link") { model.demoNewLink() }.accessibilityIdentifier("demo.hostPanel.newLink")
+                    if !model.demoOfferLink.isEmpty {
+                        Text(verbatim: model.demoOfferLink).font(OF.machine).textSelection(.enabled)
+                            .accessibilityIdentifier("demo.hostPanel.link")
+                        Button("Copy link") { UIPasteboard.general.string = model.demoOfferLink }
+                            .accessibilityIdentifier("demo.hostPanel.copy")
+                    }
+                }
             }
             .navigationTitle("Demo host")
             .navigationBarTitleDisplayMode(.inline)
@@ -344,9 +362,10 @@ struct DemoPrimaryPanel: View {
                         Button("Let 10 minutes pass (primary offline)") { model.primaryTimeElapses(); dismiss() }
                             .accessibilityIdentifier("demo.primaryPanel.elapse")
                     }
-                case .comparingPrimary(_, let code, _):
+                case .comparingPrimary:
+                    // The primary's own screen: the code its fake derived, never the phone's.
                     Section("Primary shows") {
-                        Text(verbatim: code).font(OF.code).kerning(6).accessibilityIdentifier("demo.primaryPanel.code")
+                        Text(verbatim: model.demoPrimaryCertCode).font(OF.code).kerning(6).accessibilityIdentifier("demo.primaryPanel.code")
                     }
                     Section {
                         Toggle("I compared the codes", isOn: $compared).accessibilityIdentifier("demo.primaryPanel.compared")
@@ -354,7 +373,7 @@ struct DemoPrimaryPanel: View {
                             .buttonStyle(.orchDanger)
                             .accessibilityIdentifier("demo.primaryPanel.reject")
                         Button { model.primaryApprove(); dismiss() } label: { Text("Approve") }
-                            .buttonStyle(.orchProminent).disabled(!compared)
+                            .buttonStyle(.orchProminent).disabled(!compared || model.demoPrimaryCertCode.isEmpty)
                             .accessibilityIdentifier("demo.primaryPanel.approve")
                         Button("Let the code expire") { model.codeTimeElapses() }
                             .accessibilityIdentifier("demo.primaryPanel.expire")

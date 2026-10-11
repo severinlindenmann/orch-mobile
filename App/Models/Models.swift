@@ -12,6 +12,18 @@ enum ConnectionState: Hashable, Sendable {
     case reconciling
 }
 
+enum WorkspaceLifecycle: Hashable, Sendable {
+    case live, removing, removalIncomplete, removed
+    var message: String? {
+        switch self {
+        case .live: nil
+        case .removing: "Removing from this iPhone…"
+        case .removalIncomplete: "Removal incomplete. Retry Leave in workspace settings."
+        case .removed: "Removed from this iPhone."
+        }
+    }
+}
+
 struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     let id: String
     var name: String
@@ -23,6 +35,7 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var scopes: Set<Scope>
     var connection: ConnectionState
     var primaryLabel: String
+    var lifecycle: WorkspaceLifecycle = .live
     var notificationsOn: Bool
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
@@ -41,6 +54,12 @@ struct Resolution: Hashable, Sendable {
     let optionID: String
     let byDeviceLabel: String
     let at: Date
+}
+
+extension Resolution {
+    /// Shown when the host's recorded answer names no option this question has (or none at all).
+    static let unknownAnswer = "The recorded answer can't be shown."
+    func answerLabel(in options: [QuestionOption]) -> String? { options.first { $0.id == optionID }?.label }
 }
 
 struct Question: Identifiable, Hashable, Sendable {
@@ -202,11 +221,22 @@ enum SignPhase: Hashable, Sendable {
     case checking
     case unlockToContinue
     case custodyUnavailable
+    /// The send failed before anything was signed or stored.
+    case notSent
 }
 
 /// What the fake host does with the next answer (Demo controls and tests).
 enum SignOutcome: String, CaseIterable, Hashable, Sendable {
     case accepted, alreadyAnswered, questionChanged, uncertain, locked, custodyUnavailable, loadFails
+
+    /// What the Demo can really do to the next answer (the fake host or the lock); `custodyUnavailable` stays preview-only.
+    static var liveCases: [SignOutcome] {
+        #if targetEnvironment(simulator)
+        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .locked, .loadFails]
+        #else
+        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .loadFails]
+        #endif
+    }
 
     var title: String {
         switch self {
@@ -232,6 +262,7 @@ enum PairingAlarm: Hashable, Sendable {
 /// Fixed app text only: the host never supplies refusal wording.
 enum PairingRefusal: String, Hashable, Sendable {
     case rejectedOnHost, rejectedOnPrimary, linkUsed, otherPerson, invalidLink, relayNotConnected, timedOut
+    case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
 }
 
 enum PairingState: Hashable, Sendable {
@@ -274,6 +305,8 @@ enum LeaveServerStatus: Hashable, Sendable {
 struct LeaveReport: Hashable, Sendable {
     let workspaceName: String
     let server: LeaveServerStatus
+    /// The local wipe did not finish: the workspace is still listed and nothing is reported as removed. Leave can be tried again.
+    var incomplete = false
 }
 
 enum NotificationStatus: String, Hashable, Sendable { case notAsked, allowed, denied }

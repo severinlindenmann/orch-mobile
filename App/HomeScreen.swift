@@ -3,7 +3,7 @@ import OrchUI
 
 /// Root of the app: Welcome (nothing yet), empty Home (Demo, no workspaces) or Home (U1/U3).
 struct HomeScreen: View {
-    @State private var world: PreviewWorld
+    private let services: any AppServices
     @State private var path: [Route]
     @State private var pairing: PairingPresentation?
     @State private var forceWelcome: Bool
@@ -13,42 +13,56 @@ struct HomeScreen: View {
     private let options: LaunchOptions
     @Environment(\.colorScheme) private var scheme
 
-    init(options: LaunchOptions) {
-        let world = PreviewWorld(demo: options.demo)
-        let initial = InitialRouteParser.parse(options.initialRoute, services: world)
+    /// `initial` is the route parsed once by the caller; parsing here would re-apply its side effects (a Demo sign outcome) every time a
+    /// parent body re-evaluates and recreates this view.
+    init(services: any AppServices, options: LaunchOptions, initial parsed: InitialRoute? = nil) {
+        let initial = parsed ?? InitialRouteParser.parse(options.initialRoute, services: services)
+        self.services = services
         self.options = options
-        _world = State(initialValue: world)
-        _bridge = State(initialValue: ShareBridge.make(world: world, publishDemo: options.shareDemoTargets))
+        _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0, publishDemo: options.shareDemoTargets) })
         _path = State(initialValue: initial.path)
         _forceWelcome = State(initialValue: initial.forceWelcome)
         _pairing = State(initialValue: initial.presentPairing
-                         ? PairingPresentation(model: world.makePairing(start: initial.pairing)) : nil)
+                         ? PairingPresentation(model: services.makePairing(start: initial.pairing)) : nil)
         self.initial = initial
     }
 
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if forceWelcome || (world.workspaces.isEmpty && !world.isDemo) {
-                    WelcomeScreen(onDemo: { world.enterDemo(); forceWelcome = false },
-                                  onPair: { pairing = PairingPresentation(model: world.makePairing(start: nil)) })
-                } else if world.workspaces.isEmpty {
-                    EmptyHome(onPair: { pairing = PairingPresentation(model: world.makePairing(start: nil)) },
+                if forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo) {
+                    WelcomeScreen(onDemo: { services.home.enterDemo(); forceWelcome = false },
+                                  onPair: { pairing = PairingPresentation(model: services.makePairing(start: nil)) })
+                } else if services.home.workspaces.isEmpty {
+                    EmptyHome(onPair: { pairing = PairingPresentation(model: services.makePairing(start: nil)) },
                               onSettings: { path.append(.settings) })
                 } else {
-                    HomeContent(services: world, path: $path)
+                    HomeContent(services: services, path: $path)
+                }
+            }
+            .safeAreaInset(edge: .top) {
+                if let live = services as? LiveServices, live.resetIncomplete {
+                    VStack(spacing: 4) {
+                        Text("Reset incomplete — will finish on next launch")
+                        Button("Try again") { live.resetThisiPhone() }
+                    }
+                    .font(.footnote)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(OC.bg)
+                    .accessibilityIdentifier("home.resetIncomplete")
                 }
             }
             .background(OC.bg)
             .navigationTitle("orch")
             .toolbar {
-                if world.isDemo {
+                if services.home.isDemo {
                     ToolbarItem(placement: .topBarLeading) { DemoChip() }
                 }
-                if world.isDemo || !world.workspaces.isEmpty {
+                if services.home.isDemo || !services.home.workspaces.isEmpty {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Button("Add workspace", systemImage: "plus") {
-                            pairing = PairingPresentation(model: world.makePairing(start: nil))
+                            pairing = PairingPresentation(model: services.makePairing(start: nil))
                         }
                         .accessibilityIdentifier("home.add")
                         Button("Settings", systemImage: "gearshape") { path.append(.settings) }
@@ -57,7 +71,7 @@ struct HomeScreen: View {
                 }
             }
             .navigationDestination(for: Route.self) { route in
-                RouteView(route: route, services: world, path: $path, composeDrop: initial.composeDrop)
+                RouteView(route: route, services: services, path: $path, composeDrop: initial.composeDrop)
             }
         }
         .tint(OC.brand)
@@ -69,14 +83,15 @@ struct HomeScreen: View {
             if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() }
         }
         .onChange(of: scenePhase) { _, phase in
+            (services as? LiveServices)?.setActive(phase == .active)
             if phase == .active { if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() } }
         }
-        .onChange(of: world.workspaces.map(\.id)) { _, _ in bridge?.publishTargets() }
+        .onChange(of: services.home.workspaces.map(\.id)) { _, _ in bridge?.publishTargets() }
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: .orchDebugShareRefresh)) { _ in bridge?.refresh() }
         #endif
         .symbolRenderingMode(.hierarchical)
-        .safeAreaInset(edge: .top, spacing: 0) { if world.isDemo { DemoStripe() } }
+        .safeAreaInset(edge: .top, spacing: 0) { if services.home.isDemo { DemoStripe() } }
         .overlay(alignment: .topLeading) {
             // DEBUG/UI-test only: lets tests assert the resolved colour scheme.
             if options.uiTesting {
@@ -303,6 +318,7 @@ struct WorkspaceCard: View {
                     }
                 }
                 ConnectionChip(state: ws.connection)
+                if let message = ws.lifecycle.message { Text(verbatim: message).font(OF.meta).foregroundStyle(OC.textMuted) }
             }
             .padding(.vertical, OS.s5)
             .padding(.trailing, OS.s5)

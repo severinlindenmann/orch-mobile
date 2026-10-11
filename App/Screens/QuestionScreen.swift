@@ -30,7 +30,8 @@ struct QuestionScreen: View {
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
-                    if let r = q.resolution {
+                    // A submission still being checked is shown as such even if a snapshot already carries the resolution.
+                    if let r = q.resolution, !services.home.pendingDecisions.contains(where: { $0.questionID == q.id }) {
                         resolved(q, r)
                     } else {
                         answers(q, info)
@@ -72,8 +73,11 @@ struct QuestionScreen: View {
             Label { Text(verbatim: "Answered by \(SafeText.inline(r.byDeviceLabel, limit: 40)) · \(Fmt.relative(r.at))") }
                 icon: { Image(systemName: "checkmark.circle.fill") }
                 .font(OF.body).foregroundStyle(OC.ok)
-            if let label = q.options.first(where: { $0.id == r.optionID })?.label {
+            if let label = r.answerLabel(in: q.options) {
                 SafeTextView(label)
+            } else {
+                Text(verbatim: Resolution.unknownAnswer).font(OF.meta).foregroundStyle(OC.textMuted)
+                    .accessibilityIdentifier("question.resolution.unknownAnswer")
             }
         }
         .accessibilityElement(children: .combine)
@@ -252,8 +256,9 @@ struct SignSheet: View {
             case .sending:
                 ProgressView("Sending…").accessibilityIdentifier("sign.sending")
             case .accepted:
-                stateView("checkmark.seal.fill", OC.ok, "Sent and accepted (simulated)",
-                          "In this UI simulation your answer was applied.", id: "sign.accepted")
+                stateView("checkmark.seal.fill", OC.ok, review.isDemo ? "Sent and accepted by the Demo host" : "Sent and accepted",
+                          review.isDemo ? "The Demo host verified your signature and applied your answer." : "Your answer was applied.",
+                          id: "sign.accepted")
                 doneButton
             case .alreadyAnswered(let by, let at):
                 stateView("person.crop.circle.badge.exclamationmark", OC.warn, "Your answer wasn't applied",
@@ -275,6 +280,10 @@ struct SignSheet: View {
                 stateView("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone to sign.", id: "sign.unlock")
                 Button("Read it again and continue") { model.retryAfterUnlock() }.buttonStyle(.bordered).accessibilityIdentifier("sign.unlockRetry")
                 Button("Cancel", role: .cancel, action: onClose)
+            case .notSent:
+                stateView("wifi.exclamationmark", OC.warn, "Not sent",
+                          "Nothing was signed and nothing was stored. Check the connection, then choose your answer again.", id: "sign.notSent")
+                doneButton
             case .custodyUnavailable:
                 stateView("key.slash", OC.danger, "Signing key not available",
                           "This iPhone can no longer sign for this workspace. Re-pair it to continue.", id: "sign.custody")

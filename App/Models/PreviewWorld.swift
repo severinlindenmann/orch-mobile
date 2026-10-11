@@ -4,7 +4,8 @@ import Observation
 /// Preview/fake services seeded with the host-api-v0 §4 Demo data. Used for previews and UI tests only;
 /// real OrchClient wiring replaces this object behind `AppServices`.
 @MainActor @Observable
-final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
+final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, ShareWorld {
+    func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? { nil }
     var isDemo: Bool
     var workspaces: [WorkspaceInfo] = []
     var questions: [Question] = []
@@ -266,6 +267,9 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel {
     }
 
     // MARK: SettingsModel
+
+    var demoPushResult: String? { nil }
+    func demoSendPush(workspaceID: String) {}
 
     func setNotifications(_ on: Bool, workspaceID: String) {
         if let i = workspaces.firstIndex(where: { $0.id == workspaceID }) { workspaces[i].notificationsOn = on }

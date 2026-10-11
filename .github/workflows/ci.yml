@@ -31,7 +31,7 @@ jobs:
       - run: scripts/test-check-extension-links.sh
   app:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4.2.2
       - name: Select pinned Xcode
@@ -87,3 +87,5 @@ jobs:
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
           -derivedDataPath .build/dd-release -configuration Release
           CODE_SIGNING_ALLOWED=NO build
+      - name: Release ignores debug launch flags
+        run: scripts/check-release-flags.sh

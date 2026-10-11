@@ -70,7 +70,7 @@ struct SettingsScreen: View {
                 ForEach(PairingScenario.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             Picker("Next answer ends as", selection: Binding(get: { model.signOutcome }, set: { model.signOutcome = $0 })) {
-                ForEach(SignOutcome.allCases, id: \.self) { Text($0.title).tag($0) }
+                ForEach(SignOutcome.liveCases, id: \.self) { Text($0.title).tag($0) }
             }
             Button("Reset Demo data") { model.resetDemoData() }.accessibilityIdentifier("demo.reset")
             Button("Leave Demo", role: .destructive) { model.exitDemo(); path = [] }
@@ -117,6 +117,17 @@ struct WorkspaceSettingsScreen: View {
                     Section("Demo") {
                         Toggle("Pretend this iPhone is offline", isOn: $simulateOffline)
                             .accessibilityIdentifier("demo.offline")
+                        Button("Send a Demo notification") { model.demoSendPush(workspaceID: ws.id) }
+                            .accessibilityIdentifier("demo.push")
+                        if let result = model.demoPushResult {
+                            Text(verbatim: result).font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("demo.push.result")
+                        }
+                    }
+                }
+                if let report, report.incomplete {
+                    Section {
+                        Label("Removal incomplete. This workspace is still on this iPhone. Try again.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(OC.warn).accessibilityIdentifier("settings.leave.incomplete")
                     }
                 }
                 Section {
@@ -125,7 +136,7 @@ struct WorkspaceSettingsScreen: View {
                 } footer: {
                     Text("Removing a workspace only affects this iPhone. To cut off a lost device, revoke it on your primary.")
                 }
-            } else if let report {
+            } else if let report, !report.incomplete {
                 Section {
                     Label("Removed from this iPhone", systemImage: "checkmark.circle.fill").foregroundStyle(OC.ok)
                         .accessibilityIdentifier("settings.leave.done")

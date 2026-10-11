@@ -21,6 +21,7 @@ extension WorkspaceInfo {
 
     /// D10: why answering is off for this workspace, nil when allowed.
     var answerBlock: String? {
+        if let message = lifecycle.message { return message }
         if !scopes.contains(.decide) { return "This iPhone may not answer for this workspace." }
         switch connection {
         case .online: return nil
@@ -28,7 +29,7 @@ extension WorkspaceInfo {
         case .reconciling: return "Reconnecting · answers are off until the workspace is checked."
         }
     }
-    var isLive: Bool { if case .online = connection { true } else { false } }
+    var isLive: Bool { if case .online = connection { lifecycle == .live } else { false } }
 }
 
 extension Question {
