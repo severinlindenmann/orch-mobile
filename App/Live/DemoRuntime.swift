@@ -97,7 +97,8 @@ final class DemoRuntime {
         #endif
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: try layout(temporary: false), custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
-        await SystemDemoNotifications().purge(workspace: nil)
+        // Detached: a wedged notification daemon must never delay Home (an unanswered purge is recorded as owed and retried).
+        await SystemDemoNotifications().purge(workspace: nil)   // bounded by one 2 s deadline
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
     }
 
@@ -116,7 +117,11 @@ final class DemoRuntime {
         let layout = try layout(temporary: temporaryStorage)
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
-        await SystemDemoNotifications().purge(workspace: nil)
+        // Detached: a wedged notification daemon must never delay Home (an unanswered purge is recorded as owed and retried).
+        // One ordered task: stale purge first (the new runtime's scheduling is gated on it), then owed retries.
+        let stalePurge = Task.detached { await SystemDemoNotifications().purge(workspace: nil) }
+        await notifications.hold(until: stalePurge)
+        Task.detached { await stalePurge.value; await SystemDemoNotifications().retryOwedPurges() }
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
         let faults = ScriptedFaults()
         let env = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: faults)

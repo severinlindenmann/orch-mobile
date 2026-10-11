@@ -249,6 +249,9 @@ before any relay operation. Suspension before sealing completes leaves no partia
 - **Q4 §8.3 answer addition.** `{"state":"rejected","wsk_pub","pk_pub","rejection"}` must land in protocol-v2 §8.3 and in the
   orch-core host before real use; until then only FakeHost sends it and older devices ignore the two fields.
 
+## Notification purge owed (before the live realm ships)
+A Demo notification purge that times out is recorded as owed and retried on the next boot (`SystemDemoNotifications.setOwed`/`retryOwedPurges`). Demo accepts that. Before the live realm ships, a live Leave must report "incomplete"/pending while a notification purge is still owed for that workspace instead of reporting done.
+
 ## Signing surface: look-alike characters (PR #49)
 
 - **Localised answer sets are refused on the phone.** Option labels are checked per Unicode scalar on the exact signed
