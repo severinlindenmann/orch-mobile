@@ -276,6 +276,16 @@ struct SignSheet: View {
                 Button { Task { await model.checkWhetherReceived() } } label: { Text("Check again").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
                     .buttonStyle(.bordered).accessibilityIdentifier("sign.recheck")
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("sign.closeChecking")
+            case .notApplied:
+                stateView("eye.slash", OC.warn, "Your answer wasn't applied",
+                          "The host recorded it but did not apply it: this question is not visible to this iPhone. Nothing is sent again.", id: "sign.notApplied")
+                doneButton
+            case .needsRetry:
+                stateView("exclamationmark.arrow.circlepath", OC.warn, "Your answer was not delivered",
+                          "The relay gave up delivering it and the question is still open. Nothing is sent again unless you tap Send again: it sends the same signed answer, after checking the question.", id: "sign.needsRetry")
+                Button { Task { await model.sendAgain() } } label: { Text("Send again").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
+                    .buttonStyle(.orchProminent).accessibilityIdentifier("question.sendAgain")
+                Button("Close", action: onClose).accessibilityIdentifier("sign.closeNeedsRetry")
             case .unlockToContinue:
                 stateView("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone to sign.", id: "sign.unlock")
                 Button("Read it again and continue") { model.retryAfterUnlock() }.buttonStyle(.bordered).accessibilityIdentifier("sign.unlockRetry")

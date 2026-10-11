@@ -358,7 +358,7 @@ final class PreviewReviewModel: QuestionReviewModel {
             self.optionID = pending.optionID
             review = pending.review
             load = .loaded
-            phase = .checking
+            phase = pending.outcome == .needsRetry ? .needsRetry : .checking
         }
     }
 
@@ -420,6 +420,10 @@ final class PreviewReviewModel: QuestionReviewModel {
         case .uncertain:
             world.markUncertain(decisionID)
             phase = .checking
+        case .notDelivered:
+            // The relay ended delivery (retry_exhausted): stored, not resent until the person asks.
+            if let i = world.pendingDecisions.firstIndex(where: { $0.decisionID == decisionID }) { world.pendingDecisions[i].outcome = .needsRetry }
+            phase = .needsRetry
         case .locked:
             world.dropPending(decisionID)
             phase = .unlockToContinue
@@ -445,6 +449,15 @@ final class PreviewReviewModel: QuestionReviewModel {
         try? await Task.sleep(for: .milliseconds(600))
         let id = "d-\(questionID)"
         if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }
+        phase = .accepted
+    }
+
+    func sendAgain() async {
+        guard phase == .needsRetry else { return }
+        phase = .sending
+        try? await Task.sleep(for: .milliseconds(300))
+        let id = "d-\(questionID)"
+        if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }   // the same stored answer
         phase = .accepted
     }
 
