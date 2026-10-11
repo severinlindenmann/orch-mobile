@@ -27,6 +27,7 @@ final class LiveDrop {
     var aliases: [String: String] = [:]
     var verifying: Set<String> = []
     var objects: [String: DropObject] = [:]
+    var metadata: [String: DropMetadata] = [:]
     var downloads: [String: DropDownload] = [:]
     var rows: [DropItem] = []
     var failures: [DropUploadFailure] = []
@@ -44,7 +45,7 @@ final class LiveDrop {
         revision += 1; previewURL = nil; expiryTask?.cancel()
         if pendingDraft != nil { status = "Not sent" }
         pendingDraft = nil
-        if clear { downloads = [:]; objects = [:]; rows = []; failures = []; pendingDraft = nil; stopped = []; confirmed = []; readIDs = []; aliases = [:]; status = nil }
+        if clear { metadata = [:]; downloads = [:]; objects = [:]; rows = []; failures = []; pendingDraft = nil; stopped = []; confirmed = []; readIDs = []; aliases = [:]; status = nil }
     }
     func report(_ error: any Error) {
         if error is CancellationError || (error as? DropError) == .suspended { return }
@@ -52,7 +53,7 @@ final class LiveDrop {
         case SQLiteError.busy, TombstoneError.lockFailed: status = "Busy lock: try again"
         case DropError.rollback, DropError.integrity, DropError.malformed, DropStoreError.rollback, Refusal.badSignature, Refusal.malformed, Refusal.conflictingSnapshot,
              Refusal.staleList, Refusal.staleCard, SessionError.pairAgain, SessionError.grantConflict, SessionError.badResponse, is DropDocument.Fork, is CryptoFailure, is CryptoKitError:
-            alarm = true; status = "Verification alarm"; downloads = [:]; previewURL = nil
+            alarm = true; status = "Verification alarm"; metadata = [:]; downloads = [:]; previewURL = nil
             for index in rows.indices { rows[index].name = "Blocked item"; rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil; rows[index].verified = false }
             alarmCleanup = Task {
                 await service.invalidate()
@@ -87,7 +88,7 @@ extension LiveDrop {
                 for object in values {
                     let id = object.descriptor.object.hex
                     if objects[id]?.descriptor.version != object.descriptor.version {
-                        downloads[id] = nil; previewURL = nil
+                        metadata[id] = nil; downloads[id] = nil; previewURL = nil
                     }
                     next[id] = object
                     display.append(row(object, direction: direction))
@@ -105,16 +106,16 @@ extension LiveDrop {
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             guard usable else { return }
         }
-        guard usable, downloads[id] == nil, let object = objects[id] else { return }
+        guard usable, metadata[id] == nil, let object = objects[id] else { return }
         verifying.insert(id)
         defer { verifying.remove(id) }
         let mine = revision
         do {
-            let download = try await service.downloadVerified(object)
+            let verifiedMetadata = try await service.metadataVerified(object)
             await beforePublication?()
             guard usable, mine == revision, !Task.isCancelled,
                   objects[id]?.descriptor.version == object.descriptor.version else { return }
-            downloads[id] = download
+            metadata[id] = verifiedMetadata
             if let index = rows.firstIndex(where: { $0.id == id }) {
                 rows[index] = row(object, direction: rows[index].direction)
             }
@@ -123,7 +124,7 @@ extension LiveDrop {
 
     private func row(_ object: DropObject, direction: DropDirection) -> DropItem {
         let d = object.descriptor, download = downloads[d.object.hex]
-        let metadata = download?.metadata
+        let metadata = metadata[d.object.hex] ?? download?.metadata
         let isText = metadata?.name == "note.txt" || (metadata?.mime == "text/plain" && aliases[d.object.hex]?.hasPrefix("share-") == true)
         let kind: DropKind = metadata?.mime == "text/uri-list" ? .url : (isText ? .note : .file)
         let content = (kind == .note || kind == .url) ? download.flatMap { try? String(contentsOf: $0.url, encoding: .utf8) } : nil
@@ -144,7 +145,7 @@ extension LiveDrop {
         try await service.downloadContainer.purgeExpiredDownloads(nowMs: alarm ? .max : nowMs)
         let expired = downloads.filter { $0.value.deadlineMs <= nowMs }.map(\.key)
         for id in expired {
-            downloads[id] = nil
+            metadata[id] = nil; downloads[id] = nil
             if let index = rows.firstIndex(where: { $0.id == id }) {
                 rows[index].verified = false; rows[index].name = "Encrypted item"; rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil; rows[index].alias = nil
             }
@@ -178,9 +179,12 @@ extension LiveDrop {
         do {
             try await purge()
             guard usable, mine == revision else { return }
-            await verifyVisible(id)
-            guard usable, mine == revision, let file = downloads[id], file.deadlineMs > nowMs else { return }
-            guard file.metadata.size > 0 else { return }
+            guard let object = objects[id] else { return }
+            let file = try await service.downloadVerified(object)
+            guard usable, mine == revision, file.deadlineMs > nowMs else { return }
+            downloads[id] = file; metadata[id] = file.metadata
+            if let index = rows.firstIndex(where: { $0.id == id }) { rows[index] = row(object, direction: rows[index].direction) }
+            guard file.metadata.size > 0, file.metadata.mime != "text/uri-list" else { return }
             previewURL = file.url
             expiryTask?.cancel()
             expiryTask = Task { [weak self] in

@@ -659,6 +659,36 @@ public actor DropService {
         }
         try requireAvailable()
         try await purgeExpiredDownloads()
+        let (d, dek) = try await verifiedMetadataKey(object)
+        let blob = try await get(d.object, d.version, .blob)
+        _ = try HostAPI.expect(blob)
+        guard blob.body.count <= 26 << 20, d.contentLen == Int64(blob.body.count), d.matches(blob: blob.body) else { throw DropError.integrity }
+        let metadata = try DropMetadata.open(sealed: d.meta, dek: dek, object: d.object, version: d.version)
+        let plaintext = try DropBlob.decrypt(dek: dek, object: d.object, version: d.version, blob: blob.body, maxBytes: 26 << 20)
+        guard metadata.size == plaintext.count, plaintext.count <= Self.maxPlaintextBytes else { throw DropError.integrity }
+        try await check()
+        try await hook?("download.publish")
+        let wall = session.cfg.wall
+        try await check()
+        let file = try await session.cfg.container.writeDropVerified(plaintext, object: d.object.hex, version: d.version,
+            expiresMs: d.expiresMs, now: { wall.nowMs })
+        try await check()
+        return DropDownload(url: file.url, metadata: metadata, deadlineMs: file.deadlineMs)
+    }
+    /// Verifies metadata without fetching the blob or publishing a plaintext file.
+    public func metadataVerified(_ object: DropObject) async throws -> DropMetadata {
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.metadataVerified(object) }
+        }
+        try await check()
+        let (d, dek) = try await verifiedMetadataKey(object)
+        let metadata = try DropMetadata.open(sealed: d.meta, dek: dek, object: d.object, version: d.version)
+        guard metadata.size >= 0, metadata.size <= Self.maxPlaintextBytes else { throw DropError.integrity }
+        try await check()
+        return metadata
+    }
+
+    private func verifiedMetadataKey(_ object: DropObject) async throws -> (DropDescriptor, SymmetricKey) {
         let members = try await membership()
         let current = try await verified(object.signed, wraps: object.wraps.map(\.json), members: members)
         let d = current.descriptor
@@ -682,21 +712,10 @@ public actor DropService {
             dek = try await openKey(wraps, descriptor: d)
         }
         guard let dek else { throw DropError.unavailableKey }
-        let blob = try await get(d.object, d.version, .blob)
-        _ = try HostAPI.expect(blob)
-        guard blob.body.count <= 26 << 20, d.contentLen == Int64(blob.body.count), d.matches(blob: blob.body) else { throw DropError.integrity }
-        let metadata = try DropMetadata.open(sealed: d.meta, dek: dek, object: d.object, version: d.version)
-        let plaintext = try DropBlob.decrypt(dek: dek, object: d.object, version: d.version, blob: blob.body, maxBytes: 26 << 20)
-        guard metadata.size == plaintext.count, plaintext.count <= Self.maxPlaintextBytes else { throw DropError.integrity }
         try await check()
-        try await hook?("download.publish")
-        let wall = session.cfg.wall
-        try await check()
-        let file = try await session.cfg.container.writeDropVerified(plaintext, object: d.object.hex, version: d.version,
-            expiresMs: d.expiresMs, now: { wall.nowMs })
-        try await check()
-        return DropDownload(url: file.url, metadata: metadata, deadlineMs: file.deadlineMs)
+        return (d, dek)
     }
+
     private func openKey(_ wraps: [DropWrapRecord], descriptor d: DropDescriptor) async throws -> SymmetricKey? {
         for w in wraps {
             guard w.object == d.object, w.version == d.version else { throw DropError.integrity }

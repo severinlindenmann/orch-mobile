@@ -176,7 +176,7 @@ struct DropItemScreen: View {
                             .disabled(!drop.canOperate).accessibilityIdentifier("drop.claim")
                     }
                     Button("Open") { Task { await drop.open(item.id) } }
-                        .disabled(!drop.usable || !item.verified || item.bytes == 0 || item.kind == .url)
+                        .disabled(!drop.usable || !item.verified || item.bytes == 0)
                         .accessibilityIdentifier("drop.open")
                 }
                 if let text = item.text {

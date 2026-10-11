@@ -107,3 +107,14 @@ extension DropServiceTests {
         } catch { task.cancel(); await gate.release(); throw error }
     }
 }
+
+extension DropServiceTests {
+    @Test func metadataVerificationDoesNotPublishPlaintext() async throws {
+        let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
+        let object = try await service.send(Data("private".utf8), name: "private")
+        #expect(try await service.metadataVerified(object).name == "private")
+        #expect(try await phone.container.database().query("SELECT downloaded_at FROM drop_heads WHERE object=?", [.text(object.descriptor.object.hex)]).first?.int("downloaded_at") == nil)
+        let file = try await service.downloadVerified(object)
+        #expect(try Data(contentsOf: file.url) == Data("private".utf8))
+    }
+}
