@@ -263,3 +263,5 @@ before any relay operation. Suspension before sealing completes leaves no partia
   right-to-left word directly next to digits or Latin. Accepted false negatives: Turkish dotless ı (U+0131), superscript and
   subscript digits, vulgar fractions, ™ and ℠ are not marked in prose ("m²", "½"); Cyrillic/Greek words that do not read as
   Latin are not marked next to Latin ("Объединить PR 12?"). Fix by: orch-mobile (full UTS #39 data if this proves too loose).
+
+- **Signing surface, accepted prose risks (PR #49 reviews):** right-to-left words in question prose are marked only when directly next to digits or Latin; implicit bidi reordering elsewhere in prose is not marked (option labels refuse all RTL; bidi controls are always marked). A dotless ı is unmarked only on lines with Turkish-specific letters. Prose marking is best effort; only option labels fail closed.

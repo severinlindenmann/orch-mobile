@@ -109,6 +109,18 @@ import Testing
         #expect(SafeText.optionRefusal(["Deploy", "Ship\u{3163}t"]) == .nonStandard)
     }
 
+    @Test func finalRoundLeftovers() {
+        // Stroked Latin-1 letters fold to their base letter, so these pairs are ambiguous.
+        #expect(SafeText.optionRefusal(["Ok", "\u{00D8}k"]) == .ambiguous)      // Øk
+        #expect(SafeText.optionRefusal(["Do it", "\u{00D0}o it"]) == .ambiguous) // Ðo it
+        // Dotless i in an otherwise plain-ASCII word reads as "i" and is marked; in a Turkish word it is not.
+        #expect(marked("Turn \u{0131}t on"))
+        #expect(!marked("Kap\u{0131} a\u{00E7}\u{0131}k"))                     // Kapı açık
+        // Superscript letter n is not a prose exemption.
+        #expect(marked("2\u{207F} items"))
+        #expect(!marked("10 m\u{00B2}"))
+    }
+
     @Test func reviewSpoofsMarkedInProse() {
         let spoofs = [
             "\u{043E}\u{043A}",                                        // ок

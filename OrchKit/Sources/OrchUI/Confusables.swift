@@ -85,6 +85,8 @@ enum Confusables {
         add("ıɑɡǀɩ", "iagli")
         m[0x01C3] = "!"
         m[0x212A] = "K"
+        // Stroked Latin-1 letters (allowed in labels) that read as their base letter: skeleton only.
+        m[0x00D8] = "O"; m[0x00F8] = "o"; m[0x00D0] = "D"
         // Punctuation and symbols
         add("\u{201A}\u{037E}\u{0387}\u{0589}\u{05C3}\u{2236}\u{A789}\u{02F8}\u{2024}\u{2044}\u{2215}\u{2216}\u{2223}\u{05C0}\u{2212}\u{2010}\u{2011}\u{2012}\u{02D7}\u{02BC}\u{2032}\u{A78C}\u{02C8}\u{02B9}", ",;.:::::.//\\ll-----'''''")
         m[0x2033] = "\""
@@ -131,7 +133,8 @@ enum Confusables {
     /// Accepted risk, listed in gaps.md; option labels stay strict (`strictFlags`).
     private static func proseCompatExempt(_ v: UInt32) -> Bool {
         switch v {
-        case 0xB2, 0xB3, 0xB9, 0x2070, 0x2074...0x208E, 0xBC...0xBE, 0x2150...0x215F, 0x2189, 0x2120, 0x2122: return true
+        // 0x207F (superscript letter n) is deliberately not exempt.
+        case 0xB2, 0xB3, 0xB9, 0x2070, 0x2074...0x207E, 0x2080...0x208E, 0xBC...0xBE, 0x2150...0x215F, 0x2189, 0x2120, 0x2122: return true
         default: return false
         }
     }
@@ -213,8 +216,12 @@ enum Confusables {
         // Per line: any Latin word; scripts with real prose (a single-script word that does not read as Latin).
         var lineHasLatin = [Bool](repeating: false, count: line + 1)
         var native = [Set<Script>](repeating: [], count: line + 1)
+        // Turkish-specific letters (ç ğ ş ö ü İ and capitals) on a line make a dotless ı there read as Turkish.
+        var lineIsTurkish = [Bool](repeating: false, count: line + 1)
+        let turkishLetters: Set<UInt32> = [0xE7, 0xC7, 0x11F, 0x11E, 0x15F, 0x15E, 0xF6, 0xD6, 0xFC, 0xDC, 0x130]
         for w in words {
             if w.isLatin { lineHasLatin[w.line] = true }
+            if w.letters.contains(where: { turkishLetters.contains(scalars[$0.0].value) }) { lineIsTurkish[w.line] = true }
             if w.scripts.count == 1, let sc = w.scripts.first, sc != .latin, sc != .cjk, !w.readsAsLatin { native[w.line].insert(sc) }
         }
         for n in words.indices where !words[n].letters.isEmpty {
@@ -239,8 +246,11 @@ enum Confusables {
             } else if let sc = scripts.first {
                 switch sc {
                 case .latin:
-                    // U+0131 dotless i is ordinary Turkish: skeleton only (accepted risk, gaps.md).
-                    for (k, _) in w.letters where scalars[k].value > 0x7F && scalars[k].value != 0x131 && prototype[scalars[k].value] != nil {
+                    // U+0131 dotless i is ordinary Turkish: left unmarked when its word has other non-ASCII letters ("açık")
+                    // or its line has Turkish-specific letters ("kapısı açık"); otherwise ("Turn ıt on") it reads as "i".
+                    let turkish = lineIsTurkish[w.line] || w.letters.contains { scalars[$0.0].value > 0x7F && scalars[$0.0].value != 0x131 }
+                    for (k, _) in w.letters where scalars[k].value > 0x7F
+                        && (scalars[k].value != 0x131 || !turkish) && prototype[scalars[k].value] != nil {
                         out[k] = markerLabel("look-alike", scalars[k])
                     }
                 case .cjk:
