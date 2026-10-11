@@ -20,7 +20,11 @@ struct HomeScreen: View {
         self.services = services
         self.options = options
         _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0, publishDemo: options.shareDemoTargets) })
-        _path = State(initialValue: initial.path)
+        // A deep link to a tab root (drop, settings, needs-you) is held back and applied to its tab once the tab bar exists, so the
+        // screen (and e.g. a confirm alert it presents on appear) is never created twice, first on Home and then in its tab.
+        let isTabRoot: Bool = switch initial.path.first { case .drop?, .settings?, .needsYou?: true; default: false }
+        _path = State(initialValue: isTabRoot ? [] : initial.path)
+        _pendingRoute = State(initialValue: isTabRoot ? initial.path : [])
         _forceWelcome = State(initialValue: initial.forceWelcome)
         _pairing = State(initialValue: initial.presentPairing
                          ? PairingPresentation(model: services.makePairing(start: initial.pairing)) : nil)
@@ -32,7 +36,7 @@ struct HomeScreen: View {
     @State private var dropPath: [Route] = []
     @State private var settingsPath: [Route] = []
     @State private var composeOnDropTab = false
-    @State private var migratedInitialRoute = false
+    @State private var pendingRoute: [Route]
 
     /// With tabs, Drop / Settings / Questions are tabs, never a second copy pushed on Home: switch tabs instead.
     private func select(_ route: Route) {
@@ -44,23 +48,22 @@ struct HomeScreen: View {
         }
     }
 
-    /// A deep-link route that targets a tab root (drop, settings, needs-you) selects that tab and its path once tabs exist.
-    private func adoptInitialRoute() {
-        guard showsTabs, !migratedInitialRoute else { return }
-        migratedInitialRoute = true
-        guard let first = path.first else { return }
-        let rest = Array(path.dropFirst())
-        switch first {
-        case .drop: path = []; dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
-        case .settings: path = []; settingsPath = rest; tab = .settings
-        case .needsYou: path = []; questionsPath = rest; tab = .questions
-        default: break
-        }
-    }
-
-    /// Tabs exist once there is something to navigate (workspaces or the Demo); Welcome and the empty Home stay a single stack.
+    /// Tabs exist once there is something to navigate (workspaces); Welcome and the empty Home stay a single stack.
     private var showsTabs: Bool {
         !(forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo)) && !services.home.workspaces.isEmpty
+    }
+
+    /// Applies a held deep-link route to its tab once tabs exist.
+    private func adoptInitialRoute() {
+        guard showsTabs, let first = pendingRoute.first else { return }
+        let rest = Array(pendingRoute.dropFirst())
+        pendingRoute = []
+        switch first {
+        case .drop: dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
+        case .settings: settingsPath = rest; tab = .settings
+        case .needsYou: questionsPath = rest; tab = .questions
+        default: break
+        }
     }
 
     private func startPairing() { pairing = PairingPresentation(model: services.makePairing(start: nil)) }
