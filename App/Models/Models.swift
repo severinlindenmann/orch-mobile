@@ -290,6 +290,8 @@ enum PairingAlarm: Hashable, Sendable {
 
 /// Fixed app text only: the host never supplies refusal wording.
 enum PairingRefusal: String, Hashable, Sendable {
+    /// An unattributed refusal (protocol-v2 section 8.3, G3b): "The pairing was refused", naming nobody.
+    case refused
     case rejectedOnHost, rejectedOnPrimary, linkUsed, otherPerson, invalidLink, relayNotConnected, timedOut
     case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
 }
@@ -305,8 +307,9 @@ enum PairingState: Hashable, Sendable {
     case expired
     case alarm(PairingAlarm)
     case refused(PairingRefusal)
-    /// The primary device declined to sign this iPhone (a PK-signed rejection the client verified, never the host's word alone).
-    case denied
+    /// "Denied by the owner": the owner's PK-signed rejection of exactly this attempt verified (G3b). `owner` is a short tag of the
+    /// pinned owner's person id (from the link's pk_pin), never the host-supplied primary label.
+    case denied(owner: String)
 }
 
 enum PairingScenario: String, CaseIterable, Hashable, Sendable {

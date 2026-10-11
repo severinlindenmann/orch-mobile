@@ -32,7 +32,7 @@ final class LivePairingModel: PairingFlowModel {
     @ObservationIgnored private var panelTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var invitationRevision = 0
-    @ObservationIgnored private var rejectedBy: PairingRefusal = .rejectedOnHost
+    @ObservationIgnored private var rejectedBy: PairingRefusal = .refused
     @ObservationIgnored private var joinedReported = false
     /// Counts every state the stream delivered: a sampled state read before a newer streamed one is dropped.
     @ObservationIgnored private var streamSeq = 0
@@ -92,7 +92,7 @@ final class LivePairingModel: PairingFlowModel {
         let mine = generation
         state = .connecting
         joinedReported = false
-        rejectedBy = .rejectedOnHost
+        rejectedBy = .refused
         beginTask?.cancel()
         beginTask = Task {
             guard let runtime = await services.demoRuntime(), mine == generation else { return }
@@ -178,10 +178,10 @@ final class LivePairingModel: PairingFlowModel {
             switch alarm.kind {
             case .echoWrongKey: state = .alarm(.echoWrongKey)
             case .r1Challenge: state = .alarm(.r1Attack(primaryLabel: alarm.primaryLabel))
-            case .pinSubstitution, .regression: state = .alarm(.substitution)
+            case .pinSubstitution, .regression, .foreignRejection: state = .alarm(.substitution)
             }
         case .rejected: state = .refused(rejectedBy)
-        case .denied: state = .denied
+        case .denied(let owner): state = .denied(owner: String(owner.hex.prefix(8)))
         case .expired: state = .expired
         case .failed(let f):
             switch f {
@@ -243,15 +243,13 @@ final class LivePairingModel: PairingFlowModel {
     func primaryReject() {
         switch state {
         case .comparingPrimary, .waitingPrimary:
-            // An opened request ends through the primary's signed rejection (the client shows `denied` once it verifies);
-            // only the "nothing opened yet" path below is decided here.
+            // An opened request ends through the owner's PK-signed rejection: the client shows "Denied by the owner" only once it
+            // verifies for this attempt (G3b), and an unverifiable one stays unattributed. Only the "nothing opened yet" path below
+            // is decided here (the panel itself plays the primary's human).
             Task {
                 guard let runtime = await services.demoRuntime() else { return }
                 let device = runtime.env.deviceID
                 if let prompt = await runtime.primary.openPrompts().first(where: { $0.deviceID == device }) {
-                    // Before the phone pinned the challenge the client cannot bind the signed rejection and ends on plain
-                    // `rejected`; this panel knows the primary said no, so that outcome is worded as the primary's.
-                    rejectedBy = .rejectedOnPrimary
                     try? await runtime.primary.reject(request: prompt.requestID, relay: runtime.env.relay)
                 } else {
                     // Nothing was opened yet: the human at the primary turns the request down, so the pairing ends here.
