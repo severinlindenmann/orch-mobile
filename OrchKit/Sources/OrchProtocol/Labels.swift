@@ -57,6 +57,8 @@ public enum Label {
     public static let hSASCert = "orch/v2/sas-cert|"
     public static let hDEKCommit = "orch/v2/dek-commit|"
     public static let hCardKeyCommit = "orch/v2/card-key-commit|"
+    /// Q10 (one `WK` per epoch, ever): the member list's `wk_commit` (P3-D7 follow-up; relay G2b).
+    public static let hWKCommit = "orch/v2/wk-commit|"
     public static let hDropParent = "orch/v2/drop-parent|"
     public static let hWSEnvelope = "orch/v2/ws-envelope-hash|"
     public static let hQuestion = "orch/v2/question|"

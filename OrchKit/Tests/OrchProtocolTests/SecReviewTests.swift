@@ -78,6 +78,7 @@ import Testing
         let sorted = ids.sorted { $0.hex < $1.hex }
         return try! MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": .int(epoch),
                                               "list_seq": .int(seq), "issued_ms": 1, "persons": .array(persons.map { .string($0.hex) }),
+                                              "wk_commit": testWKCommit(ws, epoch),
                                               "members": .array(sorted.map { ["device_id": .string($0.hex), "person_id": .string(person.hex),
                                                                                "scopes": .array(scopes.map { .string($0) })] })])
     }
@@ -112,7 +113,7 @@ import Testing
         #expect(throws: Refusal.otherPerson) { try list(ws, epoch: 1, seq: 1, ids: [ida], person: me, persons: [bobID]).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
         dir.certs[idc] = try cert(bob, bobDev); dir.grants.insert(.init(device: idc, epoch: 2))
         let withBob = try MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": 2, "list_seq": 2,
-                                                    "issued_ms": 1, "persons": [.string(bobID.hex)],
+                                                    "issued_ms": 1, "persons": [.string(bobID.hex)], "wk_commit": testWKCommit(ws, 2),
                                                     "members": .array([(ida, me), (idc, bobID)].sorted { $0.0.hex < $1.0.hex }.map {
                                                         ["device_id": .string($0.0.hex), "person_id": .string($0.1.hex), "scopes": ["look"]] })])
         #expect(throws: Refusal.otherPerson) { try withBob.checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10) }   // no account

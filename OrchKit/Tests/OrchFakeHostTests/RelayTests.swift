@@ -236,8 +236,14 @@ import OrchProtocol
         // The exact same body again is the committed result; other bytes for that list_seq are stale_list.
         #expect(try await w.host.sendMembership(committed, relay: relay, session: w.hostSession) == (2, 1))
         await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .staleList))) { try await w.publish(roster2, epoch: 1, listSeq: 2) }
-        // A skipped epoch, a removal without the bump: refused with the specific code.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 3, listSeq: 3) }
+        // An epoch more than 2^16 ahead (Q10), a removal without the bump, another WK at the current epoch: refused with the specific code.
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .badEpoch))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 65_538, listSeq: 3) }
+        var otherKey = try await w.host.membershipBody(roster: roster2, epoch: 1, listSeq: 3).object!
+        otherKey["member_list"] = try await w.host.memberList(roster2.map { ($0.0.deviceID, $0.1) }, epoch: 1, listSeq: 3,
+                                                              wkCommit: WKCommit.compute(workspace: w.ws, epoch: 1, wk: SymmetricKey(size: .bits256)))
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .wkCommitChanged))) {
+            try await w.host.sendMembership(.object(otherKey), relay: relay, session: w.hostSession)
+        }
         await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .rotationRequired))) { try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 1, listSeq: 3) }
         // A grant at another epoch than the list's: not_for_this_device. Other bytes for a committed (device, epoch): grant_conflict.
         var wrongEpoch = try await w.host.membershipBody(roster: [(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 3).object!

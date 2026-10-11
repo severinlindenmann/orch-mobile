@@ -15,6 +15,9 @@ enum FixtureCoverage {
         case pr4 = "PR4 pairing/primary/cert_rejection"
         /// Bridge: 202 acceptance, 429 quota/rate limiting, 409 stale_epoch and the rest of the bridge refusals.
         case pr5 = "PR5 bridge 202/429/stale_epoch"
+        /// Q10 (one WK per epoch, ever; orch-relay G2b): member lists carry `wk_commit` and the sequence rules changed. Cases
+        /// whose expected outcome Q10 changes wait for the relay's G2b fixtures (TODO(G2b): re-copy and drop these overrides).
+        case g2b = "G2b wk_commit / Q10 sequence rules"
     }
 
     /// Pending, by fixture file.
@@ -26,8 +29,11 @@ enum FixtureCoverage {
     /// PRs whose files are all replayable now.
     static let done: Set<PR> = [.pr3, .pr4, .pr5]
 
-    /// Per-case overrides of `pending` (case id -> PR), for cases whose enabling PR differs from the rest of their file. None yet.
-    static let caseOverrides: [String: PR] = [:]
+    /// Per-case overrides (case id -> PR), for cases whose enabling PR differs from the rest of their file. An override wins over
+    /// `replayable`: the case is pending even though its file replays.
+    /// - membership.json#refusal_409_bad_epoch: a first list with `list_seq = 2`, refused before Q10; Q10 accepts any first
+    ///   `list_seq >= 1` (covered by local_g2b_vectors.json `member_list_sequence/first_list_any_seq` until G2b lands).
+    static let caseOverrides: [String: PR] = ["membership.json#refusal_409_bad_epoch": .g2b]
 
     /// Fixture files whose cases the FakeRelay replays today (all cases of the file; see RelayReplayTests).
     static let replayable: Set<String> = ["session_challenge.json", "session_login.json", "session_logout.json",

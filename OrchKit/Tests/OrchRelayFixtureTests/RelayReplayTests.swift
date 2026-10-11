@@ -72,9 +72,9 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
 @Suite struct FixtureReplayTests {
     static let files = FixtureSchemaTests.files
     /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 120 cases of the twelve PR3 directory and
-    /// membership files, the 104 cases of the nine PR4 files, and 15 bridge_device_post + 9 bridge_device_poll + 14
-    /// bridge_host_post cases (PR5).
-    static let expectedReplayed = 18 + 120 + 104 + 38
+    /// membership files less the one Q10 override (SkipList `caseOverrides`), the 104 cases of the nine PR4 files, and
+    /// 15 bridge_device_post + 9 bridge_device_poll + 14 bridge_host_post cases (PR5).
+    static let expectedReplayed = 18 + 119 + 104 + 38
 
     /// The instant of every fixture case that has one (all 386a6cb cases use 1790000000000). The three condition-only cases
     /// (victim_person_without_member, other_workspace_person_refused x2) carry no `given.now_ms`; they replay at that same instant.
@@ -201,8 +201,9 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
             }
         }
 
-        if c.given["scenario"]?.string == "exact_bytes_already_committed" { try await check(f, c, relay) }   // the first, committing send
-        try await check(f, c, relay)
+        let sent = try Self.sentBody(f, c)
+        if c.given["scenario"]?.string == "exact_bytes_already_committed" { try await check(f, c, relay, body: sent) }   // the first, committing send
+        try await check(f, c, relay, body: sent)
         if mustBeConsumed, let challenge { #expect(!(await relay.outstandingChallenges.contains(challenge)), "\(id): the challenge is consumed") }
         if f.fileName == "session_logout.json", c.name == "success" {
             #expect(await relay.liveSessionTokens.isEmpty, "\(id): the token is gone after logout")
@@ -293,12 +294,19 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         return true
     }
 
-    func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay) async throws {
+    /// The request body as sent: byte for byte, except that a membership publication's `wsk_a` list gains `wk_commit` until the
+    /// G2b fixtures land (PreG2b; computed once per case, so a resend is the same bytes).
+    static func sentBody(_ f: Fixtures.File, _ c: Fixtures.Case) throws -> Data {
+        if f.fileName == "membership.json", let j = c.request["json"]?.jsonValue { return try canonicalJSON(try PreG2b.upgradeBody(j)) }
+        return try body(c.request)
+    }
+
+    func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay, body sent: Data? = nil) async throws {
         let id = caseID(f, c)
         var headers: [String: String] = [:]
         for (k, v) in c.request["headers"]?.object ?? [:] { if let s = v.string { headers[k] = s } }
         let reply = try await relay.send(WireRequest(method: c.request["method"]?.string ?? "", target: try Self.target(c.request), headers: headers,
-                                                     body: try Self.body(c.request), clientAddress: "fixture"))
+                                                     body: try sent ?? Self.body(c.request), clientAddress: "fixture"))
         let text = String(decoding: reply.body, as: UTF8.self)
         #expect(Int64(reply.status) == c.response["status"]?.int, "\(id) status \(reply.status) \(text)")
         // headers: exactly the fixture's response headers (names case-insensitive), nothing extra
@@ -333,10 +341,10 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
     @Test func replayableFixturesReplayAgainstFakeRelay() async throws {
         var n = 0
         for f in Self.files where FixtureCoverage.replayable.contains(f.fileName) {
-            for c in f.cases { try await replay(f, c); n += 1 }
+            for c in f.cases where FixtureCoverage.caseOverrides[caseID(f, c)] == nil { try await replay(f, c); n += 1 }
         }
         #expect(n == Self.expectedReplayed)
-        #expect(Self.expectedReplayed == FixtureCoverage.expectedCaseCount - FixtureCoverage.pending.keys.reduce(0) { acc, name in
+        #expect(Self.expectedReplayed == FixtureCoverage.expectedCaseCount - FixtureCoverage.caseOverrides.count - FixtureCoverage.pending.keys.reduce(0) { acc, name in
             acc + (Self.files.first { $0.fileName == name }?.cases.count ?? 0) })
     }
 }
