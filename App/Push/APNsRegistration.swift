@@ -129,6 +129,10 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// Without this iOS shows nothing while orch is in the foreground (the owner's "test notifications showed nothing").
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void) {
+        // Defense in depth: nothing from a removed or quarantined workspace is shown, even if it was scheduled earlier.
+        if PresentationGate.isBlocked(thread: notification.request.content.threadIdentifier, identifier: notification.request.identifier) {
+            completionHandler([]); return
+        }
         completionHandler([.banner, .list, .sound])
     }
 
@@ -145,5 +149,18 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // Visible state only (settings); never a crash, never retried in a tight loop.
         Self.lastRegistrationError = (error as NSError).localizedDescription
+    }
+}
+
+/// Workspaces that are removed (Leave, reset) or quarantined; foreground presentation checks it. Thread-safe: read from the notification delegate.
+enum PresentationGate {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var blocked: Set<String> = []
+    static func block(_ ws: String) { lock.lock(); blocked.insert(ws); lock.unlock() }
+    static func unblock(_ ws: String) { lock.lock(); blocked.remove(ws); lock.unlock() }
+    static func blockAll(_ ws: [String]) { lock.lock(); blocked.formUnion(ws); lock.unlock() }
+    static func isBlocked(thread: String, identifier: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return blocked.contains { $0 == thread || identifier.hasPrefix("demo/\($0)/") }
     }
 }

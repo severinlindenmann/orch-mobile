@@ -27,8 +27,8 @@ struct SettingsScreen: View {
             if !model.pendingServerCleanups.isEmpty {
                 Section {
                     ForEach(model.pendingServerCleanups) { item in
-                        Label("\(SafeText.inline(item.name, limit: 40)): server cleanup pending", systemImage: "arrow.triangle.2.circlepath")
-                            .accessibilityIdentifier("settings.serverCleanup.\(item.ws)")
+                        Label("A removed workspace: server cleanup pending", systemImage: "arrow.triangle.2.circlepath")
+                            .accessibilityIdentifier("settings.serverCleanup.\(item.id)")
                     }
                     Button("Retry now") { Task { await model.retryServerCleanup() } }
                         .accessibilityIdentifier("settings.serverCleanup.retry")

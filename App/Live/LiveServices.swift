@@ -30,8 +30,6 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var notificationStatus: NotificationStatus = .notAsked
     private(set) var pushDiagnostics = ""
     private(set) var pendingServerCleanups: [PendingServerCleanup] = []
-    /// Demo: the "Pretend this iPhone is offline" switch of the last Leave; server cleanup stays pending until "Retry now".
-    @ObservationIgnored private var pretendOffline = false
     @ObservationIgnored private(set) var cleanupStore: ServerCleanupStore
     var cleanupDefaults: UserDefaults { resetFlags }
     /// The server-side half of Leave (push unsubscribe, membership removal). Demo simulates it; it throws while offline.
@@ -70,6 +68,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func canUse(_ id: String) -> Bool { active && isLive(id) }
     func register(_ ws: LiveWorkspace) {
         ws.services = self
+        // A re-paired workspace is a new membership: an old cleanup must never reach it.
+        pendingServerCleanups = cleanupStore.remove(ws: ws.workspaceID.hex)
+        PresentationGate.unblock(ws.workspaceID.hex)
         lifecycle[ws.info.id] = .live
         live.append(ws)
     }
@@ -592,15 +593,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     // MARK: Pending server cleanup (U9)
 
-    private func enqueueServerCleanup(name: String, ws: String) {
-        pendingServerCleanups = cleanupStore.add(PendingServerCleanup(ws: ws, name: name, since: Date()))
+    private func enqueueServerCleanup(ws: String, generation: Int64) {
+        pendingServerCleanups = cleanupStore.add(PendingServerCleanup(ws: ws, generation: generation, since: Date()))
     }
 
     /// Back online: tries each pending server-side cleanup once. Successes leave the list; failures stay for the next try.
     func retryServerCleanup() async {
-        pretendOffline = false
         for item in cleanupStore.load() {
-            do { try await serverCleanup(item); pendingServerCleanups = cleanupStore.remove(ws: item.ws) }
+            do { try await serverCleanup(item); pendingServerCleanups = cleanupStore.remove(ws: item.ws, generation: item.generation) }
             catch { continue }
         }
         pendingServerCleanups = cleanupStore.load()
@@ -621,7 +621,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         // A failed share-outbox journal must not block the local wipe (U9: Leave never depends on anything but this phone). The wipe's
         // own phase 1 publishes the tombstone to both App Groups first and fails the whole wipe if it cannot, so nothing is
         // reported removed without a durable tombstone.
-        _ = beforeWorkspaceRemoval?(workspaceID)
+        var journaled = beforeWorkspaceRemoval?(workspaceID) != false
         let canDeregister = ws.info.scopes.contains(.operate)
         await waitForLifecycle()
         await ws.stop()
@@ -634,12 +634,16 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             transition(workspaceID, to: .removalIncomplete)
             return LeaveReport(workspaceName: name, server: .pendingOffline, incomplete: true, failure: "\(error)")
         }
+        PresentationGate.block(ws.workspaceID.hex)
+        // The wipe is durable; retry the share-outbox journal now and say so if it is still unfinished (publishTargets keeps retrying).
+        if !journaled { journaled = beforeWorkspaceRemoval?(workspaceID) != false }
+        if !journaled { shareStatus = "Share cleanup for a removed workspace is unfinished. It will be retried." }
         transition(workspaceID, to: .removed)
         live.removeAll { $0.info.id == workspaceID }
         heldDropItems.removeAll { $0.workspaceID == workspaceID }
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
         let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
-        if server == .pendingOffline { pretendOffline = true; enqueueServerCleanup(name: name, ws: ws.workspaceID.hex) }
+        if server == .pendingOffline { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
         return LeaveReport(workspaceName: name, server: server)
     }
 
@@ -657,6 +661,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let old { failedReset = old }
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
+        PresentationGate.blockAll(workspaces.map { $0.workspaceID.hex })
         runtime = nil; live = []; heldDropItems = []; pendingDecisions = []; submitted = [:]
         reconcileTasks.values.forEach { $0.cancel() }
         reconcileTasks = [:]; reconcileSerials = [:]

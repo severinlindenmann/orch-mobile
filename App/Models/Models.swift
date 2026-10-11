@@ -344,9 +344,9 @@ struct LeaveReport: Hashable, Sendable {
 
 /// Server-side cleanup of a workspace that is already gone from this iPhone (U9). Holds no key material.
 struct PendingServerCleanup: Codable, Hashable, Sendable, Identifiable {
-    var id: String { ws }
+    var id: String { "\(ws)/\(generation)" }
     let ws: String
-    let name: String
+    let generation: Int64
     let since: Date
 }
 

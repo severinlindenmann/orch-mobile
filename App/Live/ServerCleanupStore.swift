@@ -1,7 +1,7 @@
 import Foundation
 
 /// Durable list of workspaces removed locally whose server-side cleanup (push unsubscribe, membership removal) is still pending (U9).
-/// Names and ids only: no keys, no tokens.
+/// Workspace id and generation only (no names, no keys, no tokens): the list outlives "Removed from this iPhone" in a backed-up UserDefaults, so it must not say what was removed.
 struct ServerCleanupStore {
     private let defaults: UserDefaults
     private static let key = "orch.serverCleanup.pending"
@@ -19,14 +19,14 @@ struct ServerCleanupStore {
 
     @discardableResult
     func add(_ item: PendingServerCleanup) -> [PendingServerCleanup] {
-        var items = load().filter { $0.ws != item.ws }
+        var items = load().filter { $0.id != item.id }
         items.append(item)
         save(items); return items
     }
 
     @discardableResult
-    func remove(ws: String) -> [PendingServerCleanup] {
-        let items = load().filter { $0.ws != ws }
+    func remove(ws: String, generation: Int64? = nil) -> [PendingServerCleanup] {
+        let items = load().filter { $0.ws != ws || (generation != nil && $0.generation != generation) }
         save(items); return items
     }
 
