@@ -123,7 +123,6 @@ package enum CertQueue {
 
     package static func reject(_ r: inout Record, signed: JSONValue, pk: SigningPublicKey, nowMs now: Int64) -> Outcome {
         guard r.isRetained(at: now) else { return .refuse(.notFound) }
-        guard r.person == Identifiers.personID(pk) else { return .refuse(.otherPerson) }
         do { _ = try CertRejection.check(signed, pk: pk, request: r.object) }
         catch let e as Refusal { return .refuse(RelayRefusal.Code(rawValue: e.rawValue) ?? .malformed) }
         catch { return .refuse(.malformed) }

@@ -118,7 +118,7 @@ import OrchTestVectors
     }
 
     /// Success-path signed objects verify under their EXPECTED signer only (not any vector key): person-signed kinds
-    /// (device_cert, revocation, cert_challenge, card) under the key whose person id equals the object's person/owner id;
+    /// (device_cert, revocation, cert_challenge, cert_rejection, card) under the key whose person id equals the object's person/owner id;
     /// workspace-key kinds (member_list, cert_request, wk_grant) under `wsk_a` for the vectors' workspace 705d40ab….
     /// Pure wire: no product behaviour involved.
     @Test func signedObjectsInSuccessCasesVerify() throws {
@@ -127,7 +127,8 @@ import OrchTestVectors
         let byPerson = Dictionary(uniqueKeysWithValues: ["person_alice.sig", "person_bob.sig"].map { (Identifiers.personID(keys[$0]!).hex, keys[$0]!) })
         let wskA = keys["wsk_a.sig"]!
         let kinds = Dictionary(uniqueKeysWithValues: SignedKind.allCases.map { ($0.rawValue, $0) })
-        let personField = ["device_cert": "person_id", "revocation": "person_id", "cert_challenge": "person_id", "card": "owner_person_id"]
+        let personField = ["device_cert": "person_id", "revocation": "person_id", "cert_challenge": "person_id", "cert_rejection": "person_id",
+                           "card": "owner_person_id"]
         let wskKinds: Set<String> = ["member_list", "cert_request", "wk_grant"]
         var verified: [String: Int] = [:]
         let okNames: Set<String> = ["success", "exact_retry", "resigned_identical", "first_card_without_session"]
@@ -135,8 +136,6 @@ import OrchTestVectors
         func walk(_ v: JSONValue, _ id: String) {
             guard let m = v.object else { if let a = v.array { for x in a { walk(x, id) } }; return }
             guard let o = m["o"]?.object, let kind = o["kind"]?.string, m["sig"] != nil else { for x in m.values { walk(x, id) }; return }
-            // TODO(PR4): cert_rejection has no SignedKind/label support yet; excluded from `verified` and from the pinned counts.
-            if kind == "cert_rejection" { return }
             let key: SigningPublicKey?
             if let f = personField[kind] { key = o[f]?.string.flatMap { byPerson[$0] } }
             else if wskKinds.contains(kind) {
@@ -156,7 +155,7 @@ import OrchTestVectors
             }
         }
         // pinned: a fixture re-copy that changes these counts must be reviewed
-        let expected: [String: Int] = ["card": 3, "cert_challenge": 4, "cert_request": 2, "device_cert": 6, "member_list": 3, "revocation": 4, "wk_grant": 5]
+        let expected: [String: Int] = ["card": 3, "cert_challenge": 4, "cert_rejection": 3, "cert_request": 2, "device_cert": 6, "member_list": 3, "revocation": 4, "wk_grant": 5]
         #expect(verified == expected, "\(verified)")
     }
 }
@@ -184,13 +183,20 @@ import OrchTestVectors
         #expect(pendingIDs.count + supportedIDs.count == FixtureCoverage.expectedCaseCount)
     }
 
-    /// PR2 enables exactly the three session files. A PR that enables more must edit this set with the skip list.
+    /// PR2 enables the three session files, PR4 the nine pairing/primary files. A PR that enables more must edit this set with the skip list.
     @Test func replayableSetMatchesPRStage() {
-        #expect(FixtureCoverage.replayable == ["session_challenge.json", "session_login.json", "session_logout.json"])
+        #expect(FixtureCoverage.replayable == ["session_challenge.json", "session_login.json", "session_logout.json",
+                                              "accounts.json", "pair_device_post.json", "pair_host_post.json", "pair_poll.json",
+                                              "cert_challenge.json", "cert_rejection.json", "cert_request_get.json",
+                                              "cert_requests_poll.json", "cert_requests_post.json"])
+        #expect(!FixtureCoverage.pending.values.contains(.pr4))
         #expect(FixtureCoverage.pending.filter { $0.value == .pr2 }.keys.sorted() == ["host_hold.json", "host_poll.json"])
     }
 
+    /// Every PR still has pending files, or is done (its files all replay).
     @Test func everyPRHasWork() {
-        for pr in FixtureCoverage.PR.allCases { #expect(FixtureCoverage.pending.values.contains(pr), "\(pr.rawValue)") }
+        for pr in FixtureCoverage.PR.allCases {
+            #expect(FixtureCoverage.pending.values.contains(pr) != FixtureCoverage.done.contains(pr), "\(pr.rawValue)")
+        }
     }
 }

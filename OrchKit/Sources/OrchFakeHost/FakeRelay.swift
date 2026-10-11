@@ -578,7 +578,9 @@ public actor FakeRelay: RequestSender {
     }
     package func seedRevoked(_ device: ID16) { revoked.insert(device) }
     /// A workspace's `WSK` and owner as if its card had been published (the card itself is not needed by the routes seeded).
-    package func seedWorkspaceKey(_ ws: ID16, wsk: SigningPublicKey, owner: ID16) { seededCards[ws] = (wsk, owner) }
+    package func seedWorkspaceKey(_ ws: ID16, wsk: SigningPublicKey, owner: ID16, replacingCard: Bool = false) { seededCards[ws] = (wsk, owner) }
+    /// No account for `person` (its key unknown to the relay).
+    package func forgetAccount(_ person: ID16) { owners[person] = nil; accounts[person] = nil }
     /// A device of `person` as the directory would know it from a stored certificate (`expiresMs` past = an expired certificate).
     package func seedDevice(_ device: ID16, person: ID16, expiresMs: Int64? = nil) { seededDevices[device] = (person, expiresMs) }
     /// The account key the relay trusts for `person` (a different key than the signer's makes its signatures `bad_signature`).
@@ -699,8 +701,9 @@ public actor FakeRelay: RequestSender {
 
     /// The card's `WSK` and owner of a workspace (a published card, or a fixture seed).
     private func cardKeys(_ ws: ID16) -> (wsk: SigningPublicKey, owner: ID16)? {
+        if let s = seededCards[ws] { return s }                  // a fixture seed stands in for (or over) the published card
         if let c = workspaces[ws]?.card { return (c.wsk, c.ownerPersonID) }
-        return seededCards[ws]
+        return nil
     }
 
     /// The person of a device the directory knows and the expiry of its certificate.
