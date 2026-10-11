@@ -330,19 +330,32 @@ extension PairHarness {
         }
     }
 
-    /// With `asksPrimaryAlways` and the primary online, a certified phone still goes through the primary's code and joins.
-    @Test func testAsksPrimaryAlwaysShowsThePrimaryCodeOnACertifiedPhone() async throws {
+    /// With `asksPrimaryAlways` and the primary online, a phone holding the owner's certificate still goes through the primary's code.
+    /// While that certificate is not in the directory, the primary's new one is published and the phone joins. Directory certificates
+    /// are immutable (`cert_conflict`, #46): once the old one is there, the primary cannot publish a different one for the same device,
+    /// and the pairing must fail closed (never ready on the strength of an unpublished certificate).
+    @Test(arguments: [false, true]) func testAsksPrimaryAlwaysShowsThePrimaryCodeOnACertifiedPhone(inDirectory: Bool) async throws {
         let h = try await PairHarness.make(.firstTime)
         let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
         let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
         try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
-        try await h.relay.publishCertificate(cert)
+        if inDirectory { try await h.relay.publishCertificate(cert) }
         await h.host.setAsksPrimaryAlways(true)
         _ = try await h.startToHostCode()
         try await h.hostApproves()
-        #expect(isComparingPrimary(try await h.drive(until: { isComparingPrimary($0) || $0.isTerminal })))
-        try await h.primaryApproves()
-        #expect(isReady(try await h.drive(until: { $0.isTerminal })))
+        let comparing = try await h.drive(until: { isComparingPrimary($0) || $0.isTerminal })
+        #expect(isComparingPrimary(comparing))
+        if inDirectory {
+            await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .certConflict))) { try await h.primaryApproves() }
+            let ended = try await h.drive(steps: 800, until: { $0.isTerminal })
+            #expect(!isReady(ended), "\(ended)")
+            #expect(try await h.env.index.workspaces().isEmpty)
+            #expect(await h.relay.grantCount(workspace: h.host.workspace, device: h.phoneID) == 0)
+        } else {
+            try await h.primaryApproves()
+            let ended = try await h.drive(until: { $0.isTerminal })
+            #expect(isReady(ended), "\(ended)")
+        }
     }
 
     @Test func testEchoWrongKeyAlarmBeforeSAS() async throws {
