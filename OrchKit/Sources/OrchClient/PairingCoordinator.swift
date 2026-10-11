@@ -142,10 +142,15 @@ public actor PairingCoordinator {
     /// The state as of now: a challenge's code is hidden the instant it expires, whatever was last polled.
     public var state: PairingState { derive(at: nowMs) }
 
-    /// A fresh single-consumer stream: the current state first, then every change.
+    /// A fresh single-consumer UI stream: the current state first, then updates, retaining the newest 16 if consumption lags.
     public func states() -> AsyncStream<PairingState> {
+        states(bufferingPolicy: .bufferingNewest(16))
+    }
+
+    /// Tests recording transition history use unbounded buffering, registered before driving the coordinator.
+    internal func states(bufferingPolicy: AsyncStream<PairingState>.Continuation.BufferingPolicy) -> AsyncStream<PairingState> {
         let id = nextStreamID; nextStreamID += 1
-        let (stream, cont) = AsyncStream<PairingState>.makeStream(bufferingPolicy: .bufferingNewest(16))
+        let (stream, cont) = AsyncStream<PairingState>.makeStream(bufferingPolicy: bufferingPolicy)
         streams[id] = cont
         cont.onTermination = { [weak self] _ in Task { await self?.dropStream(id) } }
         cont.yield(state)

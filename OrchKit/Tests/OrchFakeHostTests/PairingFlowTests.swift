@@ -15,7 +15,10 @@ actor StateLog {
     private(set) var states: [PairingState] = []
     private var task: Task<Void, Never>?
     func attach(_ c: PairingCoordinator) async {
-        let stream = await c.states()
+        let stream = await c.states(bufferingPolicy: .unbounded)
+        attach(stream)
+    }
+    func attach(_ stream: AsyncStream<PairingState>) {
         task = Task { for await s in stream { self.add(s) } }
     }
     private func add(_ s: PairingState) { states.append(s) }
@@ -622,6 +625,22 @@ extension PairHarness {
 }
 
 @Suite struct PairingLoopTests {
+    @Test func stateLogRetainsHostCodeWhenConsumerStartsAfterExpiry() async throws {
+        let h = try await PairHarness.make(.primaryOffline)
+        // Register before driving, but deliberately consume nothing until the flow ends.
+        // Repeated cert_pending replies must not evict the earlier host comparison.
+        let stream = await h.coordinator.states(bufferingPolicy: .unbounded)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        #expect(try await h.drive(steps: 800, until: { $0.isTerminal }) == .expired(.certification))
+        let log = StateLog()
+        await log.attach(stream)
+        await log.settled(h.coordinator)
+        await log.stop()
+        #expect(await log.showedHostCode)
+        #expect(await log.states.count > 16)
+    }
+
     @Test func stateLogSettlesAfterAnUnpublishedExpiry() async throws {
         let h = try await PairHarness.make(.firstTime)
         let log = StateLog(); await log.attach(h.coordinator)
