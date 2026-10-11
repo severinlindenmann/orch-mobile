@@ -25,6 +25,12 @@ public struct DropObject: Sendable, Equatable {
     public let wraps: [DropWrapRecord]
 }
 
+public struct DropListing: Sendable {
+    public let objects: [DropObject]
+    /// Opaque local identifiers; no unverified descriptor fields are exposed.
+    public let blocked: [String]
+}
+
 public struct DropDownload: Sendable, Equatable {
     public let url: URL
     public let metadata: DropMetadata
@@ -231,9 +237,13 @@ public actor DropService {
     }
 
     public func list(_ direction: Direction = .received) async throws -> [DropObject] {
+        try await listVerifiedRows(direction).objects
+    }
+
+    public func listVerifiedRows(_ direction: Direction = .received) async throws -> DropListing {
         // Nested operations and unstructured children retain the admitting lifecycle epoch.
         if Self.operationEpoch == nil {
-            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.list(direction) }
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.listVerifiedRows(direction) }
         }
         try requireAvailable()
         try await purgeExpiredDownloads()
@@ -243,14 +253,24 @@ public actor DropService {
         let o = try parse(await session.cfg.transport.dropList(canonicalJSON(query), session: s), fields: ["objects"])
         guard let rows = o["objects"]?.array, rows.count <= 1024 else { throw DropError.tooLarge }
         var result: [DropObject] = []
-        for row in rows {
+        var blocked: [String] = []
+        for (index, row) in rows.enumerated() {
+            do {
             guard let r = row.object, Set(r.keys) == ["descriptor", "wraps"], let signed = r["descriptor"], let wraps = r["wraps"]?.array else { throw DropError.malformed }
             let v = try await verified(signed, wraps: wraps, members: members)
             guard (direction == .sending) == (v.descriptor.authorID == session.cfg.deviceID) else { throw DropError.unauthorized }
             result.append(v)
+            } catch {
+                switch error {
+                case DropError.malformed, DropError.integrity, DropError.rollback, DropError.unauthorized, DropError.expired, DropError.tooLarge,
+                     is Refusal, is DropDocument.Fork, is CryptoFailure, is CryptoKitError, DropStoreError.rollback:
+                    blocked.append("blocked-\(direction.rawValue)-\(index)")
+                default: throw error
+                }
+            }
         }
         try await check()
-        return result
+        return DropListing(objects: result, blocked: blocked)
     }
 
     /// Imports only this generation's claimed destination. The SQLite item mapping survives crashes;

@@ -114,6 +114,7 @@ struct DropRow: View {
                 HStack {
                     if item.unread { Circle().fill(OC.youMark).frame(width: 8, height: 8).accessibilityLabel("Unread") }
                     Text(verbatim: item.displayName).lineLimit(1)
+                    if item.blocked { Image(systemName: "exclamationmark.shield.fill").foregroundStyle(OC.danger).accessibilityLabel("Verification alarm") }
                 }
                 Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes)) · \(item.hasSignedExpiry ? "expires " + Fmt.relative(item.expires) : "no signed expiry")" : "\(ws?.displayName ?? "") · Metadata not verified")
                     .font(OF.meta).foregroundStyle(OC.textMuted)

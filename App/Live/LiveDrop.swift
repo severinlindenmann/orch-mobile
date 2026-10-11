@@ -15,6 +15,7 @@ final class LiveDrop {
     private(set) var listRevision = 0
     var status: String?
     private(set) var alarm = false
+    private(set) var warning = false
     private(set) var unauthorized = false
     private(set) var loading = false
     private(set) var sending = false
@@ -75,8 +76,8 @@ extension LiveDrop {
         defer { loading = false }
         do {
             try await purge()
-            let received = try await service.list(.received)
-            let sending = try await service.list(.sending)
+            let received = try await service.listVerifiedRows(.received)
+            let sending = try await service.listVerifiedRows(.sending)
             let failed = try await service.failedUploads()
             let confirmations = try await service.confirmedUploads()
             await beforePublication?()
@@ -85,7 +86,12 @@ extension LiveDrop {
             var next: [String: DropObject] = [:]
             var display: [DropItem] = []
             for (direction, values) in [(DropDirection.received, received), (.sending, sending)] {
-                for object in values {
+                for id in values.blocked {
+                    display.append(DropItem(id: "\(workspace?.info.id ?? "")-\(id)", workspaceID: workspace?.info.id ?? "", name: "Blocked item", bytes: 0,
+                        kind: .file, direction: direction, expires: .distantFuture, versions: 0, unread: false, text: nil,
+                        from: "", verified: false, hasSignedExpiry: false, blocked: true))
+                }
+                for object in values.objects {
                     let id = object.descriptor.object.hex
                     if objects[id]?.descriptor.version != object.descriptor.version {
                         metadata[id] = nil; downloads[id] = nil; previewURL = nil
@@ -97,7 +103,11 @@ extension LiveDrop {
             objects = next; rows = display; failures = failed
             listRevision += 1
             downloads = downloads.filter { next[$0.key] != nil }
-            status = nil
+            if !received.blocked.isEmpty || !sending.blocked.isEmpty {
+                warning = true; downloads = [:]; metadata = [:]; previewURL = nil
+                try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max)
+            }
+            status = warning ? "Verification warning: blocked items" : nil
         } catch { if mine == revision && workspace?.usable == true { report(error) } }
     }
 
@@ -119,7 +129,23 @@ extension LiveDrop {
             if let index = rows.firstIndex(where: { $0.id == id }) {
                 rows[index] = row(object, direction: rows[index].direction)
             }
-        } catch { if mine == revision && workspace?.usable == true { report(error) } }
+        } catch {
+            guard mine == revision, workspace?.usable == true else { return }
+            switch error {
+            case DropError.integrity, DropError.malformed, DropError.rollback, DropError.unauthorized,
+                 is Refusal, is CryptoFailure, is CryptoKitError, is DropDocument.Fork, DropStoreError.rollback:
+                warning = true; status = "Verification warning: blocked items"
+                downloads = [:]; metadata = [:]; previewURL = nil
+                objects[id] = nil
+                if let index = rows.firstIndex(where: { $0.id == id }) {
+                    rows[index].blocked = true; rows[index].verified = false; rows[index].name = "Blocked item"
+                    rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil
+                }
+                do { try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max) }
+                catch { status = "Verification warning: local cleanup needs retry" }
+            default: report(error)
+            }
+        }
     }
 
     private func row(_ object: DropObject, direction: DropDirection) -> DropItem {

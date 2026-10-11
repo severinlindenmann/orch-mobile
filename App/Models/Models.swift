@@ -127,6 +127,7 @@ struct DropItem: Identifiable, Hashable, Sendable {
     var stopped = false
     var mime: String? = nil
     var hasSignedExpiry = true
+    var blocked = false
     var presentationID: String { alias ?? id }
 }
 
