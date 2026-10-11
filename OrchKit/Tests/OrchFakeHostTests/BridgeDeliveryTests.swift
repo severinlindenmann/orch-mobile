@@ -86,16 +86,16 @@ import OrchStore
         let rig = HostRig()
         let rid = ID16.fresh(0xB2), route = BridgeRoute(workspaceID: w.ws, requestID: rid)
         let chunk = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
-        let unknown = try await w.transport.bridgePost(chunk, route: route, session: w.hostSession)
+        let unknown = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
         #expect(unknown.status == 410 && errorCode(unknown) == "expired")
         #expect(try await w.postRequest(rid: rid).status == 202)
-        #expect(try await w.transport.bridgePost(chunk, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         w.clock.advance(milliseconds: 60_000)
         // A stored replay of the expired chunk is accepted (202) but brings nothing back.
-        #expect(try await w.transport.bridgePost(chunk, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         #expect(try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession)).isEmpty)
         w.clock.advance(milliseconds: 840_000)                               // 900 s after the request: the rid is gone
-        let gone = try await w.transport.bridgePost(chunk, route: route, session: w.hostSession)
+        let gone = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
         #expect(gone.status == 410 && errorCode(gone) == "expired")
     }
 

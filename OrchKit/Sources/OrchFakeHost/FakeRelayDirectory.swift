@@ -117,7 +117,7 @@ extension FakeRelay {
 
     static func status(of c: RelayRefusal.Code) -> Int {
         switch c {
-        case .staleList, .staleEpoch, .badEpoch, .rotationRequired, .missingGrant, .grantConflict, .wrapConflict, .accountExists, .certConflict,
+        case .staleList, .staleEpoch, .badEpoch, .rotationRequired, .missingGrant, .wkCommitChanged, .grantConflict, .wrapConflict, .accountExists, .certConflict,
              .fenced, .holderConflict, .otherWorkspace, .wskChanged, .delegationChanged, .staleCard, .wxkChangedWithoutVersion, .badWxkVersion: return 409
         case .scopeExceeded, .notForThisDevice, .revoked, .notEligible, .otherPerson: return 403
         case .unknownChallenge, .expired, .badSignature, .unauthenticated: return 401
@@ -433,7 +433,10 @@ extension FakeRelay {
         do { list = try MemberList.verify(signedList, wsk: card.wsk) } catch { throw Fail(.malformed) }
         guard list.workspace == ws else { throw Fail(.otherWorkspace) }
         do {
-            try list.checkSequence(previous: w.hasList ? (listSeq: w.listSeq, epoch: w.epoch, members: Set(w.members.keys)) : nil)
+            // The stored list's `wk_commit` as stored (trusted state; a list stored without one has none, and Q10 then refuses a
+            // same-epoch successor as `wk_commit_changed`).
+            let storedCommit = w.listJSON?.object?["o"]?.object?["wk_commit"]?.string.flatMap { B64U.decode($0, length: WKCommit.length) }
+            try list.checkSequence(previous: w.hasList ? .init(listSeq: w.listSeq, epoch: w.epoch, members: Set(w.members.keys), wkCommit: storedCommit) : nil)
         } catch let r as Refusal { throw Fail(r) }
         guard let rawGrants = b["grants"]?.array else { throw Fail(.malformed) }
         let ids = Set(list.members.map(\.deviceID))

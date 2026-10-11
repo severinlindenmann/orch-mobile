@@ -20,6 +20,12 @@ public struct MemberList: Equatable, Sendable {
     /// authorization statement, not proof of F1 roles.
     public let persons: [ID16]
     public let members: [Member]
+    /// Q10 (one `WK` per epoch, ever): `H("orch/v2/wk-commit|" || workspace_id || u32(epoch) || WK_epoch)`, 32 bytes. A device
+    /// seals only under a grant whose key this commits (`WKCommit`); the relay refuses another commit at its current epoch.
+    public let wkCommit: Data
+
+    /// Does this list commit to `wk` at its own workspace and epoch?
+    public func commits(_ wk: SymmetricKey) -> Bool { WKCommit.matches(wkCommit, workspace: workspace, epoch: epoch, wk: wk) }
 
     /// What the relay (and a verifying phone) knows about the devices a list may name.
     public struct Directory: Sendable {
@@ -41,7 +47,7 @@ public struct MemberList: Equatable, Sendable {
     }
 
     public static let maxMembers = 1024
-    static let fields: Set<String> = ["v", "suite", "kind", "workspace_id", "epoch", "list_seq", "issued_ms", "persons", "members"]
+    static let fields: Set<String> = ["v", "suite", "kind", "workspace_id", "epoch", "list_seq", "issued_ms", "persons", "members", "wk_commit"]
     static let memberFields: Set<String> = ["device_id", "person_id", "scopes"]
 
     /// Steps 1 and 2 of section 7.2: the signature with the card's `wsk_pub`, then the shape (field set, sorted unique hex
@@ -55,9 +61,11 @@ public struct MemberList: Equatable, Sendable {
     }
 
     /// Shape only (no signature): see `verify`. Fails closed: exact field sets, lower-case 16-byte hex ids, `persons` and
-    /// `members` strictly increasing (sorted, no duplicates), `list_seq` in `1 ... 2^53-1`, `issued_ms` an integer.
+    /// `members` strictly increasing (sorted, no duplicates), `list_seq` in `1 ... 2^53-1`, `issued_ms` an integer, `wk_commit`
+    /// exactly 32 bytes of canonical b64u.
     static func parse(object o: [String: JSONValue]) throws -> MemberList {
         guard o.hasExactly(fields), let ws = o.id16("workspace_id"), let epoch = o.positiveU32("epoch"),
+              let commit = o.b64u("wk_commit", length: WKCommit.length),
               let seq = o["list_seq"]?.int, seq >= 1, seq <= maxSafeInt, let issued = o["issued_ms"]?.int,
               let rawPersons = o["persons"]?.array, rawPersons.count <= maxMembers,
               let raw = o["members"]?.array, raw.count <= maxMembers else { throw Refusal.malformed }
@@ -77,21 +85,23 @@ public struct MemberList: Equatable, Sendable {
         for (a, b) in zip(members, members.dropFirst()) where !a.deviceID.hex.utf8.lexicographicallyPrecedes(b.deviceID.hex.utf8) {
             throw Refusal.malformed
         }
-        return MemberList(workspace: ws, epoch: epoch, listSeq: seq, issuedMs: issued, persons: persons, members: members)
+        return MemberList(workspace: ws, epoch: epoch, listSeq: seq, issuedMs: issued, persons: persons, members: members, wkCommit: commit)
     }
 
     /// What a device does with a list it fetched, given the last list it accepted (`known`, nil on first contact or late join,
     /// when the first list it sees may carry any epoch and `list_seq >= 1`). Identical list again (reconnect) and forward jumps
     /// (missed lists and rotations, including an epoch that rises by more than one, P3-D6) pass; rollback, conflicting content
-    /// under one `list_seq`, an epoch that falls, and a removal without an epoch bump are refused. Certificates and grants of
-    /// other members are the relay's to check: a phone does not hold them (gap 27). The coordinator separately requires its
-    /// own device and approved scopes.
+    /// under one `list_seq`, an epoch that falls, and a removal without an epoch bump are refused. Two lists at one epoch with
+    /// different `wk_commit` are the local alarm `wk_commit_conflict` (Q10), checked first: it holds whatever their order.
+    /// Certificates and grants of other members are the relay's to check: a phone does not hold them (gap 27). The coordinator
+    /// separately requires its own device and approved scopes.
     public func checkSnapshot(cardWorkspace: ID16, known: MemberList?) throws {
         guard workspace == cardWorkspace else { throw Refusal.otherWorkspace }
         guard let k = known else {
             guard listSeq >= 1 else { throw Refusal.badEpoch }
             return
         }
+        if epoch == k.epoch, wkCommit != k.wkCommit { throw Refusal.wkCommitConflict }
         if listSeq < k.listSeq { throw Refusal.staleList }
         if listSeq == k.listSeq {
             guard self == k else { throw Refusal.conflictingSnapshot }
@@ -113,23 +123,39 @@ public struct MemberList: Equatable, Sendable {
     /// first list a device of the owner (`other_person`).
     public func checkRelayUpdate(cardWorkspace: ID16, previous: MemberList?, directory: Directory, nowMs: Int64) throws {
         guard workspace == cardWorkspace else { throw Refusal.otherWorkspace }
-        try checkSequence(previous: previous.map { (listSeq: $0.listSeq, epoch: $0.epoch, members: Set($0.members.map(\.deviceID))) })
+        try checkSequence(previous: previous.map { Previous(listSeq: $0.listSeq, epoch: $0.epoch, members: Set($0.members.map(\.deviceID)),
+                                                            wkCommit: $0.wkCommit) })
         try checkMembers(directory: directory, nowMs: nowMs)
         try checkPersons(owner: Identifiers.personID(directory.ownerKey), first: previous == nil)
     }
 
-    /// Checks 4 to 7: first list `epoch = 1` and `list_seq = 1`; then `list_seq` strictly increases (`stale_list`), the
-    /// epoch is the previous one or the next (`bad_epoch`), and a removal needs the next (`rotation_required`).
-    public func checkSequence(previous: (listSeq: Int64, epoch: UInt32, members: Set<ID16>)?) throws {
+    /// The relay's stored list as `checkSequence` reads it. `wkCommit` is nil for a stored list without one (never accepted
+    /// since Q10; a same-epoch successor is then `wk_commit_changed`).
+    public struct Previous: Sendable {
+        public var listSeq: Int64, epoch: UInt32, members: Set<ID16>, wkCommit: Data?
+        public init(listSeq: Int64, epoch: UInt32, members: Set<ID16>, wkCommit: Data?) {
+            self.listSeq = listSeq; self.epoch = epoch; self.members = members; self.wkCommit = wkCommit
+        }
+    }
+
+    /// How far one publication may move the epoch (Q10): a host that skips epochs it burned (refused publications whose keys it
+    /// retains, never reseals) stays within this of the relay's epoch, and a first list within this of 1.
+    public static let maxEpochStep: UInt32 = 1 << 16
+
+    /// Checks 4 to 7 as decided for Q10 (one `WK` per epoch, ever): a first list has `1 <= epoch <= 2^16` (any `list_seq >= 1`,
+    /// which the shape already requires); then `list_seq` strictly increases (`stale_list`), `prev <= epoch <= prev + 2^16`
+    /// (`bad_epoch`), a removal needs `epoch > prev` (`rotation_required`), and a list at the same epoch carries the same
+    /// `wk_commit` (`wk_commit_changed`).
+    public func checkSequence(previous: Previous?) throws {
         guard let p = previous else {
-            guard epoch == 1, listSeq == 1 else { throw Refusal.badEpoch }
+            guard epoch >= 1, epoch <= Self.maxEpochStep else { throw Refusal.badEpoch }
             return
         }
         guard listSeq > p.listSeq else { throw Refusal.staleList }
-        let next: UInt32? = p.epoch == UInt32.max ? nil : p.epoch + 1
-        guard epoch == p.epoch || epoch == next else { throw Refusal.badEpoch }
+        guard epoch >= p.epoch, UInt64(epoch) <= UInt64(p.epoch) + UInt64(Self.maxEpochStep) else { throw Refusal.badEpoch }
         let now = Set(members.map(\.deviceID))
-        if !p.members.isSubset(of: now), epoch != next { throw Refusal.rotationRequired }
+        if !p.members.isSubset(of: now), epoch == p.epoch { throw Refusal.rotationRequired }
+        if epoch == p.epoch, p.wkCommit != wkCommit { throw Refusal.wkCommitChanged }
     }
 
     /// Check 8 and 9 for every member (see `checkRelayUpdate`).
@@ -162,6 +188,23 @@ public struct MemberList: Equatable, Sendable {
         guard cert.deviceID == m.deviceID else { throw Refusal.certInvalid }
         guard !cert.isScopedAgent, let scopes = m.scopeStrings, Scopes.isValid(scopes), scopes.count <= cert.scopesMax.count,
               Array(cert.scopesMax.prefix(scopes.count)) == scopes else { throw Refusal.scopeExceeded }
+    }
+}
+
+/// Q10's key commitment: `wk_commit = b64u(H("orch/v2/wk-commit|" || workspace_id || u32(epoch) || WK))` (SHA-256, the 16 raw
+/// bytes of the workspace id, the epoch big-endian). Binding the workspace and epoch keeps one key from answering for another.
+public enum WKCommit {
+    public static let length = 32
+
+    public static func compute(workspace: ID16, epoch: UInt32, wk: SymmetricKey) -> Data {
+        Data(SHA256.hash(data: Data(Label.hWKCommit.utf8) + workspace.bytes + Bytes.u32(epoch) + wk.rawBytes))
+    }
+
+    /// Constant-time comparison against a commitment taken from a verified list.
+    public static func matches(_ commit: Data, workspace: ID16, epoch: UInt32, wk: SymmetricKey) -> Bool {
+        let mine = compute(workspace: workspace, epoch: epoch, wk: wk)
+        guard commit.count == mine.count else { return false }
+        return zip(commit, mine).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
     }
 }
 

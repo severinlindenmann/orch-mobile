@@ -37,6 +37,8 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var primaryLabel: String
     var lifecycle: WorkspaceLifecycle = .live
     var notificationsOn: Bool
+    /// Q10 key alarm (wk_commit conflict or mismatch): blocks answering and sending until the workspace is removed and paired again.
+    var keyAlarm: String?
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
     var displayName: String { SafeText.inline(name, limit: 40) }

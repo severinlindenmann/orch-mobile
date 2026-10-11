@@ -53,8 +53,9 @@ extension FakeHost {
     /// Rotation invariants (protocol §8.5, P3-D7 atomic publication):
     /// I1: No data is sealed while the gate is up, except the revocation reply (empty refusals are allowed).
     /// I2: Clear the gate only after one publication (list and every grant, atomically) committed and installEpoch ran for one consistent roster.
-    /// I3: Bytes that may have left the host are resent identically, never resealed; a publication the relay refused is discarded with
-    ///     its uncommitted key, so a key the relay saw for a refused roster is never activated. Epochs never skip at the relay.
+    /// I3: Bytes that may have left the host are resent identically, never resealed; a publication the relay refused burns its epoch
+    ///     (Q10, one WK per epoch, ever; `bad_epoch` included): the key is retained but never activated or resealed, and the next
+    ///     rotation goes to floor + 1.
     /// I4: The final roster excludes every queued removal and every relay/host revocation.
     /// I5: One task serializes requests; same-roster requests on the same relay join using current credentials.
     /// I6: Failures retain the gate and pending work; pump retries it.
@@ -382,7 +383,7 @@ extension FakeHost {
         }
         refreshRotationSession(relay: relay, session: session)
         if rotationRequired { await runRotation() }
-        try await flushOutbox(transport: transport, session: session)
+        try await flushOutbox(relay: relay, session: session)
         // P3-D10: `after` acknowledges what this host completed, so the relay requeues (rather than coalesces) a later resend.
         let inbox = try await relay.pendingRequests(workspace: workspace, after: completedArrival, token: session.token)
             .filter { $0.arrival > lastArrival }.sorted { $0.arrival < $1.arrival }
@@ -391,8 +392,7 @@ extension FakeHost {
             lastArrival = max(lastArrival, item.arrival)          // claimed: a concurrent pass never runs it twice
             let chunks = await process(envelope: item.envelope, mailbox: item.rid)
             for c in chunks {
-                let route = BridgeRoute(workspaceID: workspace, requestID: item.rid)
-                let r = try await transport.bridgePost(c, route: route, session: session)
+                let r = try await postBridgeChunk(c, rid: item.rid, relay: relay, session: session)
                 guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
                 let flags = (try? Bridge.Parts(envelope: c).header.flags) ?? 0
                 if refusal.code == .chunkConflict, flags & Bridge.Flags.refusal.rawValue != 0 {
@@ -403,19 +403,29 @@ extension FakeHost {
                 }
                 _ = try HostAPI.expect(r, status: 202)              // anything else is an error of the pass
             }
-            try await flushOutbox(transport: transport, session: session)
+            try await flushOutbox(relay: relay, session: session)
             completedArrival = max(completedArrival, item.arrival)
             handled += 1
         }
         return handled
     }
 
-    private func flushOutbox(transport: any RelayTransport, session: RelaySession) async throws {
+    private func flushOutbox(relay: FakeRelay, session: RelaySession) async throws {
         while !outbox.isEmpty {
             let item = outbox.removeFirst()
-            let r = try await transport.bridgePost(item.chunk, route: BridgeRoute(workspaceID: workspace, requestID: item.rid), session: session)
+            let r = try await postBridgeChunk(item.chunk, rid: item.rid, relay: relay, session: session)
             _ = try HostAPI.expect(r, status: 202)
         }
+    }
+
+    /// `POST /v2/workspaces/{ws}/bridge/{rid}` for one host chunk: a W(g) write under this host's holder generation (P3-D10; the
+    /// relay fences a host post without `Orch-Holder`).
+    package func postBridgeChunk(_ chunk: Data, rid: ID16, relay: FakeRelay, session: RelaySession) async throws -> WireReply {
+        let gen = try await holderGeneration(relay: relay, session: session)
+        return try await relay.send(WireRequest(method: "POST", target: "\(HostAPI.base)/workspaces/\(workspace.hex)/bridge/\(rid.hex)",
+                                                headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen),
+                                                          "content-type": "application/octet-stream"],
+                                                body: chunk, clientAddress: "198.51.100.7"))
     }
 }
 

@@ -29,6 +29,12 @@ public protocol WorkspaceAPI: Sendable {
     ///   Retry when coordination is available; this error does not confirm removal.
     func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket
     func events() async -> AsyncStream<WorkspaceEvent>
+    /// The durable key alarm (Q10), read at launch.
+    func keyAlarm() async -> WorkspaceKeyAlarm?
+}
+
+extension WorkspaceAPI {
+    public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
 }
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String) }
 public enum DecisionOutcome: Equatable, Sendable {
@@ -46,6 +52,22 @@ public struct DecisionStatus: Equatable, Sendable {
     public let state: DecisionState
 }
 public enum ConnectionState: Equatable, Sendable { case online, offline, reconciling }
+/// Q10: a key state that blocks the workspace until the person removes it and pairs again (never "retry later").
+public enum WorkspaceKeyAlarm: Equatable, Sendable {
+    /// Two WSK-verified member lists committed one epoch to different keys (durable local alarm `wk_commit_conflict`).
+    case conflict(epoch: UInt32)
+    /// The relay serves only a grant whose key the verified list does not commit (`wkCommitMismatch`).
+    case mismatch(epoch: UInt32)
+
+    /// The alarm an error from a workspace call stands for, if any.
+    public init?(error: Error) {
+        switch error {
+        case Refusal.wkCommitConflict: self = .conflict(epoch: 0)
+        case SessionError.wkCommitMismatch(let e): self = .mismatch(epoch: e)
+        default: return nil
+        }
+    }
+}
 public enum WorkspaceEvent: Equatable, Sendable { case snapshot(WorkspaceSnapshot), invalidated, connection(ConnectionState), removed }
 public struct QuestionOption: Equatable, Sendable { public let id: String, label: String }
 public struct QuestionResolution: Equatable, Sendable {

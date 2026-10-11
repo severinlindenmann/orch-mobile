@@ -9,7 +9,7 @@ enum FakeHostForgery {
     static func list(workspace: ID16, members: [(ID16, [String])], seq: Int64) throws -> JSONValue {
         try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(workspace.hex), "epoch": 1, "list_seq": .int(seq), "issued_ms": 0,
-            "persons": [],
+            "persons": [], "wk_commit": .string(B64U.encode(Data(count: 32))),
             "members": .array(members.sorted { $0.0.hex < $1.0.hex }.map { .object(["device_id": .string($0.0.hex), "person_id": .string(ID16.random().hex),
                                                                                      "scopes": .array($0.1.map { .string($0) })]) })],
                               kind: .memberList, signer: SoftwareSigner()).json

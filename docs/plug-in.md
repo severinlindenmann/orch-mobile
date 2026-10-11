@@ -131,8 +131,14 @@ Host publication uses protocol-v2 §19.1/§19.2: `PUT /v2/devices/{device}`, `PO
 `{member_list, grants, card_key_wraps?}` → `{list_seq, epoch}` (W(g), `Orch-Holder`), plus `PUT card-keys` for later wraps.
 The FakeRelay serves these routes (and `publishCertificate/publishCard/publishRevocation` as in-process stand-ins); the hold route
 and `pendingRequests`/pairing inbox access are still fake internals (host-only, orch-core).
-Write-time authority: host session and holder, current card, each member's certificate valid now and owned by the card owner or a
-listed person, non-revocation, adjacent epoch. Grants and wraps are judged against the list in the same body; nothing is staged.
+Write-time authority: host session and holder (the strict lease on every W(g) route, pairing answers and cert requests included;
+fenced without `Orch-Holder`), current card, each member's certificate valid now and owned by the card owner or a listed person,
+non-revocation. Sequence (orch-29 Q10): a first list has `1 <= epoch <= 2^16` and any `list_seq >= 1`; then `list_seq` increases,
+`prev <= epoch <= prev + 2^16`, a removal needs `epoch > prev`, and the same epoch needs the same `wk_commit` (409 `wk_commit_changed`).
+Grants and wraps are judged against the list in the same body; nothing is staged.
+Host obligations (Q10, pending orch-52): one WK per epoch, ever. A refused publication burns its epoch (key retained, never activated
+or resealed; `list_seq` and epoch floors rise to the refused body's; the next rotation goes to floor + 1); `stale_card`/`wrap_conflict`
+resend the same signed list with fixed wraps; a same-epoch addition refused with `revoked`/`cert_*` forces a rotation.
 
 ## C. Host obligations
 

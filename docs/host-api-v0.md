@@ -330,7 +330,12 @@ Optional `epoch=<positive integer>` selects one; default returns all grants elig
 All require authenticated current membership and non-revocation; recipient comes from the session.
 No foreign-device selector. Missing data is 404 `not_found`, unauthorized is 403 `not_eligible`.
 Protocol signature/shape errors retain §14 codes; these HTTP fetch wrappers have no additional signature.
-WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Lists carry `persons` and a `person_id` per member (P3-D6).
+WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Lists carry `persons` and a `person_id` per member (P3-D6)
+and the required `wk_commit = b64u(H("orch/v2/wk-commit|" || ws || u32(epoch) || WK))` (orch-29 Q10, decisions A16).
+One WK per epoch, ever: the phone seals only at the head list's epoch, under a grant whose WK matches its `wk_commit`; a
+mismatch or a missing list/grant blocks sending (no_key), never a fallback. Older epochs are read with any WSK-verified
+grant, checked against `wk_commit` when a list for that epoch is held. Two verified lists at one epoch with different
+`wk_commit` are the local alarm `wk_commit_conflict` (durable; nothing is sealed while it stands).
 Grants are published with their list in one `PUT /v2/workspaces/{ws}/membership` (P3-D7, §19.2), never staged.
 Verify signatures, identity binding and monotonic epoch/list/card counters before committing anything.
 Routes and authorization are protocol-v2 §19.1/§19.2; the FakeRelay replays orch-relay's HTTP fixtures for them ([gap 24](gaps.md)).
@@ -353,7 +358,8 @@ including retention and card-update races ([gap 29](gaps.md), D-6); fetch errors
 
 After verifying the card, require byte-equal `card.relay_url == reviewed link origin` in §7.1 form.
 Require the verified member list to contain this device_id with scopes exactly equal to approved.scopes,
-list epoch >= approved.epoch (all >= 1), and the installed grant epoch equal to that list epoch.
+list epoch >= approved.epoch (all >= 1), the installed grant epoch equal to that list epoch with its WK matching the list's
+`wk_commit` (`grant_commit` otherwise), and record the verified list as the head before installing any key.
 A mismatch fails join; no partial workspace install or silent origin change is permitted.
 
 `GET R/devices/{device}/revocation` returns `{"record":$signedRevocation}`;

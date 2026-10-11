@@ -10,16 +10,29 @@ import OrchProtocol
 public enum MembershipPublicationError: Error, Equatable, Sendable {
     /// The relay holds a list this host did not publish (or acceptance cannot be established): surfaced, never assumed (section 19.7).
     case conflict
+    /// The host stopped publishing (`FakeHost.publicationAlarm`): nothing more is sealed or sent until an operator intervenes.
+    case alarm
+}
+
+/// Why a host stopped publishing membership (Q10 liveness): retrying would only burn epochs toward the relay's `2^16` step cap.
+public enum MembershipPublicationAlarm: Equatable, Sendable {
+    /// `FakeHost.maxConsecutiveBurns` publications in a row were refused (a deterministic refusal, a host bug or a hostile relay).
+    case burnLimit
+    /// The next epoch is `2^16` or more above the relay's: an honest relay refuses it (`bad_epoch`) forever.
+    case epochGap
 }
 
 extension FakeHost {
     struct PendingPublication: Sendable {
-        /// `cj(body)`: the exact HTTP body, resent byte for byte.
-        let raw: Data
+        /// `cj(body)`: the exact HTTP body, resent byte for byte (replaced only after a refusal proved it was not committed).
+        var raw: Data
         let memberList: JSONValue
         let listSeq: Int64
         let epoch: UInt32
         let roster: [(DemoKeys, [String])]
+        /// The devices the body wraps `CK` to, and the card sequence of those wraps (nil: no wraps).
+        var wraps: [DemoKeys] = []
+        var wrapSeq: UInt32?
         /// Set (durably, in a real host) immediately before the first send. Until then the bytes never left the host.
         var sent = false
     }
@@ -59,17 +72,23 @@ extension FakeHost {
         return .object(body)
     }
 
-    /// Builds and persists the next publication (`list_seq + 1`). `WK_e` must already be persisted (`wk(e)` creates it).
+    /// Refusals in a row that may burn an epoch before the host raises `publicationAlarm` and stops.
+    static let maxConsecutiveBurns = 8
+
+    /// Builds and persists the next publication (`list_seq + 1`). `WK_e` must already be persisted (`wk(e)` creates it). Refused
+    /// while the publication alarm stands.
     func preparePublication(roster: [(DemoKeys, [String])], epoch e: UInt32, wraps: [DemoKeys]) throws -> PendingPublication {
+        guard publicationAlarm == nil else { throw MembershipPublicationError.alarm }
         let body = try membershipBody(roster: roster, epoch: e, listSeq: listSeq + 1, wraps: wraps)
         guard let list = body.object?["member_list"] else { throw Refusal.malformed }
-        let p = PendingPublication(raw: try canonicalJSON(body), memberList: list, listSeq: listSeq + 1, epoch: e, roster: roster)
+        let p = PendingPublication(raw: try canonicalJSON(body), memberList: list, listSeq: listSeq + 1, epoch: e, roster: roster,
+                                   wraps: wraps, wrapSeq: wraps.isEmpty ? nil : max(cardSeq, 1))
         pendingPublication = p
         return p
     }
 
     /// Renews this host's holder generation, or takes a new one (the Demo host is the only writer).
-    func holderGeneration(relay: FakeRelay, session: RelaySession) async throws -> UInt64 {
+    package func holderGeneration(relay: FakeRelay, session: RelaySession) async throws -> UInt64 {
         if let g = holderGen, let renewed = try? await relay.hold(workspace: workspace, token: session.token, gen: g) { return renewed }
         let g = try await relay.hold(workspace: workspace, token: session.token, gen: nil, takeOver: true)
         holderGen = g
@@ -119,8 +138,45 @@ extension FakeHost {
         guard case .relay(let r) = failure else { throw failure }
         if Self.undecided.contains(r.code) { throw failure }
         if r.code == .staleList { return try await reconcile(p, relay: relay, session: session) }
-        discardRefused(p)
+        // Q10: only the wraps were wrong. The same signed list and grants go again with fixed wraps; no epoch is burned.
+        if r.code == .staleCard || r.code == .wrapConflict, let fixed = try rewrapped(p, code: r.code) {
+            pendingPublication = fixed
+            return try await sendPending(relay: relay, session: session)
+        }
+        discardRefused(p, code: r.code)
+        if r.code == .badEpoch { await checkEpochGap(relay: relay, session: session) }
         throw failure
+    }
+
+    /// After `bad_epoch` (burned like any refusal, not counted): read the relay's signed list. A newer list than any this host used sets the floors (as in
+    /// reconciliation); if the next epoch would still be `2^16` or more above the relay's, no publication can ever pass: alarm.
+    private func checkEpochGap(relay: FakeRelay, session: RelaySession) async {
+        guard let raw = try? await relayMemberList(relay: relay, session: session), let other = try? MemberList.verify(raw, wsk: wskPublic) else { return }
+        if other.listSeq > listSeq { listSeq = other.listSeq; relayEpochFloor = max(relayEpochFloor, other.epoch) }
+        let base = max(epoch, relayEpochFloor)
+        if base >= other.epoch, UInt64(base - other.epoch) >= UInt64(MemberList.maxEpochStep) { publicationAlarm = .epochGap }
+    }
+
+    /// The refused publication with the same `member_list` and grants and fixed card-key wraps: re-wrapped at this host's card
+    /// sequence after `stale_card` when that moved on, otherwise without wraps (the relay keeps the wraps it holds; `wrap_conflict`
+    /// says it holds other bytes for one of them). Nil when there is nothing to fix.
+    private func rewrapped(_ p: PendingPublication, code: RelayRefusal.Code) throws -> PendingPublication? {
+        guard let old = p.wrapSeq, var body = try StrictJSON.parse(p.raw, maxBytes: .max).object else { return nil }
+        var q = p
+        q.sent = false
+        let seq = max(cardSeq, 1)
+        if code == .staleCard, seq != old {
+            let items: [JSONValue] = try p.wraps.sorted { $0.deviceID.hex < $1.deviceID.hex }.map {
+                ["device_id": .string($0.deviceID.hex), "sealed": .string(try persistedWrap(for: $0, cardSeq: seq))]
+            }
+            body["card_key_wraps"] = ["card_seq": .int(Int64(seq)), "wraps": .array(items)]
+            q.wrapSeq = seq
+        } else {
+            body["card_key_wraps"] = nil
+            q.wraps = []; q.wrapSeq = nil
+        }
+        q.raw = try canonicalJSON(.object(body))
+        return q
     }
 
     /// Section 19.7: after a lost response the relay may hold exactly this list (its receipt expired): compare the signed lists.
@@ -129,9 +185,9 @@ extension FakeHost {
     private func reconcile(_ p: PendingPublication, relay: FakeRelay, session: RelaySession) async throws -> PendingPublication {
         let current = try await relayMemberList(relay: relay, session: session)
         if current == p.memberList { installCommitted(p); return p }
-        discardRefused(p)
-        // Only a list above this host's committed list_seq can be newer: a relay replaying one of this host's own earlier (refused,
-        // still WSK-signed) lists must not push the next epoch up, or an honest relay would refuse the skip (bad_epoch) forever.
+        discardRefused(p, code: nil)
+        // Only a list above every list_seq this host used can be newer: a relay replaying one of this host's own earlier refused (still
+        // WSK-signed) lists cannot push the floors up, because `discardRefused` already raised them past it (Q10).
         if let other = try? MemberList.verify(current, wsk: wskPublic), other.listSeq > listSeq {
             listSeq = other.listSeq
             relayEpochFloor = max(relayEpochFloor, other.epoch)
@@ -142,6 +198,7 @@ extension FakeHost {
     private func installCommitted(_ p: PendingPublication) {
         pendingPublication = nil
         listSeq = max(listSeq, p.listSeq)
+        consecutiveBurns = 0
         relayEpochFloor = 0                          // the relay now holds this host's list
         if p.epoch != epoch { installEpoch(p.epoch) }
         // A member revoked or removed while these bytes were in flight is not re-added locally; the gate stays up and the next
@@ -149,14 +206,26 @@ extension FakeHost {
         setRoster(p.roster.filter { !rotationRemoved.contains($0.0.deviceID) && !core.revoked.contains($0.0.deviceID) })
     }
 
-    /// The relay saw these bytes and refused them. A key it saw sealed to the roster of a refused rotation is never activated: a device
-    /// removed meanwhile could obtain the uncommitted grant from the relay. The next publication seals a fresh `WK` under that epoch.
-    private func discardRefused(_ p: PendingPublication) {
+    /// The relay saw these bytes and refused them (or holds another list). Q10, one `WK` per epoch, ever: an epoch above the current
+    /// one is burned, never resealed. Its key stays as a retained, never-activated key (it answers a section 8.5 `stale_epoch` to a
+    /// phone that sealed under it), the next publication's `list_seq` and epoch go above this one's (`listSeq` floor `p.listSeq`, epoch
+    /// floor `p.epoch`, so a rotation goes to `floor + 1`), and nothing sealed to the refused roster is ever activated. Two limits keep
+    /// a deterministic refusal from burning epochs forever: every definite refusal burns, `bad_epoch` included (the relay saw
+    /// the grants: a later roster at that epoch would reuse a key a removed device holds), but `bad_epoch` is not counted toward
+    /// `maxConsecutiveBurns` (its runaway is stopped by the 2^16 gap check instead); after `maxConsecutiveBurns` counted refusals
+    /// the host raises `publicationAlarm` and stops. A refused body at the CURRENT epoch that carried grants of the current `WK` to a device that is
+    /// not a committed member (whatever the code) raises the gate: the next pump rotates, so that key is never used again.
+    private func discardRefused(_ p: PendingPublication, code: RelayRefusal.Code?) {
         pendingPublication = nil
-        guard p.epoch > epoch else { return }
-        wks[p.epoch] = nil
-        core.keys[p.epoch] = nil
-        sealedGrants = sealedGrants.filter { $0.key.epoch != p.epoch }
+        listSeq = max(listSeq, p.listSeq)
+        if p.epoch > epoch {
+            if let k = wks[p.epoch] { core.keys[p.epoch] = k }
+            relayEpochFloor = max(relayEpochFloor, p.epoch)
+            if code != .badEpoch { consecutiveBurns += 1 }
+            if consecutiveBurns >= Self.maxConsecutiveBurns { publicationAlarm = .burnLimit }
+        } else if p.epoch == epoch, p.roster.contains(where: { roster[$0.0.deviceID] == nil }) {
+            rotationRequired = true
+        }
     }
 
     /// An earlier publication that may have left the host is settled first: resent byte for byte (committed or refused). One that

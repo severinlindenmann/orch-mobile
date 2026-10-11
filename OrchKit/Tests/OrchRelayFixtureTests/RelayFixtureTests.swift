@@ -173,8 +173,8 @@ import OrchTestVectors
         for f in FixtureSchemaTests.files {
             for c in f.cases {
                 let id = caseID(f, c)
-                if FixtureCoverage.replayable.contains(f.fileName) { supportedIDs.insert(id) }
-                else if FixtureCoverage.caseOverrides[id] != nil || FixtureCoverage.pending[f.fileName] != nil { pendingIDs.insert(id) }
+                if FixtureCoverage.caseOverrides[id] != nil || FixtureCoverage.pending[f.fileName] != nil { pendingIDs.insert(id) }
+                else if FixtureCoverage.replayable.contains(f.fileName) { supportedIDs.insert(id) }
             }
         }
         #expect(Set(FixtureCoverage.caseOverrides.keys).isSubset(of: Self.allIDs), "stale case override")
@@ -204,7 +204,8 @@ import OrchTestVectors
     /// Every PR still has pending files, or is done (its files all replay).
     @Test func everyPRHasWork() {
         for pr in FixtureCoverage.PR.allCases {
-            #expect(FixtureCoverage.pending.values.contains(pr) != FixtureCoverage.done.contains(pr), "\(pr.rawValue)")
+            let open = FixtureCoverage.pending.values.contains(pr) || FixtureCoverage.caseOverrides.values.contains(pr)
+            #expect(open != FixtureCoverage.done.contains(pr), "\(pr.rawValue)")
         }
     }
 }
