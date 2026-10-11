@@ -52,6 +52,7 @@ public actor DropService {
     // All work for an upload/job, including discard, passes through this FIFO admission.
     private var admissions: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var hook: (@Sendable (String) async throws -> Void)?
+    /// Test seam only; must never be wired in app code.
     package func setHook(_ hook: (@Sendable (String) async throws -> Void)?) { self.hook = hook }
     private func admit(_ key: String) async {
         if admissions[key] == nil { admissions[key] = []; return }
@@ -66,9 +67,13 @@ public actor DropService {
         guard try await db.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(key)]).isEmpty else { throw DropError.abandoned }
     }
     private func requireActiveUpload(_ object: ID16, _ version: UInt32) async throws {
-        try await requireActive("upload:\(object.hex):\(version)")
         let db = try await session.cfg.container.database()
+        guard let body = try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") else { throw DropError.abandoned }
+        try await requireActive(Self.abandonmentKey(object, version, body))
         guard try await db.query("SELECT job FROM drop_imports JOIN drop_abandoned ON key='job:' || job WHERE object=?", [.text(object.hex)]).isEmpty else { throw DropError.abandoned }
+    }
+    private nonisolated static func abandonmentKey(_ object: ID16, _ version: UInt32, _ body: Data) -> String {
+        "upload:\(object.hex):\(version):\(B64U.encode(Data(SHA256.hash(data: body))))"
     }
     let session: WorkspaceSession
     let card: VerifiedCard
@@ -238,7 +243,7 @@ public actor DropService {
             now: now, expiry: expiry, parent: document?.descriptor, kind: kind.rawValue)
         let db = try await session.cfg.container.database()
         try await db.transaction { tx in
-            guard try tx.query("SELECT key FROM drop_abandoned WHERE key=?", [.text("upload:\(object.hex):\(parent + 1)")]).isEmpty else { throw DropError.abandoned }
+            guard try tx.query("SELECT key FROM drop_abandoned WHERE key=?", [.text(Self.abandonmentKey(object, parent + 1, body))]).isEmpty else { throw DropError.abandoned }
             try tx.execute("INSERT OR IGNORE INTO drop_uploads(object,version,body,done) VALUES(?,?,?,0)", [.text(object.hex), .int(Int64(parent + 1)), .blob(body)])
             guard let stored = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(parent + 1))]).first?.blob("body") else { throw DropError.malformed }
             if chosenObject == nil && stored != body { throw DropError.conflict }
@@ -261,7 +266,10 @@ public actor DropService {
     }
     private func upload(object: ID16, version: UInt32, retry: Bool = false) async throws -> DropObject {
         let key = "upload:\(object.hex):\(version)"
-        if let task = uploads[key] { return try await task.value }
+        if let task = uploads[key] {
+            try await hook?("upload.coalesced:\(object.hex)")
+            return try await task.value
+        }
         let task = Task {
             try await self.hook?("upload.requested:\(object.hex)")
             await self.admit(key)
@@ -309,6 +317,8 @@ public actor DropService {
         try await upload(object: object, version: version, retry: true)
     }
 
+    /// Stops local sending of this sealed upload; present this as "stopped sending", not "deleted".
+    /// A PUT whose response was lost may already have committed; its content remains on the relay.
     public func discardUpload(object: ID16, version: UInt32) async throws {
         let key = "upload:\(object.hex):\(version)"
         await admit(key)
@@ -316,11 +326,15 @@ public actor DropService {
         try await hook?("discard.upload.admitted")
         let db = try await session.cfg.container.database()
         try await db.transaction { tx in
-            try tx.execute("INSERT OR IGNORE INTO drop_abandoned(key) VALUES(?)", [.text(key)])
+            if let body = try tx.query("SELECT body FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))]).first?.blob("body") {
+                try tx.execute("INSERT OR IGNORE INTO drop_abandoned(key) VALUES(?)", [.text(Self.abandonmentKey(object, version, body))])
+            }
             try tx.execute("DELETE FROM drop_uploads WHERE object=? AND version=?", [.text(object.hex), .int(Int64(version))])
         }
     }
 
+    /// Stops local sending and removes staged plaintext; present this as "stopped sending", not "deleted".
+    /// Content already committed by a PUT (including a lost response) remains on the relay.
     /// Tombstone precedes cleanup and survives failed deletion and stale in-memory job handles.
     public func discardShareJob(_ job: StagedJob, inbox: ShareInbox) async throws {
         guard job.manifest.ws == card.workspace.hex, job.manifest.generation == session.generation,

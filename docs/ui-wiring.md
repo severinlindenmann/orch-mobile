@@ -54,3 +54,15 @@ before calling newTicket; retain that record until a verified result is saved.
 After a lost response or restart call newTicket with that same saved submission:
 it resends the pending envelope or reconciles with an idempotent fresh envelope,
 removing the prior attempt. Returned fields must match the saved UTF-8 bytes.
+
+## Drop
+
+Use `DropService` for verified objects, downloads and durable sends. Recover pending
+uploads with `resumeUploads`; surface `failedUploads` for explicit retry or discard.
+`discardUpload` and `discardShareJob` stop local sending. The UI must present the
+outcome as "stopped sending", not "deleted": a PUT with a lost response may already
+have committed, and that content remains on the relay. Share-job discard also
+removes local staged plaintext. A fresh document seal may reuse an uncommitted
+version after discard; the discarded sealed body remains blocked.
+
+`DropService.setHook` is a test seam and must never be wired in app code.
