@@ -18,12 +18,14 @@ struct PairingScreen: View {
                     VStack(spacing: OS.s4) {
                         if let step = stepNumber { stepIndicator(step) }
                         content
+                        // At accessibility sizes the pinned Demo bar took ~45 % of the screen and truncated: it scrolls with the content instead.
+                        if typeSize.isAccessibilitySize { demoBar }
                     }
                         .padding(OS.s5)
                         .frame(maxWidth: .infinity)
                         .transaction { $0.animation = nil }
                 }
-                demoBar
+                if !typeSize.isAccessibilitySize { demoBar }
             }
             .background(isAlarm ? OC.danger.opacity(0.12) : OC.bg)
             .navigationTitle("Pair a workspace")

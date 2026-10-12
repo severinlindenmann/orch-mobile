@@ -279,7 +279,7 @@ enum LargeTextRunner {
     static func workspaceSettings(_ t: LargeTextBase, _ size: LargeTextBase.Size, dark: Bool) {
         let app = t.open("settings/workspace/laptop", size, dark: dark)
         let leave = app.buttons["settings.leave"]
-        XCTAssertTrue(leave.waitForExistence(timeout: 90))
+        XCTAssertTrue(app.el("workspace.header").waitForExistence(timeout: 90))
         t.shot(app, "settings-workspace", size, dark: dark)
         t.assertReachable(app, leave, "Leave")
         t.assertReachable(app, app.buttons["demo.push"], "Demo controls: push")
@@ -288,7 +288,7 @@ enum LargeTextRunner {
         t.assertReachable(app, leave, "Leave after the Demo controls")
         app.terminate()
         let hosted = t.open("settings/workspace/client-vm", size, dark: dark)
-        XCTAssertTrue(hosted.buttons["settings.leave"].waitForExistence(timeout: 90))
+        XCTAssertTrue(hosted.el("workspace.header").waitForExistence(timeout: 90))
         let header = hosted.el("workspace.header")
         XCTAssertTrue(header.exists)
         XCTAssertTrue(header.label.lowercased().contains("hosted by"), header.label)
