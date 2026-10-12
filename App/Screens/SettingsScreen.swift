@@ -72,7 +72,6 @@ struct SettingsScreen: View {
         .contentMargins(.bottom, 24, for: .scrollContent)
         .toolbarBackground(.visible, for: .tabBar)
         .toolbarBackground(.regularMaterial, for: .tabBar)
-        .headerProminence(.increased)
         .navigationTitle("Settings")
         .task { await model.refreshNotificationStatus() }
         .alert("Reset this iPhone?", isPresented: $confirmReset) {

@@ -310,16 +310,11 @@ struct SignSheet: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("sign.unsafeWarning")
                     }
-                    HStack(alignment: .firstTextBaseline, spacing: OS.s2) {
-                        Text("Answer").font(OF.meta).foregroundStyle(OC.textMuted)
-                        SafeTextView(review.optionLabel, strictLabel: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     Button { Task { await model.sign() } } label: { Label("Sign and send", systemImage: "signature") }
                         .buttonStyle(.orchProminent)
                         .disabled(armedRevision != review.revision)
                         .accessibilityIdentifier("sign.confirm")
-                        .accessibilityHint(armedRevision == review.revision ? "" : "Scroll to the end of the text to continue")
+                        .accessibilityHint(armedRevision == review.revision ? "Signs the selected answer" : "Scroll to the end of the text to continue")
                     if armedRevision != review.revision {
                         Text(atEndRevision == review.revision ? "Hold on…" : "Scroll to the end to continue")
                             .font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("sign.hint")
