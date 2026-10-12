@@ -158,18 +158,38 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
 enum PresentationGate {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var blocked: Set<String> = []
+    /// False until a rebuild from the workspace index succeeded (or the app has no index at all). While false nothing is
+    /// presented: a notification that arrives between launch and the rebuild, or after an unreadable index, is not shown.
+    nonisolated(unsafe) private static var rebuilt = false
+    static var isRebuilt: Bool { lock.lock(); defer { lock.unlock() }; return rebuilt }
+    static func markRebuilt() { lock.lock(); rebuilt = true; lock.unlock() }
+    static func markNotRebuilt() { lock.lock(); rebuilt = false; lock.unlock() }
     static func block(_ ws: String) { lock.lock(); blocked.insert(ws); lock.unlock() }
     static func unblock(_ ws: String) { lock.lock(); blocked.remove(ws); lock.unlock() }
     static func blockAll(_ ws: [String]) { lock.lock(); blocked.formUnion(ws); lock.unlock() }
-    /// Launch rebuild from the workspace index (the gate is memory-only): every tombstoned workspace is blocked, unless the index
-    /// now lists that workspace at a newer generation (re-paired: a new membership). Only adds; Leave/reset/transition add live.
+
+    /// Realm-agnostic rebuild from a workspace index (the gate is memory-only). Fails closed: an unreadable index leaves the
+    /// gate "not rebuilt" (blocks everything) until a later rebuild succeeds.
+    @MainActor @discardableResult
+    static func rebuild(reading read: () async throws -> (tombstones: [(ws: String, generation: Int64)], workspaces: [(ws: String, generation: Int64)])) async -> Bool {
+        do {
+            let r = try await read()
+            rebuild(tombstones: r.tombstones, workspaces: r.workspaces)
+            return true
+        } catch { markNotRebuilt(); return false }
+    }
+
+    /// Blocks every tombstoned workspace, unless the index now lists that workspace at a newer generation (re-paired: a new
+    /// membership). Only adds; Leave/reset/transition add live. Marks the gate rebuilt.
     static func rebuild(tombstones: [(ws: String, generation: Int64)], workspaces: [(ws: String, generation: Int64)]) {
         let current = Dictionary(workspaces.map { ($0.ws, $0.generation) }, uniquingKeysWith: max)
         let stale = tombstones.filter { t in (current[t.ws] ?? Int64.min) <= t.generation }.map(\.ws)
         blockAll(stale)
+        markRebuilt()
     }
     static func isBlocked(thread: String, identifier: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        if !rebuilt { return true }
         return blocked.contains { $0 == thread || identifier.hasPrefix("demo/\($0)/") }
     }
 }

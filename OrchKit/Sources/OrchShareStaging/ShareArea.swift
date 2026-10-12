@@ -390,10 +390,16 @@ public enum ShareTargetIndex {
         let coordination = area.coordination
         var live: [ShareTarget] = []
         var lockFailure: String?
+        // One deadline for the whole load, not per target; a lock that stays taken ends the loop.
+        let deadline = Date().addingTimeInterval(area.lockTimeout)
         for t in file.targets {
             do {
-                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, timeout: area.lockTimeout, { true }) == true { live.append(t) }
-            } catch { lockFailure = Self.tombstoneCode(error) }
+                let left = max(0, deadline.timeIntervalSinceNow)
+                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, timeout: left, { true }) == true { live.append(t) }
+            } catch {
+                lockFailure = Self.tombstoneCode(error)
+                if case TombstoneError.lockFailed = error { break }
+            }
         }
         if live.isEmpty {
             if let lockFailure { throw ShareError.index(.tombstones(lockFailure)) }

@@ -49,6 +49,14 @@ struct LockDeadlineTests {
         #expect(inbox.quarantined().count == 1)
     }
 
+    @Test func indexLoadUsesOneDeadlineForAllTargets() throws {
+        let base = tmp(); let area = ShareArea(shareGroupRoot: base, lockTimeout: 0.4)
+        try ShareTargetIndex.publish([target(), target(WS2), target(String(repeating: "c", count: 32)), target(String(repeating: "d", count: 32))], to: area)
+        let start = Date()
+        try heldLock(area) { _ = try? ShareTargetIndex.load(from: area) }
+        #expect(Date().timeIntervalSince(start) < 1.2)   // four per-target waits would take 1.6 s
+    }
+
     @Test func indexLoadFailsWithLockCodeInsteadOfHanging() throws {
         let base = tmp(); let area = ShareArea(shareGroupRoot: base, lockTimeout: 0.2)
         try ShareTargetIndex.publish([target()], to: area)

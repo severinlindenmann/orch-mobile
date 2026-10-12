@@ -240,9 +240,14 @@ final class DemoRuntime {
     }
 
     /// The foreground-presentation gate is memory-only: after a launch, block every workspace the index marks removed or mid-wipe.
-    func rebuildPresentationGate() async {
-        guard let tombstones = try? await env.index.tombstones(), let rows = try? await env.index.workspaces() else { return }
-        PresentationGate.rebuild(tombstones: tombstones.map { ($0.record.ws, $0.record.generation) }, workspaces: rows.map { ($0.ws, $0.generation) })
+    /// An unreadable index leaves the gate closed (nothing is presented) until a later rebuild succeeds.
+    @discardableResult
+    func rebuildPresentationGate() async -> Bool {
+        let index = env.index
+        return await PresentationGate.rebuild {
+            let t = try await index.tombstones(), w = try await index.workspaces()
+            return (t.map { ($0.record.ws, $0.record.generation) }, w.map { ($0.ws, $0.generation) })
+        }
     }
 
     /// Where a workspace keeps its unsent new-ticket draft: inside its own directory, which the local wipe deletes.

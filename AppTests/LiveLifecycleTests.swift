@@ -94,6 +94,41 @@ final class LiveLifecycleTests: XCTestCase {
 
     // MARK: PresentationGate
 
+    override func setUp() { PresentationGate.markRebuilt() }
+    override func tearDown() { PresentationGate.markRebuilt() }
+
+    func testGateNotRebuiltBlocksEverything() {
+        PresentationGate.markNotRebuilt()
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        PresentationGate.markRebuilt()
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+    }
+
+    func testUnreadableIndexFailsClosedUntilALaterRebuildSucceeds() async {
+        struct Unreadable: Error {}
+        PresentationGate.markNotRebuilt()
+        let failed = await PresentationGate.rebuild { throw Unreadable() }
+        XCTAssertFalse(failed)
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        let ok = await PresentationGate.rebuild { ([], []) }
+        XCTAssertTrue(ok)
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+    }
+
+    func testRelaunchWithTombstonedWorkspaceIsBlockedAndRepairedIsNot() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let gone = SystemEntropy().id16().hex
+        _ = try await runtime.env.index.recordTombstone(ws: gone, generation: 2)
+        defer { PresentationGate.unblock(gone) }
+        PresentationGate.markNotRebuilt()   // a fresh launch: memory-only gate
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "other", identifier: "x"))
+        let services = LiveServices(options: options, runtime: runtime)
+        await services.ensurePresentationGate()
+        XCTAssertTrue(PresentationGate.isRebuilt)
+        XCTAssertTrue(PresentationGate.isBlocked(thread: gone, identifier: "x"))
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "other", identifier: "x"))
+    }
+
     func testNonLiveLifecycleStatesBlockForegroundPresentation() {
         let services = LiveServices(options: options)
         for state in [WorkspaceLifecycle.removing, .removalIncomplete, .removed] {
