@@ -321,6 +321,12 @@ struct HomeContent: View {
             Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
             if home.isDemo { DemoChip() }
             Spacer(minLength: 0)
+            Button { path.append(.settings) } label: {
+                Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44)
+            }
+            .foregroundStyle(OC.textMuted)
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("home.settings")
             Button(action: onAdd) {
                 Image(systemName: "plus").font(.title3.weight(.semibold))
                     .frame(minWidth: 44, minHeight: 44)

@@ -148,16 +148,15 @@ struct DropRow: View {
                     Text(verbatim: item.displayName).font(OF.section).lineLimit(2)
                     if item.blocked { Image(systemName: "exclamationmark.shield.fill").foregroundStyle(OC.danger).accessibilityLabel("Verification alarm") }
                 }
-                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
-                    .font(OF.meta).foregroundStyle(OC.textMuted)
                 FlowLayout(spacing: OS.s2) {
+                    Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
+                        .font(OF.meta).foregroundStyle(OC.textMuted)
                     if item.verified {
                         StatusChip("Verified", systemImage: "checkmark.shield", color: OC.ok)
                         if item.hasSignedExpiry {
                             let left = Fmt.timeLeft(item.expires)
                             Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
                             if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn) }
-                            else { Text(verbatim: left.text).font(OF.meta).foregroundStyle(OC.textFaint) }
                         } else {
                             Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)
                         }
