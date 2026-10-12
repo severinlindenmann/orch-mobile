@@ -35,7 +35,7 @@ Build 3 (from f7cd52d) was uploaded but not handed out, because develop CI was r
 | 13 | Large share | blocked by 12 | not tested (optional) | |
 | 14 | Lock during share | blocked by 12 | not tested (optional) | |
 | 15 | Notifications | FAIL (no discoverable trigger) | build 4: arrives, not replaced; build 5: PASS | #55, #63 |
-| 16 | Large text, dark mode | delegated to Simulator validation | open | |
+| 16 | Large text, dark mode | delegated to Simulator validation | Simulator PASS (2026-10-12), partial: share-extension screen not covered | branch test/step16-large-text-dark |
 | 17 | Key custody label | PASS ("Secure Enclave", label only) | | |
 | 18 | Locked key | UNVERIFIED (no hardware diagnostics) | | |
 | 19a | Remove with "Pretend offline" | FAIL ("Remove incomplete") | build 4: PASS | #55, #60 |
@@ -45,7 +45,7 @@ Build 3 (from f7cd52d) was uploaded but not handed out, because develop CI was r
 
 Every failure from session 1 is fixed on device as of build 5. Still open:
 - 13/14 untested;
-- 16 not yet validated;
+- 16 validated on the Simulator only (share-extension screen and a real device pass still open);
 - 18/20 unverified on hardware;
 - 8: the explicit code comparison is unconfirmed.
 
@@ -68,3 +68,28 @@ Every failure from session 1 is fixed on device as of build 5. Still open:
 - b. "Not approved on your Mac" (pairing rejection) is shown in green; it should be warning styling.
 - c. Long monospaced question text is "visually painful". The exact-text and scroll-to-end rules stay.
 - d. Hidden-character chips wrap in the middle of a chip.
+
+## Step 16: large text and dark mode (Simulator, 2026-10-12)
+
+Simulator evidence only (iPhone Simulator, Demo stack). `UITests/LargeTextDarkTests.swift` runs XL, XXXL and AX5 (accessibilityXXXL),
+each in light and dark: Home (incl. scrolled to the end above the tab bar), question options (no "…"), sign sheet normal and the
+unsafe-content Demo question (hidden-character chips, single warning, hosted marker not squeezed, Sign enabled and hittable after
+scrolling to the end, Cancel reachable, unsafe options refused sheet), Drop list and compose sheet, Pairing entry and compare screen,
+Settings (last row above the tab bar), workspace Settings incl. Demo controls (Leave reachable) and a client-hosted workspace.
+Each screen asserts element reachability and that nothing runs past the screen edges; XL, XXXL and AX5 all end with 0 failures.
+Screenshots: `docs/screens/step16-<screen>-ax5-<theme>.png` (AX5 only; the XL and XXXL runs passed but their screenshots were not kept).
+
+Bugs found and fixed (restyle only; signed text, SafeText rules and arming/scroll-to-end gating untouched):
+- Sign sheet, unsafe content: the pinned footer's warning block was truncated ("Check it before you…") and left too little scroll area;
+  at XXXL the pinned footer left a third of the screen. The footer now joins the scroll content from XL (unsafe) / XXXL (always).
+- AX5 Home: the one-row header ran wider than the screen and pushed the whole page past both edges; it now stacks. DemoChip wraps.
+- AX5 workspace cards: a long chip laid out on one line wider than the card; FlowLayout now bounds chips to the row.
+- AX5 Pairing: the pinned Demo bar took about half the screen and truncated; it now scrolls with the content.
+
+Not covered: the share extension error/Details screen (needs the system share sheet; not reachable via a test hook in this run).
+Test-only: `--hold-reconcile` launch flag (DEBUG) disables the timed background reconcile (see flaky test below).
+
+Flaky `testReopenedPendingSubmissionKeepsSubmittedOption`: root cause was the app's own timed background reconcile of the stored
+decision (20 s in UI tests), which could settle the decision mid-test (before the test pressed "Check again"), removing the pending
+row the test was waiting on. The test now launches with `--hold-reconcile` and waits for state with 30 s timeouts. 10 of 10 passed
+before the fix in one local loop (the race is timing dependent) and 10 of 10 after; the fix removes the timer race rather than relying on luck.
