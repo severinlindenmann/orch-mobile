@@ -218,7 +218,7 @@ struct SignSheet: View {
                 .padding(OS.s3)
                 .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(OC.brand, lineWidth: 2))
-                if review.hasUnsafeContent {
+                if review.hasUnsafeContent, !footerShowsUnsafeWarning(review) {
                     Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(OF.meta).foregroundStyle(OC.warn)
@@ -285,6 +285,13 @@ struct SignSheet: View {
     private func lineCount(_ text: String) -> Int { text.split(separator: "\n", omittingEmptySubsequences: false).count }
 
     // MARK: Footer by phase
+
+    /// The footer's warning block (always visible, or at the end of the scroll content at accessibility sizes) is the single
+    /// warning while a signature is possible. The in-scroll notice remains only where the footer has no such block.
+    private func footerShowsUnsafeWarning(_ review: ReviewValue) -> Bool {
+        guard case .ready = model.phase else { return false }
+        return review.hasUnsafeContent && review.optionsRefusal == nil
+    }
 
     @ViewBuilder
     private func footer(_ review: ReviewValue) -> some View {
