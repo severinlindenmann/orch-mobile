@@ -80,22 +80,36 @@ import OrchStore
         #expect(fresh?.requeues == 0 && fresh?.firstMs == first + 900_000)
     }
 
-    @Test func fakeRelayAnswersAnUnknownOrExpiredRidWith410AndNeverResurrectsAChunk() async throws {
+    @Test func fakeRelayAnswersAnUnknownOrExpiredRidWith410AndReStoresOnlyExactBytes() async throws {
         var lim = RelayLimits(); lim.sessionLifetimeMs = 7_200_000            // the sessions outlive the 900 s rid
         let w = try await World.make(limits: lim)
         let rig = HostRig()
         let rid = ID16.fresh(0xB2), route = BridgeRoute(workspaceID: w.ws, requestID: rid)
         let chunk = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
-        let unknown = try await w.transport.bridgePost(chunk, route: route, session: w.hostSession)
+        let unknown = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
         #expect(unknown.status == 410 && errorCode(unknown) == "expired")
         #expect(try await w.postRequest(rid: rid).status == 202)
-        #expect(try await w.transport.bridgePost(chunk, route: route, session: w.hostSession).status == 202)
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
         w.clock.advance(milliseconds: 60_000)
-        // A stored replay of the expired chunk is accepted (202) but brings nothing back.
-        #expect(try await w.transport.bridgePost(chunk, route: route, session: w.hostSession).status == 202)
         #expect(try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession)).isEmpty)
-        w.clock.advance(milliseconds: 840_000)                               // 900 s after the request: the rid is gone
-        let gone = try await w.transport.bridgePost(chunk, route: route, session: w.hostSession)
+        // Q11 (P3-D27): other bytes for the expired index stay a conflict; the EXACT bytes are stored again for 60 s.
+        let other = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
+        let conflict = try await w.host.postBridgeChunk(other, rid: route.requestID, relay: w.relay, session: w.hostSession)
+        #expect(conflict.status == 409 && errorCode(conflict) == "chunk_conflict")
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
+        let polled = try chunkList(try await w.transport.bridgePoll(route: route, after: nil, session: w.phoneSession))
+        #expect(polled.map(\.envelope) == [chunk])
+        // A live duplicate is free; after eight re-stores the ninth is terminal.
+        #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
+        for _ in 2...8 {
+            w.clock.advance(milliseconds: 60_000)
+            #expect(try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession).status == 202)
+        }
+        w.clock.advance(milliseconds: 60_000)
+        let ninth = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
+        #expect(ninth.status == 409 && errorCode(ninth) == "retry_exhausted")
+        w.clock.advance(milliseconds: 360_000)                               // 900 s after the request: the rid is gone
+        let gone = try await w.host.postBridgeChunk(chunk, rid: route.requestID, relay: w.relay, session: w.hostSession)
         #expect(gone.status == 410 && errorCode(gone) == "expired")
     }
 
@@ -108,6 +122,137 @@ import OrchStore
         got.append(l.admit(at: .seconds(223)))
         #expect(got == [true, true, true, true, true, true, true, false])
         #expect(l.nextAllowed(at: .seconds(223)) == .seconds(282))
+    }
+
+    /// Q11: no interim `already_done(unknown)` for a copy of a request whose handler is still running (it would take index 0
+    /// from the real answer); the real answer is the only one.
+    @Test func aCopyOfARunningRequestGetsNoInterimAnswer() async throws {
+        let w = try await World.make()
+        let gate = HandlerGate()
+        await w.host.setHandler({ _ in await gate.wait(); return .response(status: 200, headers: [:], data: Data("real".utf8)) })
+        let (env, h) = try await w.sealedRequest(rid: ID16.fresh(0xB3))
+        let host = w.host
+        let first = Task { await host.process(envelope: env, mailbox: h.rid) }
+        guard await gate.waitEntered() else { Issue.record("handler never entered"); gate.open(); _ = await first.value; return }
+        let copy = await w.host.process(envelope: env, mailbox: h.rid)
+        #expect(copy.isEmpty)
+        gate.open()
+        let answer = await first.value
+        #expect(answer.count == 1)
+        // Later copies get the very same bytes.
+        let replay = await w.host.process(envelope: env, mailbox: h.rid)
+        #expect(replay == answer)
+    }
+
+    /// Q11: removing a device exhausts its chunks' re-store counts and drops every body, so a re-added device never gets an old
+    /// answer back.
+    @Test func removingADeviceExhaustsItsChunksReStores() async throws {
+        let w = try await World.make()
+        let rig = HostRig()
+        let rid = ID16.fresh(0xB4)
+        #expect(try await w.postRequest(rid: rid).status == 202)
+        let chunk = try w.sealedResponse(rig: rig, rid: rid, seq: 0, flags: [.last])
+        #expect(try await w.host.postBridgeChunk(chunk, rid: rid, relay: w.relay, session: w.hostSession).status == 202)
+        _ = try await w.publish([(w.primary.deviceKeys, World.all)], epoch: 2, listSeq: 2)
+        let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: rid))
+        let stored = try #require(record.chunks[0])
+        #expect(stored.restores == RidStore.maxRestores)
+        #expect(stored.envelope == nil)
+        #expect(await w.relay.storedBodyCount() == 0)
+    }
+
+    /// Q11: a host's stored `stale_timestamp` re-posted later still carries the host_ms of its first receipt, so the phone takes
+    /// its clock offset against the time of its FIRST send, not of the late delivery.
+    @Test func aLateStaleTimestampReplayUsesTheFirstSend() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        let phone = try await w.makePhone(skewMs: 600_000)                    // ten minutes ahead
+        let s = phone.session
+        faults.enqueue(.disconnect, at: .pollDelivery)
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: httpGet) }
+        let p = try #require(try await s.pendingRequests().first)
+        #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)   // stale_timestamp, stored
+        w.clock.advance(milliseconds: 30_000); phone.clock.advance(milliseconds: 30_000)
+        // The resend reads the stored refusal 30 s later; a resend never re-signs (U8), but the offset is adopted.
+        await #expect(throws: SessionError.uncertain(logical: p.logical)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
+        let off = try await s.clockOffsetMs()
+        #expect(abs(off + 600_000) < 5_000, "offset \(off) against the first send")
+    }
+
+    /// P3-D27: pairing answers are never stored again. After the body expired, an identical re-post is a stored replay (202, nothing
+    /// comes back) and other bytes for the answered index are 409 `chunk_conflict`.
+    @Test func aPairingAnswerIsNeverReStored() async throws {
+        let w = try await World.make()
+        let offer = ID16.fresh(0xC7), rid = ID16.fresh(0xC8)
+        let target = "\(HostAPI.base)/workspaces/\(w.ws.hex)/pair/\(offer.hex)/\(rid.hex)"
+        func post(_ body: Data) async throws -> WireReply {
+            let gen = try await w.host.holderGeneration(relay: w.relay, session: w.hostSession)     // the 40 s lease, renewed
+            return try await w.relay.send(WireRequest(method: "POST", target: target,
+                headers: ["authorization": "Bearer " + w.hostSession.token, "orch-holder": String(gen), "content-type": "application/octet-stream"],
+                body: body, clientAddress: "198.51.100.7"))
+        }
+        func polled() async throws -> [HostAPI.Chunk] {
+            try chunkList(try await w.relay.send(WireRequest(method: "GET", target: target, headers: [:], clientAddress: "203.0.113.9")))
+        }
+        let answer = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
+        #expect(try await post(answer).status == 202)
+        #expect(try await polled().count == 1)
+        w.clock.advance(milliseconds: 60_000)
+        #expect(try await polled().isEmpty)
+        let again = try await post(answer)
+        #expect(again.status == 202)
+        #expect(try await polled().isEmpty)                                 // a stored replay: nothing stored again
+        let other = try w.envelope(direction: .toDevice, rid: rid, seq: 0, epoch: 0, flags: [.last], stream: offer, signer: SoftwareSigner())
+        let conflict = try await post(other)
+        #expect(conflict.status == 409)
+        #expect(errorCode(conflict) == "chunk_conflict")
+        #expect(try await polled().isEmpty)
+    }
+
+    /// The host substitutes its kept answer only when it answers a KNOWN request again, after the §8.6 device checks: a device
+    /// revoked at the host gets the refusal for an identical resend, never the old answer.
+    @Test func aKeptAnswerNeverReplacesADeviceCheckRefusal() async throws {
+        let faults = ScriptedFaults()
+        let w = try await World.make(faults: faults)
+        await w.host.setHandler({ _ in .response(status: 200, headers: [:], data: Data("old".utf8)) })
+        let phone = try await w.makePhone()
+        let s = phone.session
+        faults.enqueue(.disconnect, at: .pollDelivery)
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: httpGet) }
+        let p = try #require(try await s.pendingRequests().first)
+        #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
+        let first = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: p.rid)?.chunks[0])
+        await w.host.markRevoked(w.phoneID)                                  // the host's own view (§8.6 step 4)
+        let env = try #require(try await s.storedEnvelope(rid: p.rid))
+        let answer = await w.host.process(envelope: env, mailbox: p.rid)
+        let chunk = try #require(answer.first)
+        #expect(RidStore.digest(chunk) != first.digest)
+        let opened = try openChunk(chunk, wk: await w.host.wkFor(1))
+        #expect(opened.meta == HostRefusal.revoked.meta)
+    }
+
+    /// #47 follow-up: a RELAY-level 409 `rid_conflict` on the same-rid re-seal is the host's rid_conflict one hop earlier: the
+    /// original attempt comes back, uncertain (not left pending until the resend window ends).
+    @Test func aRelayRidConflictOnTheSameRidReSealRestoresTheOriginal() async throws {
+        let w = try await World.make()
+        let counter = Counter()
+        await w.host.setHandler({ _ in counter.bump(); return .response(status: 200, headers: [:], data: Data()) })
+        let phone = try await w.makePhone()
+        let s = phone.session
+        let (host, relay, hostSession, primary, phoneKeys) = (w.host, w.relay, w.hostSession, w.primary, w.phone)
+        // An honest relay that queued the first copy and still answered stale_epoch (it keeps the record): the re-seal conflicts.
+        await w.relay.lieWithStaleEpochOnNextRequest(epoch: 2, deliver: true, forgets: false) {
+            try await host.rotate(remaining: [(primary.deviceKeys, World.all), (phoneKeys, ["look", "decide"])], relay: relay, session: hostSession)
+        }
+        do { _ = try await w.serve(phone) { try await s.exchange(meta: httpGet) }; Issue.record("expected uncertain") }
+        catch let e as SessionError { guard case .uncertain = e else { Issue.record("\(e)"); return } }
+        let u = try await s.uncertainRequests()
+        #expect(u.count == 1)
+        let original = try #require(u.first)
+        #expect(original.epoch == 1)
+        #expect(original.seq == 1)
+        let pending = try await s.pendingRequests()
+        #expect(pending.isEmpty)
     }
 
     // MARK: helpers

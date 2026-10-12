@@ -131,8 +131,17 @@ final class SignSheetStateTests: XCTestCase {
     func testReviewLoadFailureCanRetry() {
         let app = launch("sign/q1/loadFails")
         XCTAssertTrue(app.el("sign.loadFailed").waitForExistence(timeout: 60))
-        app.buttons["sign.retryLoad"].tap()
-        XCTAssertTrue(app.buttons["sign.confirm"].waitForExistence(timeout: 30))
+        // In a full run the first tap can land while the sheet is still settling and is swallowed (the failure
+        // view stays up). Retry the tap while the failure view is still showing; the outcome asserted is unchanged.
+        let retry = app.buttons["sign.retryLoad"]
+        let confirm = app.buttons["sign.confirm"]
+        var attempts = 0
+        while !confirm.exists && attempts < 3 {
+            if retry.waitForExistence(timeout: 5), retry.isHittable { retry.tap() }
+            _ = confirm.waitForExistence(timeout: 10)
+            attempts += 1
+        }
+        XCTAssertTrue(confirm.waitForExistence(timeout: 30))
     }
 
     @MainActor

@@ -143,11 +143,12 @@ struct PairingScreen: View {
                 closeButton
             }
         case .alarm(let alarm): alarmView(alarm)
-        case .denied:
+        case .denied(let owner):
+            // attributed to the pinned owner key (the person of the link's pk_pin), never to a device name the host sent
             VStack(spacing: OS.s4) {
-                step(icon: "hand.raised", title: "Your primary device said no",
-                     text: "Nothing was added. Your primary device declined to sign this iPhone. Start again on your Mac if that was a mistake.",
-                     id: "pair.denied", tint: OC.danger)
+                step(icon: "hand.raised", title: "Denied by the owner",
+                     text: "The owner of this workspace (owner key \(owner)) declined to sign this iPhone. Nothing was added.",
+                     id: "pair.deniedByOwner", tint: OC.danger)
                 closeButton
             }
         case .refused(let reason):
@@ -258,6 +259,7 @@ struct PairingScreen: View {
 
     private func refusalTitle(_ r: PairingRefusal) -> String {
         switch r {
+        case .refused: "The pairing was refused"
         case .rejectedOnHost: "Not approved on your Mac"
         case .rejectedOnPrimary: "Not approved on your primary device"
         case .linkUsed: "This link was already used"
@@ -268,12 +270,14 @@ struct PairingScreen: View {
         case .alreadyMember: "This workspace is already on this iPhone"
         case .clockWrong: "This iPhone's clock is wrong"
         case .couldNotVerify: "The workspace could not be verified"
+        case .keysInUse: "This iPhone's keys may be in use"
         case .keysUnavailable: "This iPhone's keys are not available"
         }
     }
 
     private func refusalText(_ r: PairingRefusal) -> String {
         switch r {
+        case .refused: "Nothing was added. Start again on your Mac if you want to pair."
         case .rejectedOnHost: "Nothing was added. Start again on your Mac if you want to pair."
         case .rejectedOnPrimary: "Nothing was added. Your primary device did not sign this iPhone."
         case .linkUsed: "This link was used by someone else. Reject it on your Mac and make a new one."
@@ -284,6 +288,7 @@ struct PairingScreen: View {
         case .alreadyMember: "Nothing was changed. Remove the workspace from this iPhone first if you want to pair it again."
         case .clockWrong: "Set the date and time on this iPhone to automatic, then start again."
         case .couldNotVerify: "Nothing was added. Make a new link on your Mac and try again."
+        case .keysInUse: "orch couldn't confirm that no other pairing is using these keys. Finish or cancel any other pairing, then try again."
         case .keysUnavailable: "Nothing was added. Unlock this iPhone and try again."
         }
     }

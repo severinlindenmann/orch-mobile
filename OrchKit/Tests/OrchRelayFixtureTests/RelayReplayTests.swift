@@ -60,7 +60,7 @@ func scalar(fromSeed seed: Data) -> Data {
 
 /// The vector person key (with its private scalar) whose person id is `person`: it signs the fixture-derived certificates.
 func personSigner(_ person: ID16) throws -> SoftwareSigner {
-    let root = try StrictJSON.parse(Vectors.data, maxBytes: .max)
+    let root = try StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
     for (name, k) in root.object?["suites"]?.object?["2"]?.object?["keys"]?.object ?? [:] where name.hasSuffix(".sig") {
         guard let seed = k.object?["seed"]?.string.flatMap({ Hex.decode($0) }) else { continue }
         let signer = try SoftwareSigner(testScalar: scalar(fromSeed: seed))
@@ -71,10 +71,11 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
 
 @Suite struct FixtureReplayTests {
     static let files = FixtureSchemaTests.files
-    /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 120 cases of the twelve PR3 directory and
-    /// membership files, the 104 cases of the nine PR4 files, and 15 bridge_device_post + 9 bridge_device_poll + 14
-    /// bridge_host_post cases (PR5).
-    static let expectedReplayed = 18 + 120 + 104 + 38
+    /// 4 session_challenge + 10 session_login + 4 session_logout cases (PR2), the 121 cases of the twelve PR3 directory and
+    /// membership files (121 since G2b added wk_commit_changed), the 103 cases of the nine PR4 files, and
+    /// 15 bridge_device_post + 9 bridge_device_poll + 14 bridge_host_post cases (PR5), and the two Q11 bridge_host_post re-store cases.
+    /// 18 (PR2) + 121 (PR3) + 103 (PR4) + 38 (PR5) + 2 (Q11) = 282; one literal (Xcode 16.4's type checker).
+    static let expectedReplayed: Int = 282
 
     /// The instant of every fixture case that has one (all 386a6cb cases use 1790000000000). The three condition-only cases
     /// (victim_person_without_member, other_workspace_person_refused x2) carry no `given.now_ms`; they replay at that same instant.
@@ -201,8 +202,9 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
             }
         }
 
-        if c.given["scenario"]?.string == "exact_bytes_already_committed" { try await check(f, c, relay) }   // the first, committing send
-        try await check(f, c, relay)
+        let sent = try Self.body(c.request)
+        if c.given["scenario"]?.string == "exact_bytes_already_committed" { try await check(f, c, relay, body: sent) }   // the first, committing send
+        try await check(f, c, relay, body: sent)
         if mustBeConsumed, let challenge { #expect(!(await relay.outstandingChallenges.contains(challenge)), "\(id): the challenge is consumed") }
         if f.fileName == "session_logout.json", c.name == "success" {
             #expect(await relay.liveSessionTokens.isEmpty, "\(id): the token is gone after logout")
@@ -285,6 +287,10 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
             case "refusal_409_chunk_conflict": known?.chunks[0] = .init(digest: other, flags: 1, expiresMs: now + 59_000)
             case "refusal_409_stale_epoch": epoch = 2          // a LAST chunk (not LAST | REFUSAL) at the request's old epoch
             case "refusal_410_expired": known = nil            // the rid is unknown
+            case "expired_identical_chunk_restored", "refusal_409_retry_exhausted":
+                // P3-D27: the identical chunk is stored, its copy expired, restored 0 resp. 8 times (Q11, orch-relay d3816ea)
+                let n = c.name == "refusal_409_retry_exhausted" ? RidStore.maxRestores : 0
+                known?.chunks[0] = .init(digest: digest, flags: 1, expiresMs: now - 1, restores: n)
             default: return false
             }
             if let known { await relay.seedRid(workspace: fixtureWorkspace, device: fixtureDevice, rid: fixtureRid, record: known) }
@@ -293,12 +299,12 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         return true
     }
 
-    func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay) async throws {
+    func check(_ f: Fixtures.File, _ c: Fixtures.Case, _ relay: FakeRelay, body sent: Data? = nil) async throws {
         let id = caseID(f, c)
         var headers: [String: String] = [:]
         for (k, v) in c.request["headers"]?.object ?? [:] { if let s = v.string { headers[k] = s } }
         let reply = try await relay.send(WireRequest(method: c.request["method"]?.string ?? "", target: try Self.target(c.request), headers: headers,
-                                                     body: try Self.body(c.request), clientAddress: "fixture"))
+                                                     body: try sent ?? Self.body(c.request), clientAddress: "fixture"))
         let text = String(decoding: reply.body, as: UTF8.self)
         #expect(Int64(reply.status) == c.response["status"]?.int, "\(id) status \(reply.status) \(text)")
         // headers: exactly the fixture's response headers (names case-insensitive), nothing extra
@@ -315,13 +321,30 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         let rec = await relay.ridRecord(workspace: fixtureWorkspace, device: fixtureDevice, rid: fixtureRid)
         switch (f.fileName, c.name) {
         case ("bridge_device_post.json", "success"):
-            #expect(rec?.copies.count == 1 && rec?.requeues == 0 && rec?.reqEpoch == 1, "\(id): one queued copy")
+            #expect(rec?.copies.count == 1, "\(id): one queued copy")
+            #expect(rec?.requeues == 0, "\(id): not requeued")
+            #expect(rec?.reqEpoch == 1, "\(id): request epoch")
         case ("bridge_device_post.json", "refusal_409_retry_exhausted"), ("bridge_device_post.json", "refusal_429_rate_limited"):
-            #expect(rec?.copies.count == (c.name == "refusal_429_rate_limited" ? 1 : 9) && rec?.requeues == (c.name == "refusal_429_rate_limited" ? 0 : 8), "\(id): nothing requeued")
+            let limited: Bool = c.name == "refusal_429_rate_limited"
+            let copies: Int = limited ? 1 : 9
+            let requeues: Int = limited ? 0 : 8
+            #expect(rec?.copies.count == copies, "\(id): nothing queued")
+            #expect(rec?.requeues == requeues, "\(id): nothing requeued")
         case ("bridge_device_post.json", _):
             #expect(c.name == "refusal_409_rid_conflict" ? rec?.copies.count == 1 : rec == nil, "\(id): nothing queued")
         case ("bridge_host_post.json", "success"):
             #expect(rec?.chunks[0]?.envelope == (try Self.body(c.request)), "\(id): the chunk is stored")
+        case ("bridge_host_post.json", "expired_identical_chunk_restored"):
+            let chunk = try #require(rec?.chunks[0], "\(id): chunk")
+            let sentBody = try Self.body(c.request)
+            let fresh: Int64 = Self.conditionOnlyNowMs + 60_000
+            #expect(chunk.restores == 1, "\(id): restored once")
+            #expect(chunk.envelope == sentBody, "\(id): the exact bytes are stored again")
+            #expect(chunk.expiresMs == fresh, "\(id): for 60 s")
+        case ("bridge_host_post.json", "refusal_409_retry_exhausted"):
+            let chunk = try #require(rec?.chunks[0], "\(id): chunk")
+            #expect(chunk.restores == RidStore.maxRestores, "\(id): count unchanged")
+            #expect(chunk.envelope == nil, "\(id): nothing restored")
         case ("bridge_host_post.json", "refusal_409_chunk_conflict"):
             #expect(rec?.chunks[0]?.digest == Data(repeating: 0xEE, count: 32), "\(id): the stored chunk is kept")
         case ("bridge_host_post.json", _):
@@ -333,10 +356,15 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
     @Test func replayableFixturesReplayAgainstFakeRelay() async throws {
         var n = 0
         for f in Self.files where FixtureCoverage.replayable.contains(f.fileName) {
-            for c in f.cases { try await replay(f, c); n += 1 }
+            for c in f.cases where FixtureCoverage.caseOverrides[caseID(f, c)] == nil { try await replay(f, c); n += 1 }
         }
         #expect(n == Self.expectedReplayed)
-        #expect(Self.expectedReplayed == FixtureCoverage.expectedCaseCount - FixtureCoverage.pending.keys.reduce(0) { acc, name in
-            acc + (Self.files.first { $0.fileName == name }?.cases.count ?? 0) })
+        // Split up: the one-expression form exceeds Xcode 16.4's type-checker time limit.
+        var pendingCases = 0
+        for name in FixtureCoverage.pending.keys {
+            pendingCases += Self.files.first(where: { $0.fileName == name })?.cases.count ?? 0
+        }
+        let expected: Int = FixtureCoverage.expectedCaseCount - FixtureCoverage.caseOverrides.count - pendingCases
+        #expect(Self.expectedReplayed == expected)
     }
 }

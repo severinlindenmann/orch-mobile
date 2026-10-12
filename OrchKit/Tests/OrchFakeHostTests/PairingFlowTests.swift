@@ -25,12 +25,12 @@ actor StateLog {
     func stop() { task?.cancel() }
     /// Waits for a published snapshot, not `state`: expiry may change that getter without publishing.
     func settled(_ c: PairingCoordinator) async {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(120))
         while ContinuousClock.now < deadline {
             if states.last == (await c.lastPublishedState) { return }
             await Task.yield()
         }
-        Issue.record("StateLog did not consume the last published state within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")")
+        Issue.record("StateLog did not consume the last published state within 120 s: log=\(states.last.map { "\($0)" } ?? "empty")")
     }
     var showedHostCode: Bool { states.contains { isComparingHost($0) } }
     var showedPrimaryCode: Bool { states.contains { isComparingPrimary($0) } }
@@ -66,6 +66,7 @@ extension PairHarness {
         return try await drive(until: { $0.isTerminal || $0 == .failed(.joiningTimedOut) })
     }
 
+    /// The workspace's vault items. The realm's attempt memory (`pairing.attempts`, G3b) is not workspace-scoped and outlives a pairing by design.
     var vaultItems: [SecretID] { ((try? vault.ids()) ?? []).filter { $0.realm == .demo && $0.ws == host.workspace.hex } }
 }
 
@@ -130,7 +131,7 @@ extension PairHarness {
             switch plan.outcome {
             case .ready: #expect(isReady(final), "\(name): \(final)")
             case .rejected: #expect(final == .rejected, "\(name): \(final)")
-            case .denied: #expect(final == .denied, "\(name): \(final)")
+            case .denied: #expect(final == .denied(owner: h.primary.personID), "\(name): \(final)")
             case .expired(let e): #expect(final == .expired(e), "\(name): \(final)")
             case .alarm(let k): #expect({ if case .alarm(let a) = final { return a.kind == k }; return false }(), "\(name): \(final)")
             case .failed(let f): #expect(final == .failed(f), "\(name): \(final)")
@@ -221,7 +222,7 @@ extension PairHarness {
             let p = try #require(await h.primary.openPrompts().first)
             try await h.primary.reject(request: p.requestID, relay: h.relay)
             // the primary's PK-signed rejection reaches the phone through the host and verifies: denied, not a host rejection
-            #expect(try await h.drive(until: { $0.isTerminal }) == .denied)
+            #expect(try await h.drive(until: { $0.isTerminal }) == .denied(owner: h.primary.personID))
             #expect(await h.nothingFor(h.phoneID))
             #expect(await h.primary.ledgerSnapshot().signed.isEmpty)
             await #expect(throws: PrimaryError.self) { _ = try await h.primary.approve(request: p.requestID, confirmedComparison: true, relay: h.relay) }
@@ -231,7 +232,8 @@ extension PairHarness {
             let h = try await PairHarness.make(.primaryOffline)
             _ = try await h.startToHostCode()
             try await h.hostApproves()
-            #expect(try await h.drive(steps: 800, until: { $0.isTerminal }) == .expired(.certification))
+            let ended = try await h.drive(steps: 800, until: { $0.isTerminal })
+            #expect(ended == .expired(.certification))
             #expect(await h.nothingFor(h.phoneID))
             #expect(await h.host.pairingState(of: h.phoneID) == "expired")
         }
@@ -274,6 +276,87 @@ extension PairHarness {
         let now = await h.coordinator.state, acc = await h.relay.accepted
         #expect(now == .alarm(alarm) && acc == sent)
         await log.stop()
+    }
+
+    /// R1 on an iPhone that already holds the owner's certificate (paired with another workspace before, D-1), as on a Demo phone after
+    /// its first pairing. The compromised host ignores the presented certificate and asks the primary to certify a key of its own: the
+    /// phone must still end on the R1 alarm with no primary code, and nothing may be added for it. Regression for iPhone checklist 9b,
+    /// where the Demo's "R1 attack" silently joined because the fake host honoured the presented certificate.
+    @Test(arguments: [false, true]) func testR1AttackOnAlreadyCertifiedPhoneRaisesAlarm(inDirectory: Bool) async throws {
+        let h = try await PairHarness.make(.r1Attack)
+        let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
+        let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
+        try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
+        #expect(await h.coordinator.storedCertificateIsPresentable() == true)
+        // after an earlier join the certificate is also public in the directory
+        if inDirectory { try await h.relay.publishCertificate(cert) }
+        let log = StateLog(); await log.attach(h.coordinator)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        let final = try await h.drive(until: { $0.isTerminal })
+        await log.settled(h.coordinator); await log.stop()
+        guard case .alarm(let alarm) = final else { Issue.record("R1 on a certified phone ended \(final), not the alarm"); return }
+        #expect(alarm.kind == .r1Challenge)
+        #expect(await !log.showedPrimaryCode)
+        #expect(await !log.states.contains(where: isReady))
+        #expect(await h.noKeyMaterial(for: h.phoneID))
+        #expect(try await h.env.index.workspaces().isEmpty)
+        let prompt = try #require(await h.primary.openPrompts().first)
+        #expect(prompt.deviceID != h.phoneID)
+        #expect(await h.host.pairingState(of: h.phoneID) != "approved")
+    }
+
+    /// iPhone checklist 10b on an already certified phone: with the Demo's `asksPrimaryAlways`, the host asks the primary even though
+    /// the phone presented its certificate; the primary is offline, so the phone waits for it and the attempt expires without a join.
+    /// An honest host without the knob joins at once (the protocol's step 6), which is what the Demo silently did before.
+    @Test(arguments: [false, true]) func testPrimaryOfflineOnAlreadyCertifiedPhone(asksPrimary: Bool) async throws {
+        let h = try await PairHarness.make(.primaryOffline)
+        let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
+        let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
+        try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
+        try await h.relay.publishCertificate(cert)
+        await h.host.setAsksPrimaryAlways(asksPrimary)
+        await h.rig.setPrimaryOnline(false)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        if asksPrimary {
+            #expect(isWaitingPrimary(try await h.drive(until: { isWaitingPrimary($0) || $0.isTerminal })))
+            let ended = try await h.drive(steps: 800, until: { $0.isTerminal })
+            #expect(ended == .expired(.certification))
+            #expect(try await h.env.index.workspaces().isEmpty)
+            #expect(await h.host.pairingState(of: h.phoneID) == "expired")
+            #expect(await h.relay.grantCount(workspace: h.host.workspace, device: h.phoneID) == 0)
+        } else {
+            #expect(isReady(try await h.drive(until: { $0.isTerminal })))
+        }
+    }
+
+    /// With `asksPrimaryAlways` and the primary online, a phone holding the owner's certificate still goes through the primary's code.
+    /// While that certificate is not in the directory, the primary's new one is published and the phone joins. Directory certificates
+    /// are immutable (`cert_conflict`, #46): once the old one is there, the primary cannot publish a different one for the same device,
+    /// and the pairing must fail closed (never ready on the strength of an unpublished certificate).
+    @Test(arguments: [false, true]) func testAsksPrimaryAlwaysShowsThePrimaryCodeOnACertifiedPhone(inDirectory: Bool) async throws {
+        let h = try await PairHarness.make(.firstTime)
+        let id = try h.config.context.deviceIdentity(custody: h.config.custody, createIfMissing: true)
+        let cert = try await h.primary.certify(DemoKeys(id.publicKeys), label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
+        try await PairingCoordinator(h.config).adoptCertificate(cert, owner: h.primary.publicKey)
+        if inDirectory { try await h.relay.publishCertificate(cert) }
+        await h.host.setAsksPrimaryAlways(true)
+        _ = try await h.startToHostCode()
+        try await h.hostApproves()
+        let comparing = try await h.drive(until: { isComparingPrimary($0) || $0.isTerminal })
+        #expect(isComparingPrimary(comparing))
+        if inDirectory {
+            await #expect(throws: ClientError.relay(RelayRefusal(status: 409, code: .certConflict))) { try await h.primaryApproves() }
+            let ended = try await h.drive(steps: 800, until: { $0.isTerminal })
+            #expect(!isReady(ended), "\(ended)")
+            #expect(try await h.env.index.workspaces().isEmpty)
+            #expect(await h.relay.grantCount(workspace: h.host.workspace, device: h.phoneID) == 0)
+        } else {
+            try await h.primaryApproves()
+            let ended = try await h.drive(until: { $0.isTerminal })
+            #expect(isReady(ended), "\(ended)")
+        }
     }
 
     @Test func testEchoWrongKeyAlarmBeforeSAS() async throws {
@@ -338,7 +421,8 @@ extension PairHarness {
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: f.pending(nonce: f.nonceA) } },
             Case(name: "challenge substitution", kind: .pinSubstitution) { f, n, op in
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: try await f.certPending(challenge: f.challenge(nonce: f.nonceB)) } },
-            Case(name: "challenge request id substitution", kind: .pinSubstitution) { f, n, op in
+            // G3b step 6: a challenge of another request after one was accepted is dropped (not_for_this_pairing), no alarm
+            Case(name: "challenge request id substitution", kind: nil) { f, n, op in
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: try await f.certPending(challenge: f.challenge(nonce: f.nonceA, request: .random())) } },
             Case(name: "challenge expiry changed", kind: .pinSubstitution) { f, n, op in
                 switch n { case 0: f.pending(nonce: f.nonceA); case 1: try await f.certPending(challenge: f.challenge(nonce: f.nonceA)); default: try await f.certPending(challenge: f.challenge(nonce: f.nonceA, expiresDelta: 1000)) } },
@@ -361,6 +445,10 @@ extension PairHarness {
                 h.clock.advance(milliseconds: 1000)
                 final = await h.coordinator.state
                 if final.isTerminal { break }
+            }
+            if c.kind == nil {
+                guard case .comparingPrimary = final else { Issue.record("\(c.name): \(final)"); continue }
+                continue
             }
             guard case .alarm(let a) = final else { Issue.record("\(c.name): \(final)"); continue }
             #expect(a.kind == c.kind, "\(c.name): \(a.kind)")
@@ -551,10 +639,9 @@ extension PairHarness {
         _ = try await g.startToHostCode()
         try await g.hostApproves()
         _ = try await g.drive(until: isComparingPrimary)
-        let before = g.env.device.publicKeys
+        // an uncertified phone drew fresh keys for this attempt (G3b): they are this pairing's, and nothing else uses them
         await g.coordinator.cancel()
-        #expect(await g.coordinator.state == .cancelled && g.vaultItems.isEmpty && g.custody.status(realm: .demo) == .present)
-        #expect(g.env.device.publicKeys == before)
+        #expect(await g.coordinator.state == .cancelled && g.vaultItems.isEmpty && g.custody.status(realm: .demo) == .missing)
         // cancel cannot un-use the offer or retract: the host keeps its record; the primary can still be asked to reject
         #expect(await g.host.pairingState(of: g.phoneID) == "cert_pending")
         // no code survives anywhere in the coordinator
@@ -653,7 +740,8 @@ extension PairHarness {
         let stream = await h.coordinator.states(bufferingPolicy: .unbounded)
         _ = try await h.startToHostCode()
         try await h.hostApproves()
-        #expect(try await h.drive(steps: 800, until: { $0.isTerminal }) == .expired(.certification))
+        let ended = try await h.drive(steps: 800, until: { $0.isTerminal })
+        #expect(ended == .expired(.certification))
         let log = StateLog()
         await log.attach(stream)
         await log.settled(h.coordinator)

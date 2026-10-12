@@ -33,11 +33,13 @@ final class PairForge: @unchecked Sendable {
     }
 
     /// A PK-signed challenge for the phone's own keys.
-    func challenge(nonce: Data, request: ID16 = ID16(bytes: Data(repeating: 0x33, count: 16))!, expiresDelta: Int64 = 0) async throws -> JSONValue {
+    /// It names this pairing's attempt (the phone persisted it before its first request) and the link's offer (G3b).
+    func challenge(nonce: Data, request: ID16 = ID16(bytes: Data(repeating: 0x33, count: 16))!, expiresDelta: Int64 = 0, attempt: String? = nil) async throws -> JSONValue {
         let exp = h.clock.nowMs + 600_000 + expiresDelta
         let o: [String: JSONValue] = [
             "v": 2, "suite": 2, "kind": "cert_challenge", "request_id": .string(request.hex), "workspace_id": .string(h.host.workspace.hex),
-            "person_id": .string(h.primary.personID.hex), "device_id": .string(phone.deviceID.hex), "dk_sig_pub": .string(B64U.encode(phone.sig.x963)),
+            "person_id": .string(h.primary.personID.hex), "offer_id": .string(link.offer.hex),
+            "attempt": .string(attempt ?? h.pairingRecord?.attempt ?? ""), "device_id": .string(phone.deviceID.hex), "dk_sig_pub": .string(B64U.encode(phone.sig.x963)),
             "dk_kx_pub": .string(B64U.encode(phone.kx.x963)), "primary_nonce": .string(B64U.encode(nonce)), "expires_ms": .int(exp)]
         return try CertChallenge.sign(o, primary: h.primary.pkSigner).json
     }
@@ -55,7 +57,8 @@ final class PairForge: @unchecked Sendable {
             cert = try await h.primary.certify(keys, label: "Demo iPhone", scopesMax: ["look", "decide", "operate"])
         }
         let pkValue: JSONValue = pk.map { .string(B64U.encode($0.x963)) } ?? pkB64
-        return ["state": "approved", "scopes": .array(scopes.map { .string($0) }), "cert": cert, "pk_pub": pkValue, "epoch": .int(epoch), "wsk_pub": wskB64]
+        return ["state": "approved", "scopes": .array(scopes.map { .string($0) }), "cert": cert, "pk_pub": pkValue, "epoch": .int(epoch),
+                "list_seq": 1, "card_seq": 1, "baseline": .null, "wsk_pub": wskB64]
     }
 
     /// Seals `meta` as the answer to one phone request (`rid`).
@@ -85,7 +88,10 @@ final class PairForge: @unchecked Sendable {
             guard let op = meta.object?["op"]?.string, let reply = try await script(op) else { continue }
             let env = try answer(reply, to: parts.header, refusal: reply.object?["refusal"] != nil)
             let target = "\(HostAPI.base)/workspaces/\(h.host.workspace.hex)/pair/\(link.offer.hex)/\(item.rid.hex)"
-            let req = try WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token], body: env, clientAddress: "forge")
+            // a host answer is a W(g) write: under the host's holder generation (P3-D10; fenced without one)
+            let gen = try await h.host.holderGeneration(relay: h.relay, session: session)
+            let req = try WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen)],
+                                      body: env, clientAddress: "forge")
             _ = try await h.relay.send(req)
         }
         return seen
@@ -94,7 +100,7 @@ final class PairForge: @unchecked Sendable {
     /// An epoch-0 `pair` request from some other device that holds the link (someone who got the QR).
     func sendPair(signer: SoftwareSigner, keys: DemoKeys, label: String) async throws {
         let ctx = PairingWire.Context(workspace: link.workspace, device: keys.deviceID, offer: link.offer, secret: SymmetricKey(data: link.secret),
-                                      wskPin: link.wskPin, pkPin: link.pkPin, dkSig: keys.sig, dkKx: keys.kx)
+                                      wskPin: link.wskPin, pkPin: link.pkPin, dkSig: keys.sig, dkKx: keys.kx, attempt: Hex.encode(ID16.random().bytes))
         let rid = ID16.random()
         let env = try PairingWire.request(.pair(label: label, cert: nil), context: ctx, signer: signer, rid: rid, seq: 1, tsMs: h.clock.nowMs, salt: Bridge.Header.freshSalt())
         let reply = try await h.env.transport.pairingPost(env, route: PairRoute(workspaceID: link.workspace, offerID: link.offer, requestID: rid))

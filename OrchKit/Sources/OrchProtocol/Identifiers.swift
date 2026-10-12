@@ -31,6 +31,18 @@ public enum Identifiers {
     }
 
     /// `cert_code` of the primary's challenge (section 4): `base32(H("orch/v2/sas-cert|" || suite || cj(challenge.o)))[0:6]`.
+    /// `dk_hash = H("orch/v2/dk-hash|" || suite || lp16(dk_sig_pub) || lp16(dk_kx_pub))` (32 bytes): both keys of one pairing
+    /// attempt (protocol-v2 section 8.4, G3b P3-D28). Travels as b64u.
+    public static func dkHash(sig: SigningPublicKey, kx: AgreementPublicKey) -> Data { dkHash(sig: sig.x963, kx: kx.x963) }
+    public static func dkHash(sig: Data, kx: Data) -> Data {
+        hash(Label.hDKHash, Bytes.u8(Suite2.id), Bytes.lp16(sig), Bytes.lp16(kx))
+    }
+
+    /// A pairing attempt nonce: exactly 32 lower-case hex characters (16 CSPRNG bytes; section 8.3 step 2, G3b).
+    public static func isAttempt(_ s: String) -> Bool {
+        s.utf8.count == 32 && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }
+    }
+
     public static func certCode(challengeObject: JSONValue) throws -> String {
         String(Base32.encode(hash(Label.hSASCert, Bytes.u8(Suite2.id), try canonicalJSON(challengeObject))).prefix(6))
     }

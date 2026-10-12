@@ -24,6 +24,8 @@ package struct HostPendingPair: Equatable, Sendable {
     package var dkSig: SigningPublicKey
     package var dkKx: AgreementPublicKey
     package var label: String
+    /// The device's pairing-attempt nonce (G3b): copied into the cert request; a resend must carry the same one.
+    package var attempt: String
     package var sasNonce: Data
     /// The certificate the phone presented, then (once approved) the one the phone gets.
     package var cert: JSONValue?
@@ -39,13 +41,18 @@ package struct HostPendingPair: Equatable, Sendable {
     package var rejection: JSONValue?
     /// What the offer allowed (the most a certificate for this device may carry); `scopes` is what the host's human approved within it.
     package var scopesMax: [String]?
+    /// The join anchor sent with `approved` (G3b): the relay-accepted head list's `list_seq`, the current card's `card_seq`, and
+    /// the baseline (`null` while the workspace has no ticket-log checkpoint).
+    package var listSeq: Int64?
+    package var cardSeq: Int64?
+    package var baseline: JSONValue = .null
     /// Bumped by every transition (and by every reservation of one): an await in the host's approval path may continue only if the
     /// version it reserved is still the pairing's, so a concurrent rejection or expiry is never overwritten.
     package var version = 0
-    package init(offer: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, label: String, sasNonce: Data, cert: JSONValue?, certState: String,
+    package init(offer: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, label: String, attempt: String, sasNonce: Data, cert: JSONValue?, certState: String,
                  state: String = "pending", certPendingSince: Int64? = nil, primaryLabel: String? = nil, challenge: JSONValue? = nil,
                  scopes: [String]? = nil, requestID: ID16? = nil) {
-        self.offer = offer; self.dkSig = dkSig; self.dkKx = dkKx; self.label = label; self.sasNonce = sasNonce; self.cert = cert
+        self.offer = offer; self.dkSig = dkSig; self.dkKx = dkKx; self.label = label; self.attempt = attempt; self.sasNonce = sasNonce; self.cert = cert
         self.certState = certState; self.state = state; self.certPendingSince = certPendingSince; self.primaryLabel = primaryLabel
         self.challenge = challenge; self.scopes = scopes; self.requestID = requestID
     }
@@ -96,12 +103,13 @@ extension HostBridgeCore {
             if p.state == "cert_pending", let since = p.certPendingSince, now >= since + Self.certPendingLifeMs { p.state = "expired"; p.version += 1; pendingPairs[h.device] = p }
             return .pair(.status(answer: answer(p, wsk: wsk, owner: owner)), h)
         }
-        guard op.utf8Equal("pair"), m.exactly(["op", "dk_sig_pub", "dk_kx_pub", "label", "cert"]), let sig = m.sigKeyField("dk_sig_pub"),
-              let kx = m.kxKeyField("dk_kx_pub"), let label = m["label"]?.string, let cert = m["cert"], cert.isNull || cert.object != nil
+        guard op.utf8Equal("pair"), m.exactly(["op", "dk_sig_pub", "dk_kx_pub", "label", "cert", "attempt"]), let sig = m.sigKeyField("dk_sig_pub"),
+              let kx = m.kxKeyField("dk_kx_pub"), let label = m["label"]?.string, let cert = m["cert"], cert.isNull || cert.object != nil,
+              let attempt = m["attempt"]?.string, Identifiers.isAttempt(attempt)
         else { return refuse("malformed") }
-        // 2. the offer is open and unused; a resend by the holder with the same two keys is answered `pending` again
+        // 2. the offer is open and unused; a resend by the holder with the same two keys AND the same attempt is answered `pending`
         let existing = pendingPairs[h.device]
-        let resend = existing.map { $0.offer == h.stream && $0.dkSig == sig && $0.dkKx == kx } ?? false
+        let resend = existing.map { $0.offer == h.stream && $0.dkSig == sig && $0.dkKx == kx && $0.attempt.utf8.elementsEqual(attempt.utf8) } ?? false
         if !resend { guard !offer.used, now < offer.expiresMs else { return refuse("pairing_closed") } }
         // 3. the device id is the key's, and the proof of possession
         guard Identifiers.deviceID(sig) == h.device, Bridge.verifySignature(parts, key: sig) else { return refuse("bad_signature") }
@@ -129,7 +137,7 @@ extension HostBridgeCore {
         // accepted: the offer is used, the label cleaned, the pairing recorded
         let presented: JSONValue? = cert.isNull ? Optional<JSONValue>.none : Optional<JSONValue>.some(cert)
         var used = offer; used.used = true; offers[h.stream] = used
-        var p = HostPendingPair(offer: h.stream, dkSig: sig, dkKx: kx, label: PersonText.clean(label), sasNonce: offer.sasNonce,
+        var p = HostPendingPair(offer: h.stream, dkSig: sig, dkKx: kx, label: PersonText.clean(label), attempt: attempt, sasNonce: offer.sasNonce,
                                 cert: presented, certState: presented == nil ? "needed" : "present", scopes: offer.scopes)
         p.scopesMax = offer.scopes
         pendingPairs[h.device] = p
@@ -151,7 +159,8 @@ extension HostBridgeCore {
                     "challenge": p.challenge ?? .null, "wsk_pub": w]
         case "approved":
             return ["state": "approved", "scopes": .array((p.scopes ?? []).map { .string($0) }), "cert": p.cert ?? .null,
-                    "pk_pub": .string(B64U.encode(owner.x963)), "epoch": .int(Int64(approvedEpochOverride ?? epoch)), "wsk_pub": w]
+                    "pk_pub": .string(B64U.encode(owner.x963)), "epoch": .int(Int64(approvedEpochOverride ?? epoch)),
+                    "list_seq": .int(p.listSeq ?? 1), "card_seq": .int(p.cardSeq ?? 1), "baseline": p.baseline, "wsk_pub": w]
         case "rejected":
             // a rejection by the primary carries its PK-signed proof (and pk_pub for the phone's pin check); the host's own has none
             guard let rej = p.rejection else { return ["state": "rejected", "wsk_pub": w] }

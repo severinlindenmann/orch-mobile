@@ -31,6 +31,10 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
             cfg.deviceID = ctx["device"].id
             let session = try await WorkspaceSession(cfg)
             for (k, v) in ctx["wk"].v.object! { try await session.install(epoch: UInt32(k)!, key: keyFromHex(v.string!)) }
+            // G2b D4: keys are read only at or below a verified head; these bridge vectors predate it, so the head is the top key epoch
+            let top = ctx["wk"].v.object!.keys.compactMap { Int64($0) }.max() ?? 1
+            try await container.database().execute("INSERT INTO member_list_head(id, list_seq, epoch, digest, members) VALUES(1,1,?,?,'')",
+                                                   [.int(top), .blob(Data(count: 32))])
             try await session.setClockOffset(ctx["offset_ms"].i64)
             var pending: [ID16: Bridge.PendingRequest] = [:]
             for (k, v) in ctx["pending"].v.object! {
@@ -64,7 +68,7 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
 
 @Suite struct RevocationOpVectorTests {
     @Test func testRevocationOpVectors() throws {
-        let s2 = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]
+        let s2 = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]
         let cases = s2["revocation_op"].items
         #expect(cases.count == 5)
         for c in cases {
@@ -155,9 +159,10 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         #expect(stored.count > Bridge.overhead)
     }
 
-    @Test func anExpiredAnswerIsNotResurrectedAndNothingIsReSigned() async throws {
-        // Protocol-v2 section 19.6 / P3-D22: once the host's answer chunk expired (60 s) the relay keeps only its digest; the host's
-        // byte-identical replay for a requeued copy is a no-op. The device keeps polling the same rid and never mints a new one.
+    @Test func anExpiredAnswerIsStoredAgainFromTheHostsExactBytes() async throws {
+        // Q11 (P3-D27, orch-relay d3816ea): once the host's answer chunk expired (60 s) the relay keeps its digest; the host re-posts
+        // the EXACT bytes it kept for the requeued copy, the relay stores them again for 60 s, and the same rid gets its answer.
+        // The handler does not run again and nothing is re-signed.
         let faults = ScriptedFaults()
         let w = try await World.make(faults: faults)
         let counter = Counter()
@@ -170,12 +175,14 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         #expect(try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) == 1)
         w.clock.advance(milliseconds: 61_000); phone.clock.advance(milliseconds: 61_000)
         let seq = try await s.nextSeq()
-        await #expect(throws: SessionError.noResponse(rid: p.rid)) { _ = try await w.serve(phone) { try await s.resend(rid: p.rid) } }
+        let r = try await w.serve(phone) { try await s.resend(rid: p.rid) }
+        #expect(r.data == Data("done".utf8))
         let seqAfter = try await s.nextSeq()
         #expect(counter.value == 1 && seqAfter == seq)
-        #expect(try await s.pendingRequests().map(\.rid) == [p.rid])                          // still the same rid, still pending
         let record = try #require(await w.relay.ridRecord(workspace: w.ws, device: w.phoneID, rid: p.rid))
-        #expect(record.requeues == 1 && record.chunks[0]?.envelope == nil)
+        let chunk = try #require(record.chunks[0])
+        #expect(record.requeues == 1)
+        #expect(chunk.restores == 1)
     }
 
     @Test func testExpiredOrUnknownRidReconcilesByQuestion() async throws {
@@ -362,8 +369,8 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         let ids = try w.vault.ids().filter { $0.ws == w.ws.hex }
         #expect(ids.map(\.purpose) == ["wk.1"] && ids.allSatisfy { $0.realm == .demo })
         #expect(try await phone.container.epochHighWater() == 1)
-        // A different key for an installed epoch is a conflict, never a replacement.
-        await #expect(throws: SessionError.grantConflict) { try await phone.session.install(epoch: 1, key: SymmetricKey(size: .bits256)) }
+        // A different key for an installed epoch is refused (the held list commits the installed one), never a replacement.
+        await #expect(throws: SessionError.wkCommitMismatch(1)) { try await phone.session.install(epoch: 1, key: SymmetricKey(size: .bits256)) }
     }
 }
 

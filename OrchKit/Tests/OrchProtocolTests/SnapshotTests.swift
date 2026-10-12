@@ -57,9 +57,9 @@ import Testing
         r2 = foreign
     }
 
-    func list(_ ws: ID16, epoch: Int64, seq: Int64, ids: [ID16], scopes: [String] = ["look"]) throws -> MemberList {
+    func list(_ ws: ID16, epoch: Int64, seq: Int64, ids: [ID16], scopes: [String] = ["look"], commit: JSONValue? = nil) throws -> MemberList {
         try MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": .int(epoch), "list_seq": .int(seq),
-                                      "issued_ms": 1, "persons": [],
+                                      "issued_ms": 1, "persons": [], "wk_commit": commit ?? testWKCommit(ws, epoch),
                                       "members": .array(ids.sorted { $0.hex < $1.hex }.map { ["device_id": .string($0.hex), "person_id": .string(Self.person.hex),
                                                                                              "scopes": .array(scopes.map { .string($0) })] })])
     }
@@ -88,6 +88,12 @@ import Testing
         try list(ws, epoch: 3, seq: 6, ids: [a]).checkSnapshot(cardWorkspace: ws, known: l5)
         // another workspace
         #expect(throws: Refusal.otherWorkspace) { try l.checkSnapshot(cardWorkspace: ID16.random(), known: nil) }
+        // Q10: two lists at one epoch commit to one WK; another commitment is the local alarm, whatever the list_seq order
+        let other = testWKCommit(ID16.random(), 2)
+        #expect(throws: Refusal.wkCommitConflict) { try list(ws, epoch: 2, seq: 6, ids: [a, b, c], commit: other).checkSnapshot(cardWorkspace: ws, known: l5) }
+        #expect(throws: Refusal.wkCommitConflict) { try list(ws, epoch: 2, seq: 4, ids: [a, b], commit: other).checkSnapshot(cardWorkspace: ws, known: l5) }
+        #expect(throws: Refusal.wkCommitConflict) { try list(ws, epoch: 2, seq: 5, ids: [a, b], commit: other).checkSnapshot(cardWorkspace: ws, known: l5) }
+        try list(ws, epoch: 3, seq: 6, ids: [a, b], commit: other).checkSnapshot(cardWorkspace: ws, known: l5)     // another epoch: its own key
     }
 }
 
@@ -101,7 +107,7 @@ import Testing
                                                  relayURL: "https://r.example", cardSeq: 1, issuedMs: 1, sealed: sealed, ck: ck, wsk: wsk), ownerKey: pk.publicKey)
         let d = SoftwareSigner()
         let inner = CertRequestInner(deviceID: Identifiers.deviceID(d.publicKey), dkSig: d.publicKey, dkKx: SoftwareKeyAgreer().publicKey,
-                                     label: "x", scopesMax: ["look", "decide"], offerID: .random())
+                                     label: "x", scopesMax: ["look", "decide"], offerID: .random(), attempt: String(repeating: "a", count: 32))
         let req = try CertRequest.make(wsk: wsk, requestID: .random(), workspace: ws, person: person, primary: primaryID, primaryKey: primaryKx.publicKey, inner: inner, createdMs: 1000)
         var ledger = PrimaryLedger()
         let a = try CertRequest.openAsPrimary(req.json, card: card, myPerson: person, me: primaryID, myKey: primaryKx, ledger: &ledger, nowMs: 1000)

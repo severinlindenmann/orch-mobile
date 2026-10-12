@@ -97,7 +97,8 @@ final class DemoRuntime {
         #endif
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: try layout(temporary: false), custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
-        await SystemDemoNotifications().purge(workspace: nil)
+        // Detached: a wedged notification daemon must never delay Home (an unanswered purge is recorded as owed and retried).
+        await SystemDemoNotifications().purge(workspace: nil)   // bounded by one 2 s deadline
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
     }
 
@@ -116,7 +117,11 @@ final class DemoRuntime {
         let layout = try layout(temporary: temporaryStorage)
         let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
         let stale = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: ScriptedFaults())
-        await SystemDemoNotifications().purge(workspace: nil)
+        // Detached: a wedged notification daemon must never delay Home (an unanswered purge is recorded as owed and retried).
+        // One ordered task: stale purge first (the new runtime's scheduling is gated on it), then owed retries.
+        let stalePurge = Task.detached { await SystemDemoNotifications().purge(workspace: nil) }
+        await notifications.hold(until: stalePurge)
+        Task.detached { await stalePurge.value; await SystemDemoNotifications().retryOwedPurges() }
         try await DemoSetup.reset(stale, custody: custody, vaults: [keys, push])
         let faults = ScriptedFaults()
         let env = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock, faults: faults)
@@ -183,7 +188,12 @@ final class DemoRuntime {
         let ids = try await host.demoSeedViews(questions: DemoContent.questions(kind), tickets: DemoContent.tickets(kind))
         for (seed, id) in zip(DemoContent.questionAliases(kind), ids) { entry.aliases[seed] = id }
         switch scenario {
+        // An R1 host ignores a certificate the phone presents and asks the primary for its own key; the attack reaches a phone that
+        // already paired before (checklist 9b).
         case .r1Attack: await host.setR1Attack(true)
+        // A phone that already paired presents its certificate and an honest host would join it at once (protocol 8.3 step 5), so the
+        // primary could never be offline for it: this Demo host asks the primary regardless (checklist 10b).
+        case .primaryOffline: await host.setAsksPrimaryAlways(true)
         case .echoWrongKey: await host.setEchoWrongKey(.signing)
         case .linkUsed: entry.answers = false
         default: break
@@ -238,11 +248,11 @@ final class DemoRuntime {
 
     /// Seals a push as the host would and runs it through the same processor the notification extension uses, ending in a local,
     /// labelled-as-simulated notification (decision A12).
-    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String) async -> PushSimulator.Result? {
+    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String, delay: TimeInterval = 1) async -> PushSimulator.Result? {
         guard let entry = entries[workspace], let sealed = try? await entry.host.demoSealPush(kind: "question", id: "demo-" + UUID().uuidString, label: label) else { return nil }
         let keys = await entry.host.demoPushKeys()
         guard let material = try? PushMaterial(generation: generation, name: name, wsk: entry.host.wskPublic, kPush: [keys.epoch: keys.kPush]) else { return nil }
-        let sim = PushSimulator(materials: [workspace: material], scheduler: ScopedDemoNotifications(owner: notifications, workspace: workspace.hex), now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
+        let sim = PushSimulator(materials: [workspace: material], scheduler: ScopedDemoNotifications(owner: notifications, workspace: workspace.hex), delay: delay, now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
         return await sim.simulate(sealed: sealed)
     }
 }

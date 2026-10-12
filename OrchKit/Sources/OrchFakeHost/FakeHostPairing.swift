@@ -48,6 +48,7 @@ extension FakeHost {
         hostIsPrimary = v
     }
     public func setR1Attack(_ v: Bool) { r1Attack = v }
+    public func setAsksPrimaryAlways(_ v: Bool) { asksPrimaryAlways = v }
     public func setEchoWrongKey(_ k: EchoedKey?) { echoWrongKey = k }
     /// Adversarial knob (tests only): a compromised host ends a pairing claiming the primary said no, relaying `rejection` as it is,
     /// without the verification `progressCertPending` does. The phone must believe it only if it verifies under the pinned `PK`.
@@ -56,6 +57,10 @@ extension FakeHost {
         transition(device, to: "rejected")
     }
     package func pairingRequestID(of device: ID16) -> ID16? { core.pendingPairs[device]?.requestID }
+    /// Tests: the attempt binding of a device's pairing (offer, attempt nonce, dk_hash of its keys).
+    package func pairingBinding(of device: ID16) -> (offer: ID16, attempt: String, dkHash: Data)? {
+        core.pendingPairs[device].map { ($0.offer, $0.attempt, Identifiers.dkHash(sig: $0.dkSig, kx: $0.dkKx)) }
+    }
 
     // MARK: offers
 
@@ -108,7 +113,10 @@ extension FakeHost {
         let v = p.version
         core.pendingPairs[device] = p
         let keys = DemoKeys(sig: p.dkSig, kx: p.dkKx)
-        if p.cert != nil {
+        // R1 (adversarial scenario): the compromised host ignores a certificate the phone presented and asks the primary for one of its
+        // own instead, so the attack also reaches an iPhone that is already one of the owner's devices (D-1). The Demo's
+        // `asksPrimaryAlways` does the same honestly (for the phone's own keys) to show the primary's phase.
+        if p.cert != nil, !bypassesPresentedCertificate {
             try await completeJoin(device: device, relay: relay, transport: transport, reserved: v)
         } else if hostIsPrimary {
             guard !isClientHosted else { throw PairingApprovalError.hostCannotBePrimary }
@@ -149,15 +157,19 @@ extension FakeHost {
         // R1 (adversarial scenario): the compromised host asks for a certificate for a key of its own.
         let attacker = DemoKeys(sig: SoftwareSigner().publicKey, kx: SoftwareKeyAgreer().publicKey)
         let k = r1Attack ? attacker : DemoKeys(sig: p.dkSig, kx: p.dkKx)
-        let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: p.label, scopesMax: p.scopesMax ?? p.scopes ?? ["look", "decide"], offerID: p.offer)
+        let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: p.label, scopesMax: p.scopesMax ?? p.scopes ?? ["look", "decide"], offerID: p.offer,
+                                     attempt: p.attempt)
         let req = try CertRequest.make(wsk: wsk, requestID: requestID, workspace: workspace, person: primary.personID, primary: primary.deviceID,
                                        primaryKey: primary.deviceKeys.kx, inner: inner, createdMs: now)
         let session = try await currentSession(transport: transport)
         await stage("cert_request.post")
         try still(device, v)
-        // `POST /v2/persons/{person}/cert-requests` with the workspace session (W(g)); 200 also for an identical resend
+        let gen = try await holderGeneration(relay: relay, session: session)
+        try still(device, v)
+        // `POST /v2/persons/{person}/cert-requests` with the workspace session under this host's holder generation (W(g)); 200 also
+        // for an identical resend
         let post = try WireRequest(method: "POST", target: "\(HostAPI.base)/persons/\(primary.personID.hex)/cert-requests",
-                                   headers: ["authorization": "Bearer " + session.token, "content-type": "application/json"],
+                                   headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen), "content-type": "application/json"],
                                    body: canonicalJSON(.object(["request": req.json])), clientAddress: "host")
         _ = try HostAPI.expect(try await relay.send(post))
         // a rejection that landed during the post wins; the posted request is not retracted (the primary may still challenge it, but the
@@ -211,6 +223,10 @@ extension FakeHost {
         }
         core.approvedEpochOverride = hostile.approvedEpoch
         core.pendingPairs[device]?.state = "approved"
+        // the join anchor: the list that adds this device. A held list (a Demo scenario) is not accepted yet, so the phone stays
+        // below the anchor and retries until it is published.
+        core.pendingPairs[device]?.listSeq = heldList != nil ? listSeq + 1 : listSeq
+        core.pendingPairs[device]?.cardSeq = Int64(max(cardSeq, 1))
         core.pendingPairs[device]?.scopes = scopes
         lastPairingError = nil
     }
@@ -240,9 +256,12 @@ extension FakeHost {
         for item in inbox.sorted(by: { $0.arrival < $1.arrival }) {
             lastPairArrival = max(lastPairArrival, item.arrival)
             for chunk in await process(envelope: item.envelope, mailbox: item.rid) {
-                // the response is posted with the workspace session; a lost post is a lost answer (the phone re-sends)
+                // the response is posted with the workspace session under this host's holder generation (W(g)); a lost post (or a
+                // lost hold) is a lost answer (the phone re-sends)
                 let target = "\(HostAPI.base)/workspaces/\(workspace.hex)/pair/\(item.offer.hex)/\(item.rid.hex)"
-                if let req = try? WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token],
+                guard let gen = try? await holderGeneration(relay: relay, session: session) else { continue }
+                if let req = try? WireRequest(method: "POST", target: target, headers: ["authorization": "Bearer " + session.token,
+                                                                                         "orch-holder": String(gen)],
                                               body: chunk, clientAddress: "host") {
                     _ = try? await relay.send(req)
                 }
@@ -270,6 +289,8 @@ extension FakeHost {
                 // A rejection that does not verify is ignored and the request is checked as if it had none (challenge, certificate):
                 // an unauthenticated relay field must never stall a pairing.
                 if let r = try? CertRejection.verify(rej, pk: primary.publicKey), r.requestID == rid, r.workspace == workspace,
+                   r.offer == p.offer, r.attempt.utf8.elementsEqual(p.attempt.utf8), r.device == device,
+                   r.dkHash == Identifiers.dkHash(sig: p.dkSig, kx: p.dkKx),
                    r.person == primary.personID {
                     core.pendingPairs[device]?.rejection = rej
                     transition(device, to: "rejected")
@@ -281,7 +302,9 @@ extension FakeHost {
             }
             // the request's certificate, or the directory's: has the primary certified exactly this device?
             // Both sources are tried: one that does not verify (or names other keys) never hides a good one in the other.
-            let directory = await relay.certificate(device: device)
+            // An R1 host wants its own key certified, not the phone admitted, and `asksPrimaryAlways` waits for the primary's answer:
+            // neither falls back to the phone's directory certificate.
+            let directory = bypassesPresentedCertificate ? nil : await relay.certificate(device: device)
             guard core.pendingPairs[device]?.version == v else { continue }
             let good = [view?.cert, directory].compactMap { $0 }.first { cert in
                 (try? DeviceCertificate.verify(cert, personKey: primary.publicKey, nowMs: now, revoked: core.revoked))

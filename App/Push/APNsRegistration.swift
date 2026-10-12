@@ -67,14 +67,77 @@ enum PushPermission {
     /// Asks for permission (the system prompt appears at most once) and, if granted, registers with APNs. A denial is a
     /// visible state in settings, not an error.
     @discardableResult
-    static func requestAfterFirstJoin(application: UIApplication = .shared) async -> State {
-        let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) ?? false
-        if granted { application.registerForRemoteNotifications() }
+    static func requestAfterFirstJoin(application: UIApplication = .shared, registerWithAPNs: Bool = true) async -> State {
+        let granted = await requestAuthorization()
+        if granted, registerWithAPNs { registerForAPNs(application: application) }
         return await current()
+    }
+
+    /// Shows the system prompt only while the status is undetermined (the OS never asks twice). Completion-handler API (Xcode 16.4).
+    static func requestIfNeeded() async -> State {
+        let state = await current()
+        guard state == .notDetermined else { return state }
+        _ = await requestAuthorization()
+        return await current()
+    }
+
+    private static func requestAuthorization() async -> Bool {
+        await withCheckedContinuation { c in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                if let error { OrchAppDelegate.lastRegistrationError = "Notification permission: \(error.localizedDescription)" }
+                c.resume(returning: granted)
+            }
+        }
+    }
+
+    /// Real APNs registration: only for a real (non-Demo) installation that was granted permission. The outcome (token or
+    /// failure) lands in `PushDiagnostics`, never silently.
+    static func registerForAPNs(application: UIApplication = .shared) {
+        OrchAppDelegate.registrationAttempted = true
+        application.registerForRemoteNotifications()
+    }
+
+    /// Opens this app's page in iOS Settings (the only way back after a denial).
+    static func openSystemSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
     }
 }
 
-final class OrchAppDelegate: NSObject, UIApplicationDelegate {
+/// Plain-text state for the Settings diagnostics row: nothing secret (no token value).
+@MainActor
+enum PushDiagnostics {
+    static func summary(isDemo: Bool, permission: String) -> String {
+        let store = APNsTokenStore()
+        var parts = ["permission: \(permission)", "APNs environment: \(APNsEnvironment.current.rawValue)"]
+        if isDemo { parts.append("APNs: not used in Demo (local simulation only)") }
+        else if let error = OrchAppDelegate.lastRegistrationError { parts.append("APNs registration failed: \(error)") }
+        else if store.stored != nil { parts.append("APNs token registered") }
+        else if OrchAppDelegate.registrationAttempted { parts.append("APNs registration pending") }
+        else { parts.append("APNs registration not attempted") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    nonisolated(unsafe) static var registrationAttempted = false
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    /// Without this iOS shows nothing while orch is in the foreground (the owner's "test notifications showed nothing").
+    /// The async form: its signature is identical in the Xcode 16.4 and newer SDKs (the completion-handler form's
+    /// Sendable annotation differs between them and fails to compile on CI).
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        // Defense in depth: nothing from a removed or quarantined workspace is shown, even if it was scheduled earlier.
+        if PresentationGate.isBlocked(thread: notification.request.content.threadIdentifier, identifier: notification.request.identifier) {
+            return []
+        }
+        return [.banner, .list, .sound]
+    }
+
     /// Set by the session layer later: called with the token when it changed (re-register every workspace).
     nonisolated(unsafe) static var onTokenChanged: (@Sendable (APNsTokenStore.Stored) -> Void)?
     nonisolated(unsafe) static var lastRegistrationError: String?
@@ -88,5 +151,18 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // Visible state only (settings); never a crash, never retried in a tight loop.
         Self.lastRegistrationError = (error as NSError).localizedDescription
+    }
+}
+
+/// Workspaces that are removed (Leave, reset) or quarantined; foreground presentation checks it. Thread-safe: read from the notification delegate.
+enum PresentationGate {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var blocked: Set<String> = []
+    static func block(_ ws: String) { lock.lock(); blocked.insert(ws); lock.unlock() }
+    static func unblock(_ ws: String) { lock.lock(); blocked.remove(ws); lock.unlock() }
+    static func blockAll(_ ws: [String]) { lock.lock(); blocked.formUnion(ws); lock.unlock() }
+    static func isBlocked(thread: String, identifier: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return blocked.contains { $0 == thread || identifier.hasPrefix("demo/\($0)/") }
     }
 }

@@ -117,8 +117,9 @@ Pair POST limits are 60/min/workspace and 60/min/address; the fake's Retry-After
 Bridge quota defaults to 128 live mailboxes per device/workspace. Both are provisional v0 limits.
 Bridge delivery follows §19.3/§19.6 (host API §1, "Bridge delivery"): one replay record per device rid for 900 s
 from first receipt, coalescing of live undelivered copies, requeue at most once per 10 s (429 with the rest of the
-interval) and 8 times (then terminal 409 `retry_exhausted`), and P3-D22 for host chunks (410 for an unknown rid, no
-TTL refresh, no resurrection). The phone keeps polling the same rid after 202/429, never reissues under a new rid on its
+interval) and 8 times (then terminal 409 `retry_exhausted`), and P3-D22/D27 for host chunks (410 for an unknown rid, no
+TTL refresh for a live duplicate, re-store of exact stored bytes only, bounded: 900 s from first receipt, 8 per chunk).
+A host must keep its exact response-envelope bytes before the first POST and re-post only those. The phone keeps polling the same rid after 202/429, never reissues under a new rid on its
 own, treats `stale_epoch` as an unsigned hint (bounded signed list/grant refetch, 3/min then 20/40/60 s; same-rid re-seal) and surfaces
 `retry_exhausted` for an explicit user retry. The FakeRelay's acknowledged cursor is `pendingRequests(after:)`;
 P3's real host uses `host/hold` + `host/poll` (P3-D10), which the phone never calls.
@@ -131,8 +132,14 @@ Host publication uses protocol-v2 §19.1/§19.2: `PUT /v2/devices/{device}`, `PO
 `{member_list, grants, card_key_wraps?}` → `{list_seq, epoch}` (W(g), `Orch-Holder`), plus `PUT card-keys` for later wraps.
 The FakeRelay serves these routes (and `publishCertificate/publishCard/publishRevocation` as in-process stand-ins); the hold route
 and `pendingRequests`/pairing inbox access are still fake internals (host-only, orch-core).
-Write-time authority: host session and holder, current card, each member's certificate valid now and owned by the card owner or a
-listed person, non-revocation, adjacent epoch. Grants and wraps are judged against the list in the same body; nothing is staged.
+Write-time authority: host session and holder (the strict lease on every W(g) route, pairing answers and cert requests included;
+fenced without `Orch-Holder`), current card, each member's certificate valid now and owned by the card owner or a listed person,
+non-revocation. Sequence (orch-29 Q10): a first list has `1 <= epoch <= 2^16` and any `list_seq >= 1`; then `list_seq` increases,
+`prev <= epoch <= prev + 2^16`, a removal needs `epoch > prev`, and the same epoch needs the same `wk_commit` (409 `wk_commit_changed`).
+Grants and wraps are judged against the list in the same body; nothing is staged.
+Host obligations (Q10, pending orch-52): one WK per epoch, ever. A refused publication burns its epoch (key retained, never activated
+or resealed; `list_seq` and epoch floors rise to the refused body's; the next rotation goes to floor + 1); `stale_card`/`wrap_conflict`
+resend the same signed list with fixed wraps; a same-epoch addition refused with `revoked`/`cert_*` forces a rotation.
 
 ## C. Host obligations
 
@@ -186,7 +193,7 @@ Implement exact question/hash/option/resolution and ticket schemas in host API �
 Verify detached §13 decisions before atomic compare-and-set; persist immutable decision_id/answer.
 A changed hash requires `question_changed`; a competing decision returns `already_answered` who/when.
 Provide authoritative question reads to reconcile lost responses by decision_id AND answer.
-Slice 2a permits byte-identical resend only within 300 s (900 s minus 600 s margin), using the larger
+The phone starts a byte-identical resend only within ~240 s (900 s minus 660 s margin, orch-29 Q11), using the larger
 of monotonic and persisted wall age; afterward mark uncertain and reconcile without silently re-signing.
 This is stricter than host API §2's broad 900 s description; use branch behavior until reconciled.
 For new_ticket, persist `(device_id,creation_id,canonical request,ticket)` atomically and indefinitely
@@ -206,18 +213,19 @@ Source: host API §§3,5–6; Slice 2b `PairingCoordinator.swift`, `FakeHostPair
 - Echo both phone keys; pin SAS nonce/owner/challenge. Approval is an explicit code comparison,
   never a timer or transport success. Do not regress state or substitute a challenge after display.
 - If certification is needed, send §8.4 cert_request signed by WSK and sealed to the primary's dk_kx.
-  The inner carries device_id, both keys, cleaned label, scopes_max and offer_id.
+  The inner carries device_id, both keys, cleaned label, scopes_max, offer_id and the phone's `attempt`; `o` repeats
+  offer_id, attempt, device_id and dk_hash in clear (P3-D28), and the primary refuses a mismatch with the inner (malformed).
   Primary verifies the request/delegation, opens stored keys, issues one pinned challenge and signs
   those exact keys only after cert-code confirmation. The phone never holds PK/PVK (D-2).
 - Queues are §19.3 routes (P3-D11): the host posts its request with W(g) and reads
   `GET /v2/cert-requests/{id}`; the primary polls, challenges and rejects with its own device session
   (D(p), addressee). Rejection is the PK-signed `cert_rejection` (label `orch/v2/sig/cert-rejection|`).
-  The host verifies it under PK for its request and relays it unchanged in its `rejected` answer as
-  `{"state":"rejected","wsk_pub","pk_pub","rejection"}`; a host's own rejection carries neither field.
-  The phone shows `denied` only after pk_pin, the PK signature, workspace and person check AND a match
-  with the pinned PK and the request id of the challenge it showed; an invalid one is dropped (keep
-  waiting), another request alarms, and an unbindable one (no pinned challenge) ends as plain `rejected`.
-  The `rejected` answer's `pk_pub` + `rejection` are an orch-mobile addition pending orch-relay adoption (gaps Q4).
+  The host verifies it under PK for its request (and the attempt binding) and relays it unchanged in the long
+  `rejected` form `{"state":"rejected","wsk_pub","pk_pub","rejection"}`; its own rejection is the short form.
+  The pair request meta is exactly `{op, dk_sig_pub, dk_kx_pub, label, cert, attempt}`; a resend keeps the attempt,
+  a new attempt (same keys) is `pairing_closed`. `approved` carries the join anchor `list_seq`, `card_seq`, `baseline`
+  from relay-accepted objects only. The phone runs §8.4 step 5 and §8.3's rejected checks in the G3b order
+  (keys/device before attempt and offer); only a full pass shows "Denied by the owner".
   A real host must not stall on a relay `rejection` that does not verify: ignore it and keep checking the
   challenge and both certificate sources (the request's and the directory's), as FakeHost does.
 - Publish valid own-key certificate → one membership publication (list, every member's current WK grant, the CK wrap) → approved.

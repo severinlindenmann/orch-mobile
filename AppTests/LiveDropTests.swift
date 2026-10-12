@@ -110,6 +110,14 @@ final class LiveDropTests: XCTestCase {
             XCTAssertTrue(isolated.alarm)
             XCTAssertFalse(isolated.usable)
         }
+        // Q10 key alarm: its own message (re-pair), not "Key unavailable: retry later", and the workspace shows it too
+        for error in [Refusal.wkCommitConflict as any Error, SessionError.wkCommitMismatch(2)] {
+            let isolated = LiveDrop(service: drop.service, workspace: drop.workspace!)
+            isolated.report(error)
+            XCTAssertTrue(isolated.alarm)
+            XCTAssertEqual(isolated.status, LiveWorkspace.keyAlarmMessage)
+        }
+        XCTAssertEqual(drop.workspace?.info.keyAlarm, LiveWorkspace.keyAlarmMessage)
         drop.report(DropStoreError.rollback)
         XCTAssertTrue(drop.alarm)
         XCTAssertFalse(drop.usable)

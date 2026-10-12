@@ -126,7 +126,9 @@ extension FixtureReplayTests {
             case "refusal_401_bad_signature": await relay.seedWorkspaceKey(ws, wsk: SoftwareSigner().publicKey, owner: person, replacingCard: true)
             case "refusal_403_not_eligible": await relay.seedWorkspaceKey(ws, wsk: wskA, owner: otherPerson, replacingCard: true)
             case "refusal_403_other_person": await relay.forgetAccount(person)
-            case "refusal_409_other_workspace": await relay.seedWorkspaceKey(otherWS, wsk: wskA, owner: person)
+            case "refusal_409_other_workspace":
+                await relay.seedWorkspaceKey(otherWS, wsk: wskA, owner: person)
+                await relay.seedHolder(otherWS, generation: 1)        // the session's workspace holds generation 1 too (strict fence)
             case "refusal_409_replayed": await relay.seedCertRecord(try record(.open, request: try altered(try request, "created_ms", .int(now - 1))))
             case "refusal_409_request_open": await relay.seedCertRecord(try record(.open, id: ID16(hex: "f2600ef4ea0405124cc2b37a234cb186")!))
             case "refusal_410_expired": wall.set(expiresAt)

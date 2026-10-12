@@ -7,7 +7,7 @@ import OrchTestVectors
 /// the module's own strict parser, which doubles as a check that the parser accepts the contract's own data.
 enum Vectors {
     static let root: JSONValue = {
-        try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max)
+        try! StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64)
     }()
     static var suite2: JSONValue { root["suites"]["2"] }
 }
@@ -54,4 +54,13 @@ func testSigner(_ name: String) throws -> SoftwareSigner {
 
 func testAgreer(_ name: String) throws -> SoftwareKeyAgreer {
     try SoftwareKeyAgreer(testScalar: scalar(fromSeed: Vectors.suite2["keys"][name]["seed"].hexData))
+}
+
+/// A deterministic test `WK_e` for (workspace, epoch) and the list `wk_commit` that commits it (Q10). Two lists built with it at
+/// one epoch carry the same commitment, as an honest host's do.
+func testWK(_ ws: ID16, _ epoch: Int64) -> SymmetricKey {
+    SymmetricKey(data: Data(SHA256.hash(data: Data("orch-mobile/test/wk|".utf8) + ws.bytes + Bytes.u32(UInt32(epoch)))))
+}
+func testWKCommit(_ ws: ID16, _ epoch: Int64) -> JSONValue {
+    .string(B64U.encode(WKCommit.compute(workspace: ws, epoch: UInt32(epoch), wk: testWK(ws, epoch))))
 }

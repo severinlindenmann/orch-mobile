@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 import OrchClient
@@ -14,7 +15,7 @@ enum PR3Replay {
     static let membersFiles: Set<String> = ["membership.json", "members.json", "grants.json", "card_keys.json", "card_key.json"]
     static var files: Set<String> { directoryFiles.union(membersFiles) }
 
-    static let v: JSONValue = (try? StrictJSON.parse(Vectors.data, maxBytes: .max))?.object?["suites"]?.object?["2"] ?? .null
+    static let v: JSONValue = (try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64))?.object?["suites"]?.object?["2"] ?? .null
     static func id(_ name: String) -> ID16 { ID16(hex: v.object!["ids"]!.object![name]!.string!)! }
     static var person: ID16 { id("person_alice") }
     static var bob: ID16 { id("person_bob") }
@@ -162,13 +163,16 @@ enum PR3Replay {
                 $0["scopes_max"] = [.string("drop:" + ws.hex)]; $0["expires_ms"] = .int(now + 10_000)
             }
             await relay.seed { r in r.devices[device]!.cert = c }
-        case "rotation_required", "stale_list":
-            var o = body.object!["member_list"]!.object!["o"]!.object!
-            o["list_seq"] = 1; o["epoch"] = 1
+        case "rotation_required", "stale_list", "bad_epoch", "wk_commit_changed":
+            // members_support.prepare_fixture (491b500): a held list_seq 1; bad_epoch holds epoch 2 above the body's 1, and
+            // wk_commit_changed holds the base publication's epoch-1 list (wk_commit A) under the body's wk_commit B.
+            var o = (scenario == "wk_commit_changed" ? baseBody : body).object!["member_list"]!.object!["o"]!.object!
+            o["list_seq"] = 1; o["epoch"] = scenario == "bad_epoch" ? 2 : 1
             let list = try SignedObject.sign(o, kind: .memberList, signer: try signer("wsk_a.sig")).json
+            let heldEpoch = UInt32(o["epoch"]!.int!)
             let laptop = id("device_laptop")
             await relay.seed { r in
-                r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.listSeq = 1; r.workspaces[ws]!.epoch = 1
+                r.workspaces[ws]!.listJSON = list; r.workspaces[ws]!.listSeq = 1; r.workspaces[ws]!.epoch = heldEpoch
                 if scenario == "rotation_required" { r.workspaces[ws]!.members[laptop] = .init(personID: person, scopes: ["look"]) }
             }
         case "not_for_this_device" where name == "card_keys":
@@ -191,7 +195,7 @@ enum PR3Replay {
                 }
             }
         case "authorized_current_state", "exact_bytes_already_committed", "malformed", "wrong_suite", "unauthenticated", "not_for_this_device",
-             "bad_epoch", "fenced", "missing_grant", "other_workspace", "too_large", "victim_person_without_member":
+             "fenced", "missing_grant", "other_workspace", "too_large", "victim_person_without_member":
             break
         default:
             return false
@@ -348,7 +352,7 @@ enum PR3Replay {
 
     @Test func membershipStateTransitions() async throws {
         let cases = PR3Replay.p3Cases.filter { $0.object?["op"]?.string == "membership" }
-        #expect(cases.count == 29)
+        #expect(cases.count == 35)
         var accepted = 0, refused = 0
         for c in cases {
             let co = c.object!, name = co["name"]!.string!, args = co["args"]!.object!
@@ -391,6 +395,6 @@ enum PR3Replay {
                 #expect(a["card_seq"] == want["card_seq"], "\(name) card_seq")
             }
         }
-        #expect(accepted + refused == 29 && accepted > 0 && refused > 0)
+        #expect(accepted + refused == 35 && accepted > 0 && refused > 0)
     }
 }

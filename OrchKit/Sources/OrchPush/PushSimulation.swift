@@ -7,7 +7,15 @@ import UserNotifications
 /// Where a simulated notification goes. The app supplies `UNUserNotificationScheduler`; tests supply a recorder.
 public protocol LocalNotificationScheduling: Sendable {
     func schedule(_ presentation: PushPresentation, identifier: String) async
+    /// `delay` is the seconds until the OS shows it (Demo: lets the user lock the phone first). Recorders ignore it.
+    func schedule(_ presentation: PushPresentation, identifier: String, delay: TimeInterval) async
     func removeDelivered(identifiers: [String]) async
+}
+
+public extension LocalNotificationScheduling {
+    func schedule(_ presentation: PushPresentation, identifier: String, delay: TimeInterval) async {
+        await schedule(presentation, identifier: identifier)
+    }
 }
 
 /// Demo and local simulation (decision A12): the SAME `PushProcessor` and `PushPresentation` the notification extension
@@ -27,9 +35,12 @@ public actor PushSimulator {
     private let scheduler: any LocalNotificationScheduling
     private let now: @Sendable () -> Date
 
-    public init(materials: [ID16: PushMaterial], scheduler: any LocalNotificationScheduling, now: @escaping @Sendable () -> Date = { Date() }) {
+    private let delay: TimeInterval
+
+    public init(materials: [ID16: PushMaterial], scheduler: any LocalNotificationScheduling, delay: TimeInterval = 1,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         keys = materials.mapValues(\.keys); names = materials.mapValues(\.name)
-        self.scheduler = scheduler; self.now = now
+        self.scheduler = scheduler; self.now = now; self.delay = delay
     }
 
     /// `sealed` is the outer object (the bytes of the `o` string). Drops schedule the generic text, like the extension.
@@ -46,7 +57,7 @@ public actor PushSimulator {
             result = Result(presentation: .genericSimulated, outcome: .init(drop: why))
         }
         if let key = result.presentation.removesDelivered { await scheduler.removeDelivered(identifiers: ["sim/\(key)"]) }
-        await scheduler.schedule(result.presentation, identifier: "sim/\(result.presentation.entityKey ?? UUID().uuidString)")
+        await scheduler.schedule(result.presentation, identifier: "sim/\(result.presentation.entityKey ?? UUID().uuidString)", delay: delay)
         return result
     }
 }
@@ -60,14 +71,28 @@ extension PushPresentation {
 /// Schedules through `UNUserNotificationCenter`. The simulated flag becomes a visible subtitle and a `userInfo` marker.
 public struct UNUserNotificationScheduler: LocalNotificationScheduling {
     public init() {}
+    /// The last `add` failure text (nil after a success), so the app can show it instead of a silent no-op.
+    public static let lastError = LastError()
+    public final class LastError: @unchecked Sendable {
+        private let lock = NSLock(); private var value: String?
+        public func set(_ v: String?) { lock.lock(); value = v; lock.unlock() }
+        public var current: String? { lock.lock(); defer { lock.unlock() }; return value }
+    }
     public func schedule(_ p: PushPresentation, identifier: String) async {
+        await schedule(p, identifier: identifier, delay: 1)
+    }
+    public func schedule(_ p: PushPresentation, identifier: String, delay: TimeInterval) async {
         let c = UNMutableNotificationContent()
         c.title = p.title; c.body = p.body
         if p.simulated { c.subtitle = PushSimulator.label; c.userInfo = ["orch_simulated": true] }
         if let t = p.threadID { c.threadIdentifier = t }
         if p.sound { c.sound = .default }
-        let req = UNNotificationRequest(identifier: identifier, content: c, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))
-        try? await UNUserNotificationCenter.current().add(req)
+        let req = UNNotificationRequest(identifier: identifier, content: c, trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false))
+        // Completion-handler API (Xcode 16.4); a refusal is reported, not swallowed.
+        let error: String? = await withCheckedContinuation { c in
+            UNUserNotificationCenter.current().add(req) { c.resume(returning: $0.map { "\($0)" }) }
+        }
+        if let error { UNUserNotificationScheduler.lastError.set(error) } else { UNUserNotificationScheduler.lastError.set(nil) }
     }
     public func removeDelivered(identifiers: [String]) async {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)

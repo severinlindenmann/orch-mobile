@@ -31,6 +31,7 @@ extension WorkspaceInfo {
     /// D10: why answering is off for this workspace, nil when allowed.
     var answerBlock: String? {
         if let message = lifecycle.message { return message }
+        if let alarm = keyAlarm { return alarm }
         if !scopes.contains(.decide) { return "This iPhone may not answer for this workspace." }
         switch connection {
         case .online: return nil
@@ -93,16 +94,11 @@ struct WorkspaceHeader: View {
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("workspace.header")
         } else {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: OS.s3) {
-                nameRow
-                if hosted { HostedMarker(hostedBy: hostedBy).fixedSize() }
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: OS.s2) {
-                nameRow
-                if hosted { HostedMarker(hostedBy: hostedBy) }
-            }
+        // Always stacked: the side-by-side ViewThatFits variant squeezed the hosted marker to a one-character
+        // column (header 400+ pt tall) inside a Form row, pushing Leave off screen.
+        VStack(alignment: .leading, spacing: OS.s2) {
+            nameRow
+            if hosted { HostedMarker(hostedBy: hostedBy) }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(verbatim: SafeText.inline(name, limit: 40)

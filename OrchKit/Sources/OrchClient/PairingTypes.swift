@@ -61,6 +61,8 @@ public struct PairingAlarm: Sendable, Equatable {
         case .r1Challenge: "Reject on \(primaryLabel); do not confirm any code there; this host may be compromised"
         case .pinSubstitution, .regression:
             "Abandon this pairing. Reject any outstanding prompt on your Mac (host) and on \(primaryLabel)"
+        case .foreignRejection:
+            "Abandon this pairing: the owner turned down a request for another device in this workspace. Reject any prompt on your Mac (host)"
         }
     }
 }
@@ -96,9 +98,9 @@ public enum PairingState: Sendable, Equatable {
     case ready(JoinedHandle)
     case alarm(PairingAlarm)
     case rejected
-    /// The owner's primary device declined to certify this iPhone. Shown only for a `cert_rejection` that verified under the
-    /// pinned `PK` for this pairing's request; never on the host's word alone.
-    case denied
+    /// "Denied by the owner": the owner's PK-signed rejection of exactly this attempt verified (protocol-v2 section 8.3, G3b).
+    /// Attributed to the pinned owner (`owner` = the person of the link's `pk_pin`), never to the host-supplied primary label.
+    case denied(owner: ID16)
     case expired(PairingExpiry)
     case failed(PairingFailure)
     case cancelled

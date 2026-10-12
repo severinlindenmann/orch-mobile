@@ -16,6 +16,8 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case rotationRequired = "rotation_required"
     case scopeExceeded = "scope_exceeded"
     case missingGrant = "missing_grant"
+    /// Q10: a list at the relay's current epoch whose `wk_commit` differs from the stored list's (409 at the relay).
+    case wkCommitChanged = "wk_commit_changed"
     case delegationMismatch = "delegation_mismatch"
     case staleCard = "stale_card"
     case wskChanged = "wsk_changed"
@@ -31,6 +33,11 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case unknownRequest = "unknown_request"
     /// Local (never on the wire): a snapshot that contradicts the one already accepted under the same sequence.
     case conflictingSnapshot = "conflicting_snapshot"
+    /// Local alarm (never on the wire, Q10): two `WSK`-verified member lists at one epoch commit to different `WK`s. One `WK`
+    /// per epoch, ever: only a host that equivocates (or a stolen `WSK`) can sign both.
+    case wkCommitConflict = "wk_commit_conflict"
+    /// Local (G2b D4): a key for an epoch above the head list's, or before any verified list. Epochs move only on a verified list.
+    case futureEpoch = "future_epoch"
 }
 
 /// Failures of the byte-level primitives (encodings, keys, AEAD).

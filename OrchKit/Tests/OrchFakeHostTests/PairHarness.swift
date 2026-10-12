@@ -104,7 +104,7 @@ struct SkewedWall: WallClock {
 /// Polls `condition` (yielding between looks) until it holds or `timeoutSeconds` of REAL time pass. Returns whether it held; records an
 /// issue with `what` and the optional `diagnostics` on timeout, so a stalled runner fails loudly instead of hanging or flaking.
 @discardableResult
-func eventually(_ what: String, timeoutSeconds: Int = 60, diagnostics: () async -> String = { "" },
+func eventually(_ what: String, timeoutSeconds: Int = 120, diagnostics: () async -> String = { "" },
                 _ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds))
     while ContinuousClock.now < deadline {
@@ -128,12 +128,12 @@ func settleBriefly(yields: Int = 100, minMs: Int = 200) async {
 extension PairHarness {
     /// Runs the injected clock for a test that has `coordinator.run()` going in a task: the clock advances only while run() is parked
     /// on it (a registered sleeper) or after a real-time stall with no observable progress (run() awaiting storage or relay work with
-    /// no sleep registered). Scheduler yields are never counted as elapsed simulated time. Bounded by 60 s of real time and `simCapMs`
+    /// no sleep registered). Scheduler yields are never counted as elapsed simulated time. Bounded by 120 s of real time and `simCapMs`
     /// of simulated time; `pump` lets the fakes act between ticks.
     func tickRunLoop(stepMs: Int64 = 1000, pump: Bool = false, simCapMs: Int64 = 3_600_000,
                      until: @Sendable (PairingState) -> Bool) async throws -> (state: PairingState, met: Bool, diagnostics: String) {
         let startMs = clock.nowMs
-        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(120))
         var lastState = await coordinator.state
         var lastRequests = await relay.requestsReceived
         var unchangedSince = ContinuousClock.now

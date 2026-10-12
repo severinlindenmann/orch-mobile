@@ -91,10 +91,19 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
           NSExtensionAttributes:
-            NSExtensionActivationRule:
-              NSExtensionActivationSupportsText: true
-              NSExtensionActivationSupportsWebURLWithMaxCount: 1
-              NSExtensionActivationSupportsFileWithMaxCount: 5
+            # One OR'd predicate (a dictionary rule ANDs its keys, which hid the extension for image-only shares from Photos).
+            # public.data/url/text cover everything ProviderStager imports (files, images, movies, links, text). The count bound
+            # mirrors ShareLimits.maxItems but is PER extension item (one NSExtensionItem with more than 5 attachments does not
+            # activate); the overall 5-item cap across items is still enforced by ProviderStager/ShareModel.save.
+            NSExtensionActivationRule: >-
+              SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
+              (ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text")).@count >= 1).@count >= 1
+              AND SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
+              (ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
+              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text")).@count > 5).@count == 0
     dependencies:
       - package: OrchKit
         products: [OrchUI, OrchCoordination, OrchShareStaging]

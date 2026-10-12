@@ -44,6 +44,7 @@ final class LiveWorkspace: WorkspaceModel {
             let stream = await self.api.events()
             guard self.usable, !Task.isCancelled else { return }
             await self.api.start()
+            await self.checkKeyAlarm()
             await self.refresh()
             for await event in stream {
                 if Task.isCancelled { break }
@@ -67,9 +68,29 @@ final class LiveWorkspace: WorkspaceModel {
             let snapshot = try await api.snapshot()
             guard usable else { return }
             apply(snapshot)
+            await checkKeyAlarm()
         } catch {
+            noteKeyAlarm(error)
             markOffline()
         }
+    }
+
+    // MARK: Key alarm (Q10)
+
+    static let keyAlarmMessage = "Key alarm: this workspace published two different keys for the same version, so orch has stopped sending to it. It clears when your Mac issues a new key. If it stays, remove the workspace and pair again."
+
+    /// Reads the alarm (at launch and after every snapshot). It is per epoch (G2b D2): a verified list at a higher epoch lifts it,
+    /// and then it is cleared here.
+    func checkKeyAlarm() async {
+        info.keyAlarm = await api.keyAlarm() != nil ? Self.keyAlarmMessage : nil
+    }
+
+    /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
+    @discardableResult
+    func noteKeyAlarm(_ error: any Error) -> Bool {
+        guard WorkspaceKeyAlarm(error: error) != nil else { return false }
+        info.keyAlarm = Self.keyAlarmMessage
+        return true
     }
 
     private func handle(_ event: WorkspaceEvent) {
@@ -136,6 +157,8 @@ final class LiveWorkspace: WorkspaceModel {
             return .created(key: ticket.key)
         } catch ViewError.invalidDraft {
             return .failed("The title or text has characters that cannot be sent. Remove them and try again.")
+        } catch where noteKeyAlarm(error) {
+            return .failed(Self.keyAlarmMessage)
         } catch {
             return .failed("The ticket was not confirmed. Try again; it will not be created twice.")
         }

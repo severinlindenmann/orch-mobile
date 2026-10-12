@@ -160,21 +160,30 @@ import Testing
         return .init(ownerKey: d["owner_pk_pub"].sigPub, persons: persons, certs: certs, revoked: Set(d["revoked"].items.map(\.id)), grants: grants)
     }
 
-    /// Relay vectors 386a6cb (P3-D6): 14 cases, every list with `persons` and per-member `person_id`; 3 accepted.
+    /// The relay's stored list as `checkSequence` reads it (members.py): its header, member set and `wk_commit` as stored, which a
+    /// legacy row may lack (`wk_commit_prev_missing_same_epoch_refused`).
+    static func previous(_ p: JSONValue) -> MemberList.Previous {
+        MemberList.Previous(listSeq: p["list_seq"].i64, epoch: p["epoch"].u32, members: Set(p["members"].items.map { $0["device_id"].id }),
+                            wkCommit: p["wk_commit"].string.flatMap { B64U.decode($0, length: WKCommit.length) })
+    }
+
+    /// Relay vectors 491b500 (P3-D6, G2b/P3-D26): 34 cases; the first-list and skip windows, burned epochs and list_seqs,
+    /// `wk_commit` shape and `wk_commit_changed`, and the certificate/grant checks after the sequence.
     @Test func memberListCases() throws {
         let cases = s2["member_lists"].items
-        #expect(cases.count == 14)
+        #expect(cases.count == 34)
         var ok = 0
         for c in cases {
             let name = c["name"].str
             do {
                 let list = try MemberList.verify(c["signed"], wsk: c["wsk_pub"].sigPub)
-                let prev = c["prev"].isNull ? nil : try MemberList.parse(object: c["prev"].object!)
-                try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previous: prev, directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
+                try list.checkRelayUpdate(cardWorkspace: c["card_workspace_id"].id, previousRow: c["prev"].isNull ? nil : Self.previous(c["prev"]),
+                                          directory: directory(c["directory"]), nowMs: c["now_ms"].i64)
                 ok += 1
                 let want = c["expect"]["ok"]
                 #expect(!want.isNull, "\(name) accepted")
                 #expect(list.epoch == want["epoch"].u32 && list.listSeq == want["list_seq"].i64, "\(name)")
+                #expect(B64U.encode(list.wkCommit) == want["wk_commit"].str, "\(name)")
                 #expect(list.persons.map(\.hex) == want["persons"].items.map(\.str), "\(name)")
                 #expect(list.members.map { $0.deviceID.hex } == want["members"].items.map { $0["device_id"].str }, "\(name)")
                 #expect(list.members.map { $0.personID.hex } == want["members"].items.map { $0["person_id"].str }, "\(name)")
@@ -183,7 +192,43 @@ import Testing
                 #expect(r.rawValue == c["expect"]["refuse"].str, "\(name)")
             }
         }
-        #expect(ok == 3)
+        #expect(ok == cases.filter { !$0["expect"]["ok"].isNull }.count)
+    }
+
+    /// Relay vectors 491b500: the `wk_commit` value vectors and label.
+    @Test func wkCommitVectors() throws {
+        #expect(Vectors.root["labels"]["h_wk_commit"].str == Label.hWKCommit)
+        let cases = s2["wk_commit"].items
+        #expect(!cases.isEmpty)
+        for c in cases {
+            let ws = c["workspace_id"].id, e = UInt32(c["epoch"].i64), wk = c["wk"].key
+            #expect(B64U.encode(WKCommit.compute(workspace: ws, epoch: e, wk: wk)) == c["wk_commit"].str, "\(c["name"].str)")
+            #expect(WKCommit.matches(c["wk_commit"].b64Data, workspace: ws, epoch: e, wk: wk))
+            #expect(!WKCommit.matches(c["wk_commit"].b64Data, workspace: ws, epoch: e &+ 1, wk: wk))
+        }
+    }
+
+    @Test func wkCommitIsARequiredExactField() throws {
+        let wsk = SoftwareSigner(), ws = ID16.random()
+        func list(_ edit: (inout [String: JSONValue]) -> Void) throws -> JSONValue {
+            var o: [String: JSONValue] = ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": 1, "list_seq": 1,
+                                          "issued_ms": 1, "persons": [], "wk_commit": testWKCommit(ws, 1),
+                                          "members": [["device_id": .string(String(repeating: "0", count: 32)), "person_id": .string(String(repeating: "a", count: 32)), "scopes": ["look"]]]]
+            edit(&o)
+            return try SignedObject.sign(o, kind: .memberList, signer: wsk).json
+        }
+        let ok = try MemberList.verify(list { _ in }, wsk: wsk.publicKey)
+        #expect(ok.commits(testWK(ws, 1)) && !ok.commits(testWK(ws, 2)))
+        #expect(throws: Refusal.malformed) { try MemberList.verify(list { $0["wk_commit"] = nil }, wsk: wsk.publicKey) }
+        #expect(throws: Refusal.malformed) { try MemberList.verify(list { $0["wk_commit"] = .null }, wsk: wsk.publicKey) }
+        #expect(throws: Refusal.malformed) { try MemberList.verify(list { $0["wk_commit"] = .string(B64U.encode(Data(count: 31))) }, wsk: wsk.publicKey) }
+        #expect(throws: Refusal.malformed) { try MemberList.verify(list { $0["wk_commit"] = .string(B64U.encode(Data(count: 33))) }, wsk: wsk.publicKey) }
+        #expect(throws: Refusal.malformed) { try MemberList.verify(list { $0["wk_commit"] = .string(B64U.encode(Data(count: 32)) + "=") }, wsk: wsk.publicKey) }
+        #expect(throws: Refusal.malformed) { try MemberList.verify(list { $0["wk_commit"] = .string(Hex.encode(Data(count: 32))) }, wsk: wsk.publicKey) }
+        // the commitment is under the signature: changing it breaks the list
+        var tampered = try list { _ in }.object!
+        var o = tampered["o"]!.object!; o["wk_commit"] = testWKCommit(ws, 2); tampered["o"] = .object(o)
+        #expect(throws: Refusal.badSignature) { try MemberList.verify(.object(tampered), wsk: wsk.publicKey) }
     }
 
     @Test func memberListShapeRefusals() throws {
@@ -191,7 +236,7 @@ import Testing
         let p1 = String(repeating: "a", count: 32), p2 = String(repeating: "b", count: 32)
         func list(_ edit: (inout [String: JSONValue]) -> Void) throws -> JSONValue {
             var o: [String: JSONValue] = ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": 1, "list_seq": 1,
-                                          "issued_ms": 1, "persons": [],
+                                          "issued_ms": 1, "persons": [], "wk_commit": testWKCommit(ws, 1),
                                           "members": [["device_id": .string(String(repeating: "0", count: 32)), "person_id": .string(p1), "scopes": ["look"]]]]
             edit(&o)
             return try SignedObject.sign(o, kind: .memberList, signer: wsk).json

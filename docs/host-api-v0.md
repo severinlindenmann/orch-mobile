@@ -167,8 +167,12 @@ undelivered (above the host's acknowledged cursor); otherwise it is requeued at 
 header epoch is not the current list epoch is 409 `stale_epoch {"epoch"}`, an unsigned hint; a known
 rid skips the epoch check. Host chunks need a known, unexpired rid (else 410 `expired`), the request's
 epoch (an old epoch only as `LAST|REFUSAL` or a byte-identical stored replay, else 409 `stale_epoch`);
-other bytes at a stored index are 409 `chunk_conflict`; a stored replay never refreshes a TTL or
-resurrects an expired body. The phone (`WorkspaceSession`):
+other bytes at a stored index are 409 `chunk_conflict`; a live duplicate never refreshes a TTL. An
+expired chunk is stored again only from the host's EXACT stored bytes (P3-D27, Q11): a fresh 60 s
+within the record, current epoch or `LAST|REFUSAL` only (old-epoch data: a no-op 202), until 900 s
+after the rid's first receipt (410) and at most 8 times per chunk (409 `retry_exhausted`). Hosts keep
+the exact response bytes before the first POST and re-post only those; a copy of a request whose
+handler still runs gets no interim answer. The phone (`WorkspaceSession`):
 - after 202 or 429 keeps polling the SAME rid and never reissues under a new rid; with no answer the
   request stays pending (`noResponse`, or the 429 refusal) and `resend` sends the same bytes (a 503
   queued nothing: surfaced at once, still pending);
@@ -261,8 +265,9 @@ Changed question receives `question_changed` with content_hash; fetch again and 
 Persist immutable review, decision_id, answer, detached signature and envelope before the first send.
 After a lost response, first resend the stored envelope byte-for-byte with the same rid/seq/salt;
 the host replays its recorded response while the rid record lives (received_at + 900 s, §8.6 step 5).
-Under protocol-v2 the relay delivers that replay only while the original answer chunk lives (60 s):
-an expired chunk is never resurrected (P3-D22), so a later resend gets no answer and ends `uncertain`.
+Under protocol-v2 the host re-posts the exact stored answer bytes and the relay stores an expired chunk
+again (P3-D27, bounded); the phone starts its last automatic resend by ~240 s after the first send
+(later: `uncertain`) and takes a `stale_timestamp` offset against the time of its first send.
 On `already_done(unknown)`, unknown-rid `stale_timestamp`, or expiry of that 900-second window, fetch
 the question: matching resolution decision_id AND answer confirms acceptance; another resolution
 shows who/when; open permits resending only the same detached signed decision in a fresh envelope
@@ -330,7 +335,14 @@ Optional `epoch=<positive integer>` selects one; default returns all grants elig
 All require authenticated current membership and non-revocation; recipient comes from the session.
 No foreign-device selector. Missing data is 404 `not_found`, unauthorized is 403 `not_eligible`.
 Protocol signature/shape errors retain §14 codes; these HTTP fetch wrappers have no additional signature.
-WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Lists carry `persons` and a `person_id` per member (P3-D6).
+WK grants and lists are WSK-signed; WK is sealed to dk_kx (§7.3). Lists carry `persons` and a `person_id` per member (P3-D6)
+and the required `wk_commit = b64u(H("orch/v2/wk-commit|" || ws || u32(epoch) || WK))` (orch-29 Q10, decisions A16).
+One WK per epoch, ever: the phone seals only at the head list's epoch, under a grant whose WK matches its `wk_commit`; a
+mismatch or a missing list/grant blocks sending (no_key), never a fallback. Older epochs are read with any WSK-verified
+grant, checked against `wk_commit` when a list for that epoch is held. Two verified lists at one epoch with different
+`wk_commit` are the local alarm `wk_commit_conflict`, raised before a lower `list_seq` is refused as stale; it stops sealing at
+that epoch until a verified list at a higher epoch arrives. The head's own `list_seq` with other content is `conflicting_snapshot`
+(no sealing block). A read above the head, or before any verified list, is the local `future_epoch` (G2b D1–D4, orch-relay 491b500).
 Grants are published with their list in one `PUT /v2/workspaces/{ws}/membership` (P3-D7, §19.2), never staged.
 Verify signatures, identity binding and monotonic epoch/list/card counters before committing anything.
 Routes and authorization are protocol-v2 §19.1/§19.2; the FakeRelay replays orch-relay's HTTP fixtures for them ([gap 24](gaps.md)).
@@ -353,7 +365,8 @@ including retention and card-update races ([gap 29](gaps.md), D-6); fetch errors
 
 After verifying the card, require byte-equal `card.relay_url == reviewed link origin` in §7.1 form.
 Require the verified member list to contain this device_id with scopes exactly equal to approved.scopes,
-list epoch >= approved.epoch (all >= 1), and the installed grant epoch equal to that list epoch.
+list epoch >= approved.epoch (all >= 1), the installed grant epoch equal to that list epoch with its WK matching the list's
+`wk_commit` (`grant_commit` otherwise), and record the verified list as the head before installing any key.
 A mismatch fails join; no partial workspace install or silent origin change is permitted.
 
 `GET R/devices/{device}/revocation` returns `{"record":$signedRevocation}`;
@@ -605,11 +618,11 @@ A late response cannot recreate a cancelled generation. Never retain a pending s
 | question_changed | hash mismatch forces authoritative reload and a fresh immutable review |
 | lostResponse | fault after commit; restart resends stored envelope/same rid first; expired/unknown replay falls back to question fetch; no duplicate side effect |
 
-Primary rejection is the P3-D11 `cert_rejection` (PK-signed). The host relays it in its `rejected` answer with
-`pk_pub` (an orch-mobile addition to §8.3's answer shape pending orch-relay adoption, ignored by older devices;
-[gaps Q4](gaps.md#pr4-open-spec-items-blockers-before-real-relay-use)); the phone believes it only
-when it verifies and binds to the pinned PK and challenge request id, and otherwise never attributes the
-rejection to the primary. The phone joining timeout stays provisional. UI clock scaling changes no check order.
+Primary rejection is the P3-D11/P3-D28 `cert_rejection` (PK-signed, bound to the attempt: `offer_id`, `attempt`,
+`device_id`, `dk_hash`, `expires_ms`). The host relays it in the long `rejected` form `{state, wsk_pub, pk_pub, rejection}`
+(protocol-v2 §8.3, orch-relay 04da0e7); the short form `{state, wsk_pub}` is its own refusal. The phone shows "Denied by the
+owner" (`pair.deniedByOwner`, attributed to the pinned owner key) only after every §8.3 check; anything else is the unattributed
+"The pairing was refused", and a rejection naming a foreign device raises the alarm. The phone joining timeout stays provisional. UI clock scaling changes no check order.
 
 ## 7. Implementation slices and evidence gates
 

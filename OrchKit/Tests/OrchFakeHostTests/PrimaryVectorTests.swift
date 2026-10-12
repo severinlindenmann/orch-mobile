@@ -27,6 +27,8 @@ extension J { var isNull: Bool { v.isNull } }
         var host: FakeHost { h.host }
         var card: VerifiedCard
         let clock: TestClock
+        var offer = ID16.random()
+        var attempt = Hex.encode(ID16.random().bytes)
 
         static func make(clientHosted: Bool = false) async throws -> Rig {
             let h = try await PairHarness.make(.firstTime, clientHosted: clientHosted, hostedBy: clientHosted ? "Example Client" : nil)
@@ -37,7 +39,8 @@ extension J { var isNull: Bool { v.isNull } }
         func request(id: ID16 = .random(), wsk: SoftwareSigner? = nil, primaryDevice: ID16? = nil, scopes: [String] = ["look", "decide", "operate", "type"],
                      keys: DemoKeys? = nil, createdMs: Int64? = nil) async throws -> JSONValue {
             let k = keys ?? phone
-            let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: "Severin's iPhone", scopesMax: scopes, offerID: .random())
+            let inner = CertRequestInner(deviceID: k.deviceID, dkSig: k.sig, dkKx: k.kx, label: "Severin's iPhone", scopesMax: scopes, offerID: offer,
+                                         attempt: attempt)
             let signer = wsk ?? host.wsk
             let r = try CertRequest.make(wsk: signer, requestID: id, workspace: ws, person: primary.personID, primary: primaryDevice ?? primary.deviceID,
                                          primaryKey: primary.deviceKeys.kx, inner: inner, createdMs: createdMs ?? clock.nowMs).json
@@ -48,14 +51,16 @@ extension J { var isNull: Bool { v.isNull } }
         /// The host's `POST /v2/persons/{person}/cert-requests`; the relay may refuse it (the primary then refuses it as well).
         func enqueue(_ r: JSONValue) async throws {
             let session = try await host.openSession(transport: h.env.transport)
+            let gen = try await host.holderGeneration(relay: h.relay, session: session)          // W(g): under the holder generation
             _ = try await h.relay.send(WireRequest(method: "POST", target: "/v2/persons/\(primary.personID.hex)/cert-requests",
-                                                   headers: ["authorization": "Bearer " + session.token, "content-type": "application/json"],
+                                                   headers: ["authorization": "Bearer " + session.token, "orch-holder": String(gen),
+                                                             "content-type": "application/json"],
                                                    body: canonicalJSON(.object(["request": r])), clientAddress: "host"))
         }
     }
 
     @Test func testPrimaryCertRequestVectors() async throws {
-        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]["cert_request"]
+        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]["cert_request"]
         let cases = vec["cases"].items
         #expect(cases.count == 10)
         var ok = 0
@@ -116,7 +121,7 @@ extension J { var isNull: Bool { v.isNull } }
     }
 
     @Test func testPrimaryOpenCases() async throws {
-        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max))["suites"]["2"]["cert_request"]
+        let vec = J(try StrictJSON.parse(OrchTestVectors.Vectors.data, maxBytes: .max, maxDepth: 64))["suites"]["2"]["cert_request"]
         let cases = vec["open_cases"].items
         #expect(cases.count == 5)
         var signedCerts = 0
@@ -162,7 +167,9 @@ extension J { var isNull: Bool { v.isNull } }
         guard case .success(let p) = await rig.primary.open(request: try await rig.request(), card: rig.card, relay: relay) else { Issue.record("open"); return }
         // the code is over the primary's own challenge, which names exactly the phone's keys and a nonce drawn after them
         let ch = try #require(await relay.certRecord(p.requestID)?.challenge)
-        let checked = try CertChallenge.check(ch, pk: rig.primary.publicKey, workspace: rig.ws, device: rig.phone.deviceID, dkSig: rig.phone.sig, dkKx: rig.phone.kx, nowMs: rig.clock.nowMs)
+        let c = PairingAttemptContext(workspace: rig.ws, offer: rig.offer, device: rig.phone.deviceID, dkSig: rig.phone.sig, dkKx: rig.phone.kx,
+                                      attempt: rig.attempt, earlierAttempts: [], acceptedRequestID: nil)
+        let checked = try CertChallenge.check(ch, pk: rig.primary.publicKey, attempt: c, nowMs: rig.clock.nowMs)
         #expect(checked.certCode == p.certCode)
         // approval needs the explicit confirmation
         await #expect(throws: PrimaryError.comparisonNotConfirmed) { _ = try await rig.primary.approve(request: p.requestID, confirmedComparison: false, relay: relay) }
@@ -179,7 +186,8 @@ extension J { var isNull: Bool { v.isNull } }
     func canonicalJSONObject(from rig: Rig, extra: [String: JSONValue]) throws -> [String: JSONValue] {
         var o: [String: JSONValue] = ["device_id": .string(rig.phone.deviceID.hex), "dk_sig_pub": .string(B64U.encode(rig.phone.sig.x963)),
                                       "dk_kx_pub": .string(B64U.encode(rig.phone.kx.x963)), "label": "Severin's iPhone",
-                                      "scopes_max": ["look", "decide", "operate", "type"], "offer_id": .string(ID16.random().hex)]
+                                      "scopes_max": ["look", "decide", "operate", "type"], "offer_id": .string(rig.offer.hex),
+                                      "attempt": .string(rig.attempt)]
         for (k, v) in extra { o[k] = v }
         return o
     }
@@ -193,7 +201,11 @@ extension PrimaryCertRequestVectorTests.Rig {
                                       plaintext: canonicalJSON(.object(inner)))
         let r = try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "cert_request", "request_id": .string(rid.hex), "workspace_id": .string(ws.hex),
-            "person_id": .string(primary.personID.hex), "primary_device_id": .string(primary.deviceID.hex), "created_ms": .int(clock.nowMs),
+            "person_id": .string(primary.personID.hex), "primary_device_id": .string(primary.deviceID.hex),
+            "offer_id": inner["offer_id"] ?? .null, "attempt": inner["attempt"] ?? .null, "device_id": inner["device_id"] ?? .null,
+            "dk_hash": .string(B64U.encode(Identifiers.dkHash(sig: B64U.decode(inner["dk_sig_pub"]?.string ?? "") ?? Data(),
+                                                               kx: B64U.decode(inner["dk_kx_pub"]?.string ?? "") ?? Data()))),
+            "created_ms": .int(clock.nowMs),
             "expires_ms": .int(clock.nowMs + CertRequest.lifetimeMs), "sealed": .string(B64U.encode(sealed))], kind: .certRequest, signer: host.wsk).json
         try await enqueue(r)
         return r

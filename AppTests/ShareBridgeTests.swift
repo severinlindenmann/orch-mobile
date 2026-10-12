@@ -85,21 +85,69 @@ final class ShareBridgeTests: XCTestCase {
         XCTAssertTrue(world.items(.sending).contains { $0.id.hasPrefix("share-") && $0.workspaceID == "laptop" })
     }
 
-    func testDemoWorkspacesAreNotOfferedToTheExtensionByDefault() async throws {
+    func testDemoWorkspacesAreOfferedAndNeverClaimedByALiveApp() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-\(UUID().uuidString)")
         let world = PreviewWorld(demo: true)
         let bridge = try XCTUnwrap(ShareBridge.make(world: world, override: root))
         bridge.publishTargets()
-        XCTAssertThrowsError(try ShareTargetIndex.load(from: ShareArea(shareGroupRoot: root)))
-        // A Demo-realm job staged anyway is neither claimed nor quarantined by a live-realm app.
+        let offered = try ShareTargetIndex.load(from: ShareArea(shareGroupRoot: root))
+        XCTAssertFalse(offered.isEmpty)
+        XCTAssertTrue(offered.allSatisfy { $0.realm == "demo" })
+        let withheld = try XCTUnwrap(ShareBridge.make(world: PreviewWorld(demo: true), override: root.appendingPathComponent("w"), publishDemo: false))
+        withheld.publishTargets()
+        XCTAssertThrowsError(try ShareTargetIndex.load(from: ShareArea(shareGroupRoot: root.appendingPathComponent("w"))))
+        // A Demo-realm job staged anyway is neither claimed nor quarantined by a live-realm app; the stale Demo
+        // destinations are retired (tombstoned), so the job is left unclaimed and nothing is imported.
         let live = PreviewWorld(demo: false)
         let liveBridge = try XCTUnwrap(ShareBridge.make(world: live, override: root))
+        let area = ShareArea(shareGroupRoot: root)
         let t = ShareTarget(realm: "demo", ws: ShareBridge.wsHex("laptop"), name: "x", hue: 0, generation: 1)
-        let s = try StagingSession(area: ShareArea(shareGroupRoot: root), target: t)
+        let s = try StagingSession(area: area, target: t)
         try s.add(.text("x")); try s.commit(note: nil)
         liveBridge.refresh(); await liveBridge.waitForRefresh()
-        XCTAssertEqual(ShareInbox(area: ShareArea(shareGroupRoot: root)).peekReady().count, 1)
         XCTAssertTrue(live.items(.sending).isEmpty)
+        XCTAssertTrue(ShareInbox(area: area).quarantined().isEmpty)
+        let tombstones = try area.coordination.records()
+        XCTAssertTrue(tombstones.contains { $0.realm == "demo" && $0.ws == ShareBridge.wsHex("laptop") })
+        XCTAssertFalse(tombstones.contains { $0.realm == "live" })
+    }
+
+    /// B1: live -> Demo -> live must keep the live destination (never tombstoned by Demo) and its staged job.
+    func testDemoNeverTombstonesLiveDestinations() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-\(UUID().uuidString)")
+        let area = ShareArea(shareGroupRoot: root)
+        let liveTarget = ShareTarget(realm: "live", ws: String(repeating: "a", count: 32), name: "Mac", hue: 1, generation: 4)
+        try ShareTargetIndex.publish([liveTarget], to: area)
+        let s = try StagingSession(area: area, target: liveTarget)
+        try s.add(.text("keep me")); try s.commit(note: nil)
+        // Demo cold start.
+        let demo = try XCTUnwrap(ShareBridge.make(world: PreviewWorld(demo: true), override: root))
+        demo.publishTargets()
+        let offered = try ShareTargetIndex.load(from: area)
+        XCTAssertTrue(offered.contains(liveTarget), "live destinations stay visible while Demo is active")
+        XCTAssertTrue(offered.contains { $0.realm == "demo" })
+        XCTAssertFalse(try area.coordination.records().contains { $0.realm == "live" })
+        XCTAssertEqual(ShareInbox(area: area).peekReady().count, 1)
+        // Back to live: the destination is still valid at its generation and the staged job survives.
+        XCTAssertNotNil(try area.coordination.ifNotRemoved(realm: "live", ws: liveTarget.ws, generation: 4) { true })
+        XCTAssertEqual(ShareInbox(area: area).peekReady().count, 1)
+    }
+
+    /// B5: the activation rule matches 1...5 items of data/url/text and not 6.
+    func testActivationRuleBoundsItemCount() throws {
+        let plugins = try XCTUnwrap(Bundle.main.builtInPlugInsURL)
+        let info = try XCTUnwrap(NSDictionary(contentsOf: plugins.appendingPathComponent("OrchShare.appex/Info.plist")))
+        let rule = try XCTUnwrap(((info["NSExtension"] as? [String: Any])?["NSExtensionAttributes"] as? [String: Any])?["NSExtensionActivationRule"] as? String)
+        let predicate = NSPredicate(format: rule)
+        func items(_ types: [[String]]) -> NSDictionary {
+            ["extensionItems": [["attachments": types.map { ["registeredTypeIdentifiers": $0] }]]]
+        }
+        XCTAssertTrue(predicate.evaluate(with: items([["public.jpeg", "public.image"]])))      // Photos image
+        XCTAssertTrue(predicate.evaluate(with: items([["public.url"]])))                       // Safari link
+        XCTAssertTrue(predicate.evaluate(with: items([["public.plain-text"]])))
+        XCTAssertTrue(predicate.evaluate(with: items(Array(repeating: ["public.jpeg"], count: 5))))
+        XCTAssertFalse(predicate.evaluate(with: items(Array(repeating: ["public.jpeg"], count: 6))))
+        XCTAssertFalse(predicate.evaluate(with: items([])))
     }
 
     /// C2: tombstoning must succeed before a target stops being tracked.

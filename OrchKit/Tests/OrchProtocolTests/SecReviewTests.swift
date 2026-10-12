@@ -78,6 +78,7 @@ import Testing
         let sorted = ids.sorted { $0.hex < $1.hex }
         return try! MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": .int(epoch),
                                               "list_seq": .int(seq), "issued_ms": 1, "persons": .array(persons.map { .string($0.hex) }),
+                                              "wk_commit": testWKCommit(ws, epoch),
                                               "members": .array(sorted.map { ["device_id": .string($0.hex), "person_id": .string(person.hex),
                                                                                "scopes": .array(scopes.map { .string($0) })] })])
     }
@@ -112,7 +113,7 @@ import Testing
         #expect(throws: Refusal.otherPerson) { try list(ws, epoch: 1, seq: 1, ids: [ida], person: me, persons: [bobID]).checkRelayUpdate(cardWorkspace: ws, previous: nil, directory: dir, nowMs: 10) }
         dir.certs[idc] = try cert(bob, bobDev); dir.grants.insert(.init(device: idc, epoch: 2))
         let withBob = try MemberList.parse(object: ["v": 2, "suite": 2, "kind": "member_list", "workspace_id": .string(ws.hex), "epoch": 2, "list_seq": 2,
-                                                    "issued_ms": 1, "persons": [.string(bobID.hex)],
+                                                    "issued_ms": 1, "persons": [.string(bobID.hex)], "wk_commit": testWKCommit(ws, 2),
                                                     "members": .array([(ida, me), (idc, bobID)].sorted { $0.0.hex < $1.0.hex }.map {
                                                         ["device_id": .string($0.0.hex), "person_id": .string($0.1.hex), "scopes": ["look"]] })])
         #expect(throws: Refusal.otherPerson) { try withBob.checkRelayUpdate(cardWorkspace: ws, previous: l1, directory: dir, nowMs: 10) }   // no account
@@ -135,28 +136,27 @@ import Testing
     // MARK: cert challenge / ledger
     @Test func challengeR1() throws {
         let pk = SoftwareSigner(), phoneSig = SoftwareSigner(), phoneKx = SoftwareKeyAgreer(), evil = SoftwareSigner()
-        let ws = ID16.random(), me = Identifiers.deviceID(phoneSig.publicKey)
+        let ws = ID16.random(), me = Identifiers.deviceID(phoneSig.publicKey), offer = ID16.random(), att = String(repeating: "d", count: 32)
+        let c = PairingAttemptContext(workspace: ws, offer: offer, device: me, dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, attempt: att,
+                                      earlierAttempts: [], acceptedRequestID: nil)
         func ch(_ sig: SigningPublicKey, _ kx: AgreementPublicKey, dev: ID16, signer: SoftwareSigner) throws -> JSONValue {
             try CertChallenge.sign(["v": 2, "suite": 2, "kind": "cert_challenge", "request_id": .string(ID16.random().hex), "workspace_id": .string(ws.hex),
-                                    "person_id": .string(Identifiers.personID(signer.publicKey).hex), "device_id": .string(dev.hex),
+                                    "person_id": .string(Identifiers.personID(signer.publicKey).hex), "offer_id": .string(offer.hex),
+                                    "attempt": .string(att), "device_id": .string(dev.hex),
                                     "dk_sig_pub": .string(B64U.encode(sig.x963)), "dk_kx_pub": .string(B64U.encode(kx.x963)),
                                     "primary_nonce": .string(B64U.encode(Data(count: 32))), "expires_ms": 100], primary: signer).json
         }
-        _ = try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+        _ = try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, attempt: c, nowMs: 50)
         // host substitutes its own sig key, keeps the phone's id
         #expect(throws: CertChallengeDrop.notMyKey) {
-            try CertChallenge.check(try ch(evil.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+            try CertChallenge.check(try ch(evil.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, attempt: c, nowMs: 50)
         }
         #expect(throws: CertChallengeDrop.notMyKey) {
-            try CertChallenge.check(try ch(phoneSig.publicKey, SoftwareKeyAgreer().publicKey, dev: me, signer: pk), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+            try CertChallenge.check(try ch(phoneSig.publicKey, SoftwareKeyAgreer().publicKey, dev: me, signer: pk), pk: pk.publicKey, attempt: c, nowMs: 50)
         }
         // challenge signed by a different person key
         #expect(throws: CertChallengeDrop.challengeSignature) {
-            try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: evil), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+            try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: evil), pk: pk.publicKey, attempt: c, nowMs: 50)
         }
     }
 
@@ -171,7 +171,7 @@ import Testing
         func req(_ id: ID16, scopes: [String] = ["look"], now: Int64) throws -> JSONValue {
             let d = SoftwareSigner()
             let inner = CertRequestInner(deviceID: Identifiers.deviceID(d.publicKey), dkSig: d.publicKey, dkKx: SoftwareKeyAgreer().publicKey,
-                                         label: "x", scopesMax: scopes, offerID: ID16.random())
+                                         label: "x", scopesMax: scopes, offerID: ID16.random(), attempt: String(repeating: "e", count: 32))
             return try CertRequest.make(wsk: wsk, requestID: id, workspace: ws, person: person, primary: primaryID, primaryKey: primaryKx.publicKey,
                                         inner: inner, createdMs: now).json
         }

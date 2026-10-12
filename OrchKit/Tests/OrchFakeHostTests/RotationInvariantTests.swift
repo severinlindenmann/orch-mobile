@@ -41,7 +41,7 @@ import OrchProtocol
         }
         let remaining = [(w.phone, ["look", "decide"])]
         let first = Task { try await w.host.rotate(remaining: remaining, relay: w.relay, session: w.hostSession) }
-        while gate.entered == 0 { await Task.yield() }
+        guard await eventually("gate entered", timeoutSeconds: 120, { gate.entered > 0 }) else { return }
         let second = Task { try await w.host.invariantJoin(remaining, relay: w.relay, session: w.hostSession, entered: entered) }
         await entered.pass()
         gate.open()
@@ -78,7 +78,7 @@ import OrchProtocol
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)],
                                     relay: w.relay, session: w.hostSession)
         }
-        while gate.entered == 0 { await Task.yield() }
+        guard await eventually("gate entered", timeoutSeconds: 120, { gate.entered > 0 }) else { return }
         let revocation = Task { await w.host.invariantRevoke(env, rid: h.rid, entered: entered) }
         await entered.pass()
         gate.open()
@@ -111,8 +111,9 @@ import OrchProtocol
         #expect(list.members.map(\.deviceID) == [w.phoneID])
     }
 
-    /// The publication is refused at the relay (a member revoked while it was delayed there), then the phone is removed too: the
-    /// same epoch is published again under a fresh key for the remaining roster, and no removed device holds its grant.
+    /// The publication is refused at the relay (a member revoked while it was delayed there), then the phone is removed too: Q10
+    /// burns the refused epoch, the next one is published under a fresh key for the remaining roster, and no removed device holds
+    /// its grant.
     @Test(arguments: ["host", "relay"])
     func refusedPublicationThenRemoval(revokeAt: String) async throws {
         let faults = ScriptedFaults()
@@ -122,7 +123,7 @@ import OrchProtocol
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)],
                                     relay: w.relay, session: w.hostSession)
         }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        guard await eventually("a sleeper parks on the test clock", timeoutSeconds: 120, { w.clock.sleeperCount > 0 }) else { return }
         let refusedKey = await w.host.wkFor(2).withUnsafeBytes { Data($0) }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.primaryID))
         w.clock.advance(milliseconds: 1000)
@@ -132,7 +133,7 @@ import OrchProtocol
         else { try await w.relay.publishRevocation(try await w.primary.revoke(device: w.phoneID)) }
         _ = try await rotationRetry(w) { try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession) }
         let final = await w.host.epoch
-        #expect(final == 2)
+        #expect(final == 3)                                   // Q10: the refused epoch 2 is burned
         #expect(await w.host.wkFor(final).withUnsafeBytes { Data($0) } != refusedKey)
         #expect(await w.host.coreState().members.isEmpty)
         #expect(await w.relay.hasGrant(workspace: w.ws, device: w.phoneID, epoch: final) == false)

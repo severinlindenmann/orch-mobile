@@ -9,7 +9,7 @@ import OrchTestVectors
 /// copies per record (`max(cursor, copies) + 1`); the FakeRelay passes its workspace position counter instead.
 @Suite struct RidStoreVectorTests {
     static let cases: [(suite: String, JSONValue)] = {
-        guard let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max) else { return [] }
+        guard let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64) else { return [] }
         return ["1", "2"].flatMap { suite in
             (root.object?["suites"]?.object?[suite]?.object?["p3"]?.object?["cases"]?.array ?? [])
                 .filter { ["request_replay", "chunk"].contains($0.object?["op"]?.string ?? "") }.map { (suite, $0) }
@@ -28,7 +28,8 @@ import OrchTestVectors
         for (k, c) in o["chunks"]?.object ?? [:] {
             chunks[try #require(UInt64(k))] = .init(digest: Self.digest(try #require(c.object?["digest"]?.string)),
                                                      flags: UInt8(try #require(c.object?["flags"]?.int)),
-                                                     expiresMs: try #require(c.object?["expires_ms"]?.int))
+                                                     expiresMs: try #require(c.object?["expires_ms"]?.int),
+                                                     restores: Int(c.object?["restores"]?.int ?? 0))
         }
         return RelayRidRecord(digest: Self.digest(try #require(o["digest"]?.string)), reqEpoch: UInt32(try #require(o["req_epoch"]?.int)),
                               firstMs: try #require(o["first_ms"]?.int), requeues: Int(try #require(o["requeues"]?.int)),
@@ -66,7 +67,48 @@ import OrchTestVectors
         case (nil, "chunk_conflict"): return .chunkConflict
         case (nil, "stale_epoch"): return o["epoch"]?.int.map { .staleEpoch(epoch: UInt32($0)) }
         case (nil, "quota_exceeded"): return .quotaExceeded
+        case ("restored", nil): return .restored
+        case (nil, "retry_exhausted"): return .retryExhausted
         default: return nil
+        }
+    }
+
+    /// `p3.restore` (orch-relay d3816ea, Q11 / P3-D27): 34 chunk cases per suite. `fenced`, `revoked` and `member` model the holder and
+    /// target gates the FakeRelay runs before the store (see `hostPost`); `room` is the target's remaining response budget.
+    static let restoreCases: [(suite: String, JSONValue)] = {
+        guard let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64) else { return [] }
+        return ["1", "2"].flatMap { suite in
+            (root.object?["suites"]?.object?[suite]?.object?["p3"]?.object?["restore"]?.array ?? []).map { (suite, $0) }
+        }
+    }()
+
+    @Test func restoreCasesOfBothSuites() throws {
+        #expect(Self.restoreCases.count == 68)
+        for (suite, c) in Self.restoreCases {
+            let o = try #require(c.object)
+            let name = "\(suite)/\(o["name"]?.string ?? "?")"
+            #expect(o["op"]?.string == "chunk", "\(name) op")
+            let args = try #require(o["args"]?.object)
+            let raw = try #require(args["raw"]?.string.flatMap { Hex.decode($0) })
+            let header = try Bridge.Parts(envelope: raw).header
+            let epoch = UInt32(try #require(args["epoch"]?.int)), now = try #require(args["now_ms"]?.int)
+            // A restart keeps the durable state: the record (with its restore counts) is all there is.
+            var state = try Self.record(o["state"])
+            let before = state
+            let result = try #require(o["expect"]?.object?["result"])
+            let gate: RidStore.ChunkResult?
+            if args["fenced"] == .bool(true) { gate = nil; #expect(result.object?["refuse"]?.string == "fenced", "\(name)") }
+            else if args["revoked"] == .bool(true) { gate = nil; #expect(result.object?["refuse"]?.string == "revoked", "\(name)") }
+            else if args["member"] == .bool(false) { gate = nil; #expect(result.object?["refuse"]?.string == "not_eligible", "\(name)") }
+            else {
+                let want = try #require(Self.expected(chunk: result), "\(name) result")
+                let room = args["room"]?.int.map(Int.init)
+                gate = RidStore.chunk(&state, raw: raw, header: header, epoch: epoch, nowMs: now, room: room)
+                #expect(gate == want, "\(name)")
+            }
+            if gate == nil { #expect(state == before, "\(name): a gate refusal touches nothing") }
+            let expected = try Self.record(o["expect"]?.object?["state"])
+            #expect(Self.metadata(state) == expected, "\(name) post-state")
         }
     }
 

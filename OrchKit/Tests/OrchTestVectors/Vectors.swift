@@ -5,3 +5,4 @@ public enum Vectors {
     public static var url: URL { Bundle.module.url(forResource: "vectors_v2", withExtension: "json")! }
     public static var data: Data { try! Data(contentsOf: url) }
 }
+

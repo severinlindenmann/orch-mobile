@@ -33,4 +33,5 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     ///   Retry when coordination is available; this error does not confirm removal.
     public func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket { try await session.createTicket(draft) }
     public func events() async -> AsyncStream<WorkspaceEvent> { await session.eventStream() }
+    public func keyAlarm() async -> WorkspaceKeyAlarm? { await session.keyAlarm() }
 }

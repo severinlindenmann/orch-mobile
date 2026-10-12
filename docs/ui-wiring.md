@@ -154,3 +154,10 @@ and before relay side effects. Test gates release late arrivals and deadline fai
 completion is bounded as well. `DropLifecycleRegressionTests` covers cancelled-epoch resume, session
 suspension, atomic multi-attachment sealing and metadata-only reads. QuickLook Share/Save suppression
 remains a blocker before real data, recorded in `gaps.md`; no export change is included here.
+
+## Demo notification trigger, push diagnostics, offline Leave
+
+- Settings > Demo controls > "Send a demo question notification" (`demo.sendNotification`, result `demo.sendNotification.result`): asks for notification permission on first use, then seals a Demo push and runs it through PushSimulator into a local notification after 8 s (1 s under UI tests) so the tester can lock the phone. Denied permission shows "Open iOS Settings" (`settings.notifications.openSettings`).
+- `OrchAppDelegate` is the `UNUserNotificationCenterDelegate` and presents banners in the foreground; without it iOS shows nothing while orch is open.
+- `settings.push.diagnostics`: permission, APNs environment and token / pending / failure text (no token value). Real APNs registration is attempted only for non-Demo installs with permission allowed; Demo never registers.
+- Leave offline: the local wipe never depends on the host. Pending server cleanup is listed under "Finish on your Mac" (`settings.serverCleanup.<ws>`, `settings.serverCleanup.retry`); `removalIncomplete` (`settings.leave.incomplete`, with `settings.leave.failure`) means a genuine local wipe failure only.

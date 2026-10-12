@@ -28,6 +28,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var onStopShared: (() -> Void)?
     var deviceLabel = "Demo iPhone"
     var notificationStatus: NotificationStatus = .notAsked
+    private(set) var pushDiagnostics = ""
+    private(set) var pendingServerCleanups: [PendingServerCleanup] = []
+    @ObservationIgnored private(set) var cleanupStore: ServerCleanupStore
+    var cleanupDefaults: UserDefaults { resetFlags }
+    /// The server-side half of Leave (push unsubscribe, membership removal). Demo simulates it; it throws while offline.
+    @ObservationIgnored var serverCleanup: (PendingServerCleanup) async throws -> Void = { _ in }
     var pairingScenario: PairingScenario = .firstTime
     var signOutcome: SignOutcome = .accepted
     @ObservationIgnored private(set) var runtime: DemoRuntime?
@@ -62,6 +68,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func canUse(_ id: String) -> Bool { active && isLive(id) }
     func register(_ ws: LiveWorkspace) {
         ws.services = self
+        // A re-paired workspace is a new membership: an old cleanup must never reach it.
+        pendingServerCleanups = cleanupStore.remove(ws: ws.workspaceID.hex)
+        PresentationGate.unblock(ws.workspaceID.hex)
         lifecycle[ws.info.id] = .live
         live.append(ws)
     }
@@ -78,6 +87,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         self.resetFlags = resetFlags ?? (options.uiTesting
             ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
         self.options = options; self.runtime = runtime; self.isDemo = runtime != nil
+        cleanupStore = ServerCleanupStore(defaults: self.resetFlags)
+        pendingServerCleanups = cleanupStore.load()
     }
 
     // MARK: Boot
@@ -100,6 +111,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
         if options.demoSeed, isDemo { await seedDemoWorkspaces() }
+        // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
+        if !isDemo { Task.detached { await SystemDemoNotifications().retryOwedPurges() } }
         ready = true
     }
 
@@ -509,28 +522,88 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func setNotifications(_ on: Bool, workspaceID: String) {
         guard isLive(workspaceID) else { return }
         live.first { $0.info.id == workspaceID }?.setNotifications(on)
-        if on, notificationStatus == .notAsked { requestNotificationPermission() }
+        if on, notificationStatus == .notAsked { Task { await ensureNotificationPermission() } }
     }
 
-    private func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            Task { @MainActor in self.notificationStatus = granted ? .allowed : .denied }
+    private func map(_ state: PushPermission.State) -> NotificationStatus {
+        switch state {
+        case .notDetermined: .notAsked
+        case .denied: .denied
+        case .authorized, .provisional: .allowed
         }
     }
+
+    /// Reads the real OS status (so a denial from an earlier run shows up) and, for a real installation that is allowed,
+    /// attempts APNs registration. Demo never registers with APNs: there is no relay behind it.
+    func refreshNotificationStatus() async {
+        let state = await PushPermission.current()
+        notificationStatus = map(state)
+        if !isDemo, notificationStatus == .allowed { PushPermission.registerForAPNs() }
+        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
+    }
+
+    /// Asks the system once (never at launch) and waits for the answer.
+    @discardableResult
+    private func ensureNotificationPermission() async -> NotificationStatus {
+        let state = await PushPermission.requestIfNeeded()
+        notificationStatus = map(state)
+        if !isDemo, notificationStatus == .allowed { PushPermission.registerForAPNs() }
+        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
+        return notificationStatus
+    }
+
+    func openNotificationSettings() { PushPermission.openSystemSettings() }
 
     func demoSendPush(workspaceID: String) {
         guard isLive(workspaceID) else { return }
-        guard let ws = live.first(where: { $0.info.id == workspaceID }), let runtime else { return }
-        if notificationStatus == .notAsked { requestNotificationPermission() }
-        demoPushResult = "Sending…"
-        Task {
-            let result = await runtime.simulatePush(workspace: ws.workspaceID, name: ws.info.name, generation: ws.generation,
-                                                    label: "Demo: a question is waiting")
-            switch result?.outcome {
-            case .some(let outcome): demoPushResult = "Local notification scheduled (\(outcome))"
-            case .none: demoPushResult = "The Demo push could not be sealed."
-            }
+        Task { await sendDemoNotification(workspaceID: workspaceID, delay: 1) }
+    }
+
+    /// Settings -> Demo controls: one tap, short delay so the tester can lock the phone or go home.
+    func demoSendNotification() async {
+        guard let ws = live.first(where: { isLive($0.info.id) }) else {
+            demoPushResult = "Pair a Demo workspace first."
+            return
         }
+        await sendDemoNotification(workspaceID: ws.info.id, delay: options.uiTesting ? 1 : Self.demoNotificationDelay)
+    }
+
+    static let demoNotificationDelay: TimeInterval = 8
+
+    private func sendDemoNotification(workspaceID: String, delay: TimeInterval) async {
+        guard let ws = live.first(where: { $0.info.id == workspaceID }), let runtime else { return }
+        demoPushResult = "Checking notification permission…"
+        let status = await ensureNotificationPermission()
+        guard status == .allowed else {
+            demoPushResult = "Notifications are off for orch. Turn them on in iOS Settings, then try again."
+            return
+        }
+        demoPushResult = "Sending…"
+        let result = await runtime.simulatePush(workspace: ws.workspaceID, name: ws.info.name, generation: ws.generation,
+                                                label: "Demo: a question is waiting", delay: delay)
+        guard let result else { demoPushResult = "The Demo push could not be sealed."; return }
+        if let failure = UNUserNotificationScheduler.lastError.current {
+            demoPushResult = "iOS refused the notification: \(failure)"
+        } else if delay >= 5 {
+            demoPushResult = "Notification scheduled — lock the phone or go home. Local notification scheduled (\(result.outcome)) in \(Int(delay)) s."
+        } else {
+            demoPushResult = "Local notification scheduled (\(result.outcome))"
+        }
+    }
+
+    // MARK: Pending server cleanup (U9)
+
+    private func enqueueServerCleanup(ws: String, generation: Int64) {
+        pendingServerCleanups = cleanupStore.add(PendingServerCleanup(ws: ws, generation: generation, since: Date()))
+    }
+
+    /// Back online: tries each pending server-side cleanup once. Successes leave the list; failures stay for the next try.
+    func retryServerCleanup() async {
+        for item in cleanupStore.load() {
+            do { try await serverCleanup(item); pendingServerCleanups = cleanupStore.remove(ws: item.ws, generation: item.generation) }
+            catch { continue }
+        }
+        pendingServerCleanups = cleanupStore.load()
     }
 
     /// Leave = "Remove from this iPhone": the real local wipe first and network-independent; server cleanup is reported separately (U9).
@@ -545,12 +618,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         await ws.drop?.service.invalidate()
         let name = ws.info.name
         // The share outbox journals the removal first; a failed journal keeps the workspace in place.
-        guard beforeWorkspaceRemoval?(workspaceID) != false else {
-            transition(workspaceID, to: .removalIncomplete)
-            await waitForLifecycle()
-            await ws.stop()
-            return LeaveReport(workspaceName: name, server: .pendingOffline, incomplete: true)
-        }
+        // A failed share-outbox journal must not block the local wipe (U9: Leave never depends on anything but this phone). The wipe's
+        // own phase 1 publishes the tombstone to both App Groups first and fails the whole wipe if it cannot, so nothing is
+        // reported removed without a durable tombstone.
+        var journaled = beforeWorkspaceRemoval?(workspaceID) != false
         let canDeregister = ws.info.scopes.contains(.operate)
         await waitForLifecycle()
         await ws.stop()
@@ -561,13 +632,18 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             // Never report success on a failed wipe: the workspace stays listed, stopped and marked "removal incomplete"; Leave again
             // resumes the persisted wipe (LocalWipe.resumePendingWipes). A half-wiped workspace is not restarted.
             transition(workspaceID, to: .removalIncomplete)
-            return LeaveReport(workspaceName: name, server: .pendingOffline, incomplete: true)
+            return LeaveReport(workspaceName: name, server: .pendingOffline, incomplete: true, failure: "\(error)")
         }
+        PresentationGate.block(ws.workspaceID.hex)
+        // The wipe is durable; retry the share-outbox journal now and say so if it is still unfinished (publishTargets keeps retrying).
+        if !journaled { journaled = beforeWorkspaceRemoval?(workspaceID) != false }
+        if !journaled { shareStatus = "Share cleanup for a removed workspace is unfinished. It will be retried." }
         transition(workspaceID, to: .removed)
         live.removeAll { $0.info.id == workspaceID }
         heldDropItems.removeAll { $0.workspaceID == workspaceID }
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
         let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
+        if server == .pendingOffline { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
         return LeaveReport(workspaceName: name, server: server)
     }
 
@@ -585,12 +661,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let old { failedReset = old }
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
+        PresentationGate.blockAll(workspaces.map { $0.workspaceID.hex })
         runtime = nil; live = []; heldDropItems = []; pendingDecisions = []; submitted = [:]
         reconcileTasks.values.forEach { $0.cancel() }
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
         demoLockRelease?.cancel()
         resetFlags.set(true, forKey: Keys.resetPending)
+        pendingServerCleanups = cleanupStore.clear()   // the device identity goes with it; nothing is left to clean up from here
         isDemo = false
         deviceLabel = thenDemo ? deviceLabel : "iPhone"
         if !options.uiTesting { UserDefaults.standard.set(false, forKey: Keys.demo) }

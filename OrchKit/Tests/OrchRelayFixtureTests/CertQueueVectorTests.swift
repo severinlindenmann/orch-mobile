@@ -9,7 +9,7 @@ import OrchTestVectors
 /// (challenge, rejection, certificate completion): same result, same post-state, byte for byte.
 @Suite struct CertQueueVectorTests {
     static let p3: [JSONValue] = {
-        let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max)
+        let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
         return root?.object?["suites"]?.object?["2"]?.object?["p3"]?.object?["cases"]?.array ?? []
     }()
 
@@ -32,9 +32,26 @@ import OrchTestVectors
         }
     }
 
+    static let binding: [JSONValue] = {
+        let root = try? StrictJSON.parse(Vectors.data, maxBytes: .max, maxDepth: 64)
+        return root?.object?["suites"]?.object?["2"]?.object?["cert_binding"]?.object?["relay"]?.array ?? []
+    }()
+
     @Test func requestAdmission() throws {
-        let cases = Self.p3.filter { $0.object?["op"]?.string == "request" }
-        #expect(cases.count == 13)
+        try admit(Self.p3.filter { $0.object?["op"]?.string == "request" }, count: 13)
+    }
+
+    /// G3b (P3-D28) cert_binding.relay: the clear attempt binding's shape at admission, and a posted challenge or rejection naming
+    /// exactly the stored request's binding (403 not_for_this_device) and expiry (400 malformed).
+    @Test func attemptBinding() throws {
+        #expect(Self.binding.count == 30)
+        try admit(Self.binding.filter { $0.object?["op"]?.string == "request" }, count: 7)
+        let seen = try transitions(Self.binding.filter { $0.object?["op"]?.string == "queue" })
+        #expect(seen == ["challenge": 8, "rejection": 15], "\(seen)")
+    }
+
+    func admit(_ cases: [JSONValue], count: Int) throws {
+        #expect(cases.count == count)
         for c in cases {
             let name = c.object?["name"]?.string ?? "?", a = try #require(c.object?["args"])
             var records: [ID16: CertQueue.Record] = [:]
@@ -55,6 +72,11 @@ import OrchTestVectors
     @Test func queueTransitions() throws {
         let cases = Self.p3.filter { $0.object?["op"]?.string == "queue" }
         #expect(cases.count == 27)
+        let seen = try transitions(cases)
+        #expect(seen == ["challenge": 11, "rejection": 8, "certificate": 8], "\(seen)")
+    }
+
+    func transitions(_ cases: [JSONValue]) throws -> [String: Int] {
         var seen: [String: Int] = [:]
         for c in cases {
             let name = c.object?["name"]?.string ?? "?", a = try #require(c.object?["args"]?.object)
@@ -73,6 +95,6 @@ import OrchTestVectors
             #expect(Self.result(out) == expect["result"], "\(name): \(out)")
             #expect(r == (try Self.record(try #require(expect["state"]))), "\(name) post-state")
         }
-        #expect(seen == ["challenge": 11, "rejection": 8, "certificate": 8], "\(seen)")
+        return seen
     }
 }

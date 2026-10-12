@@ -37,6 +37,8 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var primaryLabel: String
     var lifecycle: WorkspaceLifecycle = .live
     var notificationsOn: Bool
+    /// Q10 key alarm (wk_commit conflict or mismatch): blocks answering and sending until the workspace is removed and paired again.
+    var keyAlarm: String?
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
     var displayName: String { SafeText.inline(name, limit: 40) }
@@ -288,8 +290,12 @@ enum PairingAlarm: Hashable, Sendable {
 
 /// Fixed app text only: the host never supplies refusal wording.
 enum PairingRefusal: String, Hashable, Sendable {
+    /// An unattributed refusal (protocol-v2 section 8.3, G3b): "The pairing was refused", naming nobody.
+    case refused
     case rejectedOnHost, rejectedOnPrimary, linkUsed, otherPerson, invalidLink, relayNotConnected, timedOut
     case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
+    /// Fresh keys could not be drawn for this attempt (G3b): another pairing may use the current ones, or that could not be confirmed.
+    case keysInUse
 }
 
 enum PairingState: Hashable, Sendable {
@@ -303,8 +309,9 @@ enum PairingState: Hashable, Sendable {
     case expired
     case alarm(PairingAlarm)
     case refused(PairingRefusal)
-    /// The primary device declined to sign this iPhone (a PK-signed rejection the client verified, never the host's word alone).
-    case denied
+    /// "Denied by the owner": the owner's PK-signed rejection of exactly this attempt verified (G3b). `owner` is a short tag of the
+    /// pinned owner's person id (from the link's pk_pin), never the host-supplied primary label.
+    case denied(owner: String)
 }
 
 enum PairingScenario: String, CaseIterable, Hashable, Sendable {
@@ -336,6 +343,16 @@ struct LeaveReport: Hashable, Sendable {
     let server: LeaveServerStatus
     /// The local wipe did not finish: the workspace is still listed and nothing is reported as removed. Leave can be tried again.
     var incomplete = false
+    /// Why the local wipe failed (only with `incomplete`), shown so a genuine failure is diagnosable.
+    var failure: String?
+}
+
+/// Server-side cleanup of a workspace that is already gone from this iPhone (U9). Holds no key material.
+struct PendingServerCleanup: Codable, Hashable, Sendable, Identifiable {
+    var id: String { "\(ws)/\(generation)" }
+    let ws: String
+    let generation: Int64
+    let since: Date
 }
 
 enum NotificationStatus: String, Hashable, Sendable { case notAsked, allowed, denied }

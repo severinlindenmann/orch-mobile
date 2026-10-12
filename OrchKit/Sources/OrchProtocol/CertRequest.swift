@@ -10,17 +10,23 @@ public struct CertRequestInner: Equatable, Sendable {
     public let label: String
     public let scopesMax: [String]
     public let offerID: ID16
+    /// The device's pairing-attempt nonce from its pair request, copied unchanged (32 lower-case hex; G3b P3-D28).
+    public let attempt: String
+    /// `dk_hash` of both keys (section 8.4).
+    public var dkHash: Data { Identifiers.dkHash(sig: dkSig, kx: dkKx) }
 
-    public init(deviceID: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, label: String, scopesMax: [String], offerID: ID16) {
+    public init(deviceID: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, label: String, scopesMax: [String], offerID: ID16, attempt: String) {
         self.deviceID = deviceID; self.dkSig = dkSig; self.dkKx = dkKx; self.label = label; self.scopesMax = scopesMax; self.offerID = offerID
+        self.attempt = attempt
     }
 
-    static let fields: Set<String> = ["device_id", "dk_sig_pub", "dk_kx_pub", "label", "scopes_max", "offer_id"]
+    static let fields: Set<String> = ["device_id", "dk_sig_pub", "dk_kx_pub", "label", "scopes_max", "offer_id", "attempt"]
     static let maxBytes = 4096
 
     var json: JSONValue {
         ["device_id": .string(deviceID.hex), "dk_sig_pub": .string(B64U.encode(dkSig.x963)), "dk_kx_pub": .string(B64U.encode(dkKx.x963)),
-         "label": .string(label), "scopes_max": .array(scopesMax.map { .string($0) }), "offer_id": .string(offerID.hex)]
+         "label": .string(label), "scopes_max": .array(scopesMax.map { .string($0) }), "offer_id": .string(offerID.hex),
+         "attempt": .string(attempt)]
     }
 
     /// Exact field set, valid keys, `device_id` derived from `dk_sig_pub`, valid scopes: otherwise `malformed`.
@@ -30,9 +36,9 @@ public struct CertRequestInner: Equatable, Sendable {
               let sig = o.b64u("dk_sig_pub", length: Suite2.publicKeyLength).flatMap({ try? SigningPublicKey(x963: $0) }),
               let kx = o.b64u("dk_kx_pub", length: Suite2.publicKeyLength).flatMap({ try? AgreementPublicKey(x963: $0) }),
               let raw = o["scopes_max"]?.array, case let scopes = raw.compactMap(\.string), scopes.count == raw.count,
-              Scopes.isValid(scopes), id == Identifiers.deviceID(sig)
+              Scopes.isValid(scopes), id == Identifiers.deviceID(sig), let attempt = o["attempt"]?.string, Identifiers.isAttempt(attempt)
         else { throw Refusal.malformed }
-        return CertRequestInner(deviceID: id, dkSig: sig, dkKx: kx, label: label, scopesMax: scopes, offerID: offer)
+        return CertRequestInner(deviceID: id, dkSig: sig, dkKx: kx, label: label, scopesMax: scopes, offerID: offer, attempt: attempt)
     }
 }
 
@@ -80,7 +86,8 @@ public struct PrimaryLedger: Equatable, Sendable {
         guard !rejected.contains(requestID) else { throw Refusal.rejected }
         let o: [String: JSONValue] = [
             "v": 2, "suite": 2, "kind": "cert_challenge", "request_id": .string(requestID.hex), "workspace_id": .string(a.workspace.hex),
-            "person_id": .string(a.person.hex), "device_id": .string(a.inner.deviceID.hex),
+            "person_id": .string(a.person.hex), "offer_id": .string(a.inner.offerID.hex), "attempt": .string(a.inner.attempt),
+            "device_id": .string(a.inner.deviceID.hex),
             "dk_sig_pub": .string(B64U.encode(a.inner.dkSig.x963)), "dk_kx_pub": .string(B64U.encode(a.inner.dkKx.x963)),
             "primary_nonce": .string(B64U.encode(primaryNonce)), "expires_ms": .int(a.expiresMs)]
         let s = try CertChallenge.sign(o, primary: primary)
@@ -121,7 +128,8 @@ public struct PrimaryLedger: Equatable, Sendable {
         guard let a = accepted[requestID] else { throw Refusal.unknownRequest }
         guard !signed.contains(requestID) else { throw Refusal.alreadySigned }
         guard Identifiers.personID(primary.publicKey) == a.person else { throw Refusal.otherPerson }
-        let s = try CertRejection.sign(requestID: requestID, workspace: a.workspace, person: a.person, primary: primary)
+        let s = try CertRejection.sign(requestID: requestID, workspace: a.workspace, person: a.person, offer: a.inner.offerID, attempt: a.inner.attempt,
+                                       device: a.inner.deviceID, dkHash: a.inner.dkHash, expiresMs: a.expiresMs, primary: primary)
         reject(requestID: requestID)
         return s
     }
@@ -135,7 +143,7 @@ public struct PrimaryLedger: Equatable, Sendable {
 
 public enum CertRequest {
     static let fields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "primary_device_id",
-                                      "created_ms", "expires_ms", "sealed"]
+                                      "offer_id", "attempt", "device_id", "dk_hash", "created_ms", "expires_ms", "sealed"]
     public static let lifetimeMs: Int64 = 600_000
     public static let maxSealedBytes = 8192
 
@@ -156,7 +164,9 @@ public enum CertRequest {
         do { o = try SignedObject.parse(signed).verify(kind: .certRequest, key: card.wsk) } catch { throw Refusal.badSignature }
         guard o.hasExactly(fields), let reqID = o.id16("request_id"), let ws = o.id16("workspace_id"), let person = o.id16("person_id"),
               let primary = o.id16("primary_device_id"), let created = o["created_ms"]?.int, let expires = o["expires_ms"]?.int,
-              let sealed = o.b64u("sealed"), sealed.count <= maxSealedBytes else { throw Refusal.malformed }
+              let sealed = o.b64u("sealed"), sealed.count <= maxSealedBytes,
+              let clearOffer = o.id16("offer_id"), let clearAttempt = o["attempt"]?.string, Identifiers.isAttempt(clearAttempt),
+              let clearDevice = o.id16("device_id"), let clearHash = o.b64u("dk_hash", length: 32) else { throw Refusal.malformed }
         guard ws == card.workspace else { throw Refusal.badSignature }
         guard primary == me, person == myPerson else { throw Refusal.notForThisDevice }
         let lower = saturatingAdd(created, -Suite2.skewMs)
@@ -168,6 +178,9 @@ public enum CertRequest {
         do { plain = try Sealing.open(with: myKey, recipientID: me, purpose: .certRequest, object: reqID, epoch: 0, sealed: sealed) }
         catch { throw Refusal.malformed }
         let inner = try CertRequestInner.parse(plain)
+        // step 2.7 (G3b): the clear attempt binding the relay sees must be exactly the sealed inner's
+        guard clearOffer == inner.offerID, clearAttempt.utf8.elementsEqual(inner.attempt.utf8), clearDevice == inner.deviceID,
+              clearHash == inner.dkHash else { throw Refusal.malformed }
         guard !inner.scopesMax[0].bytesHasPrefix("drop:") else { throw Refusal.scopeExceeded }   // agents enrol through section 6.4 only
         ledger.record(.init(workspace: ws, person: person, expiresMs: expires, inner: inner), requestID: reqID)
         return Accepted(requestID: reqID, inner: inner, clientHostedWarning: card.delegation.clientHosted)
@@ -180,56 +193,123 @@ public enum CertRequest {
                                       plaintext: canonicalJSON(inner.json))
         return try SignedObject.sign([
             "v": 2, "suite": 2, "kind": "cert_request", "request_id": .string(requestID.hex), "workspace_id": .string(workspace.hex),
-            "person_id": .string(person.hex), "primary_device_id": .string(primary.hex), "created_ms": .int(createdMs),
+            "person_id": .string(person.hex), "primary_device_id": .string(primary.hex), "offer_id": .string(inner.offerID.hex),
+            "attempt": .string(inner.attempt), "device_id": .string(inner.deviceID.hex), "dk_hash": .string(B64U.encode(inner.dkHash)),
+            "created_ms": .int(createdMs),
             "expires_ms": .int(saturatingAdd(createdMs, lifetimeMs)), "sealed": .string(B64U.encode(sealed))],
                                      kind: .certRequest, signer: wsk)
     }
 }
 
-/// Why a phone dropped the primary's challenge (section 8.4 step 5). `notMyKey` raises the alarm.
+/// Why a phone dropped the primary's challenge (section 8.4 step 5, G3b order). `notMyKey` raises the alarm.
 public enum CertChallengeDrop: String, Error, Sendable, Equatable {
     case challengeSignature = "challenge_signature"
     case notForThisWorkspace = "not_for_this_workspace"
     case notMyKey = "not_my_key"
+    case staleAttempt = "stale_attempt"
+    case notForThisPairing = "not_for_this_pairing"
     case challengeExpired = "challenge_expired"
     public var raisesAlarm: Bool { self == .notMyKey }
 }
 
+/// What the phone knows of its own pairing attempt when it judges a PK-signed object (G3b, P3-D28): the link's workspace and
+/// offer, its current device and keys, its attempt nonce, the `(device_id, dk_hash)` of its own earlier attempts (kept at least
+/// 10 minutes), and the `request_id` of a challenge it already accepted in this attempt.
+public struct PairingAttemptContext: Sendable, Equatable {
+    public var workspace: ID16
+    public var offer: ID16
+    public var device: ID16
+    public var dkSig: SigningPublicKey
+    public var dkKx: AgreementPublicKey
+    public var attempt: String
+    public var earlierAttempts: [EarlierAttempt]
+    public var acceptedRequestID: ID16?
+
+    public struct EarlierAttempt: Sendable, Equatable, Hashable {
+        public let deviceID: ID16
+        public let dkHash: Data
+        public init(deviceID: ID16, dkHash: Data) { self.deviceID = deviceID; self.dkHash = dkHash }
+    }
+
+    public init(workspace: ID16, offer: ID16, device: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, attempt: String,
+                earlierAttempts: [EarlierAttempt], acceptedRequestID: ID16?) {
+        self.workspace = workspace; self.offer = offer; self.device = device; self.dkSig = dkSig; self.dkKx = dkKx; self.attempt = attempt
+        self.earlierAttempts = earlierAttempts; self.acceptedRequestID = acceptedRequestID
+    }
+
+    public var dkHash: Data { Identifiers.dkHash(sig: dkSig, kx: dkKx) }
+
+    /// Step 4 of both checks when the object does not name this attempt's own device and keys: an expired object is silent
+    /// (`expired`), one naming both the device id AND the key hash of an own earlier attempt is `stale_attempt`, anything else is
+    /// foreign and raises the alarm (`not_my_key`). Both must match: an old signing key with another exchange key is foreign.
+    func foreign(device: ID16, dkHash: Data, expired: Bool, expiredDrop: Error) -> Error {
+        if expired { return expiredDrop }
+        if earlierAttempts.contains(EarlierAttempt(deviceID: device, dkHash: dkHash)) { return CertChallengeDrop.staleAttempt }
+        return CertChallengeDrop.notMyKey
+    }
+}
+
 public enum CertChallenge {
-    static let fields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "device_id", "dk_sig_pub",
-                                      "dk_kx_pub", "primary_nonce", "expires_ms"]
+    static let fields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "offer_id", "attempt", "device_id",
+                                      "dk_sig_pub", "dk_kx_pub", "primary_nonce", "expires_ms"]
 
     package static func sign(_ o: [String: JSONValue], primary: some Signer) throws -> SignedObject {
         try SignedObject.sign(o, kind: .certChallenge, signer: primary)
     }
 
-    /// What the phone checks before it shows anything. Check the link's `pk_pin` against `pk` first (the pairing
-    /// coordinator's job). Then: the signature with `pk` and the exact field set, the workspace and person, that the three
-    /// device fields are the phone's own, and that `now < expires_ms`. Returns the challenge object and `cert_code`.
-    public static func check(_ signed: JSONValue, pk: SigningPublicKey, workspace: ID16, device: ID16, dkSig: SigningPublicKey,
-                             dkKx: AgreementPublicKey, nowMs: Int64) throws -> (object: [String: JSONValue], certCode: String) {
+    /// What the phone checks before it shows anything (section 8.4 step 5, G3b order), after the coordinator checked the link's
+    /// `pk_pin` against `pk` (step 1): 2 the signature with `pk` and the exact field set (`challenge_signature`); 3 the workspace
+    /// and person (`not_for_this_workspace`); 4 the device id and both keys are this attempt's own, else expired -> silent,
+    /// own earlier attempt -> `stale_attempt`, otherwise `not_my_key` (alarm); 5 `attempt` and `offer_id` (`not_for_this_pairing`);
+    /// 6 the `request_id` of a challenge already accepted in this attempt (`not_for_this_pairing`); 7 `now < expires_ms`
+    /// (`challenge_expired`). Returns the challenge object and `cert_code`.
+    public static func check(_ signed: JSONValue, pk: SigningPublicKey, attempt c: PairingAttemptContext, nowMs: Int64) throws
+        -> (object: [String: JSONValue], certCode: String) {
         let o: [String: JSONValue]
         do { o = try SignedObject.parse(signed).verify(kind: .certChallenge, key: pk) } catch { throw CertChallengeDrop.challengeSignature }
         guard o.hasExactly(fields), o.b64u("primary_nonce", length: 32) != nil, let expires = o["expires_ms"]?.int,
-              let ws = o.id16("workspace_id"), let person = o.id16("person_id"), let dev = o.id16("device_id"),
-              let sig = o.b64u("dk_sig_pub"), let kx = o.b64u("dk_kx_pub"), o.id16("request_id") != nil
+              let ws = o.id16("workspace_id"), let person = o.id16("person_id"), let dev = o.id16("device_id"), let rid = o.id16("request_id"),
+              let offer = o.id16("offer_id"), let attempt = o["attempt"]?.string, Identifiers.isAttempt(attempt),
+              let sig = o.b64u("dk_sig_pub", length: Suite2.publicKeyLength), let kx = o.b64u("dk_kx_pub", length: Suite2.publicKeyLength)
         else { throw CertChallengeDrop.challengeSignature }
-        guard ws == workspace, person == Identifiers.personID(pk) else { throw CertChallengeDrop.notForThisWorkspace }
-        guard dev == device, sig == dkSig.x963, kx == dkKx.x963 else { throw CertChallengeDrop.notMyKey }
+        guard ws == c.workspace, person == Identifiers.personID(pk) else { throw CertChallengeDrop.notForThisWorkspace }
+        guard dev == c.device, sig == c.dkSig.x963, kx == c.dkKx.x963 else {
+            throw c.foreign(device: dev, dkHash: Identifiers.dkHash(sig: sig, kx: kx), expired: nowMs >= expires,
+                            expiredDrop: CertChallengeDrop.challengeExpired)
+        }
+        guard attempt.utf8.elementsEqual(c.attempt.utf8), offer == c.offer else { throw CertChallengeDrop.notForThisPairing }
+        if let seen = c.acceptedRequestID, seen != rid { throw CertChallengeDrop.notForThisPairing }
         guard nowMs < expires else { throw CertChallengeDrop.challengeExpired }
         return (o, try Identifiers.certCode(challengeObject: .object(o)))
     }
 }
 
-/// The primary's PK-signed rejection of a cert request (P3-D11, section 8.4):
-/// `{"o": {v, suite, kind: "cert_rejection", request_id, workspace_id, person_id}, "sig": Sign(PK, "orch/v2/sig/cert-rejection|" || cj(o))}`.
-/// Only `PK` can sign one, so neither the host nor the relay can forge "your primary said no".
-public enum CertRejection {
-    static let fields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id"]
+/// Why a phone does not attribute a `rejected` answer to the owner (section 8.3, G3b). Only `notMyKey` raises the alarm.
+public enum CertRejectionDrop: String, Error, Sendable, Equatable {
+    case notAPairingAnswer = "not_a_pairing_answer"
+    case pkPin = "pk_pin"
+    case rejectionSignature = "rejection_signature"
+    case notForThisWorkspace = "not_for_this_workspace"
+    case notMyKey = "not_my_key"
+    case staleAttempt = "stale_attempt"
+    case notForThisPairing = "not_for_this_pairing"
+    case rejectionExpired = "rejection_expired"
+    public var raisesAlarm: Bool { self == .notMyKey }
+}
 
-    package static func sign(requestID: ID16, workspace: ID16, person: ID16, primary: some Signer) throws -> SignedObject {
+/// The primary's PK-signed rejection of a cert request (P3-D11, G3b P3-D28):
+/// `{"o": {v, suite, kind: "cert_rejection", request_id, workspace_id, person_id, offer_id, attempt, device_id, dk_hash, expires_ms},
+///   "sig": Sign(PK, "orch/v2/sig/cert-rejection|" || cj(o))}`. Only `PK` can sign one, and it names one attempt of one device.
+public enum CertRejection {
+    static let fields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "offer_id", "attempt", "device_id",
+                                      "dk_hash", "expires_ms"]
+
+    package static func sign(requestID: ID16, workspace: ID16, person: ID16, offer: ID16, attempt: String, device: ID16, dkHash: Data,
+                             expiresMs: Int64, primary: some Signer) throws -> SignedObject {
         try SignedObject.sign(["v": 2, "suite": 2, "kind": "cert_rejection", "request_id": .string(requestID.hex),
-                               "workspace_id": .string(workspace.hex), "person_id": .string(person.hex)],
+                               "workspace_id": .string(workspace.hex), "person_id": .string(person.hex), "offer_id": .string(offer.hex),
+                               "attempt": .string(attempt), "device_id": .string(device.hex), "dk_hash": .string(B64U.encode(dkHash)),
+                               "expires_ms": .int(expiresMs)],
                               kind: .certRejection, signer: primary)
     }
 
@@ -237,28 +317,60 @@ public enum CertRejection {
         public let requestID: ID16
         public let workspace: ID16
         public let person: ID16
+        public let offer: ID16
+        public let attempt: String
+        public let device: ID16
+        public let dkHash: Data
+        public let expiresMs: Int64
     }
 
-    /// The signature under `pk` (`bad_signature`), then the exact field set (`malformed`). Nothing else: callers bind the
-    /// identifiers to their own context (`check(_:pk:request:)` for the relay, `CertRejectionDrop` for the phone).
+    /// The signature under `pk` (`bad_signature`), then the exact field set and field shapes (`malformed`).
     public static func verify(_ signed: JSONValue, pk: SigningPublicKey) throws -> Verified {
         let o: [String: JSONValue]
         do { o = try SignedObject.parse(signed).verify(kind: .certRejection, key: pk) }
         catch Refusal.malformed { throw Refusal.malformed }
         catch { throw Refusal.badSignature }
-        guard o.hasExactly(fields), let rid = o.id16("request_id"), let ws = o.id16("workspace_id"), let person = o.id16("person_id")
+        guard o.hasExactly(fields), let rid = o.id16("request_id"), let ws = o.id16("workspace_id"), let person = o.id16("person_id"),
+              let offer = o.id16("offer_id"), let attempt = o["attempt"]?.string, Identifiers.isAttempt(attempt),
+              let device = o.id16("device_id"), let hash = o.b64u("dk_hash", length: 32), let expires = o["expires_ms"]?.int
         else { throw Refusal.malformed }
-        return Verified(requestID: rid, workspace: ws, person: person)
+        return Verified(requestID: rid, workspace: ws, person: person, offer: offer, attempt: attempt, device: device, dkHash: hash, expiresMs: expires)
     }
 
-    /// The relay's check against the stored request object (P3-D11, vectors `p3` op `rejection`), in order: signature,
-    /// field set, `person_id` = the request's and `person_id(pk)` (`other_person`), `workspace_id` (`other_workspace`),
-    /// `request_id` (`not_for_this_device`).
+    /// The relay's check against the stored request object (P3-D11 + P3-D28), in order: signature, field set (`malformed`),
+    /// `person_id` = the request's and `person_id(pk)` (`other_person`), `workspace_id` (`other_workspace`), `request_id`
+    /// (`not_for_this_device`), the request's `expires_ms` (`malformed`), then the clear attempt binding `offer_id`, `attempt`,
+    /// `device_id`, `dk_hash` (`not_for_this_device`).
     public static func check(_ signed: JSONValue, pk: SigningPublicKey, request: [String: JSONValue]) throws -> Verified {
         let v = try verify(signed, pk: pk)
         guard v.person == Identifiers.personID(pk), v.person == request.id16("person_id") else { throw Refusal.otherPerson }
         guard v.workspace == request.id16("workspace_id") else { throw Refusal.otherWorkspace }
         guard v.requestID == request.id16("request_id") else { throw Refusal.notForThisDevice }
+        guard v.expiresMs == request["expires_ms"]?.int else { throw Refusal.malformed }
+        guard v.offer == request.id16("offer_id"), request["attempt"]?.string.map({ $0.utf8.elementsEqual(v.attempt.utf8) }) == true,
+              v.device == request.id16("device_id"), v.dkHash == request.b64u("dk_hash", length: 32) else { throw Refusal.notForThisDevice }
+        return v
+    }
+
+    /// The phone's check of a long-form `rejected` answer (section 8.3, G3b order), after the field set and `pk_pin` (step 1):
+    /// 2 signature and exact fields (`rejection_signature`); 3 workspace and person (`not_for_this_workspace`); 4 device id and
+    /// `dk_hash` are this attempt's own, else expired -> `rejection_expired`, own earlier attempt -> `stale_attempt`, otherwise
+    /// `not_my_key` (alarm); 5 attempt and offer (`not_for_this_pairing`); 6 the accepted challenge's request id
+    /// (`not_for_this_pairing`); 7 `now < expires_ms` (`rejection_expired`). Only a full pass is a denial by the owner.
+    public static func checkOnPhone(_ signed: JSONValue, pk: SigningPublicKey, attempt c: PairingAttemptContext, nowMs: Int64) throws -> Verified {
+        let v: Verified
+        do { v = try verify(signed, pk: pk) } catch { throw CertRejectionDrop.rejectionSignature }
+        guard v.workspace == c.workspace, v.person == Identifiers.personID(pk) else { throw CertRejectionDrop.notForThisWorkspace }
+        guard v.device == c.device, v.dkHash == c.dkHash else {
+            switch c.foreign(device: v.device, dkHash: v.dkHash, expired: nowMs >= v.expiresMs, expiredDrop: CertRejectionDrop.rejectionExpired) {
+            case CertChallengeDrop.staleAttempt: throw CertRejectionDrop.staleAttempt
+            case CertChallengeDrop.notMyKey: throw CertRejectionDrop.notMyKey
+            default: throw CertRejectionDrop.rejectionExpired
+            }
+        }
+        guard v.attempt.utf8.elementsEqual(c.attempt.utf8), v.offer == c.offer else { throw CertRejectionDrop.notForThisPairing }
+        if let seen = c.acceptedRequestID, seen != v.requestID { throw CertRejectionDrop.notForThisPairing }
+        guard nowMs < v.expiresMs else { throw CertRejectionDrop.rejectionExpired }
         return v
     }
 }

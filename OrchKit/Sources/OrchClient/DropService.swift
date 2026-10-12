@@ -175,7 +175,7 @@ public actor DropService {
         let raw = try await RelayClient(transport: session.cfg.transport).memberList(workspace: card.workspace, session: s)
         let list: MemberList
         do { list = try await session.acceptMemberList(raw) }
-        catch let r as Refusal where r == .staleList || r == .conflictingSnapshot || r == .badEpoch { throw DropError.rollback }
+        catch let r as Refusal where r == .staleList || r == .conflictingSnapshot || r == .badEpoch || r == .wkCommitConflict || r == .rotationRequired { throw DropError.rollback }
         guard list.workspace == card.workspace, list.members.contains(where: { $0.deviceID == session.cfg.deviceID && ($0.scopeStrings?.contains(operate ? "operate" : "look") ?? false) }) else { throw DropError.unauthorized }
         guard list.epoch >= (try await session.currentEpoch()) else { throw DropError.rollback }
         if list.epoch > (try await session.currentEpoch()) {
@@ -360,7 +360,7 @@ public actor DropService {
               Set(attachments.map(\.id)).count == attachments.count,
               attachments.reduce(0, { $0 + $1.data.count }) <= Self.maxPlaintextBytes else { throw DropError.tooLarge }
         let members = try await membership(operate: true)
-        let epoch = members.epoch, wk = try await session.dropKey(epoch)
+        let epoch = members.epoch, wk = try await session.dropSealKey(epoch)
         let now = session.cfg.wall.nowMs
         var sealed: [(String, Data)] = []
         for attachment in attachments {
@@ -403,8 +403,7 @@ public actor DropService {
         }
         let parent = document?.descriptor.version ?? 0
         guard parent < Self.maxVersions, document == nil || document?.descriptor.objectKind == "document" else { throw DropError.malformed }
-        let epoch = try await session.currentEpoch()
-        let wk = try await session.dropKey(epoch)
+        let (epoch, wk) = try await session.dropSealKey()            // head-based, as the bridge (not the lagging high-water mark)
         try await check()
         let body = try DropUpload.seal(data, metadata: DropMetadata(name: name, mime: mime, size: Int64(data.count), transcript: transcript),
             object: object, workspace: card.workspace, author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig,
@@ -601,7 +600,7 @@ public actor DropService {
                     guard try DropDescriptor.parentHash(of: parent!.raw) == descriptor.parentHash else { throw DropError.conflict }
                 }
                 guard let expiry = descriptor.expiresMs, expiry > session.cfg.wall.nowMs else { throw DropError.expired }
-                let currentKey = try await session.dropKey(members.epoch)
+                let currentKey = try await session.dropSealKey(members.epoch)
                 try await check()
                 let fresh = try DropUpload.seal(plaintext, metadata: metadata, object: object, workspace: card.workspace,
                     author: session.cfg.deviceID, authorKind: "device", signer: session.cfg.identity.sig, wxk: card.wxk,

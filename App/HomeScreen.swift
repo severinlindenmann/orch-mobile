@@ -19,7 +19,7 @@ struct HomeScreen: View {
         let initial = parsed ?? InitialRouteParser.parse(options.initialRoute, services: services)
         self.services = services
         self.options = options
-        _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0, publishDemo: options.shareDemoTargets) })
+        _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0) })
         // A deep link to a tab root (drop, settings, needs-you) is held back and applied to its tab once the tab bar exists, so the
         // screen (and e.g. a confirm alert it presents on appear) is never created twice, first on Home and then in its tab.
         let isTabRoot: Bool = switch initial.path.first { case .drop?, .settings?, .needsYou?: true; default: false }
