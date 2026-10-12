@@ -94,8 +94,26 @@ final class LiveLifecycleTests: XCTestCase {
 
     // MARK: PresentationGate
 
-    override func setUp() { PresentationGate.markRebuilt() }
-    override func tearDown() { PresentationGate.markRebuilt() }
+    override func setUp() { PresentationGate.defaults = UserDefaults(suiteName: "orch.tests.gate.\(UUID().uuidString)")!; PresentationGate.markRebuilt() }
+    override func tearDown() { PresentationGate.defaults = .standard; PresentationGate.markRebuilt() }
+
+    func testFailedBootKeepsTheGateClosedWithoutDemoUntilARealRebuild() async throws {
+        PresentationGate.requireRebuild()   // what a failed boot / incomplete reset records
+        XCTAssertTrue(PresentationGate.persistedUnrebuilt)
+        // Relaunch without Demo: no runtime is wanted, but the persisted flag keeps everything blocked.
+        PresentationGate.markNotRebuilt()
+        let services = LiveServices(options: options)
+        await services.ensurePresentationGate(intendedDemo: false)
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        // A successful rebuild from the index clears it.
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        await LiveServices(options: options, runtime: runtime).ensurePresentationGate()
+        XCTAssertFalse(PresentationGate.persistedUnrebuilt)
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        PresentationGate.markNotRebuilt()
+        await services.ensurePresentationGate(intendedDemo: false)
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+    }
 
     func testGateNotRebuiltBlocksEverything() {
         PresentationGate.markNotRebuilt()

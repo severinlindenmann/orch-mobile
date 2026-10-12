@@ -161,6 +161,14 @@ enum PresentationGate {
     /// False until a rebuild from the workspace index succeeded (or the app has no index at all). While false nothing is
     /// presented: a notification that arrives between launch and the rebuild, or after an unreadable index, is not shown.
     nonisolated(unsafe) private static var rebuilt = false
+    /// Survives relaunch: set when a boot failed or a reset is incomplete (the index could not be read), cleared ONLY by a
+    /// successful rebuild from the index. While set, nothing is presented even when no runtime is wanted.
+    nonisolated(unsafe) static var defaults: UserDefaults = .standard
+    static let unrebuiltKey = "orch.presentationGate.unrebuilt"
+    static var persistedUnrebuilt: Bool { defaults.bool(forKey: unrebuiltKey) }
+    static func requireRebuild() { defaults.set(true, forKey: unrebuiltKey); markNotRebuilt() }
+    /// No index exists to read (no runtime wanted): open the gate, unless an earlier failure still requires a real rebuild.
+    static func openWithoutIndex() { if !persistedUnrebuilt { markRebuilt() } }
     static var isRebuilt: Bool { lock.lock(); defer { lock.unlock() }; return rebuilt }
     static func markRebuilt() { lock.lock(); rebuilt = true; lock.unlock() }
     static func markNotRebuilt() { lock.lock(); rebuilt = false; lock.unlock() }
@@ -185,6 +193,7 @@ enum PresentationGate {
         let current = Dictionary(workspaces.map { ($0.ws, $0.generation) }, uniquingKeysWith: max)
         let stale = tombstones.filter { t in (current[t.ws] ?? Int64.min) <= t.generation }.map(\.ws)
         blockAll(stale)
+        defaults.removeObject(forKey: unrebuiltKey)
         markRebuilt()
     }
     static func isBlocked(thread: String, identifier: String) -> Bool {

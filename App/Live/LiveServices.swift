@@ -108,6 +108,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 resetIncomplete = false
             } catch {
                 resetIncomplete = true
+                PresentationGate.requireRebuild()
             }
         }
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
@@ -124,7 +125,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// runtime that did not start, or an unreadable index, leaves the gate closed; the next foreground retries.
     func ensurePresentationGate(intendedDemo: Bool = false) async {
         if let runtime { await runtime.rebuildPresentationGate() }
-        else if !intendedDemo { PresentationGate.markRebuilt() }
+        else if !intendedDemo { PresentationGate.openWithoutIndex() }
     }
 
     @discardableResult
@@ -153,6 +154,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         bootTask = nil
         runtime = r
         isDemo = r != nil
+        if r == nil { PresentationGate.requireRebuild() }
         if let r { r.deviceLabel = deviceLabel; await r.rebuildPresentationGate() }
         if !options.uiTesting { UserDefaults.standard.set(r != nil, forKey: Keys.demo) }
         return r
