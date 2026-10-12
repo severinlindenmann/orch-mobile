@@ -387,7 +387,7 @@ Run vectors independently on P2/P3: branch `testBridgeHostCases`, `testResulting
 Keep realm/reset, parser, custody, UI and NSE unit tests local too; they do not become server tests merely
 by changing a transport. The missing push route (Drop is faked) cannot substantiate a remote contract yet (P2/T1).
 
-Add these **provisional P3 e2e scenarios**, separate from the Demo-only iPhone session:
+Add these **provisional P3 e2e scenarios**, separate from the Demo-only iPhone session ([e2e-iphone.md](e2e-iphone.md)):
 1. HTTPS transport: bad trust/ATS failure, all redirects, oversized/chunked/error responses,
    conflicting headers, cancellation and bearer redaction; verify no cross-origin request occurs.
 2. Real host + primary + phone: fresh and existing-cert joins, reject/expiry/R1 cases, restart at
