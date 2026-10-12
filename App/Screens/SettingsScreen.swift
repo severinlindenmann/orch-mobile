@@ -96,6 +96,8 @@ struct SettingsScreen: View {
             }
             Button("Send a demo question notification") { Task { await model.demoSendNotification() } }
                 .accessibilityIdentifier("demo.sendNotification")
+            Text("Answer it in orch — the notification then changes to “Answered on …”.").font(OF.meta).foregroundStyle(OC.textMuted)
+                .accessibilityIdentifier("demo.sendNotification.hint")
             if let result = model.demoPushResult {
                 Text(verbatim: result).font(OF.meta).foregroundStyle(OC.textMuted)
                     .accessibilityIdentifier("demo.sendNotification.result")

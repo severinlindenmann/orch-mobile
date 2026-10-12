@@ -251,8 +251,38 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func snapshotApplied(_ ws: LiveWorkspace) {
+        reconcileNotifications()
         Task {
             if let ms = await ws.api.verifiedReceiptMs, let runtime { lastChecked = runtime.date(forMs: ms) } else { lastChecked = Date() }
+        }
+    }
+
+    /// The notification centre the app replaces/removes through (a recorder in tests).
+    @ObservationIgnored var notificationCenter: any NotificationCentering = UNNotificationCentering()
+    /// Tests answer the permission question without the OS.
+    @ObservationIgnored var notificationPermissionOverride: (() async -> NotificationStatus)?
+    @ObservationIgnored private var notificationReconcileTask: Task<Void, Never>?
+    @ObservationIgnored private var notificationReconcileDirty = false
+
+    /// Replace-on-closed and reconcile-on-open. For every question this app knows is closed, a delivered (or scheduled) notification
+    /// for it becomes "Answered on <device>" under the SAME identifier. Local Demo notifications never reach the notification
+    /// extension, and a real push can arrive before the app learns the question closed, so the app does this itself on every
+    /// applied snapshot and on foreground. Serialised; a stalled notification daemon only stalls this task.
+    func reconcileNotifications() {
+        if notificationReconcileTask != nil { notificationReconcileDirty = true; return }
+        notificationReconcileTask = Task { [weak self] in
+            while let self {
+                self.notificationReconcileDirty = false
+                var closed: [String: QuestionClosure] = [:]
+                for ws in self.live where ws.usable {
+                    for q in ws.answered {
+                        closed["\(ws.workspaceID.hex)/\(q.id)"] = QuestionClosure(workspaceName: ws.info.name, deviceLabel: q.resolution?.byDeviceLabel ?? "")
+                    }
+                }
+                await NotificationReconciler.reconcile(center: self.notificationCenter, closed: closed)
+                if !self.notificationReconcileDirty { break }
+            }
+            self?.notificationReconcileTask = nil
         }
     }
 
@@ -288,6 +318,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                     await ws.api.refreshViews()
                     guard !Task.isCancelled, let self, self.canUse(ws.info.id) else { return }
                     await self.refreshPending(reconcile: true)
+                    self.reconcileNotifications()
                 }
             }
         }
@@ -545,6 +576,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Asks the system once (never at launch) and waits for the answer.
     @discardableResult
     private func ensureNotificationPermission() async -> NotificationStatus {
+        if let notificationPermissionOverride { return await notificationPermissionOverride() }
         let state = await PushPermission.requestIfNeeded()
         notificationStatus = map(state)
         if !isDemo, notificationStatus == .allowed { PushPermission.registerForAPNs() }
@@ -578,9 +610,19 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             demoPushResult = "Notifications are off for orch. Turn them on in iOS Settings, then try again."
             return
         }
+        // The notification must belong to a real open question, or nothing could ever replace it.
+        var target = ws.waiting.first?.id
+        if target == nil {
+            demoPushResult = "Asking a Demo question…"
+            guard let asked = await runtime.askDemoQuestion(workspace: ws.workspaceID) else {
+                demoPushResult = "The Demo question could not be created."; return
+            }
+            target = asked.hex
+            Task { await ws.refresh() }      // the new question appears in the app; never awaited here
+        }
         demoPushResult = "Sending…"
         let result = await runtime.simulatePush(workspace: ws.workspaceID, name: ws.info.name, generation: ws.generation,
-                                                label: "Demo: a question is waiting", delay: delay)
+                                                label: "Demo: a question is waiting", questionID: target, delay: delay)
         guard let result else { demoPushResult = "The Demo push could not be sealed."; return }
         if let failure = UNUserNotificationScheduler.lastError.current {
             demoPushResult = "iOS refused the notification: \(failure)"

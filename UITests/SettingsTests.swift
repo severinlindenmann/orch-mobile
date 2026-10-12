@@ -80,6 +80,8 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 90))
         send.tap()
         let result = app.el("demo.sendNotification.result")
+        var scrolls = 0
+        while !result.exists && scrolls < 4 { app.swipeUp(); scrolls += 1 }
         XCTAssertTrue(result.waitForExistence(timeout: 30))
         let settled = NSPredicate(format: "label CONTAINS 'scheduled' OR label CONTAINS 'iOS Settings'")
         expectation(for: settled, evaluatedWith: result)

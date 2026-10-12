@@ -82,11 +82,7 @@ public struct UNUserNotificationScheduler: LocalNotificationScheduling {
         await schedule(p, identifier: identifier, delay: 1)
     }
     public func schedule(_ p: PushPresentation, identifier: String, delay: TimeInterval) async {
-        let c = UNMutableNotificationContent()
-        c.title = p.title; c.body = p.body
-        if p.simulated { c.subtitle = PushSimulator.label; c.userInfo = ["orch_simulated": true] }
-        if let t = p.threadID { c.threadIdentifier = t }
-        if p.sound { c.sound = .default }
+        let c = p.notificationContent()
         let req = UNNotificationRequest(identifier: identifier, content: c, trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false))
         // Completion-handler API (Xcode 16.4); a refusal is reported, not swallowed.
         let error: String? = await withCheckedContinuation { c in
