@@ -61,7 +61,7 @@ struct ReplayPerWorkspaceTests {
         #expect(r.maxShownTs(for: ID16.random()) == Int64.min)
     }
 
-    @Test func testPushReplayMigrationAndWorkspaceWipe() throws {
+    @Test func testPushReplayMigrationAndWorkspaceWipe() async throws {
         // Legacy global table: A's retained entries, B's retained entry, C nothing. The legacy global mark is not an input.
         let legacy: [PushProcessor.ReplayState.LegacyEntry] = [
             .init(workspace: a.id, id: "q1", tsMs: nowMs - 1000), .init(workspace: a.id, id: "q0", tsMs: nowMs - 2000),
@@ -85,14 +85,10 @@ struct ReplayPerWorkspaceTests {
         try store.transact(workspace: a.id, generation: 1, nowMs: nowMs) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 5)) }
         try store.transact(workspace: b.id, generation: 1, nowMs: nowMs) { _ in ((), PushProcessor.WorkspaceReplay().recordingForTest("q", 5)) }
         let ws = a.id.hex
-        let done = Task { () -> Void in
-            let idx = try await WorkspaceIndex(layout: layout)
-            try await idx.addWorkspace(ws: ws, generation: 1)
-            try await LocalWipe(index: idx).wipe(ws: ws, generation: 1)
-        }
-        let sem = DispatchSemaphore(value: 0)
-        Task { _ = try? await done.value; sem.signal() }
-        sem.wait()
+        // Awaited, never a semaphore: blocking a cooperative-pool thread on work that needs the pool deadlocked CI's 3-core runner.
+        let idx = try await WorkspaceIndex(layout: layout)
+        try await idx.addWorkspace(ws: ws, generation: 1)
+        try await LocalWipe(index: idx).wipe(ws: ws, generation: 1)
         #expect(try store.load(workspace: a.id, generation: 1) == nil, "wipe must remove A's replay state")
         #expect(try store.load(workspace: b.id, generation: 1) != nil, "B's state survives A's wipe")
     }
