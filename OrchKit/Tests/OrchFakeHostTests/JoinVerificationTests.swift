@@ -15,7 +15,14 @@ import OrchStore
     struct Fetched {
         let card: JSONValue, list: JSONValue, grants: [JSONValue], wrap: HostAPI.CardKey
         let h: PairHarness
-        var approved: PairingRecord.Approved { .init(scopes: ["look", "decide"], cert: .null, epoch: 1) }
+        /// The honest anchor: the fetched list's epoch and list_seq, card_seq 1, the approved scopes.
+        var anchor: JoinAnchor {
+            let o = list.object?["o"]?.object
+            return JoinAnchor(epoch: UInt32(o?["epoch"]?.int ?? 1), listSeq: o?["list_seq"]?.int ?? 1, cardSeq: 1, scopes: ["look", "decide"], baseline: nil)
+        }
+        var approved: PairingRecord.Approved { .init(cert: .null, anchor: anchor) }
+        func approved(_ edit: (inout JoinAnchor) -> Void) -> PairingRecord.Approved { var a = anchor; edit(&a); return .init(cert: .null, anchor: a) }
+        var anchorSeq: Int64 { anchor.listSeq }
 
         func verify(card: JSONValue? = nil, list: JSONValue? = nil, grants: [JSONValue]? = nil, wrap: HostAPI.CardKey? = nil,
                     origin: String = DemoRelay.origin, approved: PairingRecord.Approved? = nil, pk: SigningPublicKey? = nil, wsk: SigningPublicKey? = nil,
@@ -108,11 +115,15 @@ import OrchStore
         // the joined scopes are exactly the approved ones: nothing in the card or CK widens them
         let profile = try #require(try await h.env.index.profile(ws: h.host.workspace.hex))
         #expect(profile.scopes == ["look", "decide"])
-        // a list that gives the device more than was approved fails the join
-        let wider = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide", "operate"])], epoch: 1, listSeq: 9)
-        #expect(failure(f) { try f.verify(list: wider) } == "JoinFailure(reason: \"member_scopes\")")
-        let narrower = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look"])], epoch: 1, listSeq: 9)
-        #expect(failure(f) { try f.verify(list: narrower) } == "JoinFailure(reason: \"member_scopes\")")
+        // a list at the anchor's list_seq that gives the device other scopes than approved: scopes_mismatch (G3b, retried)
+        let mismatch = "\(JoinAnchor.Refusal.scopesMismatch)"
+        let wider = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide", "operate"])], epoch: 1, listSeq: f.anchorSeq)
+        #expect(failure(f) { try f.verify(list: wider) } == mismatch)
+        let narrower = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look"])], epoch: 1, listSeq: f.anchorSeq)
+        #expect(failure(f) { try f.verify(list: narrower) } == mismatch)
+        // above the anchor the newer WSK-signed list's scopes are authoritative (an owner's change after approval)
+        let later = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look"])], epoch: 1, listSeq: f.anchorSeq + 1)
+        #expect(try f.verify(list: later).scopes == ["look"])
         // end to end with a host that lists more than it approved
         // (approved: look only, within the certificate's look+decide; the list says look+decide)
         let g = try await PairHarness.make(.firstTime)
@@ -121,10 +132,12 @@ import OrchStore
         try await g.hostApproves(scopes: ["look"])
         _ = try await g.drive(until: isComparingPrimary)
         try await g.primaryApproves()
-        let endState = try await g.drive(until: { $0.isTerminal })
-        #expect(endState == .failed(.verification(reason: "member_scopes")))
+        let endState = try await g.drive(until: { $0.isTerminal || $0 == .failed(.joiningTimedOut) })
+        #expect(endState == .failed(.joiningTimedOut))                // scopes_mismatch at the anchor: retried, never installed
         let installed = try await g.env.index.workspaces()
-        #expect(installed.isEmpty && g.vaultItems.isEmpty)
+        #expect(installed.isEmpty && g.vaultItems.map(\.purpose) == ["pairing"])          // retryable: the pending record only
+        await g.coordinator.cancel()
+        #expect(g.vaultItems.isEmpty)
     }
 
     @Test func testCardOriginMatchesLink() async throws {
@@ -156,21 +169,23 @@ import OrchStore
         let f = try await joined(h)
         // this device must be in the list, with exactly the approved scopes
         let without = try await h.host.memberList([(h.primary.deviceID, World.all)], epoch: 1, listSeq: 9)
-        #expect(failure(f) { try f.verify(list: without) } == "JoinFailure(reason: \"member_scopes\")")
+        #expect(failure(f) { try f.verify(list: without) } == "\(JoinAnchor.Refusal.notAMember)")
         // P3-D6: this device listed under another person, a listed person without a member device, or a list without an owner device
         let stranger = ID16.random()
         let asOther = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 1, listSeq: 9,
                                                   persons: [stranger], personOf: [h.phoneID: stranger])
-        #expect(failure(f) { try f.verify(list: asOther) } == "JoinFailure(reason: \"member_scopes\")")
+        #expect(failure(f) { try f.verify(list: asOther) } == "JoinFailure(reason: \"member_person\")")
         let victim = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 1, listSeq: 9,
                                                  persons: [stranger])
         #expect(failure(f) { try f.verify(list: victim) } == "JoinFailure(reason: \"member_persons\")")
         let noOwner = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 1, listSeq: 9,
                                                   persons: [stranger], personOf: [h.primary.deviceID: stranger, h.phoneID: stranger])
         #expect(failure(f) { try f.verify(list: noOwner) } == "JoinFailure(reason: \"member_persons\")")
-        // the list epoch is at least the approved epoch, and the installed grant is the list epoch
-        let approvedLater = PairingRecord.Approved(scopes: ["look", "decide"], cert: .null, epoch: 2)
-        #expect(failure(f) { try f.verify(approved: approvedLater) } == "JoinFailure(reason: \"member_epoch\")")
+        // the list is at or above the anchor (epoch, list_seq), the card at or above its card_seq; the installed grant is the list epoch
+        let below = "\(JoinAnchor.Refusal.belowAnchor)"
+        #expect(failure(f) { try f.verify(approved: f.approved { $0.epoch = 2 }) } == below)
+        #expect(failure(f) { try f.verify(approved: f.approved { $0.listSeq += 1 }) } == below)
+        #expect(failure(f) { try f.verify(approved: f.approved { $0.cardSeq = 2 }) } == below)
         let epoch2 = try await h.host.memberList([(h.primary.deviceID, World.all), (h.phoneID, ["look", "decide"])], epoch: 2, listSeq: 9)
         #expect(failure(f) { try f.verify(list: epoch2) } == "pending")                    // no grant for epoch 2 yet: stays joining
         let g2 = try await h.host.grant(for: DemoKeys(h.env.device.publicKeys), epoch: 2)
@@ -197,9 +212,11 @@ import OrchStore
         #expect(o.vaultItems.isEmpty)
         let e = try await PairHarness.make(.firstTime)
         await e.host.setHostile { $0.approvedEpoch = 5 }
-        #expect(try await e.completeFirstTime() == .failed(.verification(reason: "member_epoch")))
+        #expect(try await e.completeFirstTime() == .failed(.joiningTimedOut))      // below_anchor: retried, never installed
         let none = try await e.env.index.workspaces()
-        #expect(none.isEmpty && e.vaultItems.isEmpty)
+        #expect(none.isEmpty && e.vaultItems.map(\.purpose) == ["pairing"])
+        await e.coordinator.cancel()
+        #expect(e.vaultItems.isEmpty)
     }
 
     @Test func testJoinCommitsOneWorkspaceAndEveryPieceOrNone() async throws {

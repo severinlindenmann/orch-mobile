@@ -70,6 +70,7 @@ import Testing
             "h_pin_workspace": Label.hPinWorkspace,
             "h_sas": Label.hSAS,
             "h_sas_cert": Label.hSASCert,
+            "h_dk_hash": Label.hDKHash,
             "h_dek_commit": Label.hDEKCommit,
             "h_card_key_commit": Label.hCardKeyCommit,
             "h_wk_commit": Label.hWKCommit,
@@ -99,7 +100,7 @@ import Testing
                    Label.sigCertRequest, Label.sigEnrollRequest, Label.sigDropObject, Label.sigDropClaim, Label.sigWSEnvelope,
                    Label.sigWSCosign, Label.sigWebAuthnBind, Label.sigRelayAuth, Label.sigPublish,
                    Label.aadSeal, Label.aadPush, Label.aadWrap, Label.aadCard, Label.aadLabel, Label.aadDropMeta,
-                   Label.hDeviceID, Label.hPersonID, Label.hPinPerson, Label.hPinWorkspace, Label.hSAS, Label.hSASCert,
+                   Label.hDeviceID, Label.hPersonID, Label.hPinPerson, Label.hPinWorkspace, Label.hSAS, Label.hSASCert, Label.hDKHash,
                    Label.hDEKCommit, Label.hCardKeyCommit, Label.hDropParent, Label.hWSEnvelope, Label.hQuestion,
                    Label.hAssert, Label.hWebAuthnReg, Label.macEnroll]
         for a in all {
@@ -455,7 +456,8 @@ import Testing
     /// file gains a group, and pins the case counts the gates assert.
     @Test func everyGroupIsAccountedFor() {
         let run: Set<String> = ["keys", "ids", "sign", "hkdf", "salted_aead", "seal", "seal_open", "label_sealed", "certs", "revocations",
-                                "card", "wk_grants", "wk_commit", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop"]
+                                "card", "wk_grants", "wk_commit", "member_lists", "cert_request", "question_hash", "decisions", "push", "relay_auth", "drop",
+                                "cert_binding", "rejected_forms", "approved_anchor"]      // G3b: OrchProtocolTests, OrchFakeHostTests, OrchRelayFixtureTests
         let partial: Set<String> = ["bridge"]                       // seal, device_cases and sas run; host_cases, pair_answers, links deferred
         // member_list_snapshots run through WorkspaceSession in OrchFakeHostTests.SnapshotVectorTests; checkpoints are F1 (host/relay)
         let deferred: Set<String> = ["enroll", "webauthn", "revocation_op", "ws_envelopes", "publish", "p3", "member_list_snapshots", "checkpoints"]  // p3: relay state machine; its membership cases replay in OrchRelayFixtureTests.P3MembershipVectorTests, the rest with PR4/PR5

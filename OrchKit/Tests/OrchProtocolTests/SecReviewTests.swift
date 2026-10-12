@@ -136,28 +136,27 @@ import Testing
     // MARK: cert challenge / ledger
     @Test func challengeR1() throws {
         let pk = SoftwareSigner(), phoneSig = SoftwareSigner(), phoneKx = SoftwareKeyAgreer(), evil = SoftwareSigner()
-        let ws = ID16.random(), me = Identifiers.deviceID(phoneSig.publicKey)
+        let ws = ID16.random(), me = Identifiers.deviceID(phoneSig.publicKey), offer = ID16.random(), att = String(repeating: "d", count: 32)
+        let c = PairingAttemptContext(workspace: ws, offer: offer, device: me, dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, attempt: att,
+                                      earlierAttempts: [], acceptedRequestID: nil)
         func ch(_ sig: SigningPublicKey, _ kx: AgreementPublicKey, dev: ID16, signer: SoftwareSigner) throws -> JSONValue {
             try CertChallenge.sign(["v": 2, "suite": 2, "kind": "cert_challenge", "request_id": .string(ID16.random().hex), "workspace_id": .string(ws.hex),
-                                    "person_id": .string(Identifiers.personID(signer.publicKey).hex), "device_id": .string(dev.hex),
+                                    "person_id": .string(Identifiers.personID(signer.publicKey).hex), "offer_id": .string(offer.hex),
+                                    "attempt": .string(att), "device_id": .string(dev.hex),
                                     "dk_sig_pub": .string(B64U.encode(sig.x963)), "dk_kx_pub": .string(B64U.encode(kx.x963)),
                                     "primary_nonce": .string(B64U.encode(Data(count: 32))), "expires_ms": 100], primary: signer).json
         }
-        _ = try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+        _ = try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, attempt: c, nowMs: 50)
         // host substitutes its own sig key, keeps the phone's id
         #expect(throws: CertChallengeDrop.notMyKey) {
-            try CertChallenge.check(try ch(evil.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+            try CertChallenge.check(try ch(evil.publicKey, phoneKx.publicKey, dev: me, signer: pk), pk: pk.publicKey, attempt: c, nowMs: 50)
         }
         #expect(throws: CertChallengeDrop.notMyKey) {
-            try CertChallenge.check(try ch(phoneSig.publicKey, SoftwareKeyAgreer().publicKey, dev: me, signer: pk), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+            try CertChallenge.check(try ch(phoneSig.publicKey, SoftwareKeyAgreer().publicKey, dev: me, signer: pk), pk: pk.publicKey, attempt: c, nowMs: 50)
         }
         // challenge signed by a different person key
         #expect(throws: CertChallengeDrop.challengeSignature) {
-            try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: evil), pk: pk.publicKey, workspace: ws, device: me,
-                                    dkSig: phoneSig.publicKey, dkKx: phoneKx.publicKey, nowMs: 50)
+            try CertChallenge.check(try ch(phoneSig.publicKey, phoneKx.publicKey, dev: me, signer: evil), pk: pk.publicKey, attempt: c, nowMs: 50)
         }
     }
 
@@ -172,7 +171,7 @@ import Testing
         func req(_ id: ID16, scopes: [String] = ["look"], now: Int64) throws -> JSONValue {
             let d = SoftwareSigner()
             let inner = CertRequestInner(deviceID: Identifiers.deviceID(d.publicKey), dkSig: d.publicKey, dkKx: SoftwareKeyAgreer().publicKey,
-                                         label: "x", scopesMax: scopes, offerID: ID16.random())
+                                         label: "x", scopesMax: scopes, offerID: ID16.random(), attempt: String(repeating: "e", count: 32))
             return try CertRequest.make(wsk: wsk, requestID: id, workspace: ws, person: person, primary: primaryID, primaryKey: primaryKx.publicKey,
                                         inner: inner, createdMs: now).json
         }

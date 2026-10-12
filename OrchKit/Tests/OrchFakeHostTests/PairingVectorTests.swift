@@ -67,57 +67,7 @@ import OrchTestVectors
 
     // MARK: pair_answers
 
-    func ctx(_ c: J) -> PairingWire.Context {
-        let x = c["ctx"]
-        return PairingWire.Context(workspace: x["workspace"].id, device: x["device"].id, offer: x["offer"].id, secret: SymmetricKey(data: x["secret"].hexData),
-                                   wskPin: x["wsk_pin"].hexData, pkPin: x["pk_pin"].hexData,
-                                   dkSig: try! SigningPublicKey(x963: B64U.decode(x["dk_sig_pub"].str)!), dkKx: try! AgreementPublicKey(x963: B64U.decode(x["dk_kx_pub"].str)!),
-                                   offsetMs: x["offset_ms"].i64)
-    }
-
-    @Test func testPairAnswerVectors() throws {
-        let cases = bridgeVectors()["pair_answers"].items
-        #expect(cases.count == 20)
-        var accepted = 0, dropped = 0, alarms = 0
-        for c in cases {
-            let name = c["name"].str, e = c["expect"]
-            let env = c["envelope"].hexData
-            let h = try Bridge.Parts(envelope: env).header
-            var pending: [ID16: Bridge.PendingRequest] = [:]
-            for (k, v) in c["ctx"]["pending"].v.object! { pending[ID16(hex: k)!] = Bridge.PendingRequest(next: UInt64(v.object!["next"]!.int!), epoch: 0) }
-            let mailbox = Bridge.MailboxPosition(id: h.rid, index: h.seq, last: h.flagSet.contains(.last), stream: false)
-            let (outcome, table) = PairingWire.check(env, context: ctx(c), pending: pending, mailbox: mailbox, nowMs: c["now_ms"].i64)
-            switch outcome {
-            case .accept(let a):
-                accepted += 1
-                #expect(e["result"].str == "accept", "\(name)")
-                #expect(B64U.encode(a.wskPub.x963) == e["wsk_pub"].str, "\(name)")
-                #expect(table[h.rid]?.next == (pending[h.rid]?.next ?? 0) + 1, "\(name)")        // resulting state: the chunk index advanced
-                switch a.body {
-                case .pending(_, let sas): #expect(e["state"].str == "pending" && sas == e["sas"].str, "\(name)")
-                case .certPending(let label, _, let ch):
-                    #expect(e["state"].str == "cert_pending" && label == e["primary_label"].str, "\(name)")
-                    #expect(ch?.certCode == e["cert_code"].string, "\(name)")
-                case .approved(let scopes, _, let cert, _, let epoch):
-                    #expect(e["state"].str == "approved" && scopes == e["scopes"].items.map(\.str) && Int64(epoch) == e["epoch"].i64, "\(name)")
-                    #expect(cert.deviceID.hex == e["device_id"].str, "\(name)")
-                case .rejected: #expect(e["state"].str == "rejected", "\(name)")
-                case .denied: Issue.record("\(name): the vectors carry no primary rejection")
-                case .expired: #expect(e["state"].str == "expired", "\(name)")
-                case .refusal(let code, _):
-                    #expect(code == e["refusal"].str, "\(name)")
-                    if let off = e["offset_ms"].int { #expect(a.offsetMs == off && !a.clockWrong, "\(name)"); #expect(table[h.rid]?.offsetAdopted == true, "\(name)") }
-                }
-            case .drop(let why, let alarm, _):
-                dropped += 1
-                #expect(e["result"].str == "drop" && e["why"].str == why, "\(name): \(why)")
-                #expect((alarm != nil) == (e["alarm"].v.bool ?? false), "\(name)")
-                if alarm != nil { alarms += 1 }
-                #expect(table == pending, "\(name)")                                               // a dropped answer changes nothing
-            }
-        }
-        #expect(accepted == 7 && dropped == 13 && alarms == 2)
-    }
+    // pair_answers run in PairingBindingVectorTests.pairAnswers (the shared answer runner, G3b context)
 
     // MARK: links
 

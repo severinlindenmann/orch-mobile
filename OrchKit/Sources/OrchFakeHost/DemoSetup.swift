@@ -41,10 +41,17 @@ public final class DemoEnvironment: Sendable {
     public let index: WorkspaceIndex
     public let relay: FakeRelay
     public let transport: InProcessRelayTransport
-    /// This iPhone's Demo keys: `Realm.demo` entries in custody, distinct from any live keys. The handles are leased to
-    /// `generation`: they stop signing when the environment is reset.
-    public let device: DeviceIdentity
-    public let deviceID: ID16
+    /// This iPhone's Demo keys as custody holds them now: `Realm.demo` entries, distinct from any live keys, leased to `generation`
+    /// (they stop signing when the environment is reset). An uncertified phone draws fresh keys for every pairing attempt (G3b), so
+    /// this is read from custody each time; while custody holds none (keys removed after a pairing ended) the last identity seen is
+    /// returned, so the Demo panels and tests keep naming the device that paired.
+    public var device: DeviceIdentity {
+        if let now = try? context.deviceIdentity(custody: custody, createIfMissing: false) { lastDevice.withLock { $0 = now }; return now }
+        return lastDevice.withLock { $0 }
+    }
+    public var deviceID: ID16 { Identifiers.deviceID(device.publicKeys.sig) }
+    let custody: any DeviceKeyCustody
+    private let lastDevice: LockedBox<DeviceIdentity>
     public let clock: any Clock<Duration>
     public let wall: any WallClock
     public let entropy: any Entropy
@@ -54,11 +61,12 @@ public final class DemoEnvironment: Sendable {
     let resetState = ResetState()
 
     init(context: RealmContext, capability: DemoCapability, layout: StoreLayout, index: WorkspaceIndex, relay: FakeRelay,
-         transport: InProcessRelayTransport, device: DeviceIdentity, clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy) {
+         transport: InProcessRelayTransport, device: DeviceIdentity, custody: any DeviceKeyCustody, clock: any Clock<Duration>, wall: any WallClock,
+         entropy: any Entropy) {
         self.context = context; self.capability = capability; self.layout = layout; self.index = index; self.relay = relay
         self.transport = transport; self.clock = clock; self.wall = wall; self.entropy = entropy
-        self.device = device        // already leased to the generation by RealmContext.deviceIdentity
-        deviceID = Identifiers.deviceID(device.publicKeys.sig)
+        self.lastDevice = LockedBox(device)        // already leased to the generation by RealmContext.deviceIdentity
+        self.custody = custody
     }
 }
 
@@ -76,7 +84,7 @@ public enum DemoSetup {
         let relay = try FakeRelay(capability: capability, context: context, clock: clock, wall: wall, entropy: entropy, faults: faults, limits: limits)
         let transport = try InProcessRelayTransport(context: context, relay: relay)
         return DemoEnvironment(context: context, capability: capability, layout: layout, index: index, relay: relay, transport: transport,
-                               device: device, clock: clock, wall: wall, entropy: entropy)
+                               device: device, custody: custody, clock: clock, wall: wall, entropy: entropy)
     }
 
     /// "Reset Demo": ends this environment's lifetime and erases the Demo realm, and only the Demo realm.
@@ -143,4 +151,12 @@ public enum DemoSetup {
         try FakeHost(capability: env.capability, context: env.context, primary: primary, name: name, clientHosted: clientHosted,
                      hostedBy: hostedBy, workspace: workspace, demoDropFixtures: demoDropFixtures, wall: env.wall, entropy: env.entropy)
     }
+}
+
+/// A value behind a lock (Sendable storage for a final class).
+final class LockedBox<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+    init(_ v: T) { value = v }
+    func withLock<R>(_ body: (inout T) -> R) -> R { lock.lock(); defer { lock.unlock() }; return body(&value) }
 }

@@ -47,9 +47,9 @@ package enum CertQueue {
     package static let retentionMs: Int64 = 60_000
     package static let maxOpenPerPerson = 64
     static let requestFields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "primary_device_id",
-                                             "created_ms", "expires_ms", "sealed"]
-    static let challengeFields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "device_id", "dk_sig_pub",
-                                               "dk_kx_pub", "primary_nonce", "expires_ms"]
+                                             "offer_id", "attempt", "device_id", "dk_hash", "created_ms", "expires_ms", "sealed"]
+    static let challengeFields: Set<String> = ["v", "suite", "kind", "request_id", "workspace_id", "person_id", "offer_id", "attempt", "device_id",
+                                               "dk_sig_pub", "dk_kx_pub", "primary_nonce", "expires_ms"]
 
     /// Expires a non-terminal record whose time has come (the transition happens on the first touch at or after `expires_ms`).
     static func age(_ r: inout Record, now: Int64) {
@@ -71,7 +71,10 @@ package enum CertQueue {
               let rid = o["request_id"]?.string.flatMap(ID16.init(hex:)), let ws = o["workspace_id"]?.string.flatMap(ID16.init(hex:)),
               let person = o["person_id"]?.string.flatMap(ID16.init(hex:)), let primary = o["primary_device_id"]?.string.flatMap(ID16.init(hex:)),
               let created = o["created_ms"]?.int, let expires = o["expires_ms"]?.int,
-              let sealed = o["sealed"]?.string.flatMap({ B64U.decode($0) }), !sealed.isEmpty, sealed.count <= CertRequest.maxSealedBytes
+              let sealed = o["sealed"]?.string.flatMap({ B64U.decode($0) }), !sealed.isEmpty, sealed.count <= CertRequest.maxSealedBytes,
+              // the clear attempt binding (P3-D28): shapes only, the relay cannot open the inner
+              o["offer_id"]?.string.flatMap(ID16.init(hex:)) != nil, o["attempt"]?.string.map(Identifiers.isAttempt) == true,
+              o["device_id"]?.string.flatMap(ID16.init(hex:)) != nil, o["dk_hash"]?.string.flatMap({ B64U.decode($0, length: 32) }) != nil
         else { return .refuse(.malformed) }
         guard person == owner else { return .refuse(.otherPerson) }
         guard ws == workspace else { return .refuse(.otherWorkspace) }
@@ -105,7 +108,15 @@ package enum CertQueue {
               o["dk_kx_pub"]?.string.flatMap({ B64U.decode($0, length: Suite2.publicKeyLength) }).flatMap({ try? AgreementPublicKey(x963: $0) }) != nil,
               o["device_id"]?.string.flatMap(ID16.init(hex:)) == Identifiers.deviceID(sig),
               o["primary_nonce"]?.string.flatMap({ B64U.decode($0, length: 32) }) != nil,
-              o["expires_ms"]?.int == r.expiresMs else { return .refuse(.malformed) }
+              o["expires_ms"]?.int == r.expiresMs,
+              let offer = o["offer_id"]?.string.flatMap(ID16.init(hex:)), let attempt = o["attempt"]?.string, Identifiers.isAttempt(attempt),
+              let kx = o["dk_kx_pub"]?.string.flatMap({ B64U.decode($0, length: Suite2.publicKeyLength) }) else { return .refuse(.malformed) }
+        // P3-D28: the challenge names exactly the request's clear attempt binding (dk_hash of its two keys)
+        let req = r.object
+        guard offer == req["offer_id"]?.string.flatMap(ID16.init(hex:)), req["attempt"]?.string.map({ $0.utf8.elementsEqual(attempt.utf8) }) == true,
+              Identifiers.deviceID(sig) == req["device_id"]?.string.flatMap(ID16.init(hex:)),
+              Identifiers.dkHash(sig: sig.x963, kx: kx) == req["dk_hash"]?.string.flatMap({ B64U.decode($0, length: 32) })
+        else { return .refuse(.notForThisDevice) }
         age(&r, now: now)
         if r.state == .expired { return .refuse(.expired) }
         if let stored = r.challenge, SignedObject.sameCanonicalObject(stored, signed) { return .ok(r.state.rawValue) }
