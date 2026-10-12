@@ -150,7 +150,7 @@ import OrchProtocol
         let rotation = Task {
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)], relay: w.relay, session: w.hostSession)
         }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        guard await eventually("a sleeper parks on the test clock", timeoutSeconds: 120, { w.clock.sleeperCount > 0 }) else { return }
         await w.host.markRevoked(w.primaryID)
         w.clock.advance(milliseconds: 1000)
         _ = try? await rotation.value
@@ -176,7 +176,7 @@ import OrchProtocol
         let rotation = Task {
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)], relay: w.relay, session: w.hostSession)
         }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        guard await eventually("a sleeper parks on the test clock", timeoutSeconds: 120, { w.clock.sleeperCount > 0 }) else { return }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.primaryID))
         w.clock.advance(milliseconds: 1000)
         await #expect(throws: ClientError.relay(RelayRefusal(status: 403, code: .revoked))) { try await rotation.value }
