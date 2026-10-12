@@ -247,7 +247,7 @@ struct TargetIndexTests {
         #expect(throws: ShareError.noWorkspaces) { try ShareTargetIndex.load(from: area) }
         // Corrupt or invalid index: unreadable.
         try Data("garbage".utf8).write(to: area.targetsURL)
-        #expect(throws: ShareError.unreadable) { try ShareTargetIndex.load(from: area) }
+        #expect(throws: ShareError.index(.decode("dataCorrupted"))) { try ShareTargetIndex.load(from: area) }
         #expect(throws: ShareError.self) { try ShareTargetIndex.publish([ShareTarget(realm: "live", ws: "../x", name: "n", hue: 0, generation: 1)], to: area) }
     }
 

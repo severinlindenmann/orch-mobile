@@ -144,6 +144,8 @@ public struct ShareArea: Sendable {
 public enum ShareError: Error, Equatable, Sendable {
     case noWorkspaces
     case unreadable
+    /// The destinations index exists (or should) but cannot be used; the reason is specific and path-free.
+    case index(ShareIndexFailure)
     case tooManyItems
     case tooLarge
     case empty
@@ -151,6 +153,66 @@ public enum ShareError: Error, Equatable, Sendable {
     case destinationRemoved
     case cancelled
     case io(String)
+}
+
+/// Why the destinations index could not be used. Every case is path-free and name-free (support evidence).
+public enum ShareIndexFailure: Error, Equatable, Sendable {
+    /// The index path was refused by the share-area containment check (path normalisation; device-only before 2026-10).
+    case outsideShareDir
+    /// open/read failed with this errno (EACCES/EPERM: sandbox or data protection; ELOOP: a link).
+    case io(Int32)
+    case notRegular
+    case tooBig
+    /// JSON decoding failed: decoding-error kind and coding path (schema keys only, never values).
+    case decode(String)
+    case version(Int)
+    /// An entry has an invalid realm or workspace id.
+    case invalidEntry
+    /// Every destination was dropped because the tombstones could not be locked or read.
+    case tombstones(String)
+
+    /// Short fixed text, e.g. "io 1 EPERM", "decode keyNotFound targets.0.hue".
+    public var code: String {
+        switch self {
+        case .outsideShareDir: "path refused"
+        case .io(let e): "io \(e) \(ShareIndexFailure.errnoName(e))"
+        case .notRegular: "not a regular file"
+        case .tooBig: "too big"
+        case .decode(let d): "decode \(d)"
+        case .version(let v): "version \(v)"
+        case .invalidEntry: "invalid entry"
+        case .tombstones(let t): "tombstones \(t)"
+        }
+    }
+
+    public static func errnoName(_ e: Int32) -> String {
+        switch e {
+        case EPERM: "EPERM"
+        case ENOENT: "ENOENT"
+        case EACCES: "EACCES"
+        case ELOOP: "ELOOP"
+        case ENOTDIR: "ENOTDIR"
+        case EISDIR: "EISDIR"
+        case EWOULDBLOCK: "EWOULDBLOCK"
+        case EIO: "EIO"
+        case EBADF: "EBADF"
+        default: "errno"
+        }
+    }
+
+    static func describe(_ error: DecodingError) -> String {
+        func at(_ kind: String, _ c: [CodingKey]) -> String {
+            let p = c.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+            return p.isEmpty ? kind : "\(kind) \(p)"
+        }
+        switch error {
+        case .keyNotFound(let key, let ctx): return at("keyNotFound", ctx.codingPath + [key])
+        case .typeMismatch(_, let ctx): return at("typeMismatch", ctx.codingPath)
+        case .valueNotFound(_, let ctx): return at("valueNotFound", ctx.codingPath)
+        case .dataCorrupted(let ctx): return at("dataCorrupted", ctx.codingPath)
+        @unknown default: return "unknown"
+        }
+    }
 }
 
 /// Limits from U11 (prototype policy, not wire law).
@@ -181,31 +243,103 @@ public struct ShareTarget: Codable, Hashable, Sendable, Identifiable {
 public enum ShareTargetIndex {
     struct File: Codable { var version: Int; var targets: [ShareTarget] }
 
-    /// App side. Replaces the whole index atomically; entries with invalid ids are refused.
-    public static func publish(_ targets: [ShareTarget], to area: ShareArea) throws {
-        for t in targets { try ShareArea.validate(realm: t.realm, ws: t.ws) }
-        try area.ensureDirectory(area.shareDir)
-        let clipped = targets.map { ShareTarget(realm: $0.realm, ws: $0.ws, name: String($0.name.prefix(80)), hue: $0.hue, generation: $0.generation) }
-        let data = try JSONEncoder().encode(File(version: 1, targets: clipped))
-        try area.writeFile(data, to: area.targetsURL)
+    /// App side. Replaces the whole index atomically; entries with invalid ids are refused. The outcome (success or a
+    /// path-free failure code) is also recorded best-effort in `index-status.json` for the on-device diagnostics.
+    public static func publish(_ targets: [ShareTarget], to area: ShareArea, now: Date = Date()) throws {
+        do {
+            for t in targets { try ShareArea.validate(realm: t.realm, ws: t.ws) }
+            try area.ensureDirectory(area.shareDir)
+            let clipped = targets.map { ShareTarget(realm: $0.realm, ws: $0.ws, name: String($0.name.prefix(80)), hue: $0.hue, generation: $0.generation) }
+            let data = try JSONEncoder().encode(File(version: 1, targets: clipped))
+            try area.writeFile(data, to: area.targetsURL)
+            PublishStatus.record(.init(at: now.timeIntervalSince1970, result: "ok", targets: targets.count), in: area)
+        } catch {
+            PublishStatus.record(.init(at: now.timeIntervalSince1970, result: PublishStatus.code(error), targets: targets.count), in: area)
+            throw error
+        }
+    }
+
+    /// The app's last publish attempt, as seen by both sides (no names: a count and a fixed result code).
+    public struct PublishStatus: Codable, Equatable, Sendable {
+        public let at: Double
+        public let result: String
+        public let targets: Int
+
+        static func url(_ area: ShareArea) -> URL { area.shareDir.appendingPathComponent("index-status.json") }
+
+        static func record(_ status: PublishStatus, in area: ShareArea) {
+            guard let data = try? JSONEncoder().encode(status) else { return }
+            try? area.writeFile(data, to: url(area))
+        }
+
+        public static func read(from area: ShareArea) -> PublishStatus? {
+            guard let data = try? area.readFile(url(area), cap: 4096) else { return nil }
+            return try? JSONDecoder().decode(PublishStatus.self, from: data)
+        }
+
+        /// Fixed code for a publish failure; ShareError.io texts are fixed strings in this module (never paths).
+        public static func code(_ error: Error) -> String {
+            switch error {
+            case ShareError.io(let s): "io: \(s)"
+            case let e as ShareError: "\(e)"
+            case let f as ShareFS.ReadFailure: "\(f)"
+            case is EncodingError: "encode"
+            default: "other"
+            }
+        }
     }
 
     /// Extension side. Missing file means the app never published a workspace (`.noWorkspaces`). Anything unreadable
-    /// or invalid fails closed (`.unreadable`); removed (tombstoned) destinations are filtered out.
+    /// or invalid fails closed with a specific `.index(_)` reason; removed (tombstoned) destinations are filtered out.
     public static func load(from area: ShareArea) throws -> [ShareTarget] {
-        let data: Data
-        do { data = try area.readFile(area.targetsURL, cap: 256 * 1024) }
-        catch ShareFS.ReadFailure.notFound { throw ShareError.noWorkspaces }
-        catch { throw ShareError.unreadable }
-        guard let file = try? JSONDecoder().decode(File.self, from: data), file.version == 1 else { throw ShareError.unreadable }
-        for t in file.targets where (try? ShareArea.validate(realm: t.realm, ws: t.ws)) == nil { throw ShareError.unreadable }
+        let file = try readFile(from: area)
         let coordination = area.coordination
         var live: [ShareTarget] = []
+        var lockFailure: String?
         for t in file.targets {
-            let ok = try? coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation) { true }
-            if ok == true { live.append(t) }
+            do {
+                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, { true }) == true { live.append(t) }
+            } catch { lockFailure = Self.tombstoneCode(error) }
         }
-        if live.isEmpty { throw ShareError.noWorkspaces }
+        if live.isEmpty {
+            if let lockFailure { throw ShareError.index(.tombstones(lockFailure)) }
+            // nil from ifNotRemoved is "removed" OR "tombstones unreadable": tell them apart for the user.
+            if !file.targets.isEmpty {
+                do { _ = try coordination.records() } catch { throw ShareError.index(.tombstones(Self.tombstoneCode(error))) }
+            }
+            throw ShareError.noWorkspaces
+        }
         return live
+    }
+
+    /// The validated index file without the tombstone filter (also used by diagnostics).
+    static func readFile(from area: ShareArea) throws -> File {
+        let data: Data
+        do { data = try area.readFile(area.targetsURL, cap: 256 * 1024) }
+        catch let f as ShareFS.ReadFailure {
+            switch f {
+            case .notFound: throw ShareError.noWorkspaces
+            case .notRegular: throw ShareError.index(.notRegular)
+            case .tooBig: throw ShareError.index(.tooBig)
+            case .io(let e): throw ShareError.index(.io(e))
+            }
+        }
+        catch { throw ShareError.index(.outsideShareDir) }   // ShareError.io from the containment check / invalid component
+        let file: File
+        do { file = try JSONDecoder().decode(File.self, from: data) }
+        catch let e as DecodingError { throw ShareError.index(.decode(ShareIndexFailure.describe(e))) }
+        catch { throw ShareError.index(.decode("other")) }
+        guard file.version == 1 else { throw ShareError.index(.version(file.version)) }
+        for t in file.targets where (try? ShareArea.validate(realm: t.realm, ws: t.ws)) == nil { throw ShareError.index(.invalidEntry) }
+        return file
+    }
+
+    static func tombstoneCode(_ error: Error) -> String {
+        switch error as? TombstoneError {
+        case .lockFailed(let e): "lock \(e) \(ShareIndexFailure.errnoName(e))"
+        case .corrupt: "corrupt"
+        case .io: "io"
+        case nil: error is DecodingError ? "corrupt" : "other"
+        }
     }
 }
