@@ -15,7 +15,10 @@ struct PairingScreen: View {
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
-                    content
+                    VStack(spacing: OS.s4) {
+                        if let step = stepNumber { stepIndicator(step) }
+                        content
+                    }
                         .padding(OS.s5)
                         .frame(maxWidth: .infinity)
                         .transaction { $0.animation = nil }
@@ -40,6 +43,30 @@ struct PairingScreen: View {
         .interactiveDismissDisabled()
     }
 
+    /// 1 link, 2 compare, 3 add. Terminal states (expired, alarm, refused) show no progress.
+    private var stepNumber: Int? {
+        switch model.state {
+        case .entry, .connecting: 1
+        case .comparingHost, .waitingPrimary, .comparingPrimary: 2
+        case .joining, .ready: 3
+        case .expired, .alarm, .refused, .denied: nil
+        }
+    }
+
+    private func stepIndicator(_ step: Int) -> some View {
+        VStack(alignment: .leading, spacing: OS.s2) {
+            HStack(spacing: 6) {
+                ForEach(1...3, id: \.self) { i in
+                    Capsule().fill(i <= step ? OC.brand : OC.surface3).frame(height: 4)
+                }
+            }
+            Text(verbatim: "Step \(step) of 3").font(OF.meta).foregroundStyle(OC.textFaint)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "Step \(step) of 3"))
+        .accessibilityIdentifier("pair.steps")
+    }
+
     private var hostName: String { SafeText.label(model.hostLabel, limit: 24, allowDigits: false).nonEmpty ?? "your Mac" }
 
     private var isAlarm: Bool { if case .alarm = model.state { true } else { false } }
@@ -57,6 +84,9 @@ struct PairingScreen: View {
                 Text(verbatim: "Approve only if both codes match. Reject on \(hostName) if they don't.")
                     .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 Label("Waiting for approval", systemImage: "hourglass").font(OF.meta).foregroundStyle(OC.textMuted)
+                Button { model.cancel(); onClose() } label: { Text("They are different") }
+                    .buttonStyle(.orchSoftDanger).accessibilityIdentifier("pair.different")
+                    .accessibilityHint("Stops pairing on this iPhone. Nothing is added.")
             }
         case .waitingPrimary(let rawLabel, let deadline):
             let label = SafeText.label(rawLabel, limit: 24, allowDigits: false)
@@ -84,6 +114,9 @@ struct PairingScreen: View {
                         let left = max(0, Int(expires.timeIntervalSince(ctx.date)))
                         Label { Text(verbatim: "Code hidden in \(left / 60):\(String(format: "%02d", left % 60))") } icon: { Image(systemName: "timer") }
                             .font(OF.meta)
+                        Button { model.cancel(); onClose() } label: { Text("They are different") }
+                            .buttonStyle(.orchSoftDanger).accessibilityIdentifier("pair.different")
+                            .accessibilityHint("Stops pairing on this iPhone. Nothing is added.")
                     }
                 } else {
                     step(icon: "clock.badge.xmark", title: "The code timed out",
@@ -106,7 +139,7 @@ struct PairingScreen: View {
         case .expired:
             VStack(spacing: OS.s4) {
                 step(icon: "clock.badge.xmark", title: "Nobody approved in time",
-                     text: "Start again on your Mac to make a new link.", id: "pair.expired")
+                     text: "Start again on your Mac to make a new link.", id: "pair.expired", tint: OC.warn)
                 closeButton
             }
         case .alarm(let alarm): alarmView(alarm)
@@ -115,26 +148,28 @@ struct PairingScreen: View {
             VStack(spacing: OS.s4) {
                 step(icon: "hand.raised", title: "Denied by the owner",
                      text: "The owner of this workspace (owner key \(owner)) declined to sign this iPhone. Nothing was added.",
-                     id: "pair.deniedByOwner")
+                     id: "pair.deniedByOwner", tint: OC.danger)
                 closeButton
             }
         case .refused(let reason):
             VStack(spacing: OS.s4) {
-                step(icon: "xmark.octagon", title: refusalTitle(reason), text: refusalText(reason), id: "pair.refused")
+                step(icon: "xmark.octagon", title: refusalTitle(reason), text: refusalText(reason), id: "pair.refused",
+                     tint: refusalTint(reason))
                 closeButton
             }
         }
     }
 
     private var closeButton: some View {
-        Button { model.cancel(); onClose() } label: { Text("Close").frame(maxWidth: .infinity) }
-            .buttonStyle(.bordered).controlSize(.large).accessibilityIdentifier("pair.close")
+        Button { model.cancel(); onClose() } label: { Text("Close") }
+            .buttonStyle(.orchSoft).accessibilityIdentifier("pair.close")
     }
 
     // MARK: Entry
 
     private var entry: some View {
         VStack(alignment: .leading, spacing: OS.s4) {
+            OrbitMark(size: 40)
             Text("Add a workspace").font(OF.display)
             Text("On your Mac open orch, choose Remote, then Pair phone.").font(OF.body).foregroundStyle(OC.textMuted)
             Button { showScan = true } label: {
@@ -198,10 +233,18 @@ struct PairingScreen: View {
 
     // MARK: Helpers
 
-    private func step(icon: String, title: String, text: String, id: String, spinner: Bool = false) -> some View {
+    /// Rejections and refusals are never green: warning for "nothing happened in time", danger for a rejection.
+    private func refusalTint(_ r: PairingRefusal) -> Color {
+        switch r {
+        case .rejectedOnHost, .rejectedOnPrimary, .linkUsed, .otherPerson, .couldNotVerify: OC.danger
+        default: OC.warn
+        }
+    }
+
+    private func step(icon: String, title: String, text: String, id: String, spinner: Bool = false, tint: Color? = nil) -> some View {
         VStack(spacing: OS.s4) {
-            Image(systemName: icon).font(.system(size: 48)).foregroundStyle(OC.brand).accessibilityHidden(true)
-            Text(verbatim: title).font(OF.wsName).multilineTextAlignment(.center)
+            Image(systemName: icon).font(.system(size: 48)).foregroundStyle(tint ?? OC.brand).accessibilityHidden(true)
+            Text(verbatim: title).font(OF.wsName).foregroundStyle(tint ?? OC.text).multilineTextAlignment(.center)
             Text(verbatim: text).font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
             if spinner { ProgressView() }
         }

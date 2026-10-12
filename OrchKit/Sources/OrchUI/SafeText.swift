@@ -187,11 +187,15 @@ public enum SafeText {
         return nil
     }
 
-    public enum Style: Sendable { case signing, prose }
+    /// `.signing` and `.prose` use readable proportional text; `.exact` is monospace for character-by-character comparison.
+    public enum Style: Sendable { case signing, prose, exact }
 
     @MainActor
     public static func attributed(_ input: String, style: Style = .signing, strictLabel: Bool = false) -> AttributedString {
-        let font: Font = style == .signing ? OF.machine : OF.body
+        // Readable proportional text for the prose itself; monospace only for the exact markers of hidden characters.
+        // Option labels (strictLabel) and exact text stay monospace: I/l, 0/O, rn/m must be tellable apart. Only prose is proportional.
+        let font: Font = strictLabel ? OF.machine.weight(.semibold) : (style == .exact ? OF.machine : OF.body)
+        let markerFont: Font = OF.machine.bold()
         var out = AttributedString()
         // FSI ... PDI keeps an unterminated bidi override from reordering the rest of the screen.
         out += AttributedString("\u{2068}")
@@ -203,8 +207,9 @@ public enum SafeText {
                 part.foregroundColor = OC.text
                 out += part
             case .marker(let m):
-                var part = AttributedString("\u{2066}" + m + "\u{2069}")
-                part.font = font.bold()
+                // Non-breaking spaces keep a marker on one line (it must never split inside the chip).
+                var part = AttributedString("\u{2066}" + m.replacingOccurrences(of: " ", with: "\u{00A0}") + "\u{2069}")
+                part.font = markerFont
                 part.foregroundColor = OC.warn
                 part.backgroundColor = OC.soft(OC.warn)
                 out += part
@@ -236,6 +241,7 @@ public struct SafeTextView: View {
 
     public var body: some View {
         Text(SafeText.attributed(text, style: style, strictLabel: strictLabel))
+            .lineSpacing(4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .clipped()

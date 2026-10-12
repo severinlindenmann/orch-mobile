@@ -64,7 +64,7 @@ final class ScreenshotTests: XCTestCase {
     @MainActor
     func testCaptureAccessibilitySizes() {
         let ax = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXL"]
-        let list: [(String, String?)] = [("40-ax-home", nil), ("41-ax-sign-sheet", "sign/q1"), ("43-ax-workspace", "workspace/laptop")]
+        let list: [(String, String?)] = [("40-ax-home", nil), ("41-ax-sign-sheet", "sign/q1"), ("43-ax-workspace", "workspace/laptop"), ("44-ax-sign-sheet-unsafe", "sign/q3")]
         for dark in [false, true] {
             for (name, route) in list {
                 let app = launch(route, dark: dark, extra: ax)

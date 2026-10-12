@@ -2,6 +2,16 @@ import Testing
 @testable import OrchUI
 
 @Suite struct SafeTextTests {
+    @MainActor @Test func lookAlikeMarkerIsUnbreakable() {
+        let a = String(SafeText.attributed("\u{FF39}es", strictLabel: true).characters)
+        #expect(a.contains("U+FF39"))
+        #expect(!a.contains(" U+FF39"), "no breaking space inside a marker")
+        #expect(a.contains("\u{00A0}U+FF39"))
+    }
+    @MainActor @Test func markersStayUnbrokenInProportionalText() {
+        let a = SafeText.attributed("a\u{200B}b")
+        #expect(String(a.characters).contains("⟨U+200B⟩"))
+    }
     @Test func bidiControlsMarked() {
         #expect(SafeText.markers(in: "a\u{202E}b\u{202C}") == ["⟨U+202E⟩", "⟨U+202C⟩"])
         #expect(SafeText.markers(in: "x\u{2066}y\u{2069}") == ["⟨U+2066⟩", "⟨U+2069⟩"])

@@ -119,10 +119,7 @@ struct WorkspaceScreen: View {
             }
             ForEach(model.waiting) { q in
                 NavigationLink(value: Route.question(workspace: workspaceID, id: q.id, autoSign: false)) {
-                    HStack {
-                        AttentionRail().frame(height: 36)
-                        QuestionRow(question: q, color: model.info.color, workspaceName: model.info.displayName)
-                    }
+                    QuestionRow(question: q, color: model.info.color, workspaceName: model.info.displayName)
                 }
                 .accessibilityIdentifier("question.\(q.id)")
             }
@@ -167,6 +164,14 @@ struct WorkspaceScreen: View {
     @ViewBuilder
     private var files: some View {
         let items = services.drop.items(workspace: workspaceID)
+        Section {
+            Button { composing = true } label: {
+                Label { Text(verbatim: "Send to \(model.info.displayName)") } icon: { Image(systemName: "square.and.arrow.up") }
+            }
+            .accessibilityIdentifier("ws.files.send")
+            TabAwareLink(route: .drop) { Text("Open Drop") }
+                .accessibilityIdentifier("ws.files.openDrop")
+        }
         Section("Files and notes in Drop") {
             if items.isEmpty { Text("Nothing in Drop for this workspace.").foregroundStyle(OC.textMuted) }
             ForEach(items) { item in
@@ -174,14 +179,6 @@ struct WorkspaceScreen: View {
                     .accessibilityIdentifier("ws.file.\(item.presentationID)")
                     .task(id: services.drop.dropRefreshRevision) { await services.drop.verifyDropRow(item.id) }
             }
-        }
-        Section {
-            Button { composing = true } label: {
-                Label { Text(verbatim: "Send to \(model.info.displayName)") } icon: { Image(systemName: "square.and.arrow.up") }
-            }
-            .accessibilityIdentifier("ws.files.send")
-            NavigationLink(value: Route.drop) { Text("Open Drop") }
-                .accessibilityIdentifier("ws.files.openDrop")
         }
     }
 

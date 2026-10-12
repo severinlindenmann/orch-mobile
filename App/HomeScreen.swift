@@ -20,24 +20,73 @@ struct HomeScreen: View {
         self.services = services
         self.options = options
         _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0) })
-        _path = State(initialValue: initial.path)
+        // A deep link to a tab root (drop, settings, needs-you) is held back and applied to its tab once the tab bar exists, so the
+        // screen (and e.g. a confirm alert it presents on appear) is never created twice, first on Home and then in its tab.
+        let isTabRoot: Bool = switch initial.path.first { case .drop?, .settings?, .needsYou?: true; default: false }
+        _path = State(initialValue: isTabRoot ? [] : initial.path)
+        _pendingRoute = State(initialValue: isTabRoot ? initial.path : [])
         _forceWelcome = State(initialValue: initial.forceWelcome)
         _pairing = State(initialValue: initial.presentPairing
                          ? PairingPresentation(model: services.makePairing(start: initial.pairing)) : nil)
         self.initial = initial
     }
 
-    var body: some View {
+    @State private var tab: AppTab = .home
+    @State private var questionsPath: [Route] = []
+    @State private var dropPath: [Route] = []
+    @State private var settingsPath: [Route] = []
+    @State private var composeOnDropTab = false
+    @State private var pendingRoute: [Route]
+    @State private var routeOnHome = false
+
+    /// With tabs, Drop / Settings / Questions are tabs, never a second copy pushed on Home: switch tabs instead.
+    private func select(_ route: Route) {
+        switch route {
+        case .drop: dropPath = []; tab = .drop
+        case .settings: settingsPath = []; tab = .settings
+        case .needsYou: questionsPath = []; tab = .questions
+        default: break
+        }
+    }
+
+    /// Tabs exist once there is something to navigate (workspaces); Welcome and the empty Home stay a single stack.
+    private var showsTabs: Bool {
+        !(forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo)) && !services.home.workspaces.isEmpty
+    }
+
+    /// Applies a held deep-link route to its tab once tabs exist. With no workspaces (empty Demo) there are never tabs for it, so the
+    /// route is pushed on Home instead; if workspaces appear later it is moved to its tab.
+    private func adoptInitialRoute() {
+        if !showsTabs {
+            if !pendingRoute.isEmpty { path = pendingRoute; pendingRoute = []; routeOnHome = true }
+            return
+        }
+        let source: [Route]
+        if !pendingRoute.isEmpty { source = pendingRoute; pendingRoute = [] }
+        else if routeOnHome { source = path; path = [] }
+        else { return }
+        routeOnHome = false
+        guard let first = source.first else { return }
+        let rest = Array(source.dropFirst())
+        switch first {
+        case .drop: dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
+        case .settings: settingsPath = rest; tab = .settings
+        case .needsYou: questionsPath = rest; tab = .questions
+        default: path = source
+        }
+    }
+
+    private func startPairing() { pairing = PairingPresentation(model: services.makePairing(start: nil)) }
+
+    private var homeStack: some View {
         NavigationStack(path: $path) {
             Group {
                 if forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo) {
-                    WelcomeScreen(onDemo: { services.home.enterDemo(); forceWelcome = false },
-                                  onPair: { pairing = PairingPresentation(model: services.makePairing(start: nil)) })
+                    WelcomeScreen(onDemo: { services.home.enterDemo(); forceWelcome = false }, onPair: startPairing)
                 } else if services.home.workspaces.isEmpty {
-                    EmptyHome(onPair: { pairing = PairingPresentation(model: services.makePairing(start: nil)) },
-                              onSettings: { path.append(.settings) })
+                    EmptyHome(onPair: startPairing, onSettings: { path.append(.settings) })
                 } else {
-                    HomeContent(services: services, path: $path)
+                    HomeContent(services: services, path: $path, onAdd: startPairing)
                 }
             }
             .safeAreaInset(edge: .top) {
@@ -56,24 +105,60 @@ struct HomeScreen: View {
             .background(OC.bg)
             .navigationTitle("orch")
             .toolbar {
-                if services.home.isDemo {
+                if services.home.isDemo && services.home.workspaces.isEmpty {
                     ToolbarItem(placement: .topBarLeading) { DemoChip() }
                 }
-                if services.home.isDemo || !services.home.workspaces.isEmpty {
+                if services.home.isDemo && services.home.workspaces.isEmpty {
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button("Add workspace", systemImage: "plus") {
-                            pairing = PairingPresentation(model: services.makePairing(start: nil))
-                        }
-                        .accessibilityIdentifier("home.add")
-                        Button("Settings", systemImage: "gearshape") { path.append(.settings) }
-                            .accessibilityIdentifier("home.settings")
+                        Button("Add workspace", systemImage: "plus", action: startPairing)
+                            .accessibilityIdentifier("home.add")
                     }
                 }
             }
+            .toolbar(services.home.workspaces.isEmpty ? .visible : .hidden, for: .navigationBar)
             .navigationDestination(for: Route.self) { route in
                 RouteView(route: route, services: services, path: $path, composeDrop: initial.composeDrop)
             }
         }
+    }
+
+    private func tabStack<Root: View>(_ binding: Binding<[Route]>, @ViewBuilder root: () -> Root) -> some View {
+        NavigationStack(path: binding) {
+            root()
+                .navigationDestination(for: Route.self) { route in
+                    RouteView(route: route, services: services, path: binding, composeDrop: false)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if showsTabs {
+            TabView(selection: $tab) {
+                homeStack
+                    .tabItem { Label("Home", systemImage: "house") }
+                    .tag(AppTab.home)
+                tabStack($questionsPath) { NeedsYouScreen(services: services) }
+                    .tabItem { Label("Questions", systemImage: "questionmark.bubble") }
+                    .badge(services.home.needsYouCount)
+                    .tag(AppTab.questions)
+                tabStack($dropPath) { DropScreen(services: services, startComposing: composeOnDropTab) }
+                    .tabItem { Label("Drop", systemImage: "tray.and.arrow.down") }
+                    .tag(AppTab.drop)
+                tabStack($settingsPath) { SettingsScreen(services: services, path: $settingsPath) }
+                    .tabItem { Label("Settings", systemImage: "gearshape") }
+                    .tag(AppTab.settings)
+            }
+        } else {
+            homeStack
+        }
+    }
+
+    var body: some View {
+        rootContent
+        .environment(\.routeSelector, showsTabs ? RouteSelector({ select($0) }, goHome: { tab = .home }) : nil)
+        .onAppear { adoptInitialRoute() }
+        .onChange(of: showsTabs) { _, _ in adoptInitialRoute() }
         .tint(OC.brand)
         // A10: claim what the share extension staged, on launch and on every activation.
         .task {
@@ -90,7 +175,7 @@ struct HomeScreen: View {
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: .orchDebugShareRefresh)) { _ in bridge?.refresh() }
         #endif
-        .symbolRenderingMode(.hierarchical)
+        .symbolRenderingMode(.monochrome)
         .safeAreaInset(edge: .top, spacing: 0) { if services.home.isDemo { DemoStripe() } }
         .overlay(alignment: .topLeading) {
             // DEBUG/UI-test only: lets tests assert the resolved colour scheme.
@@ -197,19 +282,24 @@ struct EmptyHome: View {
 // MARK: Home content
 
 struct HomeContent: View {
+    @ScaledMetric(relativeTo: .body) private var iconBox = 36.0
     let services: any AppServices
     @Binding var path: [Route]
+    let onAdd: () -> Void
 
     private var home: any HomeModel { services.home }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: OS.s3) {
+                header
                 if home.needsYouCount > 0, let oldest = home.oldestWaiting { needsYouStrip(oldest) }
                 ForEach(home.pendingDecisions) { d in pendingRow(d) }
                 Text(verbatim: "Last checked \(Fmt.relative(home.lastChecked))")
-                    .font(OF.meta).foregroundStyle(OC.textMuted)
+                    .font(.footnote).foregroundStyle(OC.textFaint)
+                    .padding(.horizontal, OS.s1).padding(.top, OS.s1)
                     .accessibilityIdentifier("home.lastChecked")
+                SectionCaption("Your workspaces").padding(.horizontal, OS.s1)
                 ForEach(home.workspaces) { ws in
                     NavigationLink(value: Route.workspace(ws.id, .questions)) {
                         WorkspaceCard(ws: ws, waiting: home.waitingCount(in: ws.id))
@@ -225,25 +315,50 @@ struct HomeContent: View {
         .foregroundStyle(OC.text)
     }
 
+    private var header: some View {
+        HStack(spacing: OS.s3) {
+            OrbitMark(size: 30)
+            Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
+            if home.isDemo { DemoChip(compact: true) }
+            Spacer(minLength: 0)
+            Button { path.append(.settings) } label: {
+                Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .foregroundStyle(OC.textMuted)
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("home.settings")
+            Button(action: onAdd) {
+                Image(systemName: "plus").font(.title3.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .foregroundStyle(OC.brand)
+            .accessibilityLabel("Add workspace")
+            .accessibilityIdentifier("home.add")
+        }
+    }
+
     private var stale: Bool { home.workspaces.contains { !$0.isLive } }
 
     private func needsYouStrip(_ oldest: (question: Question, workspace: WorkspaceInfo)) -> some View {
         let count = home.needsYouCount
-        return NavigationLink(value: Route.needsYou) {
+        return TabAwareLink(route: .needsYou) {
             HStack(spacing: OS.s3) {
-                Image(systemName: "questionmark.bubble.fill").foregroundStyle(OC.youMark)
+                Image(systemName: "questionmark.bubble.fill").font(.body.weight(.semibold))
+                    .foregroundStyle(OC.onBrand).frame(width: iconBox, height: iconBox)
+                    .background(OC.brand, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text(verbatim: (stale ? "Last known: " : "") + (count == 1 ? "1 needs you" : "\(count) need you"))
-                        .font(OF.section).foregroundStyle(OC.you)
+                        .font(OF.section).foregroundStyle(OC.text)
                     Text(verbatim: "\(oldest.workspace.displayName) · \(oldest.question.firstLine)")
-                        .font(OF.body).lineLimit(2)
+                        .font(OF.body).foregroundStyle(OC.textMuted).lineLimit(2)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").foregroundStyle(OC.textMuted)
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.brand)
             }
-            .padding(OS.s5)
-            .orchCard()
-            .overlay(alignment: .leading) { AttentionRail().padding(.leading, OS.s2).padding(.vertical, OS.s3) }
+            .padding(OS.s4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: OR.card, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("home.needsYou")
@@ -262,16 +377,16 @@ struct HomeContent: View {
                     Text(retry ? "Tap to send it again" : "Tap to see where it stands").font(OF.meta).foregroundStyle(OC.textMuted)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").foregroundStyle(OC.textMuted)
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.textMuted)
             }
-            .padding(OS.s5).orchCard()
+            .padding(OS.s4).orchCard()
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("home.pending")
     }
 
     private var dropCard: some View {
-        NavigationLink(value: Route.drop) {
+        TabAwareLink(route: .drop) {
             HStack(spacing: OS.s3) {
                 Image(systemName: "tray.and.arrow.down").foregroundStyle(OC.brand)
                 VStack(alignment: .leading, spacing: OS.s1) {
@@ -279,9 +394,9 @@ struct HomeContent: View {
                     Text(verbatim: dropLine).font(OF.meta).foregroundStyle(OC.textMuted)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").foregroundStyle(OC.textMuted)
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.textMuted)
             }
-            .padding(OS.s5)
+            .padding(OS.s4)
             .orchCard()
         }
         .buttonStyle(.plain)
@@ -300,35 +415,29 @@ struct WorkspaceCard: View {
     let waiting: Int
 
     var body: some View {
-        HStack(spacing: OS.s3) {
-            WorkspaceRail(color: ws.color)
-            VStack(alignment: .leading, spacing: OS.s2) {
-                if ws.isHosted { HostedMarker(hostedBy: ws.hostedBy) }
-                Text(verbatim: ws.displayName).font(OF.wsName)
-                Label { Text(verbatim: ws.displayHost) } icon: { Image(systemName: "laptopcomputer") }
-                    .font(OF.meta).foregroundStyle(OC.textMuted)
-                HStack(spacing: OS.s2) {
-                    if waiting > 0 {
-                        AttentionRail().frame(height: 22)
-                        Label { Text(verbatim: (ws.isLive ? "" : "Last known: ") + Fmt.plural(waiting, "question waiting", "questions waiting")) }
-                            icon: { Image(systemName: "questionmark.bubble") }
-                            .font(OF.meta).foregroundStyle(OC.you)
-                    } else {
-                        Label { Text(verbatim: ws.isLive ? "Nothing needs you" : "Last known: nothing needs you") }
-                            icon: { Image(systemName: "checkmark.circle") }
-                            .font(OF.meta).foregroundStyle(OC.textMuted)
-                    }
-                }
-                ConnectionChip(state: ws.connection)
-                if let message = ws.lifecycle.message { Text(verbatim: message).font(OF.meta).foregroundStyle(OC.textMuted) }
+        VStack(alignment: .leading, spacing: OS.s2) {
+            HStack(alignment: .firstTextBaseline, spacing: OS.s2) {
+                Image(systemName: "laptopcomputer").foregroundStyle(OC.textMuted).accessibilityHidden(true)
+                Text(verbatim: ws.displayName).font(OF.wsName).frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.vertical, OS.s5)
-            .padding(.trailing, OS.s5)
-            Spacer(minLength: 0)
+            Text(verbatim: ws.displayHost).font(OF.meta).foregroundStyle(OC.textMuted)
+            FlowLayout {
+                ConnectionChip(state: ws.connection)
+                if ws.isHosted { HostedMarker(hostedBy: ws.hostedBy) }
+                if waiting > 0 {
+                    StatusChip((ws.isLive ? "" : "Last known: ") + Fmt.plural(waiting, "question waiting", "questions waiting"),
+                               systemImage: "questionmark.bubble", color: OC.brand)
+                } else {
+                    StatusChip(ws.isLive ? "Nothing needs you" : "Last known: nothing needs you",
+                               systemImage: "checkmark.circle", color: OC.textMuted)
+                }
+            }
+            if let message = ws.lifecycle.message { Text(verbatim: message).font(OF.meta).foregroundStyle(OC.textMuted) }
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(OS.s4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .orchCard()
-        .clipShape(RoundedRectangle(cornerRadius: OR.card, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(verbatim: label))
     }
@@ -364,11 +473,11 @@ struct NeedsYouScreen: View {
                     }
                 } header: {
                     HStack(spacing: OS.s2) {
-                        WorkspaceRail(color: group.workspace.color).frame(height: 14).clipShape(Capsule())
-                        Text(verbatim: group.workspace.displayName).font(OF.section)
+                        Text(verbatim: group.workspace.displayName).font(OF.section).foregroundStyle(OC.text)
                         if group.workspace.isHosted { Image(systemName: "building.2").foregroundStyle(OC.hosted)
                             .accessibilityLabel("Client hosted") }
                     }
+                    .textCase(nil)
                 }
             }
             Section {
@@ -379,7 +488,12 @@ struct NeedsYouScreen: View {
                 EmptyState(systemImage: "checkmark.seal", title: "Nothing needs you").listRowBackground(Color.clear)
             }
         }
-        .navigationTitle("Needs you")
+        .scrollContentBackground(.hidden)
+        .background(OC.bg)
+        .contentMargins(.bottom, 24, for: .scrollContent)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarBackground(.regularMaterial, for: .tabBar)
+        .navigationTitle("Questions")
         .accessibilityIdentifier("needsYou.list")
     }
 }
@@ -390,14 +504,46 @@ struct QuestionRow: View {
     let workspaceName: String
 
     var body: some View {
-        HStack(spacing: OS.s3) {
-            WorkspaceRail(color: color).frame(height: 36).clipShape(Capsule())
-            VStack(alignment: .leading, spacing: OS.s1) {
-                Text(verbatim: question.firstLine).lineLimit(2)
-                Text(verbatim: "\(question.displayTicket) · \(workspaceName) · \(Fmt.relative(question.created))")
-                    .font(OF.meta).foregroundStyle(OC.textMuted)
-            }
+        VStack(alignment: .leading, spacing: OS.s1) {
+            Text(verbatim: question.firstLine).lineLimit(2)
+            Text(verbatim: "\(question.displayTicket) · \(workspaceName) · \(Fmt.relative(question.created))")
+                .font(OF.meta).foregroundStyle(OC.textMuted)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+
+enum AppTab: Hashable { case home, questions, drop, settings }
+
+/// Set while the tab bar is shown: routes that are tab roots switch tab instead of pushing a duplicate screen.
+struct RouteSelector: Sendable {
+    let action: @MainActor @Sendable (Route) -> Void
+    let goHome: @MainActor @Sendable () -> Void
+    init(_ action: @escaping @MainActor @Sendable (Route) -> Void, goHome: @escaping @MainActor @Sendable () -> Void) {
+        self.action = action; self.goHome = goHome
+    }
+}
+
+private struct RouteSelectorKey: EnvironmentKey { static let defaultValue: RouteSelector? = nil }
+extension EnvironmentValues {
+    var routeSelector: RouteSelector? {
+        get { self[RouteSelectorKey.self] }
+        set { self[RouteSelectorKey.self] = newValue }
+    }
+}
+
+/// A NavigationLink that, under the tab bar, selects the matching tab instead.
+struct TabAwareLink<Label: View>: View {
+    let route: Route
+    @ViewBuilder let label: Label
+    @Environment(\.routeSelector) private var selector
+
+    var body: some View {
+        if let selector {
+            Button { selector.action(route) } label: { label }
+        } else {
+            NavigationLink(value: route) { label }
+        }
     }
 }
