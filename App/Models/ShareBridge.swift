@@ -116,7 +116,9 @@ final class ShareBridge {
             }
         }
         // Include the persisted index so a process restart cannot lose an unpublished removal.
-        let persisted = (try? ShareTargetIndex.load(from: area)) ?? []
+        // Every persisted destination, stale or tombstoned too (retiring one twice is idempotent). An unreadable index reads
+        // as empty so the publish below repairs it; that can drop an unpublished removal across a restart (docs/gaps.md).
+        let persisted = (try? ShareTargetIndex.persisted(from: area)) ?? []
         let previous = Array(published.values) + persisted
         do {
             for old in Set(previous) {
@@ -136,6 +138,7 @@ final class ShareBridge {
         listed = Set(next.keys)
         // While Demo is active the persisted LIVE destinations stay visible (the extension labels Demo ones); imports are realm-checked.
         let kept = world.isDemo ? persisted.filter { $0.realm == "live" } : []
+        // publish records its own outcome (index-status.json) for the on-device diagnostics, so try? loses nothing.
         try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] } + kept, to: area)
         lastPurge = inbox.purgeTombstoned()
     }

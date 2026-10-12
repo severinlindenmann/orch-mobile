@@ -155,6 +155,35 @@ public enum ShareError: Error, Equatable, Sendable {
     case io(String)
 }
 
+extension ShareFS.ReadFailure {
+    var code: String {
+        switch self {
+        case .notFound: "not found"
+        case .notRegular: "not a regular file"
+        case .tooBig: "too big"
+        case .io(let e): "io \(e) \(ShareIndexFailure.errnoName(e))"
+        }
+    }
+}
+
+extension ShareError {
+    /// Fixed, path-free code (every associated string in this module is a fixed text or a sanitised code).
+    public var code: String {
+        switch self {
+        case .noWorkspaces: "none"
+        case .unreadable: "unreadable"
+        case .index(let f): f.code
+        case .tooManyItems: "too many items"
+        case .tooLarge: "too large"
+        case .empty: "empty"
+        case .unsupported(let s): "unsupported: \(ShareTargetIndex.sanitizeCode(s))"
+        case .destinationRemoved: "destination removed"
+        case .cancelled: "cancelled"
+        case .io(let s): "io: \(ShareTargetIndex.sanitizeCode(s))"
+        }
+    }
+}
+
 /// Why the destinations index could not be used. Every case is path-free and name-free (support evidence).
 public enum ShareIndexFailure: Error, Equatable, Sendable {
     /// The index path was refused by the share-area containment check (path normalisation; device-only before 2026-10).
@@ -170,6 +199,8 @@ public enum ShareIndexFailure: Error, Equatable, Sendable {
     case invalidEntry
     /// Every destination was dropped because the tombstones could not be locked or read.
     case tombstones(String)
+    /// The app could not refresh the index (it marked it stale): nothing is offered until a publish succeeds.
+    case stale(String)
 
     /// Short fixed text, e.g. "io 1 EPERM", "decode keyNotFound targets.0.hue".
     public var code: String {
@@ -182,6 +213,7 @@ public enum ShareIndexFailure: Error, Equatable, Sendable {
         case .version(let v): "version \(v)"
         case .invalidEntry: "invalid entry"
         case .tombstones(let t): "tombstones \(t)"
+        case .stale(let c): "stale: \(c)"
         }
     }
 
@@ -241,7 +273,21 @@ public struct ShareTarget: Codable, Hashable, Sendable, Identifiable {
 
 /// The minimal destinations index: realm, ws id, display name, hue, generation. No labels, keys or content.
 public enum ShareTargetIndex {
-    struct File: Codable { var version: Int; var targets: [ShareTarget] }
+    struct File: Codable {
+        var version: Int
+        var targets: [ShareTarget]
+        /// Set by the app when a refresh was skipped (fixed code); a stale index offers nothing. Absent when fresh.
+        var stale: String?
+    }
+
+    /// Only short fixed codes survive (the extension can write the share folder too, so these files are untrusted):
+    /// ASCII letters, digits and ` :._-`, at most 120 characters; anything else reads as "invalid".
+    public static func sanitizeCode(_ s: String) -> String {
+        guard !s.isEmpty, s.utf8.count <= 120, s.utf8.allSatisfy({ c in
+            (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39) || c == 0x20 || c == 0x3a || c == 0x2e || c == 0x5f || c == 0x2d
+        }) else { return "invalid" }
+        return s
+    }
 
     /// App side. Replaces the whole index atomically; entries with invalid ids are refused. The outcome (success or a
     /// path-free failure code) is also recorded best-effort in `index-status.json` for the on-device diagnostics.
@@ -261,8 +307,22 @@ public enum ShareTargetIndex {
 
     /// App side: a publish that was not attempted (an earlier step failed) is recorded too, so the diagnostics never show
     /// a stale "ok". `reason` must be a fixed, path-free code.
+    ///
+    /// The existing index is kept (the app still needs it to retire removed destinations after a restart) but marked
+    /// stale, so the extension offers nothing from it: a destination removed meanwhile is never offered.
     public static func recordPublishSkipped(_ reason: String, in area: ShareArea, now: Date = Date()) {
+        if var file = try? readFile(from: area, allowStale: true) {
+            file.stale = sanitizeCode(reason)
+            if let data = try? JSONEncoder().encode(file) { try? area.writeFile(data, to: area.targetsURL) }
+        }
         PublishStatus.record(.init(at: now.timeIntervalSince1970, result: "skipped: \(reason)", targets: 0), in: area)
+    }
+
+    /// App side: every destination in the index (stale or not, tombstoned or not), for retiring removals after a restart.
+    /// Missing index: empty. Unreadable: throws (the caller must not treat that as "nothing was published").
+    public static func persisted(from area: ShareArea) throws -> [ShareTarget] {
+        do { return try readFile(from: area, allowStale: true).targets }
+        catch ShareError.noWorkspaces { return [] }
     }
 
     /// The app's last publish attempt, as seen by both sides (no names: a count and a fixed result code).
@@ -278,17 +338,21 @@ public enum ShareTargetIndex {
             try? area.writeFile(data, to: url(area))
         }
 
-        public static func read(from area: ShareArea) -> PublishStatus? {
-            guard let data = try? area.readFile(url(area), cap: 4096) else { return nil }
-            return try? JSONDecoder().decode(PublishStatus.self, from: data)
+        /// Untrusted input (the extension shares the folder): the result is sanitised, the count and time clamped.
+        public static func read(from area: ShareArea, now: Date = Date()) -> PublishStatus? {
+            guard let data = try? area.readFile(url(area), cap: 4096),
+                  let raw = try? JSONDecoder().decode(PublishStatus.self, from: data) else { return nil }
+            let earliest = 1_577_836_800.0   // 2020-01-01
+            let latest = now.timeIntervalSince1970 + 86_400
+            let at = raw.at.isFinite ? min(max(raw.at, earliest), latest) : earliest
+            return PublishStatus(at: at, result: ShareTargetIndex.sanitizeCode(raw.result), targets: min(max(raw.targets, 0), 10_000))
         }
 
         /// Fixed code for a publish failure; ShareError.io texts are fixed strings in this module (never paths).
         public static func code(_ error: Error) -> String {
             switch error {
-            case ShareError.io(let s): "io: \(s)"
-            case let e as ShareError: "\(e)"
-            case let f as ShareFS.ReadFailure: "\(f)"
+            case let e as ShareError: e.code
+            case let f as ShareFS.ReadFailure: f.code
             case let t as TombstoneError: ShareTargetIndex.tombstoneCode(t)
             case let f as CoordinationFiles.FileError: f == .unsafeLock ? "unsafe lock" : "coordination io"   // io text may hold a path
             case is EncodingError: "encode"
@@ -321,7 +385,7 @@ public enum ShareTargetIndex {
     }
 
     /// The validated index file without the tombstone filter (also used by diagnostics).
-    static func readFile(from area: ShareArea) throws -> File {
+    static func readFile(from area: ShareArea, allowStale: Bool = false) throws -> File {
         let data: Data
         do { data = try area.readFile(area.targetsURL, cap: 256 * 1024) }
         catch let f as ShareFS.ReadFailure {
@@ -339,6 +403,7 @@ public enum ShareTargetIndex {
         catch { throw ShareError.index(.decode("other")) }
         guard file.version == 1 else { throw ShareError.index(.version(file.version)) }
         for t in file.targets where (try? ShareArea.validate(realm: t.realm, ws: t.ws)) == nil { throw ShareError.index(.invalidEntry) }
+        if !allowStale, let stale = file.stale { throw ShareError.index(.stale(sanitizeCode(stale))) }
         return file
     }
 

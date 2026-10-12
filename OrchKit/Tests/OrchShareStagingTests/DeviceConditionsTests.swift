@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import OrchCoordination
 @testable import OrchShareStaging
 
 /// On a device `containerURL(forSecurityApplicationGroupIdentifier:)` returns `/private/var/mobile/Containers/Shared/AppGroup/…`.
@@ -59,7 +60,7 @@ struct IndexFailureTests {
         return area
     }
 
-    @Test func protectedOrDeniedIndexReportsErrno() throws {
+    @Test(.enabled(if: geteuid() != 0, "root ignores chmod")) func protectedOrDeniedIndexReportsErrno() throws {
         let area = try published()
         // Data protection or a sandbox denial surfaces as EACCES/EPERM from open(2); chmod 000 gives the same errno path.
         #expect(chmod(area.targetsURL.path, 0) == 0)
@@ -161,7 +162,7 @@ struct DiagnosticsTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("share").path))
     }
 
-    @Test func deniedIndexShowsErrnoInDiagnostics() throws {
+    @Test(.enabled(if: geteuid() != 0, "root ignores chmod")) func deniedIndexShowsErrnoInDiagnostics() throws {
         let root = privateRoot()
         let area = ShareArea(shareGroupRoot: root)
         try ShareTargetIndex.publish([target()], to: area)
@@ -170,5 +171,94 @@ struct DiagnosticsTests {
         let lines = ShareDiagnostics.collect(groupID: "g", root: root)
         #expect(value(lines, "Index decode") == "io 13 EACCES")
         #expect(value(lines, "Offered") == "io 13 EACCES")
+    }
+}
+
+/// Fix round (PR #62 review): untrusted status file, fd-relative diagnostics, stale index, fixed staging codes.
+struct ReviewRoundTests {
+    func value(_ lines: [ShareDiagnostics.Line], _ label: String) -> String? { lines.first { $0.label == label }?.value }
+
+    @Test func forgedStatusFileIsSanitised() throws {
+        let root = privateRoot()
+        let area = ShareArea(shareGroupRoot: root)
+        try ShareTargetIndex.publish([target()], to: area)
+        // PoC: newline + fake line, RLO, NUL, absurd year, negative count.
+        let forged = #"{"at":1e15,"result":"ok\nOffered: 99 destinations\u202e\u0000","targets":-5}"#
+        try Data(forged.utf8).write(to: area.shareDir.appendingPathComponent("index-status.json"))
+        let now = Date()
+        let s = try #require(ShareTargetIndex.PublishStatus.read(from: area, now: now))
+        #expect(s.result == "invalid")
+        #expect(s.targets == 0)
+        #expect(s.at <= now.timeIntervalSince1970 + 86_400)
+        let lines = ShareDiagnostics.collect(groupID: "g", root: root)
+        let last = try #require(value(lines, "Last app publish"))
+        #expect(!last.contains("\n"))
+        #expect(!last.contains("Offered"))
+        #expect(last.hasSuffix(": invalid, 0 targets"))
+    }
+
+    @Test func oversizedOrEarlyStatusIsClamped() throws {
+        let area = ShareArea(shareGroupRoot: privateRoot())
+        try ShareTargetIndex.publish([], to: area)
+        let long = String(repeating: "a", count: 121)
+        try Data(#"{"at":-3,"result":"\#(long)","targets":99999999}"#.utf8).write(to: area.shareDir.appendingPathComponent("index-status.json"))
+        let s = try #require(ShareTargetIndex.PublishStatus.read(from: area))
+        #expect(s.result == "invalid")
+        #expect(s.targets == 10_000)
+        #expect(s.at == 1_577_836_800)
+    }
+
+    @Test func swappedShareLinkIsRefusedNotFollowed() throws {
+        let root = privateRoot()
+        let elsewhere = privateRoot()
+        try ShareTargetIndex.publish([target()], to: ShareArea(shareGroupRoot: elsewhere))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("share"), withDestinationURL: elsewhere.appendingPathComponent("share"))
+        let lines = ShareDiagnostics.collect(groupID: "g", root: root)
+        #expect(value(lines, "Share folder") == "refused (link or not a folder)")
+        #expect(value(lines, "Index file") == "missing")
+        #expect(value(lines, "Index decode") == "io \(ENOTDIR) ENOTDIR")
+        #expect(value(lines, "Tombstone lock") == "skipped (no share folder)")
+    }
+
+    @Test func swappedIndexLinkIsRefusedInDiagnostics() throws {
+        let root = privateRoot()
+        let area = ShareArea(shareGroupRoot: root)
+        try ShareTargetIndex.publish([target()], to: area)
+        let other = privateRoot().appendingPathComponent("other.json")
+        try Data(repeating: 0x20, count: 777).write(to: other)
+        try FileManager.default.removeItem(at: area.targetsURL)
+        try FileManager.default.createSymbolicLink(at: area.targetsURL, withDestinationURL: other)
+        let index = try #require(value(ShareDiagnostics.collect(groupID: "g", root: root), "Index file"))
+        #expect(index == "refused (link)")
+        #expect(!index.contains("777"))
+    }
+
+    @Test func skippedPublishMarksIndexStale() throws {
+        let area = ShareArea(shareGroupRoot: privateRoot())
+        try ShareTargetIndex.publish([target(), target(WS2)], to: area)
+        ShareTargetIndex.recordPublishSkipped("removal replay: tombstones corrupt", in: area)
+        // The extension offers nothing from a stale index ...
+        #expect(throws: ShareError.index(.stale("removal replay: tombstones corrupt"))) { try ShareTargetIndex.load(from: area) }
+        // ... but the app still sees every persisted destination to retire.
+        #expect(try ShareTargetIndex.persisted(from: area).count == 2)
+        let decode = try #require(value(ShareDiagnostics.collect(groupID: "g", root: area.shareGroupRoot), "Index decode"))
+        #expect(decode.hasSuffix("stale: removal replay: tombstones corrupt"))
+        // A successful publish clears the mark.
+        try ShareTargetIndex.publish([target()], to: area)
+        #expect(try ShareTargetIndex.load(from: area).count == 1)
+    }
+
+    @Test func skippedPublishWithoutIndexOffersNothing() throws {
+        let area = ShareArea(shareGroupRoot: privateRoot())
+        ShareTargetIndex.recordPublishSkipped("tombstones: corrupt", in: area)
+        #expect(throws: ShareError.noWorkspaces) { try ShareTargetIndex.load(from: area) }
+        #expect(ShareTargetIndex.PublishStatus.read(from: area)?.result == "skipped: tombstones: corrupt")
+    }
+
+    @Test func stagingErrorsNeverCarryPaths() {
+        let cocoa = CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: "/private/var/mobile/secret"])
+        #expect(StagingSession.fixedCode(cocoa) == "staging failed")
+        #expect(StagingSession.fixedCode(TombstoneError.io("open: 2")) == "tombstones io")
+        #expect(ShareError.io("/private/var/x").code == "io: invalid")
     }
 }

@@ -14,8 +14,7 @@ public enum ShareDiagnostics {
 
     /// `root` is what `containerURL(forSecurityApplicationGroupIdentifier:)` returned (nil: not resolvable).
     /// `lockTimeout` bounds the tombstone lock probe so the UI never hangs on a held lock.
-    public static func collect(groupID: String, root: URL?, lockTimeout: TimeInterval = 1,
-                               attributes: (String) -> [FileAttributeKey: Any]? = { try? FileManager.default.attributesOfItem(atPath: $0) }) -> [Line] {
+    public static func collect(groupID: String, root: URL?, lockTimeout: TimeInterval = 1) -> [Line] {
         var out: [Line] = [Line("App Group", groupID)]
         guard let root else {
             out.append(Line("Container", "not resolvable (entitlement or provisioning profile)"))
@@ -24,17 +23,17 @@ public enum ShareDiagnostics {
         out.append(Line("Container", "resolvable"))
         out.append(Line("Container path form", root.path.hasPrefix("/private/") ? "/private/… (device)" : "other"))
         let area = ShareArea(shareGroupRoot: root)
-        let dirAttrs = attributes(area.shareDir.path)
-        out.append(Line("Share folder", dirAttrs == nil ? "missing" : "present, protection \(protection(dirAttrs))"))
-        out.append(Line("Path check", area.components(of: area.targetsURL) == ["targets.json"] ? "ok" : "refused"))
-
-        if let a = attributes(area.targetsURL.path) {
-            let size = (a[.size] as? NSNumber)?.intValue ?? -1
-            let date = (a[.modificationDate] as? Date).map(stamp) ?? "?"
-            out.append(Line("Index file", "\(size) bytes, modified \(date), protection \(protection(a))"))
-        } else {
-            out.append(Line("Index file", "missing"))
+        // fd-relative only (module rule): a `share` or `targets.json` swapped for a link is refused, never followed.
+        var folderPresent = false
+        do {
+            let dir = try area.openDir(area.shareDir)
+            folderPresent = true
+            out.append(Line("Share folder", "present, protection \(protection(fd: dir.fd))"))
+        } catch {
+            out.append(Line("Share folder", fsCode(error, missing: "missing")))
         }
+        out.append(Line("Path check", area.components(of: area.targetsURL) == ["targets.json"] ? "ok" : "refused"))
+        out.append(Line("Index file", folderPresent ? indexFile(area) : "missing"))
 
         if let s = ShareTargetIndex.PublishStatus.read(from: area) {
             out.append(Line("Last app publish", "\(stamp(Date(timeIntervalSince1970: s.at))): \(s.result), \(s.targets) targets"))
@@ -43,15 +42,16 @@ public enum ShareDiagnostics {
         }
 
         do {
-            let file = try ShareTargetIndex.readFile(from: area)
+            let file = try ShareTargetIndex.readFile(from: area, allowStale: true)
             let demo = file.targets.filter { $0.realm == "demo" }.count
-            out.append(Line("Index decode", "ok, version \(file.version), \(file.targets.count) targets (\(demo) Demo)"))
+            let stale = file.stale.map { ", stale: \(ShareTargetIndex.sanitizeCode($0))" } ?? ""
+            out.append(Line("Index decode", "ok, version \(file.version), \(file.targets.count) targets (\(demo) Demo)\(stale)"))
         } catch {
             out.append(Line("Index decode", code(error)))
         }
 
         // Probe only an existing folder: the probe creates the lock file, never the share folder itself.
-        out.append(Line("Tombstone lock", dirAttrs == nil ? "skipped (no share folder)" : lockProbe(area, timeout: lockTimeout)))
+        out.append(Line("Tombstone lock", !folderPresent ? "skipped (no share folder)" : lockProbe(area, timeout: lockTimeout)))
         do {
             let live = try ShareTargetIndex.load(from: area)
             out.append(Line("Offered", "\(live.count) destinations"))
@@ -66,11 +66,31 @@ public enum ShareDiagnostics {
 
     /// Fixed code for any error on the index path.
     public static func code(_ error: Error) -> String {
-        switch error as? ShareError {
-        case .noWorkspaces: "none"
-        case .index(let f): f.code
-        case .some(let e): "\(e)"
-        case nil: "other"
+        (error as? ShareError)?.code ?? "other"
+    }
+
+    static func fsCode(_ error: Error, missing: String) -> String {
+        switch error {
+        case ShareFS.ReadFailure.notFound: missing
+        case ShareFS.ReadFailure.io(ELOOP): "refused (link)"
+        case ShareFS.ReadFailure.io(ENOTDIR): "refused (link or not a folder)"   // O_DIRECTORY|O_NOFOLLOW on a link
+        case let f as ShareFS.ReadFailure: f.code
+        default: "refused"
+        }
+    }
+
+    static func indexFile(_ area: ShareArea) -> String {
+        do {
+            let (dir, name) = try area.openParent(area.targetsURL)
+            let fd = try ShareFS.openFile(dir, name)
+            defer { close(fd) }
+            var st = stat()
+            guard fstat(fd, &st) == 0 else { return "stat failed \(errno)" }
+            guard (st.st_mode & S_IFMT) == S_IFREG else { return "refused (not a regular file)" }
+            let date = Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec))
+            return "\(st.st_size) bytes, modified \(stamp(date)), protection \(protection(fd: fd))"
+        } catch {
+            return fsCode(error, missing: "missing")
         }
     }
 
@@ -86,10 +106,21 @@ public enum ShareDiagnostics {
         }
     }
 
-    static func protection(_ attrs: [FileAttributeKey: Any]?) -> String {
-        guard let raw = attrs?[.protectionKey] else { return "n/a" }
-        let s = (raw as? FileProtectionType)?.rawValue ?? (raw as? String) ?? "?"
-        return s.replacingOccurrences(of: "NSFileProtection", with: "")
+    /// Data protection class of an open descriptor (iOS); "n/a" elsewhere.
+    static func protection(fd: Int32) -> String {
+        #if os(iOS)
+        let c = fcntl(fd, F_GETPROTECTIONCLASS)
+        switch c {
+        case 1: return "Complete (A)"
+        case 2: return "CompleteUnlessOpen (B)"
+        case 3: return "CompleteUntilFirstUserAuthentication (C)"
+        case 4: return "None (D)"
+        case -1: return "unknown (errno \(errno))"
+        default: return "class \(c)"
+        }
+        #else
+        return "n/a"
+        #endif
     }
 
     static func stamp(_ d: Date) -> String {

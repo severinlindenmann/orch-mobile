@@ -30,6 +30,14 @@ public final class StagingSession: @unchecked Sendable {
         strictForbidden = always + [try ShareFS.canonical(URL(fileURLWithPath: NSHomeDirectory()))]
     }
 
+    static func fixedCode(_ error: Error) -> String {
+        switch error {
+        case let t as TombstoneError: "tombstones \(ShareTargetIndex.tombstoneCode(t))"
+        case let f as ShareFS.ReadFailure: f.code
+        default: "staging failed"
+        }
+    }
+
     public var remainingBytes: Int { lock.lock(); defer { lock.unlock() }; return ShareLimits.maxTotalBytes - total }
 
     public var id: String { jobID }
@@ -119,7 +127,7 @@ public final class StagingSession: @unchecked Sendable {
         } catch {
             area.safeRemove(jobDir)
             finished = true
-            throw ShareError.io("\(error)")
+            throw ShareError.io(Self.fixedCode(error))   // never interpolate: errors may carry paths
         }
     }
 
