@@ -80,7 +80,7 @@ public struct DemoChip: View {
     public var body: some View {
         Label(compact ? "Demo" : "Demo · simulated", systemImage: "theatermasks")
             .font(OF.meta).foregroundStyle(OC.demo)
-            .lineLimit(1).fixedSize(horizontal: true, vertical: true)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)   // never wider than its container at AX sizes
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
             .background(OC.soft(OC.demo), in: Capsule())
             .accessibilityLabel("Demo mode, simulated")

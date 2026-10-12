@@ -258,10 +258,11 @@ struct SignSheet: View {
         }
     }
 
-    /// Accessibility sizes, and the unsafe-content footer from XL up (its warning block takes half the screen and truncated), keep the
+    /// Accessibility sizes, XXXL, and the unsafe-content footer from XL up (its warning block takes half the screen and truncated; at XXXL the
+    /// pinned footer left a ~third-of-screen scroll viewport), keep the
     /// footer at the end of the scroll content instead of pinned. Arming still needs the scroll end, which now includes the footer.
     private func footerInScroll(_ review: ReviewValue) -> Bool {
-        typeSize.isAccessibilitySize || (review.hasUnsafeContent && typeSize >= .xLarge)
+        typeSize.isAccessibilitySize || typeSize >= .xxxLarge || (review.hasUnsafeContent && typeSize >= .xLarge)
     }
 
     /// The content hash prefix in four-character groups so two fingerprints can be compared at a glance.

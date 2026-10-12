@@ -287,6 +287,7 @@ struct HomeContent: View {
     @Binding var path: [Route]
     let onAdd: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var typeSize
     private var home: any HomeModel { services.home }
 
     var body: some View {
@@ -315,26 +316,43 @@ struct HomeContent: View {
         .foregroundStyle(OC.text)
     }
 
-    private var header: some View {
-        HStack(spacing: OS.s3) {
-            OrbitMark(size: 30)
-            Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
-            if home.isDemo { DemoChip(compact: true) }
-            Spacer(minLength: 0)
-            Button { path.append(.settings) } label: {
-                Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+    @ViewBuilder private var header: some View {
+        if typeSize.isAccessibilitySize {
+            // The one-row header is wider than the screen at AX sizes and pulled the whole page past the edges.
+            VStack(alignment: .leading, spacing: OS.s2) {
+                HStack(spacing: OS.s3) {
+                    OrbitMark(size: 30)
+                    Spacer(minLength: 0)
+                    headerButtons
+                }
+                Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
+                if home.isDemo { DemoChip(compact: true) }
             }
-            .foregroundStyle(OC.textMuted)
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("home.settings")
-            Button(action: onAdd) {
-                Image(systemName: "plus").font(.title3.weight(.semibold))
-                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        } else {
+            HStack(spacing: OS.s3) {
+                OrbitMark(size: 30)
+                Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
+                if home.isDemo { DemoChip(compact: true) }
+                Spacer(minLength: 0)
+                headerButtons
             }
-            .foregroundStyle(OC.brand)
-            .accessibilityLabel("Add workspace")
-            .accessibilityIdentifier("home.add")
         }
+    }
+
+    @ViewBuilder private var headerButtons: some View {
+        Button { path.append(.settings) } label: {
+            Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        }
+        .foregroundStyle(OC.textMuted)
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("home.settings")
+        Button(action: onAdd) {
+            Image(systemName: "plus").font(.title3.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        }
+        .foregroundStyle(OC.brand)
+        .accessibilityLabel("Add workspace")
+        .accessibilityIdentifier("home.add")
     }
 
     private var stale: Bool { home.workspaces.contains { !$0.isLive } }

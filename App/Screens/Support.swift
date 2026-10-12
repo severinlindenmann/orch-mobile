@@ -155,7 +155,10 @@ struct FlowLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let result = arrange(width: bounds.width, subviews: subviews)
         for (index, origin) in result.origins.enumerated() {
-            subviews[index].place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+            // Propose the width it was measured at: .unspecified let a long chip lay out on one line, wider than the card, at AX sizes.
+            let measured = subviews[index].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            subviews[index].place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
+                                  proposal: ProposedViewSize(width: min(measured.width, bounds.width), height: measured.height))
         }
     }
 

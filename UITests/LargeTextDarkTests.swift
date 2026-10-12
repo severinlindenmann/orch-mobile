@@ -55,9 +55,21 @@ class LargeTextBase: XCTestCase {
     /// The element can be scrolled into view and tapped.
     @MainActor
     func assertReachable(_ app: XCUIApplication, _ element: XCUIElement, _ what: String) {
-        XCTAssertTrue(app.reveal(element, timeout: 30), "\(what) not found")
+        XCTAssertTrue(scrollReveal(app, element), "\(what) not found")
         XCTAssertTrue(element.isHittable, "\(what) not hittable")
         assertFitsWidth(app, element, what)
+    }
+
+    /// Scrolls with a drag from the middle (the default swipe starts at 80 % height, which can be a pinned footer or the tab bar).
+    @MainActor
+    func scrollReveal(_ app: XCUIApplication, _ element: XCUIElement, max: Int = 30) -> Bool {
+        var tries = 0
+        while !(element.exists && element.isHittable) && tries < max {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)))
+            tries += 1
+        }
+        return element.exists
     }
 
     /// Nothing hides behind the tab bar: after scrolling to the end the element sits above it.
@@ -166,7 +178,9 @@ enum LargeTextRunner {
     static func scrollSignSheetToEnd(_ app: XCUIApplication, _ confirm: XCUIElement) {
         var tries = 0
         while !(confirm.isEnabled && confirm.isHittable) && tries < 30 {
-            app.swipeUp()
+            // Drag from the upper-middle: the default swipe starts at 80 % height, which can be the pinned footer.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)))
             tries += 1
         }
         _ = confirm.waitForEnabled(10)
@@ -183,7 +197,7 @@ enum LargeTextRunner {
         t.assertFitsWidth(app, text, "unsafe question text")
         let header = app.el("workspace.header")
         XCTAssertTrue(header.exists, "workspace header")
-        XCTAssertTrue(header.label.contains("hosted by"), "hosted marker: \(header.label)")
+        XCTAssertTrue(header.label.lowercased().contains("hosted by"), "hosted marker: \(header.label)")
         t.assertNoEllipsis(header, "workspace host marker")
         t.assertFitsWidth(app, header, "workspace header")
         XCTAssertGreaterThan(header.frame.width, 100, "host marker squeezed: \(header.frame)")
@@ -277,7 +291,7 @@ enum LargeTextRunner {
         XCTAssertTrue(hosted.buttons["settings.leave"].waitForExistence(timeout: 90))
         let header = hosted.el("workspace.header")
         XCTAssertTrue(header.exists)
-        XCTAssertTrue(header.label.contains("hosted by"), header.label)
+        XCTAssertTrue(header.label.lowercased().contains("hosted by"), header.label)
         t.assertNoEllipsis(header, "workspace host marker")
         XCTAssertGreaterThan(header.frame.width, 100, "host marker squeezed: \(header.frame)")
         t.assertReachable(hosted, hosted.buttons["settings.leave"], "Leave (hosted workspace)")
