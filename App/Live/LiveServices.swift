@@ -402,6 +402,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Bounded background reconciliation while the app runs; the state stays visible on Home. It reconciles the stored decision only.
     func startReconcile(workspace: LiveWorkspace, decisionID: ID16) {
         guard canUse(workspace.info.id) else { return }
+        if options.holdReconcile { Task { await refreshPending() }; return }
         let key = workspace.workspaceID.hex + "/" + decisionID.hex
         reconcileTasks[key]?.cancel()
         reconcileSerial += 1

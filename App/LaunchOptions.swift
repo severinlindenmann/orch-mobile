@@ -21,6 +21,9 @@ struct LaunchOptions: Equatable, Sendable {
     let uiPreview: Bool
     /// DEBUG-only `--demo-seed`: pairs the two Demo workspaces at launch (playing the Demo humans' explicit approvals), for UI tests.
     let demoSeed: Bool
+    /// DEBUG-only `--hold-reconcile`: no timed background reconcile of stored decisions, so a UI test drives "Check again" itself
+    /// instead of racing the 20 s UI-test timer.
+    let holdReconcile: Bool
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         #if DEBUG
@@ -32,7 +35,8 @@ struct LaunchOptions: Equatable, Sendable {
 
     private init(uiTesting: Bool, demo: Bool, initialRoute: String?, appearance: String?, pushHarness: Bool = false, pushMaterial: String? = nil,
                  seedShareQuarantine: Bool = false, holdShareImport: Bool = false, shareDemoTargets: Bool = false,
-                 uiPreview: Bool = false, demoSeed: Bool = false) {
+                 uiPreview: Bool = false, demoSeed: Bool = false, holdReconcile: Bool = false) {
+        self.holdReconcile = holdReconcile
         self.uiPreview = uiPreview
         self.demoSeed = demoSeed
         self.pushHarness = pushHarness
@@ -63,6 +67,7 @@ struct LaunchOptions: Equatable, Sendable {
                              seedShareQuarantine: arguments.contains("--seed-share-quarantine"),
                              holdShareImport: arguments.contains("--hold-share-import"),
                              shareDemoTargets: arguments.contains("--share-demo-targets"),
-                             uiPreview: arguments.contains("--ui-preview"), demoSeed: arguments.contains("--demo-seed"))
+                             uiPreview: arguments.contains("--ui-preview"), demoSeed: arguments.contains("--demo-seed"),
+                             holdReconcile: arguments.contains("--hold-reconcile"))
     }
 }

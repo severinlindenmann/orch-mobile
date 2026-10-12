@@ -174,7 +174,9 @@ final class SignSheetStateTests: XCTestCase {
 
     @MainActor
     func testReopenedPendingSubmissionKeepsSubmittedOption() {
-        let app = launch("question/q1/uncertain")
+        // The app's timed background reconcile (20 s in UI tests) would settle the decision mid-test; hold it so "Check again" is the only
+        // thing that settles it (waiting on state, not racing a timer).
+        let app = launch("question/q1/uncertain", extra: ["--hold-reconcile"])
         let reject = app.buttons["question.option.reject"]
         XCTAssertTrue(reject.waitForExistence(timeout: 60))
         reject.tap()
