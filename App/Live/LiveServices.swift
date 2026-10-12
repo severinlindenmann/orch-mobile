@@ -610,9 +610,19 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             demoPushResult = "Notifications are off for orch. Turn them on in iOS Settings, then try again."
             return
         }
+        // The notification must belong to a real open question, or nothing could ever replace it.
+        var target = ws.waiting.first?.id
+        if target == nil {
+            demoPushResult = "Asking a Demo question…"
+            guard let asked = await runtime.askDemoQuestion(workspace: ws.workspaceID) else {
+                demoPushResult = "The Demo question could not be created."; return
+            }
+            target = asked.hex
+            Task { await ws.refresh() }      // the new question appears in the app; never awaited here
+        }
         demoPushResult = "Sending…"
         let result = await runtime.simulatePush(workspace: ws.workspaceID, name: ws.info.name, generation: ws.generation,
-                                                label: "Demo: a question is waiting", questionID: ws.waiting.first?.id, delay: delay)
+                                                label: "Demo: a question is waiting", questionID: target, delay: delay)
         guard let result else { demoPushResult = "The Demo push could not be sealed."; return }
         if let failure = UNUserNotificationScheduler.lastError.current {
             demoPushResult = "iOS refused the notification: \(failure)"

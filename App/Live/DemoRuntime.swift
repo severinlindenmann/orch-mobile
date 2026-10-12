@@ -246,6 +246,14 @@ final class DemoRuntime {
 
     // MARK: Demo push
 
+    /// The Demo host asks a fresh question (the Demo notification needs a real, open question to replace later). Returns its id.
+    func askDemoQuestion(workspace: ID16) async -> ID16? {
+        guard let entry = entries[workspace] else { return nil }
+        let seed = DemoQuestionSeed(ticket: "DEMO-1", text: "Demo notification: answer this question in orch.",
+                                    options: [DemoOptionSeed("approve", "Approve"), DemoOptionSeed("reject", "Reject")], createdAgoMs: 0)
+        return try? await entry.host.demoAskQuestion(seed)
+    }
+
     /// Seals a push as the host would and runs it through the same processor the notification extension uses, ending in a local,
     /// labelled-as-simulated notification (decision A12).
     func simulatePush(workspace: ID16, name: String, generation: Int64, label: String, questionID: String? = nil, delay: TimeInterval = 1) async -> PushSimulator.Result? {

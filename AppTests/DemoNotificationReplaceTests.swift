@@ -96,4 +96,41 @@ final class DemoNotificationReplaceTests: XCTestCase {
         services.exitDemo()
         await services.waitForReset()
     }
+
+    func testNoOpenQuestionMakesTheHostAskOneAndTheNotificationTargetsIt() async throws {
+        let center = RecordingCenter()
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true, notifications: DemoNotifications(backend: center))
+        let services = LiveServices(options: options, runtime: runtime)
+        services.notificationCenter = center
+        services.notificationPermissionOverride = { .allowed }
+        await pairOneWorkspace(services, runtime)
+        let ws = try XCTUnwrap(services.live.first)
+        await ws.refresh()
+        let host = try XCTUnwrap(runtime.entry(for: ws.workspaceID)?.host)
+        for q in ws.waiting {
+            try await host.demoAnswerOnHost(question: try XCTUnwrap(ID16(hex: q.id)), optionID: try XCTUnwrap(q.options.first?.id))
+        }
+        await ws.refresh()
+        let seen = Set(ws.questions.map(\.id))
+        XCTAssertTrue(ws.waiting.isEmpty)
+
+        await services.demoSendNotification()
+        for _ in 0..<200 { if !ws.waiting.isEmpty { break }; try await Task.sleep(for: .milliseconds(25)) }
+        let fresh = try XCTUnwrap(ws.waiting.first)
+        XCTAssertFalse(seen.contains(fresh.id))
+        let scheduled = await center.scheduled
+        XCTAssertEqual(scheduled.count, 1)
+        let first = try XCTUnwrap(scheduled.first)
+        XCTAssertEqual(first.presentation.entityKey, "\(ws.workspaceID.hex)/\(fresh.id)")
+
+        try await host.demoAnswerOnHost(question: try XCTUnwrap(ID16(hex: fresh.id)), optionID: try XCTUnwrap(fresh.options.first?.id), byLabel: "Demo Mac")
+        await ws.refresh()
+        for _ in 0..<200 { if await !center.posts.isEmpty { break }; try await Task.sleep(for: .milliseconds(25)) }
+        let posts = await center.posts
+        XCTAssertEqual(posts.first?.identifier, first.identifier)
+        XCTAssertEqual(posts.first?.body, "Answered on Demo Mac")
+
+        services.exitDemo()
+        await services.waitForReset()
+    }
 }
