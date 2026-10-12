@@ -177,13 +177,20 @@ final class ShareBridgeTests: XCTestCase {
     func testJournalFailureKeepsWorkspaceAndPersistedDestination() async throws {
         let (world, bridge, area) = try make()
         bridge.publishTargets()
-        let indexBefore = try Data(contentsOf: area.targetsURL)
+        let persistedBefore = try ShareTargetIndex.persisted(from: area)
+        XCTAssertFalse(persistedBefore.isEmpty)
         try FileManager.default.createDirectory(at: area.shareDir.appendingPathComponent("pending-removals.json"),
                                                 withIntermediateDirectories: false)
         _ = await world.leave(workspaceID: "client-vm", simulateOffline: false)
         bridge.publishTargets()
         XCTAssertTrue(world.workspaces.contains { $0.id == "client-vm" })
-        XCTAssertEqual(try Data(contentsOf: area.targetsURL), indexBefore)
+        // The persisted destinations are unchanged (the app can still retire them after a restart) ...
+        XCTAssertEqual(try ShareTargetIndex.persisted(from: area), persistedBefore)
+        // ... but the skipped publish marked the index stale, so the extension offers nothing from it.
+        XCTAssertThrowsError(try ShareTargetIndex.load(from: area)) { error in
+            guard case .index(.stale)? = error as? ShareError else { return XCTFail("expected a stale index, got \(error)") }
+        }
+        XCTAssertEqual(ShareTargetIndex.PublishStatus.read(from: area)?.result.hasPrefix("skipped: "), true)
         XCTAssertTrue(try area.coordination.records().isEmpty)
     }
 

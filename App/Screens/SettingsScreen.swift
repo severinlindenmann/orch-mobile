@@ -1,5 +1,6 @@
 import SwiftUI
 import OrchUI
+import OrchShareStaging
 
 struct SettingsScreen: View {
     let services: any AppServices
@@ -102,6 +103,7 @@ struct SettingsScreen: View {
                 Text(verbatim: result).font(OF.meta).foregroundStyle(OC.textMuted)
                     .accessibilityIdentifier("demo.sendNotification.result")
             }
+            ShareTargetsStatus()
             Button("Reset Demo data") { model.resetDemoData() }.accessibilityIdentifier("demo.reset")
             Button("Leave Demo", role: .destructive) { model.exitDemo(); path = [] }
                 .accessibilityIdentifier("demo.leave")
@@ -201,5 +203,36 @@ struct WorkspaceSettingsScreen: View {
         case .pendingOffline: "You are offline, so stopping notifications on the server is still pending. It will be tried again when you are back online. Finish on your Mac if it stays pending."
         case .finishOnMac: "This iPhone can't remove itself from the server for \(SafeText.inline(r.workspaceName, limit: 40)). Finish on your Mac."
         }
+    }
+}
+
+/// Demo controls → "Share targets status": what the share extension will find in its App Group (support evidence without
+/// Xcode). Path-free and name-free: see ShareDiagnostics.
+struct ShareTargetsStatus: View {
+    @State private var lines: [ShareDiagnostics.Line] = []
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            ForEach(lines) { line in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: line.label).font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text(verbatim: line.value).font(OF.meta).textSelection(.enabled)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Button("Refresh") { Task { await reload() } }.accessibilityIdentifier("demo.shareStatus.refresh")
+        } label: {
+            Text("Share targets status")
+        }
+        .accessibilityIdentifier("demo.shareStatus")
+        .onChange(of: expanded) { _, open in if open { Task { await reload() } } }
+    }
+
+    private func reload() async {
+        let id = ShareBridge.groupIdentifier
+        lines = await Task.detached {
+            ShareDiagnostics.collect(groupID: id, root: FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: id))
+        }.value
     }
 }

@@ -53,6 +53,8 @@ final class ShareModel {
     var note = ""
     /// Short non-sensitive reason shown with the unreadable state (support evidence; no paths or names).
     private(set) var unreadableReason = ""
+    /// Path-free support lines behind "Details" on the unreadable screen (same as the app's "Share targets status").
+    private(set) var details: [ShareDiagnostics.Line] = []
     let summary: [String]
 
     private let providers: [NSItemProvider]
@@ -68,9 +70,13 @@ final class ShareModel {
     }
 
     /// Reads the destinations index; unreadable or empty means nothing is retained and nothing can be saved.
+    static let groupIdentifier = "group.io.severin.orch.share"
+
     func start() {
-        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.io.severin.orch.share") else {
-            unreadableReason = "no app group container"; phase = .unreadable; return
+        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.groupIdentifier) else {
+            unreadableReason = "no app group container"
+            details = ShareDiagnostics.collect(groupID: Self.groupIdentifier, root: nil)
+            phase = .unreadable; return
         }
         let area = ShareArea(shareGroupRoot: root)
         self.area = area
@@ -78,8 +84,15 @@ final class ShareModel {
         do {
             targets = try ShareTargetIndex.load(from: area)
             phase = .choosing
-        } catch ShareError.noWorkspaces { phase = .noWorkspaces }
-        catch { unreadableReason = ShareModel.code(for: error); phase = .unreadable }
+        } catch ShareError.noWorkspaces {
+            details = ShareDiagnostics.collect(groupID: Self.groupIdentifier, root: root, lockTimeout: 0.5)
+            phase = .noWorkspaces
+        }
+        catch {
+            unreadableReason = ShareModel.code(for: error)
+            details = ShareDiagnostics.collect(groupID: Self.groupIdentifier, root: root, lockTimeout: 0.5)
+            phase = .unreadable
+        }
     }
 
     var canSave: Bool { phase == .choosing && destination != nil && !providers.isEmpty }
@@ -128,6 +141,7 @@ final class ShareModel {
         switch error as? ShareError {
         case .noWorkspaces: "index: none"
         case .unreadable: "index: unreadable"
+        case .index(let f): "index: \(f.code)"
         case .tooManyItems: "index: items"
         case .tooLarge: "index: size"
         case .empty: "index: empty"
@@ -194,9 +208,19 @@ private struct ShareComposeView: View {
         case .loading:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         case .noWorkspaces:
-            Message(text: "Open orch and pair a workspace", detail: "Then share again. Nothing was saved.", id: "share.status.none")
+            VStack(spacing: 12) {
+                Message(text: "Open orch and pair a workspace", detail: "Then share again. Nothing was saved.", id: "share.status.none")
+                    .frame(maxHeight: 200)
+                DetailsDisclosure(lines: model.details).padding(.horizontal)
+                Spacer()
+            }
         case .unreadable:
-            Message(text: "orch can't read its workspaces", detail: "Open orch and try again. Nothing was saved.\n(\(model.unreadableReason))", id: "share.status.unreadable")
+            VStack(spacing: 12) {
+                Message(text: "orch can't read its workspaces", detail: "Open orch and try again. Nothing was saved.\n(\(model.unreadableReason))", id: "share.status.unreadable")
+                    .frame(maxHeight: 200)
+                DetailsDisclosure(lines: model.details).padding(.horizontal)
+                Spacer()
+            }
         case .saved:
             Message(text: "Saved. Open orch to send.", detail: nil, id: "share.status.saved")
         case .failed(let text):
@@ -251,5 +275,29 @@ private struct Message: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// "Details" on the unreadable screen: the ShareDiagnostics lines (no paths, names or content), selectable for support.
+private struct DetailsDisclosure: View {
+    let lines: [ShareDiagnostics.Line]
+    var body: some View {
+        DisclosureGroup("Details") {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(lines) { line in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(verbatim: line.label).font(.caption).foregroundStyle(OC.textMuted)
+                            Text(verbatim: line.value).font(.caption.monospaced())
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            }
+            .frame(maxHeight: 320)
+        }
+        .accessibilityIdentifier("share.status.details")
     }
 }
