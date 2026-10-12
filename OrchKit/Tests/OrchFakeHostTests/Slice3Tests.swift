@@ -362,7 +362,7 @@ import OrchTestVectors
     }
     /// Snapshot-to-snapshot intervals on the fake clock, ending with the first one after a host-side revision change. The consumer
     /// optionally stalls in real time before it reads the clock, which is what a loaded CI runner does to it.
-    private func pollingIntervals(consumerStallMs: Int, barrier: Bool) async throws -> [Int64] {
+    private func pollingIntervals(consumerStallMs: Int, lateReadMs: Int64 = 0, barrier: Bool) async throws -> [Int64] {
         let (w, p, api, initial) = try await setup()
         let stream = await api.events()
         let consumed = Consumed()
@@ -374,7 +374,13 @@ import OrchTestVectors
             for await event in stream {
                 guard case .snapshot(let snapshot) = event else { continue }
                 if consumerStallMs > 0 { try await Task.sleep(for: .milliseconds(consumerStallMs)) }
-                let now = p.clock.nowMs
+                var now = p.clock.nowMs
+                if changedAt != nil, lateReadMs > 0 {
+                    // Deterministic lateness: read the clock only once the driver has ticked it `lateReadMs` past the emission.
+                    // serve's timeout cancels this loop if the clock never gets there.
+                    while p.clock.nowMs < now + lateReadMs { try Task.checkCancellation(); await Task.yield() }
+                    now = p.clock.nowMs
+                }
                 if let changedAt { intervals.append(now - changedAt); consumed.bump(); return intervals }
                 if snapshot.revision != initial.revision { changedAt = now }
                 else {
@@ -401,14 +407,11 @@ import OrchTestVectors
         #expect(intervals.contains { $0 >= 30_000 })
         #expect((15_000...17_000).contains(try #require(intervals.last)))
     }
-    /// Control for the test above: without the barrier the same stall makes the measurement overshoot, proving the stall bites.
-    @Test func slowConsumerWithoutBarrierOvershoots() async throws {
-        do {
-            let intervals = try await pollingIntervals(consumerStallMs: 40, barrier: false)
-            #expect(try #require(intervals.last) > 17_000)
-        } catch is CancellationError {
-            // The clock ran out its step budget while the consumer was still stalled: the same overshoot, more extreme.
-        }
+    /// Control for the test above: without the barrier a consumer that reads the clock 3 s (of fake time) after the emission
+    /// measures an interval of at least 18 s, however fast or slow the runner is. The lateness is driven by the fake clock itself.
+    @Test func lateConsumerWithoutBarrierOvershoots() async throws {
+        let intervals = try await pollingIntervals(consumerStallMs: 0, lateReadMs: 3_000, barrier: false)
+        #expect(try #require(intervals.last) > 17_000)
     }
     @Test func rejectsAmbiguousOptionsAndUnsafeIDs() async throws {
         let (_, _, _, snapshot) = try await setup()

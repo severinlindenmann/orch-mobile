@@ -176,7 +176,7 @@ final class Done: @unchecked Sendable {
     func set() { lock.withLock { v = true } }
 }
 
-/// Counts events a test's consumer has fully processed; `World.serve` uses it as a barrier against the session's emitted count.
+/// The barrier assumes a single consumer stream. Counts events a test's consumer has fully processed; `World.serve` uses it as a barrier against the session's emitted count.
 final class Consumed: @unchecked Sendable {
     private let lock = NSLock(); private var n = 0
     var count: Int { lock.withLock { n } }

@@ -1191,7 +1191,7 @@ extension WorkspaceSession {
     }
     private func emit(_ event: WorkspaceEvent) {
         if case .connection(let state) = event { connectionState = state }
-        if case .snapshot = event { snapshotsEmitted += 1 }
+        if case .snapshot = event, !subscribers.isEmpty { snapshotsEmitted += 1 }
         for c in subscribers.values { c.yield(event) }
         if case .invalidated = event, foreground, !subscribers.isEmpty, hintRefresh == nil {
             let identity = UUID(); hintIdentity = identity
