@@ -360,18 +360,28 @@ import OrchTestVectors
         #expect(try await w.serve(p) { try await api.decide(review, optionID: "approve") } == .accepted)
         #expect(try await w.serve(p) { try await api.snapshot() }.revision == 2)
     }
-    @Test func revisionChangeResetsPollingToFifteenSeconds() async throws {
+    /// Snapshot-to-snapshot intervals on the fake clock, ending with the first one after a host-side revision change. The consumer
+    /// optionally stalls in real time before it reads the clock, which is what a loaded CI runner does to it.
+    private func pollingIntervals(consumerStallMs: Int, lateReadMs: Int64 = 0, barrier: Bool) async throws -> [Int64] {
         let (w, p, api, initial) = try await setup()
         let stream = await api.events()
-        let intervals = try await w.serve(p, steps: 600) {
+        let consumed = Consumed()
+        let intervals = try await w.serve(p, steps: 600, consumed: barrier ? consumed : nil) {
             var last: Int64?
             var sameRevision = 0
             var changedAt: Int64?
             var intervals: [Int64] = []
             for await event in stream {
                 guard case .snapshot(let snapshot) = event else { continue }
-                let now = p.clock.nowMs
-                if let changedAt { intervals.append(now - changedAt); return intervals }
+                if consumerStallMs > 0 { try await Task.sleep(for: .milliseconds(consumerStallMs)) }
+                var now = p.clock.nowMs
+                if changedAt != nil, lateReadMs > 0 {
+                    // Deterministic lateness: read the clock only once the driver has ticked it `lateReadMs` past the emission.
+                    // serve's timeout cancels this loop if the clock never gets there.
+                    while p.clock.nowMs < now + lateReadMs { try Task.checkCancellation(); await Task.yield() }
+                    now = p.clock.nowMs
+                }
+                if let changedAt { intervals.append(now - changedAt); consumed.bump(); return intervals }
                 if snapshot.revision != initial.revision { changedAt = now }
                 else {
                     if let last { intervals.append(now - last) }
@@ -379,12 +389,29 @@ import OrchTestVectors
                     if sameRevision == 4 { try await w.host.replaceQuestionText(initial.questions[0].questionID, text: "Polling reset") }
                 }
                 last = now
+                consumed.bump()
             }
             return intervals
         }
         await api.setForeground(false)
+        return intervals
+    }
+    @Test func revisionChangeResetsPollingToFifteenSeconds() async throws {
+        let intervals = try await pollingIntervals(consumerStallMs: 0, barrier: true)
         #expect(intervals.contains { $0 >= 30_000 })
         #expect((15_000...17_000).contains(try #require(intervals.last)))
+    }
+    /// The flake's interleaving, forced: the consumer reads the clock late. With the consumer barrier the fake clock waits for it.
+    @Test func pollingIntervalsHoldWhenTheConsumerIsSlow() async throws {
+        let intervals = try await pollingIntervals(consumerStallMs: 40, barrier: true)
+        #expect(intervals.contains { $0 >= 30_000 })
+        #expect((15_000...17_000).contains(try #require(intervals.last)))
+    }
+    /// Control for the test above: without the barrier a consumer that reads the clock 3 s (of fake time) after the emission
+    /// measures an interval of at least 18 s, however fast or slow the runner is. The lateness is driven by the fake clock itself.
+    @Test func lateConsumerWithoutBarrierOvershoots() async throws {
+        let intervals = try await pollingIntervals(consumerStallMs: 0, lateReadMs: 3_000, barrier: false)
+        #expect(try #require(intervals.last) > 17_000)
     }
     @Test func rejectsAmbiguousOptionsAndUnsafeIDs() async throws {
         let (_, _, _, snapshot) = try await setup()
@@ -475,6 +502,7 @@ import OrchTestVectors
         await api.setForeground(true)
         try await w.serve(p) {
             for await event in stream { if case .snapshot = event { return } }
+            Issue.record("the event stream ended or was cancelled before a snapshot arrived")
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
         while p.clock.sleeperCount == 0 && ContinuousClock.now < deadline { await Task.yield() }
@@ -492,19 +520,24 @@ import OrchTestVectors
         let stream = await api.events()
         w.env.generation.invalidate()
         await #expect(throws: (any Error).self) { _ = try await api.pendingDecisions() }
-        var removed = false
-        for await event in stream { if event == .removed { removed = true } }
-        #expect(removed)
+        let removed = await boundedWait("the .removed event and stream end") {
+            var removed = false
+            for await event in stream { if event == .removed { removed = true } }
+            return removed
+        }
+        #expect(removed == true)
     }
     @Test func testForegroundPollingThirtyMinutesWithinQuota() async throws {
         let (w, p, api, _) = try await setup()
         let start = w.clock.nowMs
         let stream = await api.events()
-        let count = try await w.serve(p, steps: 4000, timeout: .seconds(60)) {
+        let consumed = Consumed()
+        let count = try await w.serve(p, steps: 4000, timeout: .seconds(60), consumed: consumed) {
             var snapshots = 0
             for await event in stream {
                 if case .snapshot = event {
                     snapshots += 1
+                    consumed.bump()
                     if w.clock.nowMs - start >= 1_800_000 { return snapshots }
                 }
             }
@@ -523,7 +556,10 @@ import OrchTestVectors
         let taskA = Task { for await event in a { if case .snapshot(let s) = event { return s.revision } }; return Int64(0) }
         let taskB = Task { for await event in b { if case .snapshot(let s) = event { return s.revision } }; return Int64(0) }
         let before = try await p.session.nextSeq()
-        let result = try await w.serve(p) { (await taskA.value, await taskB.value) }
+        // serve cancels its body on timeout but not these unstructured tasks, so cancel them with it.
+        let result = try await w.serve(p) {
+            await withTaskCancellationHandler { (await taskA.value, await taskB.value) } onCancel: { taskA.cancel(); taskB.cancel() }
+        }
         #expect(result.0 == result.1 && result.0 > 0)
         #expect(try await p.session.nextSeq() <= before + 1)
         await p.session.setForeground(false)

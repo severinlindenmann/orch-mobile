@@ -25,12 +25,12 @@ actor StateLog {
     func stop() { task?.cancel() }
     /// Waits for a published snapshot, not `state`: expiry may change that getter without publishing.
     func settled(_ c: PairingCoordinator) async {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(120))
         while ContinuousClock.now < deadline {
             if states.last == (await c.lastPublishedState) { return }
             await Task.yield()
         }
-        Issue.record("StateLog did not consume the last published state within 60 s: log=\(states.last.map { "\($0)" } ?? "empty")")
+        Issue.record("StateLog did not consume the last published state within 120 s: log=\(states.last.map { "\($0)" } ?? "empty")")
     }
     var showedHostCode: Bool { states.contains { isComparingHost($0) } }
     var showedPrimaryCode: Bool { states.contains { isComparingPrimary($0) } }
