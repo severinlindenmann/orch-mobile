@@ -67,6 +67,12 @@ struct SettingsScreen: View {
                 Text("Wipes every workspace and the device keys from this iPhone. It does not remove it from your Mac.")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(OC.bg)
+        .contentMargins(.bottom, 24, for: .scrollContent)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarBackground(.regularMaterial, for: .tabBar)
+        .headerProminence(.increased)
         .navigationTitle("Settings")
         .task { await model.refreshNotificationStatus() }
         .alert("Reset this iPhone?", isPresented: $confirmReset) {

@@ -175,7 +175,7 @@ struct HomeScreen: View {
         #if DEBUG
         .onReceive(NotificationCenter.default.publisher(for: .orchDebugShareRefresh)) { _ in bridge?.refresh() }
         #endif
-        .symbolRenderingMode(.hierarchical)
+        .symbolRenderingMode(.monochrome)
         .safeAreaInset(edge: .top, spacing: 0) { if services.home.isDemo { DemoStripe() } }
         .overlay(alignment: .topLeading) {
             // DEBUG/UI-test only: lets tests assert the resolved colour scheme.
@@ -319,17 +319,17 @@ struct HomeContent: View {
         HStack(spacing: OS.s3) {
             OrbitMark(size: 30)
             Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
-            if home.isDemo { DemoChip() }
+            if home.isDemo { DemoChip(compact: true) }
             Spacer(minLength: 0)
             Button { path.append(.settings) } label: {
-                Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44)
+                Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .foregroundStyle(OC.textMuted)
             .accessibilityLabel("Settings")
             .accessibilityIdentifier("home.settings")
             Button(action: onAdd) {
                 Image(systemName: "plus").font(.title3.weight(.semibold))
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .foregroundStyle(OC.brand)
             .accessibilityLabel("Add workspace")
@@ -490,6 +490,9 @@ struct NeedsYouScreen: View {
         }
         .scrollContentBackground(.hidden)
         .background(OC.bg)
+        .contentMargins(.bottom, 24, for: .scrollContent)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarBackground(.regularMaterial, for: .tabBar)
         .navigationTitle("Questions")
         .accessibilityIdentifier("needsYou.list")
     }

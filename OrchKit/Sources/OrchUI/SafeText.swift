@@ -193,7 +193,8 @@ public enum SafeText {
     @MainActor
     public static func attributed(_ input: String, style: Style = .signing, strictLabel: Bool = false) -> AttributedString {
         // Readable proportional text for the prose itself; monospace only for the exact markers of hidden characters.
-        let font: Font = style == .exact ? OF.machine : OF.body
+        // Option labels (strictLabel) and exact text stay monospace: I/l, 0/O, rn/m must be tellable apart. Only prose is proportional.
+        let font: Font = strictLabel ? OF.machine.weight(.semibold) : (style == .exact ? OF.machine : OF.body)
         let markerFont: Font = OF.machine.bold()
         var out = AttributedString()
         // FSI ... PDI keeps an unterminated bidi override from reordering the rest of the screen.

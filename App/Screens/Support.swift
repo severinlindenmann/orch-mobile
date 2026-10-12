@@ -109,7 +109,8 @@ struct WorkspaceHeader: View {
 
     private var nameRow: some View {
         HStack(spacing: OS.s2) {
-            Image(systemName: "laptopcomputer").foregroundStyle(OC.textMuted).accessibilityHidden(true)
+            // Workspace identity cue on the question and sign sheet (the workspace's own colour).
+            WorkspaceRail(color: color).frame(height: 22).clipShape(Capsule())
             Text(verbatim: SafeText.inline(name, limit: 40)).font(OF.wsName).fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -97,6 +97,9 @@ struct DropScreen: View {
         }
         .scrollContentBackground(.hidden)
         .background(OC.bg)
+        .contentMargins(.bottom, 24, for: .scrollContent)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarBackground(.regularMaterial, for: .tabBar)
         // Pinned below the list (not above, so a late status never shifts the segmented control) so the current transfer status is always on screen (rows taller than before would otherwise
         // scroll it out of the lazy list).
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -148,21 +151,12 @@ struct DropRow: View {
                     Text(verbatim: item.displayName).font(OF.section).lineLimit(2)
                     if item.blocked { Image(systemName: "exclamationmark.shield.fill").foregroundStyle(OC.danger).accessibilityLabel("Verification alarm") }
                 }
-                FlowLayout(spacing: OS.s2) {
-                    Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
-                        .font(OF.meta).foregroundStyle(OC.textMuted)
-                    if item.verified {
-                        StatusChip("Verified", systemImage: "checkmark.shield", color: OC.ok)
-                        if item.hasSignedExpiry {
-                            let left = Fmt.timeLeft(item.expires)
-                            Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
-                            if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn) }
-                        } else {
-                            Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)
-                        }
-                    } else {
-                        StatusChip("Metadata not verified", systemImage: "exclamationmark.triangle", color: OC.danger)
-                    }
+                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
+                    .font(OF.meta).foregroundStyle(OC.textMuted)
+                // Compact status line. Plain stacks (no custom Layout): chips keep their natural height inside a list row.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: OS.s2) { statusParts(item) }
+                    VStack(alignment: .leading, spacing: OS.s1) { statusParts(item) }
                 }
                 if item.quarantineJob != nil {
                     Label("Destination removed. Choose another destination.", systemImage: "exclamationmark.triangle")
@@ -175,6 +169,23 @@ struct DropRow: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+@MainActor @ViewBuilder
+private func statusParts(_ item: DropItem) -> some View {
+    if item.verified {
+        StatusChip("Verified", systemImage: "checkmark.shield", color: OC.ok).fixedSize()
+        if item.hasSignedExpiry {
+            let left = Fmt.timeLeft(item.expires)
+            Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
+            if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn).fixedSize() }
+        } else {
+            Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)
+        }
+    } else {
+        StatusChip("Metadata not verified", systemImage: "exclamationmark.triangle", color: OC.danger)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

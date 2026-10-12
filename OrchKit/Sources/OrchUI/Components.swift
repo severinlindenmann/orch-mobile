@@ -52,6 +52,7 @@ public struct StatusChip: View {
             .foregroundStyle(color)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
             .background(OC.soft(color), in: Capsule())
+            .fixedSize(horizontal: false, vertical: true)   // natural height inside list rows and stacks
     }
 }
 
@@ -71,10 +72,13 @@ public struct HostedMarker: View {
 }
 
 public struct DemoChip: View {
-    public init() {}
+    private let compact: Bool
+    /// `compact`: the single-word "Demo" badge for tight headers (the explanation lives in the simulation notice below).
+    public init(compact: Bool = false) { self.compact = compact }
     public var body: some View {
-        Label("Demo · simulated", systemImage: "theatermasks")
+        Label(compact ? "Demo" : "Demo · simulated", systemImage: "theatermasks")
             .font(OF.meta).foregroundStyle(OC.demo)
+            .lineLimit(1).fixedSize(horizontal: true, vertical: true)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
             .background(OC.soft(OC.demo), in: Capsule())
             .accessibilityLabel("Demo mode, simulated")

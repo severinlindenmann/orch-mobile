@@ -130,6 +130,33 @@ struct QuestionScreen: View {
 
 private struct ArmKey: Hashable { let atEnd: Bool; let revision: Int }
 
+/// The exact signed text in monospace. Open from the start when the text has hidden or look-alike characters.
+private struct ExactTextDisclosure: View {
+    let review: ReviewValue
+    @State private var open: Bool
+
+    init(review: ReviewValue) {
+        self.review = review
+        _open = State(initialValue: review.hasUnsafeContent)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $open) {
+            VStack(alignment: .leading, spacing: OS.s2) {
+                Text("Question").font(OF.meta).foregroundStyle(OC.textMuted)
+                Text(SafeText.attributed(review.text, style: .exact)).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(SafeText.spoken(review.text))
+                Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
+                Text(SafeText.attributed(review.optionLabel, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(SafeText.spoken(review.optionLabel, strictLabel: true))
+            }
+            .padding(.top, OS.s2)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("sign.exactText")
+        } label: { Text("Exact text (monospace)").font(OF.section) }
+    }
+}
+
 struct SignSheet: View {
     let model: any QuestionReviewModel
     let onClose: () -> Void
@@ -184,12 +211,13 @@ struct SignSheet: View {
                 .padding(OS.s3)
                 .background(OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 VStack(alignment: .leading, spacing: OS.s1) {
-                    Text("Your answer").font(OF.meta).foregroundStyle(OC.textFaint)
+                    Text("Selected answer").font(.footnote.weight(.bold)).foregroundStyle(OC.brand)
                     SafeTextView(review.optionLabel, strictLabel: true).accessibilityIdentifier("sign.answer")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(OS.s3)
                 .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(OC.brand, lineWidth: 2))
                 if review.hasUnsafeContent {
                     Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
@@ -201,19 +229,10 @@ struct SignSheet: View {
                         .font(OF.meta).foregroundStyle(OC.textMuted)
                     fingerprint(review.contentHash)
                     Text("The text ends with").font(OF.meta).foregroundStyle(OC.textMuted)
-                    Text(SafeText.attributed(tail(review.text), style: .exact)).clipped().accessibilityIdentifier("sign.tail")
+                    Text(SafeText.attributed(tail(review.text), style: .exact)).clipped()
+                        .accessibilityLabel(SafeText.spoken(tail(review.text))).accessibilityIdentifier("sign.tail")
                 }
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: OS.s2) {
-                        Text("Question").font(OF.meta).foregroundStyle(OC.textMuted)
-                        Text(SafeText.attributed(review.text, style: .exact)).frame(maxWidth: .infinity, alignment: .leading)
-                        Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
-                        Text(SafeText.attributed(review.optionLabel, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.top, OS.s2)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("sign.exactText")
-                } label: { Text("Exact text (monospace)").font(OF.section) }
+                ExactTextDisclosure(review: review)
                 SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID,
                               optionID: review.optionID, contentHash: review.contentHash)
                 if typeSize.isAccessibilitySize { footer(review) }
@@ -277,6 +296,25 @@ struct SignSheet: View {
                     Button(role: .cancel, action: onClose) { Text("Cancel").frame(maxWidth: .infinity, minHeight: 44) }
                         .foregroundStyle(OC.brand).accessibilityIdentifier("sign.cancel")
                 } else {
+                    if review.hasUnsafeContent {
+                        VStack(alignment: .leading, spacing: OS.s1) {
+                            Label("Hidden or look-alike characters", systemImage: "exclamationmark.triangle.fill")
+                                .font(OF.section).foregroundStyle(OC.warn)
+                            Text("This text has characters you cannot see or that look like other letters. They are marked, and the exact text is open above. Check it before you sign.")
+                                .font(OF.meta).foregroundStyle(OC.text)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(OS.s3)
+                        .background(OC.soft(OC.warn), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(OC.warn, lineWidth: 1.5))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("sign.unsafeWarning")
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: OS.s2) {
+                        Text("Answer").font(OF.meta).foregroundStyle(OC.textMuted)
+                        SafeTextView(review.optionLabel, strictLabel: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Button { Task { await model.sign() } } label: { Label("Sign and send", systemImage: "signature") }
                         .buttonStyle(.orchProminent)
                         .disabled(armedRevision != review.revision)
