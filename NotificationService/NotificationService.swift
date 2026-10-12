@@ -19,16 +19,8 @@ import OrchPush
 final class NotificationService: UNNotificationServiceExtension {
     private var delivery: PushDelivery?
 
-    /// Fresh content built from a presentation. `userInfo` holds only identifiers of the verified payload (lookup keys).
-    static func content(for p: PushPresentation) -> UNNotificationContent {
-        let c = UNMutableNotificationContent()
-        c.title = p.title
-        c.body = p.body
-        if let t = p.threadID { c.threadIdentifier = t }
-        if p.sound { c.sound = .default }
-        if let k = p.entityKey, let t = p.threadID { c.userInfo = ["orch_key": k, "orch_ws": t] }
-        return c
-    }
+    /// Fresh content built from a presentation by the shared renderer (OrchPush), the same one the app's Demo and replace paths use.
+    static func content(for p: PushPresentation) -> UNNotificationContent { p.notificationContent() }
 
     private static func pushDir() -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.io.severin.orch")?

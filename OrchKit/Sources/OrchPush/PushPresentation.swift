@@ -27,6 +27,32 @@ public struct PushPresentation: Equatable, Sendable {
     public static let generic = PushPresentation(style: .generic, title: genericTitle, body: genericBody, threadID: nil,
                                                  entityKey: nil, removesDelivered: nil, sound: false, simulated: false)
 
+    /// The "Answered on ..." replacement for a question's notification. The ONE builder for the extension (real push), the Demo
+    /// simulator and the app's own replace/reconcile, so they cannot diverge.
+    public static func closed(workspaceHex: String, id: String, workspaceName: String, body: String, simulated: Bool = false) -> PushPresentation {
+        let key = "\(workspaceHex)/\(id)"
+        let name = NotificationText.safe(workspaceName, limit: 80)
+        return PushPresentation(style: .closed, title: name.isEmpty ? genericTitle : name, body: body, threadID: workspaceHex,
+                                entityKey: key, removesDelivered: key, sound: false, simulated: simulated)
+    }
+
+    /// Body for a question closed on a device whose label the host recorded (protocol section 13 wording).
+    public static func answeredBody(deviceLabel: String) -> String {
+        let label = NotificationText.safe(deviceLabel, limit: PushProcessor.maxLabelCodePoints)
+        return label.isEmpty ? "Answered" : "Answered on \(label)"
+    }
+
+    /// userInfo keys the app reads back to find a notification's question. Lookup keys only, never an instruction (see NotificationService).
+    public static let keyInfo = "orch_key", workspaceInfo = "orch_ws", closedInfo = "orch_closed", simulatedInfo = "orch_simulated"
+
+    public var userInfo: [String: String] {
+        var info: [String: String] = [:]
+        if let k = entityKey, let t = threadID { info[Self.keyInfo] = k; info[Self.workspaceInfo] = t }
+        if style == .closed { info[Self.closedInfo] = "1" }
+        if simulated { info[Self.simulatedInfo] = "1" }
+        return info
+    }
+
     /// - Parameter workspaceName: from the pinned push material (the signed card), never from the push.
     public static func make(_ p: PushProcessor.Payload, workspaceName: String, simulated: Bool = false) -> PushPresentation {
         let key = "\(p.workspace.hex)/\(p.id)"
@@ -36,8 +62,8 @@ public struct PushPresentation: Equatable, Sendable {
         switch p.kind {
         case "question.closed":
             // Protocol section 13: the label is "Answered on <device label>"; no fetch in the extension.
-            return PushPresentation(style: .closed, title: title, body: label.isEmpty ? "Answered" : label, threadID: p.workspace.hex,
-                                    entityKey: key, removesDelivered: key, sound: false, simulated: simulated)
+            return closed(workspaceHex: p.workspace.hex, id: p.id, workspaceName: workspaceName,
+                          body: label.isEmpty ? "Answered" : label, simulated: simulated)
         case "join":
             // Verified but not displayed (gap 13): the extension cannot suppress, so the OS shows generic text.
             return PushPresentation(style: .generic, title: genericTitle, body: genericBody, threadID: nil, entityKey: nil,
@@ -72,3 +98,20 @@ public enum NotificationText {
         return r
     }
 }
+
+#if canImport(UserNotifications)
+import UserNotifications
+
+extension PushPresentation {
+    /// The single renderer: the notification service extension, Demo scheduling and in-app replacement all build content here.
+    public func notificationContent() -> UNMutableNotificationContent {
+        let c = UNMutableNotificationContent()
+        c.title = title; c.body = body
+        if simulated { c.subtitle = PushSimulator.label }
+        if let t = threadID { c.threadIdentifier = t }
+        if sound { c.sound = .default }
+        c.userInfo = userInfo
+        return c
+    }
+}
+#endif
