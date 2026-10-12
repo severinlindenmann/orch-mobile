@@ -259,6 +259,12 @@ public enum ShareTargetIndex {
         }
     }
 
+    /// App side: a publish that was not attempted (an earlier step failed) is recorded too, so the diagnostics never show
+    /// a stale "ok". `reason` must be a fixed, path-free code.
+    public static func recordPublishSkipped(_ reason: String, in area: ShareArea, now: Date = Date()) {
+        PublishStatus.record(.init(at: now.timeIntervalSince1970, result: "skipped: \(reason)", targets: 0), in: area)
+    }
+
     /// The app's last publish attempt, as seen by both sides (no names: a count and a fixed result code).
     public struct PublishStatus: Codable, Equatable, Sendable {
         public let at: Double
@@ -283,6 +289,8 @@ public enum ShareTargetIndex {
             case ShareError.io(let s): "io: \(s)"
             case let e as ShareError: "\(e)"
             case let f as ShareFS.ReadFailure: "\(f)"
+            case let t as TombstoneError: ShareTargetIndex.tombstoneCode(t)
+            case let f as CoordinationFiles.FileError: f == .unsafeLock ? "unsafe lock" : "coordination io"   // io text may hold a path
             case is EncodingError: "encode"
             default: "other"
             }

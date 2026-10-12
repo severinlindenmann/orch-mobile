@@ -98,8 +98,11 @@ final class ShareBridge {
     func publishTargets() {
         let area = inbox.area
         let coordination = area.coordination
-        do { try inbox.replayRemovals() } catch { return }
-        guard let tombstones = try? coordination.records() else { return }
+        do { try inbox.replayRemovals() } catch { ShareTargetIndex.recordPublishSkipped("removal replay: \(ShareTargetIndex.PublishStatus.code(error))", in: area); return }
+        let tombstones: [TombstoneRecord]
+        do { tombstones = try coordination.records() } catch {
+            ShareTargetIndex.recordPublishSkipped("tombstones: \(ShareTargetIndex.PublishStatus.code(error))", in: area); return
+        }
         var next: [String: ShareTarget] = [:]
         var nextTracked: [String: ShareTarget] = [:]
         for ws in world.workspaces {
@@ -127,7 +130,7 @@ final class ShareBridge {
                 try inbox.recordRemoval(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation))
             }
             try inbox.replayRemovals()
-        } catch { return }
+        } catch { ShareTargetIndex.recordPublishSkipped("retire: \(ShareTargetIndex.PublishStatus.code(error))", in: area); return }
         tracked = nextTracked
         published = next
         listed = Set(next.keys)
