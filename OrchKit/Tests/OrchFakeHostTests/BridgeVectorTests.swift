@@ -57,11 +57,15 @@ func hostCore(from st: J) -> HostBridgeCore {
         let cert: JSONValue? = o["cert"].flatMap { $0.isNull ? nil : $0 }
         var p = HostPendingPair(offer: ID16(hex: o["offer_id"]!.string!)!, dkSig: try! SigningPublicKey(x963: B64U.decode(o["dk_sig_pub"]!.string!)!),
                                 dkKx: try! AgreementPublicKey(x963: B64U.decode(o["dk_kx_pub"]!.string!)!), label: o["label"]!.string!,
+                                attempt: o["attempt"]?.string ?? "",
                                 sasNonce: B64U.decode(o["sas_nonce"]!.string!)!, cert: cert, certState: o["cert_state"]!.string!, state: o["state"]!.string!)
         p.certPendingSince = o["cert_pending_since"]?.int
         p.primaryLabel = o["primary_label"]?.string
         p.challenge = o["challenge"].flatMap { $0.isNull ? nil : $0 }
         p.scopes = o["scopes"]?.array?.compactMap(\.string)
+        p.listSeq = o["list_seq"]?.int; p.cardSeq = o["card_seq"]?.int; p.baseline = o["baseline"] ?? .null
+        p.rejection = o["rejection"].flatMap { $0.isNull ? nil : $0 }
+        p.requestID = o["request_id"]?.string.flatMap { ID16(hex: $0) }
         core.pendingPairs[ID16(hex: k)!] = p
     }
     if let per = st["limits"]["per_device"].int { core.limits.perDevice = Int(per) }

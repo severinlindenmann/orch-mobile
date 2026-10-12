@@ -107,7 +107,7 @@ import Testing
                                                  relayURL: "https://r.example", cardSeq: 1, issuedMs: 1, sealed: sealed, ck: ck, wsk: wsk), ownerKey: pk.publicKey)
         let d = SoftwareSigner()
         let inner = CertRequestInner(deviceID: Identifiers.deviceID(d.publicKey), dkSig: d.publicKey, dkKx: SoftwareKeyAgreer().publicKey,
-                                     label: "x", scopesMax: ["look", "decide"], offerID: .random())
+                                     label: "x", scopesMax: ["look", "decide"], offerID: .random(), attempt: String(repeating: "a", count: 32))
         let req = try CertRequest.make(wsk: wsk, requestID: .random(), workspace: ws, person: person, primary: primaryID, primaryKey: primaryKx.publicKey, inner: inner, createdMs: 1000)
         var ledger = PrimaryLedger()
         let a = try CertRequest.openAsPrimary(req.json, card: card, myPerson: person, me: primaryID, myKey: primaryKx, ledger: &ledger, nowMs: 1000)

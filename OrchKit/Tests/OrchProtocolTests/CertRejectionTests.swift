@@ -30,18 +30,22 @@ import Testing
     @Test func signedRejectionVerifiesOnlyUnderPK() throws {
         let pk = SoftwareSigner(), other = SoftwareSigner()
         let person = Identifiers.personID(pk.publicKey), rid = ID16(bytes: Data(repeating: 1, count: 16))!, ws = ID16(bytes: Data(repeating: 2, count: 16))!
-        let s = try CertRejection.sign(requestID: rid, workspace: ws, person: person, primary: pk)
+        let att = String(repeating: "c", count: 32), dev = ID16(bytes: Data(repeating: 3, count: 16))!, hash = Data(repeating: 4, count: 32)
+        func sign(_ r: ID16) throws -> SignedObject {
+            try CertRejection.sign(requestID: r, workspace: ws, person: person, offer: ws, attempt: att, device: dev, dkHash: hash, expiresMs: 9, primary: pk)
+        }
+        let s = try sign(rid)
         let v = try CertRejection.verify(s.json, pk: pk.publicKey)
-        #expect(v == .init(requestID: rid, workspace: ws, person: person))
+        #expect(v.requestID == rid && v.workspace == ws && v.person == person && v.attempt == att && v.device == dev && v.dkHash == hash)
         #expect(throws: Refusal.badSignature) { try CertRejection.verify(s.json, pk: other.publicKey) }
         // a cert_challenge label over the same bytes is not a rejection (domain separation)
         let forged = try Signature.sign(pk, label: Label.sigCertChallenge, message: canonicalJSON(.object(s.object)))
         #expect(throws: Refusal.badSignature) { try CertRejection.verify(SignedObject(object: s.object, signature: forged).json, pk: pk.publicKey) }
         // a re-signature of the same object is a different signature over the same canonical object
-        let again = try CertRejection.sign(requestID: rid, workspace: ws, person: person, primary: pk)
+        let again = try sign(rid)
         #expect(again.signature != s.signature)
         #expect(SignedObject.sameCanonicalObject(again.json, s.json))
-        let otherRequest = try CertRejection.sign(requestID: ws, workspace: ws, person: person, primary: pk)
+        let otherRequest = try sign(ws)
         #expect(!SignedObject.sameCanonicalObject(otherRequest.json, s.json))
     }
 

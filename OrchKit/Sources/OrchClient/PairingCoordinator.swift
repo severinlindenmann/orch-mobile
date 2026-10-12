@@ -42,6 +42,8 @@ public actor PairingCoordinator {
     private var nextGetMs: Int64 = 0
     private var retryNotBeforeMs: Int64 = 0
     private var failures = 0
+    /// This phone's own earlier attempts (G3b): loaded at start/resume from the realm's attempt memory.
+    private var earlierAttempts: [AttemptMemory.Entry] = []
     /// Drops the join's relay session: forgotten at once, and a best-effort logout so it does not count against the device's token quota.
     /// Never awaited on the lifecycle paths (start, cancel, dismiss, finish, ready): the cache is cleared synchronously and the logout
     /// runs detached, so a slow or hostile relay cannot hold a cancel or a terminal state back until the transport times out.
@@ -223,15 +225,15 @@ public actor PairingCoordinator {
             try await crashPoint("start.index")
         } catch is PairingCrash { dead = true; return self.current } catch { return fail(.custody, mine) }
         guard mine == token else { return self.current }
-        // device keys: existing identity is kept (D-1); new keys are created only now and remembered as ours to remove on cancel
-        let created: Bool
-        let id: DeviceIdentity
+        // device keys: an existing identity is kept only together with a valid certificate it presents (D-1). A phone WITHOUT a
+        // certificate draws fresh keys for every new attempt (G3b, P3-D28 MUST): the host cannot know them before the attempt starts.
+        var created: Bool
+        var id: DeviceIdentity
         do {
             created = try perform { cfg.custody.status(realm: cfg.context.realm) == .missing }
             id = try cfg.context.deviceIdentity(custody: cfg.custody, createIfMissing: true)
         } catch { return fail(violation(error), mine) }
         identity = id
-        let deviceID = Identifiers.deviceID(id.publicKeys.sig)
         // an existing certificate must belong to the owner the link pins; otherwise nothing is sent
         var existing: JSONValue?
         switch storedCertificate() {
@@ -243,7 +245,30 @@ public actor PairingCoordinator {
             if Identifiers.pkPin(owner) != link.pkPin { await dropNewKeys(created); return fail(.otherPerson, mine) }
             existing = valid ? cert : nil          // an expired certificate keeps the owner binding but is not presented
         }
+        if existing == nil && !created {
+            // uncertified with keys of an earlier attempt: replace them, but only when nothing else uses them (no workspace, no other
+            // live pairing). Otherwise fresh keys cannot be drawn and the attempt is refused rather than reusing known keys (fail closed).
+            let others = (try? await cfg.index.pairings().filter { $0.ws != ws.hex && ($0.terminal == nil || $0.terminal == "cleanup") }.count) ?? 1
+            let workspaces = (try? await cfg.index.workspaces().count) ?? 1
+            guard mine == token else { return self.current }
+            guard others == 0, workspaces == 0 else { return fail(.verification(reason: "fresh_keys_unavailable"), mine) }
+            do {
+                try perform {
+                    do { try vault().delete(purpose: "device.cert") } catch VaultError.notFound {}
+                    try cfg.custody.delete(realm: cfg.context.realm)
+                }
+                id = try cfg.context.deviceIdentity(custody: cfg.custody, createIfMissing: true)
+                created = true
+            } catch { return fail(violation(error), mine) }
+            identity = id
+        }
+        let deviceID = Identifiers.deviceID(id.publicKeys.sig)
+        let dkHash = Identifiers.dkHash(sig: id.publicKeys.sig, kx: id.publicKeys.kx)
+        let attempt = Hex.encode(cfg.entropy.bytes(16))
         let now = nowMs
+        // the attempt memory is written before anything is sent: this attempt becomes `last`, the previous one moves to `earlier`
+        do { earlierAttempts = try perform { try AttemptMemory.begin(vault: vault(), device: deviceID, dkHash: dkHash, nowMs: now) } }
+        catch { await dropNewKeys(created); return fail(violation(error), mine) }
         let generation: Int64
         do {
             generation = try await cfg.index.nextGeneration(ws: ws.hex)
@@ -251,7 +276,8 @@ public actor PairingCoordinator {
         } catch is PairingCrash { dead = true; return self.current } catch { await dropNewKeys(created); return fail(.custody, mine) }
         guard mine == token else { await dropNewKeys(created); return self.current }
         var r = PairingRecord(generation: generation, origin: link.origin, ws: ws, offer: link.offer, secret: link.secret, wskPin: link.wskPin,
-                              pkPin: link.pkPin, deviceID: deviceID, label: cfg.deviceLabel, createdKeys: created, existingCert: existing,
+                              pkPin: link.pkPin, deviceID: deviceID, label: cfg.deviceLabel, attempt: attempt, dkHash: dkHash,
+                              createdKeys: created, existingCert: existing,
                               startedMs: now, lastProgressMs: now)
         r.seq = 1
         record = r
@@ -336,9 +362,11 @@ public actor PairingCoordinator {
         catch CustodyError.missing { return await endResumed(r, mine) }
         catch CustodyError.orphaned { return await endResumed(r, mine) }
         catch { return fail(.custody, mine) }            // locked, unavailable, stale Demo: the pairing is preserved untouched
-        guard Identifiers.deviceID(id.publicKeys.sig) == r.deviceID else { return await endResumed(r, mine) }
+        guard Identifiers.deviceID(id.publicKeys.sig) == r.deviceID, Identifiers.dkHash(sig: id.publicKeys.sig, kx: id.publicKeys.kx) == r.dkHash
+        else { return await endResumed(r, mine) }
         guard mine == token else { return current }
         identity = id
+        earlierAttempts = AttemptMemory.earlier(vault())
         record = r
         pinDeadlines()
         reverified = false
@@ -506,8 +534,10 @@ public actor PairingCoordinator {
     private func context() -> PairingWire.Context? {
         guard let r = record, let id = identity, let secret = r.secret else { return nil }
         let pubs = id.publicKeys
+        let now = nowMs
         return PairingWire.Context(workspace: r.ws, device: r.deviceID, offer: r.offer, secret: SymmetricKey(data: secret), wskPin: r.wskPin,
-                                   pkPin: r.pkPin, dkSig: pubs.sig, dkKx: pubs.kx, offsetMs: r.offsetMs)
+                                   pkPin: r.pkPin, dkSig: pubs.sig, dkKx: pubs.kx, offsetMs: r.offsetMs, attempt: r.attempt,
+                                   earlierAttempts: earlierAttempts.filter { $0.untilMs > now }.map(\.attempt), acceptedRequestID: r.acceptedRequestID)
     }
 
     private func makeRequest(_ now: Int64, _ mine: Int) async -> Bool {
@@ -652,9 +682,12 @@ public actor PairingCoordinator {
             if r.certPendingSinceMs == nil { r.certPendingSinceMs = now }
             if let ch = challenge {
                 if let pinned = r.challenge {
-                    // an identical repeat is allowed; any substitution alarms
-                    guard pinned == ch.signed else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: label, mine); return }
-                } else { r.challenge = ch.signed }
+                    // an identical repeat (the same canonical object, also re-signed) is allowed; any substitution alarms. A challenge
+                    // of another request never gets here: the wire drops it (`not_for_this_pairing`, G3b step 6).
+                    guard SignedObject.sameCanonicalObject(pinned, ch.signed), r.acceptedRequestID == ch.requestID else {
+                        _ = await raiseAlarm(.pinSubstitution, primaryLabel: label, mine); return
+                    }
+                } else { r.challenge = ch.signed; r.acceptedRequestID = ch.requestID }
                 r.phase = .comparingPrimary
             } else {
                 if r.challenge != nil { _ = await raiseAlarm(.regression, primaryLabel: label, mine); return }
@@ -663,7 +696,7 @@ public actor PairingCoordinator {
             record = r; pinDeadlines(); failures = 0; nextPostMs = r.lastPostMs + interval()
             guard await persist(mine) else { return }
             publish(derive(at: now))
-        case .approved(let scopes, let cert, let certificate, let pk, let epoch):
+        case .approved(_, let cert, let certificate, let pk, _, let anchor):
             guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
             if let pinned = r.pkPub, pinned != pk.x963 { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
             // when a challenge was shown, the certificate must be for exactly the keys (and person) it named
@@ -677,7 +710,8 @@ public actor PairingCoordinator {
             // realm and owner policy on top of the wire's signature checks (a live realm takes no Demo authority and the reverse)
             if let refusal = admissionFailure(cert: cert, owner: pk, offsetMs: r.offsetMs, now: now) { _ = await finish(.failed(refusal), mine); return }
             r.pkPub = pk.x963
-            r.approved = .init(scopes: scopes, cert: cert, epoch: epoch)
+            // the join floor: persisted before anything is fetched; a later approved only raises it
+            r.approved = .init(cert: cert, anchor: r.approved.map { $0.anchor.raised(by: anchor) } ?? anchor)
             r.phase = .joining
             r.joinStartedMs = now
             r.approvedMs = now
@@ -685,21 +719,22 @@ public actor PairingCoordinator {
             record = r; pinDeadlines(); failures = 0; retryNotBeforeMs = 0
             guard await persist(mine) else { return }
             publish(.joining)
-        case .rejected: _ = await finish(.rejected, mine)
+        case .rejected(_, let alarm):
+            // unattributed ("The pairing was refused"); the alarm only for a PK-signed rejection naming a foreign device (G3b step 4)
+            if alarm { _ = await raiseAlarm(.foreignRejection, primaryLabel: r.primaryLabel, mine); return }
+            _ = await finish(.rejected, mine)
         case .denied(let requestID, let pk):
-            // the wire verified the rejection under a PK matching the link's pin; it must also be the PK and the request this
-            // pairing pinned (the challenge it showed), or it is a substitution
+            // The wire verified every section 8.3 check (pk_pin, PK signature, workspace, this attempt's device and keys, attempt and
+            // offer, the accepted challenge's request id, expiry). It must also be the PK this pairing pinned, after a pending answer.
             guard r.sasNonce != nil else { _ = await raiseAlarm(.regression, primaryLabel: r.primaryLabel, mine); return }
-            // "denied" names the primary, so it needs a binding to this pairing: the PK and the request of the challenge the phone
-            // pinned. Without a pinned challenge nothing ties the rejection to this attempt (it could be a replay of an older
-            // request of the same workspace): the phone ends on the host's authenticated "rejected" and attributes nothing.
-            guard let pinned = r.pkPub, let pinnedChallenge = r.challenge else { _ = await finish(.rejected, mine); return }
-            // a pinned challenge that no longer parses binds nothing: alarm, as for `approved`
-            guard let ch = pinnedChallenge.object?["o"]?.object, let pinnedRequest = ch.idField("request_id") else {
+            if let pinned = r.pkPub, pinned != pk.x963 { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
+            if let seen = r.acceptedRequestID, seen != requestID { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
+            // a pinned challenge that no longer parses (or names another request) binds nothing: alarm, as for `approved`
+            if let pinned = r.challenge, pinned.object?["o"]?.object?.idField("request_id") != r.acceptedRequestID {
                 _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return
             }
-            guard pinned == pk.x963, pinnedRequest == requestID else { _ = await raiseAlarm(.pinSubstitution, primaryLabel: r.primaryLabel, mine); return }
-            _ = await finish(.denied, mine)
+            // attributed to the pinned owner key (the person of pk_pin), never to the host's primary_label
+            _ = await finish(.denied(owner: Identifiers.personID(pk)), mine)
         case .expired: _ = await finish(.expired(r.certPendingSinceMs != nil ? .certification : .beforeApproval), mine)
         }
     }
@@ -1087,6 +1122,8 @@ extension PairingCoordinator {
         let listJSON: JSONValue
         let grants: [VerifiedWKGrant]
         let epoch: UInt32
+        /// The scopes this device joins with: the anchor's at its list_seq, the list's above it.
+        let scopes: [String]
     }
 
     /// Card: PK delegation against the pinned owner, pinned `WSK`, the link's workspace, `relay_url` byte-equal to the reviewed origin,
@@ -1116,10 +1153,11 @@ extension PairingCoordinator {
         // certificate (signed by the pinned PK) names.
         let owner = Identifiers.personID(pk)
         do { try list.checkPersons(owner: owner, first: true) } catch { throw JoinFailure(reason: "member_persons") }
-        guard let me = list.members.first(where: { $0.deviceID == deviceID }), me.personID == owner, let scopes = me.scopeStrings,
-              scopes.count == approved.scopes.count, zip(scopes, approved.scopes).allSatisfy({ $0.utf8Equal($1) })
-        else { throw JoinFailure(reason: "member_scopes") }
-        guard list.epoch >= approved.epoch else { throw JoinFailure(reason: "member_epoch") }
+        // the join floor (G3b): the first list at or above the anchor and listing this device (exact scopes at the anchor's
+        // list_seq, the list's own above it), then the first card at or above the anchor's card_seq
+        let scopes = try approved.anchor.checkList(list, device: deviceID)
+        try approved.anchor.checkCard(cardSeq: Int64(card.cardSeq))
+        guard list.members.first(where: { $0.deviceID == deviceID })?.personID == owner else { throw JoinFailure(reason: "member_person") }
         var grants: [VerifiedWKGrant] = []
         for g in grantJSONs {
             if let v = try? WKGrant.open(g, wsk: wsk, workspace: workspace, device: deviceID, deviceKey: identity.kx) { grants.append(v) }
@@ -1130,7 +1168,7 @@ extension PairingCoordinator {
         guard grants.contains(where: { $0.epoch == list.epoch && list.commits($0.wk) }) else { throw JoinFailure(reason: "grant_commit") }
         grants.removeAll { $0.epoch == list.epoch && !list.commits($0.wk) }
         return VerifiedJoin(card: card, cardJSON: cardJSON, part: part, hosted: Card.hostedMarker(card: card, sealedPart: part), list: list,
-                            listJSON: listJSON, grants: grants, epoch: top)
+                            listJSON: listJSON, grants: grants, epoch: top, scopes: scopes)
     }
 
     func join(_ mine: Int) async {
@@ -1203,6 +1241,9 @@ extension PairingCoordinator {
         case JoinDeadlineError.expired: _ = await finish(.expired(.afterApproval), mine)
         case JoinDeadlineError.timedOut: publish(.failed(.joiningTimedOut))
         case let f as JoinFailure: _ = await finish(.failed(.verification(reason: f.reason)), mine)
+        // below the floor or other scopes at the anchor: the relay may still be behind, retry; removed after approval: stop
+        case JoinAnchor.Refusal.notAMember: _ = await finish(.failed(.verification(reason: "not_a_member")), mine)
+        case is JoinAnchor.Refusal: joinRetry(now)
         case is JoinPending: joinRetry(now)
         case StoreError.removalStateUnknown: joinRetry(now)
         case let t as TransportError:
@@ -1286,7 +1327,7 @@ extension PairingCoordinator {
             let profile = WorkspaceProfile(ws: wsHex, name: v.part.name, description: v.part.description, origin: r.origin,
                                            clientHosted: v.card.delegation.clientHosted, hostedMarker: v.hosted.marker, hostedBy: v.hosted.hostedBy,
                                            wskPub: B64U.encode(wsk.x963), pkPub: B64U.encode(pk.x963), ownerPerson: v.card.ownerPersonID.hex,
-                                           cardSeq: Int64(v.card.cardSeq), listSeq: v.list.listSeq, epoch: Int64(v.epoch), scopes: approved.scopes,
+                                           cardSeq: Int64(v.card.cardSeq), listSeq: v.list.listSeq, epoch: Int64(v.epoch), scopes: v.scopes,
                                            card: String(decoding: try canonicalJSON(v.cardJSON), as: UTF8.self), joinedMs: nowMs)
             // the linearization point: the ownership check and the commit are one transaction
             try checkJoinDeadline(r)
@@ -1303,7 +1344,7 @@ extension PairingCoordinator {
             try? vault.delete(ws: wsHex, purpose: "pairing")
             token += 1
             record = nil
-            let joined = JoinedWorkspace(workspace: r.ws, generation: r.generation, name: v.part.name, hosted: v.hosted, scopes: approved.scopes,
+            let joined = JoinedWorkspace(workspace: r.ws, generation: r.generation, name: v.part.name, hosted: v.hosted, scopes: v.scopes,
                                          epoch: v.epoch, origin: r.origin, session: session, dropCard: v.card)
             endJoinSession()
             publish(.ready(JoinedHandle(joined: joined)))

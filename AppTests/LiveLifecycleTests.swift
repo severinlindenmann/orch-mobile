@@ -145,9 +145,9 @@ final class LiveLifecycleTests: XCTestCase {
         await bounded { await services.waitForReset() }
     }
 
-    /// Rejecting on the Demo primary while the phone still waits (request opened, challenge not yet pinned) is worded as the
-    /// primary's "no", never as the Mac's (PR #45 review).
-    func testPrimaryRejectWhileWaitingIsAttributedToThePrimary() async throws {
+    /// Rejecting on the Demo primary while the phone still waits (request opened, challenge not yet seen) ends as "Denied by the
+    /// owner": the PK-signed rejection names this attempt (G3b), so it verifies without a challenge, and never reads as the Mac's.
+    func testPrimaryRejectWhileWaitingIsDeniedByTheOwner() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)
         let services = LiveServices(options: options, runtime: runtime)
         let model = LivePairingModel(services: services, start: nil)
@@ -164,8 +164,10 @@ final class LiveLifecycleTests: XCTestCase {
         let device = runtime.env.deviceID
         await await60("prompt") { await !runtime.primary.openPrompts().filter { $0.deviceID == device }.isEmpty }
         model.primaryReject()
-        await await60("end") { if case .refused = model.state { return true }; return model.state == .denied }
-        XCTAssertTrue(model.state == .denied || model.state == .refused(.rejectedOnPrimary), "\(model.state)")
+        await await60("end") { if case .refused = model.state { return true }; if case .denied = model.state { return true }; return false }
+        // G3b: the rejection names this attempt, so it is attributed (to the pinned owner) even before a challenge was seen
+        guard case .denied(let owner) = model.state else { XCTFail("\(model.state)"); return }
+        XCTAssertEqual(owner, String(runtime.primary.personID.hex.prefix(8)))
         model.screenClosed()
         services.exitDemo()
         await bounded { await services.waitForReset() }

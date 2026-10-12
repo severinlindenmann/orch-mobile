@@ -105,7 +105,8 @@ extension PairHarness {
                 #expect(h.deviceCert == priorCert, tag)                               // the certificate this join wrote is rolled back
                 let removed = try await h.env.index.isRemoved(ws: h.wsHex, generation: 1)
                 #expect(removed == (point == "install.committed"), tag)               // a committed join is undone with a tombstone
-                #expect(h.custody.status(realm: .demo) == .present, tag)              // the keys were not this pairing's
+                // keys: an existing certificate's are kept (D-1); an uncertified attempt's fresh keys are this pairing's and go (G3b)
+                #expect(h.custody.status(realm: .demo) == (scenario == .existingCert ? .present : .missing), tag)
                 // a restart finds nothing to do
                 let again = h.fresh()
                 #expect(await again.recover(), tag)

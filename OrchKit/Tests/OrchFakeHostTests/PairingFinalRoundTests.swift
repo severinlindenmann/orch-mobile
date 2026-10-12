@@ -91,8 +91,8 @@ import OrchStore
     @Test func laterSignedCorrectionCannotExtendChallenge() async throws {
         let h = try await PairHarness.make(.firstTime)
         let forge = PairForge(h: h, link: try h.link(try await h.rig.newOffer()))
-        let ch = try await forge.challenge(nonce: forge.nonceA, expiresDelta: -500_000)
         _ = await h.coordinator.start(link: forge.link)
+        let ch = try await forge.challenge(nonce: forge.nonceA, expiresDelta: -500_000)      // after start: it names this attempt and its keys
         var seen = 0
         var first: Int64?
         for _ in 0..<40 {
