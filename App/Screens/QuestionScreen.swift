@@ -235,7 +235,7 @@ struct SignSheet: View {
                 ExactTextDisclosure(review: review)
                 SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID,
                               optionID: review.optionID, contentHash: review.contentHash)
-                if typeSize.isAccessibilitySize { footer(review) }
+                if footerInScroll(review) { footer(review) }
             }
             .padding(OS.s4)
         }
@@ -252,10 +252,16 @@ struct SignSheet: View {
             try? await Task.sleep(for: .milliseconds(800))
             if !Task.isCancelled { armedRevision = review.revision }
         }
-        if !typeSize.isAccessibilitySize {
+        if !footerInScroll(review) {
             Divider()
             footer(review).padding(OS.s4).background(OC.surface)
         }
+    }
+
+    /// Accessibility sizes, and the unsafe-content footer from XL up (its warning block takes half the screen and truncated), keep the
+    /// footer at the end of the scroll content instead of pinned. Arming still needs the scroll end, which now includes the footer.
+    private func footerInScroll(_ review: ReviewValue) -> Bool {
+        typeSize.isAccessibilitySize || (review.hasUnsafeContent && typeSize >= .xLarge)
     }
 
     /// The content hash prefix in four-character groups so two fingerprints can be compared at a glance.
@@ -308,7 +314,7 @@ struct SignSheet: View {
                             Label("Hidden or look-alike characters", systemImage: "exclamationmark.triangle.fill")
                                 .font(OF.section).foregroundStyle(OC.warn)
                             Text("This text has characters you cannot see or that look like other letters. They are marked, and the exact text is open above. Check it before you sign.")
-                                .font(OF.meta).foregroundStyle(OC.text)
+                                .font(OF.meta).foregroundStyle(OC.text).fixedSize(horizontal: false, vertical: true)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(OS.s3)
