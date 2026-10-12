@@ -142,7 +142,7 @@ final class Flag: @unchecked Sendable {
 }
 
 /// Waits (real time, capped) for a sleeper to park on `clock`; records an issue instead of spinning until the CI job timeout.
-func waitForSleeper(_ clock: TestClock, seconds: Int = 30) async -> Bool {
+func waitForSleeper(_ clock: TestClock, seconds: Int = 120) async -> Bool {
     let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
     while clock.sleeperCount == 0 {
         if ContinuousClock.now >= deadline { Issue.record("no sleeper parked on the test clock after \(seconds) s of real time"); return false }

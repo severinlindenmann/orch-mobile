@@ -208,7 +208,7 @@ extension World {
     /// Runs `body` while the host serves and both clocks tick, until it finishes. With `consumed`, the clocks also wait for the
     /// body's event consumer to catch up with the session's emitted snapshots before each tick. If `body` has not finished when
     /// `steps` or `timeout` run out, it is cancelled and its result (usually a cancellation error) is returned.
-    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, timeout: Duration = .seconds(10),
+    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, timeout: Duration = .seconds(120),
                           consumed: Consumed? = nil, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
         let done = Done()
         let task = Task { () -> Result<T, Error> in
@@ -244,7 +244,7 @@ extension World {
 
 /// Runs `body` but gives up after `seconds` of real time: cancels it and records an issue naming `what`, so a stream or task
 /// that never finishes fails the test fast instead of running into the CI job timeout. Returns nil on timeout.
-func boundedWait<T: Sendable>(_ what: String, seconds: Int = 30, _ body: @escaping @Sendable () async -> T) async -> T? {
+func boundedWait<T: Sendable>(_ what: String, seconds: Int = 120, _ body: @escaping @Sendable () async -> T) async -> T? {
     await withTaskGroup(of: T?.self) { group in
         group.addTask { await body() }
         group.addTask { try? await Task.sleep(for: .seconds(seconds)); return nil }

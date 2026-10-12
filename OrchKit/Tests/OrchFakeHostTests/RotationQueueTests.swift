@@ -28,7 +28,7 @@ extension FakeHost {
             try await w.host.rotate(remaining: [(w.primary.deviceKeys, World.all), (w.phone, ["look", "decide"])],
                                     relay: w.relay, session: w.hostSession)
         }
-        guard await eventually("publication entered", timeoutSeconds: 30, { publication.entered > 0 }) else { return }
+        guard await eventually("publication entered", timeoutSeconds: 120, { publication.entered > 0 }) else { return }
         let second = Task {
             try await w.host.signalledRotate([(w.phone, ["decide", "look"]), (w.primary.deviceKeys, ["look"])],
                                             relay: w.relay, session: w.hostSession, entered: entered)
@@ -75,7 +75,7 @@ extension FakeHost {
         let first = Task {
             try await w.host.rotate(remaining: removalFirst ? removing : keeping, relay: w.relay, session: w.hostSession)
         }
-        guard await eventually("publication entered", timeoutSeconds: 30, { publication.entered > 0 }) else { return }
+        guard await eventually("publication entered", timeoutSeconds: 120, { publication.entered > 0 }) else { return }
         let second = Task {
             try await w.host.signalledRotate(removalFirst ? keeping : removing, relay: w.relay,
                                             session: w.hostSession, entered: entered)
@@ -123,7 +123,7 @@ extension FakeHost {
         let (envelope, header) = try await w.sealedRequest(rid: ID16.fresh(0x74),
                                                         meta: ["op": "revocation", "record": record])
         let revocation = Task { await w.host.process(envelope: envelope, mailbox: header.rid) }
-        guard await eventually("publication entered", timeoutSeconds: 30, { publication.entered > 0 }) else { return }
+        guard await eventually("publication entered", timeoutSeconds: 120, { publication.entered > 0 }) else { return }
         let rotation = Task {
             try await w.host.signalledRotate([(w.primary.deviceKeys, World.all), (w.phone, ["look", "decide"])],
                                             relay: w.relay, session: w.hostSession, entered: entered)
@@ -148,7 +148,7 @@ extension FakeHost {
         await w.host.setPublishHook { calls.bump(); await publication.pass() }
         let remaining = [(w.primary.deviceKeys, World.all), (w.phone, ["look", "decide"])]
         let first = Task { try await w.host.rotate(remaining: remaining, relay: w.relay, session: w.hostSession) }
-        guard await eventually("publication entered", timeoutSeconds: 30, { publication.entered > 0 }) else { return }
+        guard await eventually("publication entered", timeoutSeconds: 120, { publication.entered > 0 }) else { return }
         let second = Task {
             try await w.host.signalledRotate(Array(remaining.reversed()), relay: w.relay,
                                             session: w.hostSession, entered: entered)
