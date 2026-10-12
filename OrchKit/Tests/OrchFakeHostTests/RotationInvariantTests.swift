@@ -41,7 +41,7 @@ import OrchProtocol
         }
         let remaining = [(w.phone, ["look", "decide"])]
         let first = Task { try await w.host.rotate(remaining: remaining, relay: w.relay, session: w.hostSession) }
-        while gate.entered == 0 { await Task.yield() }
+        guard await eventually("gate entered", timeoutSeconds: 30, { gate.entered > 0 }) else { return }
         let second = Task { try await w.host.invariantJoin(remaining, relay: w.relay, session: w.hostSession, entered: entered) }
         await entered.pass()
         gate.open()
@@ -78,7 +78,7 @@ import OrchProtocol
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)],
                                     relay: w.relay, session: w.hostSession)
         }
-        while gate.entered == 0 { await Task.yield() }
+        guard await eventually("gate entered", timeoutSeconds: 30, { gate.entered > 0 }) else { return }
         let revocation = Task { await w.host.invariantRevoke(env, rid: h.rid, entered: entered) }
         await entered.pass()
         gate.open()
@@ -123,7 +123,7 @@ import OrchProtocol
             try await w.host.rotate(remaining: [(w.phone, ["look", "decide"]), (w.primary.deviceKeys, World.all)],
                                     relay: w.relay, session: w.hostSession)
         }
-        while w.clock.sleeperCount == 0 { await Task.yield() }
+        guard await eventually("a sleeper parks on the test clock", timeoutSeconds: 30, { w.clock.sleeperCount > 0 }) else { return }
         let refusedKey = await w.host.wkFor(2).withUnsafeBytes { Data($0) }
         try await w.relay.publishRevocation(try await w.primary.revoke(device: w.primaryID))
         w.clock.advance(milliseconds: 1000)

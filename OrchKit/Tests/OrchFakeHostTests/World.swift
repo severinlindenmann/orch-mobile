@@ -6,6 +6,7 @@ import OrchCustody
 import OrchProtocol
 import OrchStore
 import OrchTestVectors
+import Testing
 @testable import OrchProtocol
 
 /// Entropy for tests: queued values first (to pin a challenge), then a counter stream.
@@ -238,5 +239,18 @@ extension World {
         }
         if !done.value { task.cancel() }
         return try await task.value.get()
+    }
+}
+
+/// Runs `body` but gives up after `seconds` of real time: cancels it and records an issue naming `what`, so a stream or task
+/// that never finishes fails the test fast instead of running into the CI job timeout. Returns nil on timeout.
+func boundedWait<T: Sendable>(_ what: String, seconds: Int = 30, _ body: @escaping @Sendable () async -> T) async -> T? {
+    await withTaskGroup(of: T?.self) { group in
+        group.addTask { await body() }
+        group.addTask { try? await Task.sleep(for: .seconds(seconds)); return nil }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        if first == nil { Issue.record("timed out after \(seconds) s of real time waiting for: \(what)") }
+        return first
     }
 }

@@ -499,6 +499,7 @@ import OrchTestVectors
         await api.setForeground(true)
         try await w.serve(p) {
             for await event in stream { if case .snapshot = event { return } }
+            Issue.record("the event stream ended or was cancelled before a snapshot arrived")
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
         while p.clock.sleeperCount == 0 && ContinuousClock.now < deadline { await Task.yield() }
@@ -516,19 +517,24 @@ import OrchTestVectors
         let stream = await api.events()
         w.env.generation.invalidate()
         await #expect(throws: (any Error).self) { _ = try await api.pendingDecisions() }
-        var removed = false
-        for await event in stream { if event == .removed { removed = true } }
-        #expect(removed)
+        let removed = await boundedWait("the .removed event and stream end") {
+            var removed = false
+            for await event in stream { if event == .removed { removed = true } }
+            return removed
+        }
+        #expect(removed == true)
     }
     @Test func testForegroundPollingThirtyMinutesWithinQuota() async throws {
         let (w, p, api, _) = try await setup()
         let start = w.clock.nowMs
         let stream = await api.events()
-        let count = try await w.serve(p, steps: 4000, timeout: .seconds(60)) {
+        let consumed = Consumed()
+        let count = try await w.serve(p, steps: 4000, timeout: .seconds(60), consumed: consumed) {
             var snapshots = 0
             for await event in stream {
                 if case .snapshot = event {
                     snapshots += 1
+                    consumed.bump()
                     if w.clock.nowMs - start >= 1_800_000 { return snapshots }
                 }
             }
@@ -547,7 +553,10 @@ import OrchTestVectors
         let taskA = Task { for await event in a { if case .snapshot(let s) = event { return s.revision } }; return Int64(0) }
         let taskB = Task { for await event in b { if case .snapshot(let s) = event { return s.revision } }; return Int64(0) }
         let before = try await p.session.nextSeq()
-        let result = try await w.serve(p) { (await taskA.value, await taskB.value) }
+        // serve cancels its body on timeout but not these unstructured tasks, so cancel them with it.
+        let result = try await w.serve(p) {
+            await withTaskCancellationHandler { (await taskA.value, await taskB.value) } onCancel: { taskA.cancel(); taskB.cancel() }
+        }
         #expect(result.0 == result.1 && result.0 > 0)
         #expect(try await p.session.nextSeq() <= before + 1)
         await p.session.setForeground(false)
