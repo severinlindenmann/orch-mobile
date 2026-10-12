@@ -67,10 +67,14 @@ final class SafeTextTests: XCTestCase {
         XCTAssertTrue(app.el("question.ambiguous").waitForExistence(timeout: 60))
         XCTAssertFalse(app.buttons["question.option.a"].isEnabled)
         XCTAssertFalse(app.buttons["question.option.b"].isEnabled)
-        // Full-width "Ｙes": the look-alike is named in the question text and in the option, in any font.
+        // Full-width "Ｙes": the look-alike is named in the question text (plain marker) and in the option
+        // (strict spoken label, which also names the script it imitates, PR #49), in any font.
         let marker = "⟨look-alike U+FF39⟩"
-        XCTAssertTrue(app.el("question.text").label.contains(marker), app.el("question.text").label)
-        XCTAssertTrue(app.buttons["question.option.b"].label.contains(marker), app.buttons["question.option.b"].label)
-        XCTAssertFalse(app.buttons["question.option.a"].label.contains(marker))
+        let spoken = "look-alike character ⟨Latin U+FF39⟩"
+        let text = app.el("question.text").label
+        let optionB = app.buttons["question.option.b"].label
+        XCTAssertTrue(text.contains(marker), text)
+        XCTAssertTrue(optionB.contains(spoken), optionB)
+        XCTAssertFalse(app.buttons["question.option.a"].label.contains("U+FF39"))
     }
 }
