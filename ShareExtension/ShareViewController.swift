@@ -148,6 +148,7 @@ final class ShareModel {
         case .unsupported: "index: type"
         case .destinationRemoved: "index: removed"
         case .cancelled: "index: cancelled"
+        case .busy: "index: busy"
         case .io: "index: io"
         case nil: "index: other"
         }
@@ -160,6 +161,7 @@ final class ShareModel {
         case .destinationRemoved: "That workspace was removed from this iPhone. Nothing was saved."
         case .unsupported: "orch can't send one of these items. Nothing was saved."
         case .empty: "There is nothing to save."
+        case .busy: "orch is busy. Nothing was saved. Try again in a moment."
         default: "Couldn't save. Nothing was kept."
         }
     }

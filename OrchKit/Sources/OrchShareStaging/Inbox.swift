@@ -143,7 +143,7 @@ public struct ShareInbox: Sendable {
         m.realm = target.realm; m.ws = target.ws; m.generation = target.generation
         guard m.isValid() else { throw ShareError.io("invalid destination") }
         let base = try area.stagingDir(realm: m.realm, ws: m.ws)
-        let published: StagedJob? = try area.coordination.ifNotRemoved(realm: target.realm, ws: target.ws, generation: target.generation) {
+        let published: StagedJob? = try area.ifNotRemovedBounded(realm: target.realm, ws: target.ws, generation: target.generation) {
             let baseDir = try area.openDir(base, create: true)
             let buildingName = m.jobID + ".redirect"
             ShareFS.removeTree(baseDir, buildingName)

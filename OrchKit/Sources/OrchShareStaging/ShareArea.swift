@@ -15,13 +15,24 @@ public struct ShareArea: Sendable {
     /// The App Group container itself (the parent of `share/`): never a legal copy source.
     public let shareGroupRoot: URL
 
-    public init(shareGroupRoot: URL) {
+    /// Longest the share extension waits for the tombstone lock before showing "busy". The extension must never wait
+    /// forever behind an app-side wipe.
+    public static let defaultLockTimeout: TimeInterval = 2
+    public var lockTimeout: TimeInterval
+
+    public init(shareGroupRoot: URL, lockTimeout: TimeInterval = ShareArea.defaultLockTimeout) {
+        self.lockTimeout = lockTimeout
         self.shareGroupRoot = shareGroupRoot
         shareDir = shareGroupRoot.appendingPathComponent("share", isDirectory: true)
     }
 
     /// The share extension's view of the tombstones (it sees only this group).
     public var coordination: TombstoneCoordination { TombstoneCoordination(directories: [shareDir]) }
+    /// `ifNotRemoved` with the bounded wait; a lock that stays taken surfaces as `ShareError.busy`.
+    func ifNotRemovedBounded<T>(realm: String, ws: String, generation: Int64, _ body: () throws -> T) throws -> T? {
+        do { return try coordination.ifNotRemoved(realm: realm, ws: ws, generation: generation, timeout: lockTimeout, body) }
+        catch TombstoneError.lockFailed(let e) where e == EWOULDBLOCK { throw ShareError.busy }
+    }
     public var targetsURL: URL { shareDir.appendingPathComponent("targets.json") }
     public var stagingRoot: URL { shareDir.appendingPathComponent("staging", isDirectory: true) }
     public var quarantineRoot: URL { shareDir.appendingPathComponent("quarantine", isDirectory: true) }
@@ -152,6 +163,8 @@ public enum ShareError: Error, Equatable, Sendable {
     case unsupported(String)
     case destinationRemoved
     case cancelled
+    /// A coordination lock stayed taken past the extension's deadline: nothing was saved, try again.
+    case busy
     case io(String)
 }
 
@@ -179,6 +192,7 @@ extension ShareError {
         case .unsupported(let s): "unsupported: \(ShareTargetIndex.sanitizeCode(s))"
         case .destinationRemoved: "destination removed"
         case .cancelled: "cancelled"
+        case .busy: "busy"
         case .io(let s): "io: \(ShareTargetIndex.sanitizeCode(s))"
         }
     }
@@ -370,7 +384,7 @@ public enum ShareTargetIndex {
         var lockFailure: String?
         for t in file.targets {
             do {
-                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, { true }) == true { live.append(t) }
+                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, timeout: area.lockTimeout, { true }) == true { live.append(t) }
             } catch { lockFailure = Self.tombstoneCode(error) }
         }
         if live.isEmpty {

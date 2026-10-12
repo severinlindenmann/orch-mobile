@@ -112,7 +112,7 @@ public final class StagingSession: @unchecked Sendable {
     /// Runs `body` inside ifNotRemoved. A removed or unreadable workspace aborts and deletes the partial job.
     private func guarded<T>(_ body: () throws -> T) throws -> T {
         do {
-            guard let result = try area.coordination.ifNotRemoved(realm: target.realm, ws: target.ws, generation: target.generation, body) else {
+            guard let result = try area.ifNotRemovedBounded(realm: target.realm, ws: target.ws, generation: target.generation, body) else {
                 finished = true
                 area.safeRemove(jobDir)
                 throw ShareError.destinationRemoved
@@ -123,6 +123,7 @@ public final class StagingSession: @unchecked Sendable {
             case .tooLarge, .unsupported, .empty: dropPartial()
             default: break
             }
+            if e == .busy { area.safeRemove(jobDir); finished = true }
             throw e
         } catch {
             area.safeRemove(jobDir)
