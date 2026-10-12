@@ -100,6 +100,8 @@ public actor WorkspaceSession {
     private var decisionDrivers: [ID16: Task<DecisionOutcome, Error>] = [:]
     private var snapshotTask: Task<WorkspaceSnapshot, Error>?
     private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
+    /// Snapshots yielded to subscribers; lets a test harness hold its fake clock while one is unconsumed (`World.serve`).
+    package private(set) var snapshotsEmitted = 0
     private var poller: Task<Void, Never>?
     private var hintRefresh: Task<Void, Never>?
     private var foreground = true
@@ -1189,6 +1191,7 @@ extension WorkspaceSession {
     }
     private func emit(_ event: WorkspaceEvent) {
         if case .connection(let state) = event { connectionState = state }
+        if case .snapshot = event { snapshotsEmitted += 1 }
         for c in subscribers.values { c.yield(event) }
         if case .invalidated = event, foreground, !subscribers.isEmpty, hintRefresh == nil {
             let identity = UUID(); hintIdentity = identity
@@ -1202,7 +1205,7 @@ extension WorkspaceSession {
         let id = UUID()
         let (stream, continuation) = AsyncStream<WorkspaceEvent>.makeStream(bufferingPolicy: .bufferingNewest(8))
         subscribers[id] = continuation
-        if let cachedSnapshot { continuation.yield(.snapshot(cachedSnapshot)) }
+        if let cachedSnapshot { snapshotsEmitted += 1; continuation.yield(.snapshot(cachedSnapshot)) }
         continuation.yield(.connection(connectionState))
         startViews()
         continuation.onTermination = { @Sendable _ in Task { await self.removeSubscriber(id) } }

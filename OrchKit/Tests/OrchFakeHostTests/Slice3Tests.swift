@@ -360,18 +360,22 @@ import OrchTestVectors
         #expect(try await w.serve(p) { try await api.decide(review, optionID: "approve") } == .accepted)
         #expect(try await w.serve(p) { try await api.snapshot() }.revision == 2)
     }
-    @Test func revisionChangeResetsPollingToFifteenSeconds() async throws {
+    /// Snapshot-to-snapshot intervals on the fake clock, ending with the first one after a host-side revision change. The consumer
+    /// optionally stalls in real time before it reads the clock, which is what a loaded CI runner does to it.
+    private func pollingIntervals(consumerStallMs: Int, barrier: Bool) async throws -> [Int64] {
         let (w, p, api, initial) = try await setup()
         let stream = await api.events()
-        let intervals = try await w.serve(p, steps: 600) {
+        let consumed = Consumed()
+        let intervals = try await w.serve(p, steps: 600, consumed: barrier ? consumed : nil) {
             var last: Int64?
             var sameRevision = 0
             var changedAt: Int64?
             var intervals: [Int64] = []
             for await event in stream {
                 guard case .snapshot(let snapshot) = event else { continue }
+                if consumerStallMs > 0 { try await Task.sleep(for: .milliseconds(consumerStallMs)) }
                 let now = p.clock.nowMs
-                if let changedAt { intervals.append(now - changedAt); return intervals }
+                if let changedAt { intervals.append(now - changedAt); consumed.bump(); return intervals }
                 if snapshot.revision != initial.revision { changedAt = now }
                 else {
                     if let last { intervals.append(now - last) }
@@ -379,12 +383,32 @@ import OrchTestVectors
                     if sameRevision == 4 { try await w.host.replaceQuestionText(initial.questions[0].questionID, text: "Polling reset") }
                 }
                 last = now
+                consumed.bump()
             }
             return intervals
         }
         await api.setForeground(false)
+        return intervals
+    }
+    @Test func revisionChangeResetsPollingToFifteenSeconds() async throws {
+        let intervals = try await pollingIntervals(consumerStallMs: 0, barrier: true)
         #expect(intervals.contains { $0 >= 30_000 })
         #expect((15_000...17_000).contains(try #require(intervals.last)))
+    }
+    /// The flake's interleaving, forced: the consumer reads the clock late. With the consumer barrier the fake clock waits for it.
+    @Test func pollingIntervalsHoldWhenTheConsumerIsSlow() async throws {
+        let intervals = try await pollingIntervals(consumerStallMs: 40, barrier: true)
+        #expect(intervals.contains { $0 >= 30_000 })
+        #expect((15_000...17_000).contains(try #require(intervals.last)))
+    }
+    /// Control for the test above: without the barrier the same stall makes the measurement overshoot, proving the stall bites.
+    @Test func slowConsumerWithoutBarrierOvershoots() async throws {
+        do {
+            let intervals = try await pollingIntervals(consumerStallMs: 40, barrier: false)
+            #expect(try #require(intervals.last) > 17_000)
+        } catch is CancellationError {
+            // The clock ran out its step budget while the consumer was still stalled: the same overshoot, more extreme.
+        }
     }
     @Test func rejectsAmbiguousOptionsAndUnsafeIDs() async throws {
         let (_, _, _, snapshot) = try await setup()

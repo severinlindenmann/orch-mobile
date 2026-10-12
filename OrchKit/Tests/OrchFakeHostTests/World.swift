@@ -175,6 +175,13 @@ final class Done: @unchecked Sendable {
     func set() { lock.withLock { v = true } }
 }
 
+/// Counts events a test's consumer has fully processed; `World.serve` uses it as a barrier against the session's emitted count.
+final class Consumed: @unchecked Sendable {
+    private let lock = NSLock(); private var n = 0
+    var count: Int { lock.withLock { n } }
+    func bump() { lock.withLock { n += 1 } }
+}
+
 struct Phone {
     let session: WorkspaceSession
     let container: WorkspaceContainer
@@ -197,8 +204,11 @@ extension World {
         return Phone(session: session, container: container, clock: pclock)
     }
 
-    /// Runs `body` while the host serves and both clocks tick, until it finishes.
-    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, timeout: Duration = .seconds(10), _ body: @escaping @Sendable () async throws -> T) async throws -> T {
+    /// Runs `body` while the host serves and both clocks tick, until it finishes. With `consumed`, the clocks also wait for the
+    /// body's event consumer to catch up with the session's emitted snapshots before each tick. If `body` has not finished when
+    /// `steps` or `timeout` run out, it is cancelled and its result (usually a cancellation error) is returned.
+    func serve<T: Sendable>(_ phone: Phone, steps: Int = 200, timeout: Duration = .seconds(10),
+                          consumed: Consumed? = nil, _ body: @escaping @Sendable () async throws -> T) async throws -> T {
         let done = Done()
         let task = Task { () -> Result<T, Error> in
             defer { done.set() }
@@ -211,6 +221,15 @@ extension World {
             // work and park in polling before ticking; otherwise a near-boundary replay can age out in flight.
             while !done.value && phone.clock.sleeperCount == 0 && ContinuousClock.now < deadline {
                 await Task.yield()
+            }
+            // Consumer barrier: never tick while an emitted snapshot is still unconsumed, otherwise a slow consumer reads a
+            // clock that has run ahead of the emission and measures intervals that include its own scheduling delay.
+            if let consumed {
+                while !done.value && ContinuousClock.now < deadline {
+                    let emitted = await phone.session.snapshotsEmitted
+                    if consumed.count >= emitted { break }
+                    await Task.yield()
+                }
             }
             if done.value || ContinuousClock.now >= deadline { break }
             _ = try await host.pump(relay: relay, transport: transport, session: try await host.currentSession(transport: transport))
