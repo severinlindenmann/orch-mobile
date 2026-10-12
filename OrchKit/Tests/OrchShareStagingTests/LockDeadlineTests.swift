@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import OrchCoordination
+import UniformTypeIdentifiers
 @testable import OrchShareStaging
 
 /// The share extension must never wait forever behind a held tombstone lock (an app-side wipe): it ends in "busy".
@@ -58,5 +59,49 @@ struct LockDeadlineTests {
                 #expect(code.hasPrefix("lock"))
             }
         }
+    }
+}
+
+/// A provider that never calls back must not hold the "saving" state forever; Cancel ends it at once.
+struct StuckProviderTests {
+    private func stuck() -> NSItemProvider {
+        let p = NSItemProvider()
+        p.registerItem(forTypeIdentifier: UTType.plainText.identifier) { _, _, _ in /* never calls back */ }
+        return p
+    }
+
+    @Test @MainActor func deadlineEndsAStuckLoad() async throws {
+        let session = try StagingSession(area: ShareArea(shareGroupRoot: tmp()), target: target())
+        let provider = stuck()
+        do {
+            try await ProviderStager.$loadDeadline.withValue(0.3) { try await ProviderStager.stage(provider, into: session) }
+            Issue.record("expected a timeout")
+        } catch let e as ShareError {
+            #expect(e == .io("provider timeout"))
+        }
+        #expect(session.itemCount == 0)
+    }
+
+    @Test @MainActor func cancellationEndsAStuckLoadQuickly() async throws {
+        let session = try StagingSession(area: ShareArea(shareGroupRoot: tmp()), target: target())
+        let provider = stuck()
+        let task = Task { @MainActor in
+            try await ProviderStager.$loadDeadline.withValue(30) { try await ProviderStager.stage(provider, into: session) }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let start = Date()
+        task.cancel()
+        do { try await task.value; Issue.record("expected cancellation") } catch is CancellationError {}
+        #expect(Date().timeIntervalSince(start) < 5)
+    }
+
+    @Test @MainActor func alreadyCancelledTaskDoesNotStart() async throws {
+        let session = try StagingSession(area: ShareArea(shareGroupRoot: tmp()), target: target())
+        let provider = stuck()
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await ProviderStager.stage(provider, into: session)
+        }
+        do { try await task.value; Issue.record("expected cancellation") } catch is CancellationError {}
     }
 }
