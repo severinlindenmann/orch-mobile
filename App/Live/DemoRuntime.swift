@@ -246,10 +246,18 @@ final class DemoRuntime {
 
     // MARK: Demo push
 
+    /// The Demo host asks a fresh question (the Demo notification needs a real, open question to replace later). Returns its id.
+    func askDemoQuestion(workspace: ID16) async -> ID16? {
+        guard let entry = entries[workspace] else { return nil }
+        let seed = DemoQuestionSeed(ticket: "DEMO-1", text: "Demo notification: answer this question in orch.",
+                                    options: [DemoOptionSeed("approve", "Approve"), DemoOptionSeed("reject", "Reject")], createdAgoMs: 0)
+        return try? await entry.host.demoAskQuestion(seed)
+    }
+
     /// Seals a push as the host would and runs it through the same processor the notification extension uses, ending in a local,
     /// labelled-as-simulated notification (decision A12).
-    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String, delay: TimeInterval = 1) async -> PushSimulator.Result? {
-        guard let entry = entries[workspace], let sealed = try? await entry.host.demoSealPush(kind: "question", id: "demo-" + UUID().uuidString, label: label) else { return nil }
+    func simulatePush(workspace: ID16, name: String, generation: Int64, label: String, questionID: String? = nil, delay: TimeInterval = 1) async -> PushSimulator.Result? {
+        guard let entry = entries[workspace], let sealed = try? await entry.host.demoSealPush(kind: "question", id: questionID ?? "demo-" + UUID().uuidString, label: label) else { return nil }
         let keys = await entry.host.demoPushKeys()
         guard let material = try? PushMaterial(generation: generation, name: name, wsk: entry.host.wskPublic, kPush: [keys.epoch: keys.kPush]) else { return nil }
         let sim = PushSimulator(materials: [workspace: material], scheduler: ScopedDemoNotifications(owner: notifications, workspace: workspace.hex), delay: delay, now: { [clock] in Date(timeIntervalSince1970: Double(clock.nowMs) / 1000) })
