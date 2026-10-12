@@ -28,7 +28,12 @@ jobs:
           sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
       # Serial on purpose: Swift Testing otherwise runs all ~760 tests at once on the runner's 3 cores, which starved the
       # cooperative pool until the job hit its timeout (run 38212117388). Serial takes minutes, never 30.
+      # LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 limits the pool to one thread, so any code that blocks a pool thread
+      # while waiting for async work (the semaphore in PushSliceTests that caused that hang) deadlocks on every run
+      # instead of now and then; the step timeout then fails it.
       - run: swift test --package-path OrchKit --no-parallel
+        env:
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
         timeout-minutes: 20
       - run: scripts/check-extension-links.sh
       - run: scripts/test-check-extension-links.sh
