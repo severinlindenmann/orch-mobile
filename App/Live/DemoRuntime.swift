@@ -239,6 +239,12 @@ final class DemoRuntime {
         forget(workspace)
     }
 
+    /// The foreground-presentation gate is memory-only: after a launch, block every workspace the index marks removed or mid-wipe.
+    func rebuildPresentationGate() async {
+        guard let tombstones = try? await env.index.tombstones(), let rows = try? await env.index.workspaces() else { return }
+        PresentationGate.rebuild(tombstones: tombstones.map { ($0.record.ws, $0.record.generation) }, workspaces: rows.map { ($0.ws, $0.generation) })
+    }
+
     /// Where a workspace keeps its unsent new-ticket draft: inside its own directory, which the local wipe deletes.
     func draftURL(workspace: ID16) -> URL? {
         try? env.layout.wsDir(workspace.hex).appendingPathComponent("ticket-draft.json")

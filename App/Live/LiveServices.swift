@@ -77,8 +77,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func waitForLifecycle() async { await lifecycleTask?.value }
     func waitForReset() async { await resetTask?.value }
 
-    private func transition(_ id: String, to state: WorkspaceLifecycle) {
+    func transition(_ id: String, to state: WorkspaceLifecycle) {
         if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
+        // Removing, removal-incomplete (quarantined) and removed workspaces never present a foreground notification.
+        if state != .live { PresentationGate.block(id) }
         lifecycle[id] = state
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
@@ -142,7 +144,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         bootTask = nil
         runtime = r
         isDemo = r != nil
-        if let r { r.deviceLabel = deviceLabel }
+        if let r { r.deviceLabel = deviceLabel; await r.rebuildPresentationGate() }
         if !options.uiTesting { UserDefaults.standard.set(r != nil, forKey: Keys.demo) }
         return r
     }

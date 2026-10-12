@@ -161,6 +161,13 @@ enum PresentationGate {
     static func block(_ ws: String) { lock.lock(); blocked.insert(ws); lock.unlock() }
     static func unblock(_ ws: String) { lock.lock(); blocked.remove(ws); lock.unlock() }
     static func blockAll(_ ws: [String]) { lock.lock(); blocked.formUnion(ws); lock.unlock() }
+    /// Launch rebuild from the workspace index (the gate is memory-only): every tombstoned workspace is blocked, unless the index
+    /// now lists that workspace at a newer generation (re-paired: a new membership). Only adds; Leave/reset/transition add live.
+    static func rebuild(tombstones: [(ws: String, generation: Int64)], workspaces: [(ws: String, generation: Int64)]) {
+        let current = Dictionary(workspaces.map { ($0.ws, $0.generation) }, uniquingKeysWith: max)
+        let stale = tombstones.filter { t in (current[t.ws] ?? Int64.min) <= t.generation }.map(\.ws)
+        blockAll(stale)
+    }
     static func isBlocked(thread: String, identifier: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return blocked.contains { $0 == thread || identifier.hasPrefix("demo/\($0)/") }
