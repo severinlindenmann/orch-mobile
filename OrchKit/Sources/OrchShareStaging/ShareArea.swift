@@ -15,13 +15,24 @@ public struct ShareArea: Sendable {
     /// The App Group container itself (the parent of `share/`): never a legal copy source.
     public let shareGroupRoot: URL
 
-    public init(shareGroupRoot: URL) {
+    /// Longest the share extension waits for the tombstone lock before showing "busy". The extension must never wait
+    /// forever behind an app-side wipe.
+    public static let defaultLockTimeout: TimeInterval = 2
+    public var lockTimeout: TimeInterval
+
+    public init(shareGroupRoot: URL, lockTimeout: TimeInterval = ShareArea.defaultLockTimeout) {
+        self.lockTimeout = lockTimeout
         self.shareGroupRoot = shareGroupRoot
         shareDir = shareGroupRoot.appendingPathComponent("share", isDirectory: true)
     }
 
     /// The share extension's view of the tombstones (it sees only this group).
     public var coordination: TombstoneCoordination { TombstoneCoordination(directories: [shareDir]) }
+    /// `ifNotRemoved` with the bounded wait; a lock that stays taken surfaces as `ShareError.busy`.
+    func ifNotRemovedBounded<T>(realm: String, ws: String, generation: Int64, _ body: () throws -> T) throws -> T? {
+        do { return try coordination.ifNotRemoved(realm: realm, ws: ws, generation: generation, timeout: lockTimeout, body) }
+        catch TombstoneError.lockFailed(let e) where e == EWOULDBLOCK { throw ShareError.busy }
+    }
     public var targetsURL: URL { shareDir.appendingPathComponent("targets.json") }
     public var stagingRoot: URL { shareDir.appendingPathComponent("staging", isDirectory: true) }
     public var quarantineRoot: URL { shareDir.appendingPathComponent("quarantine", isDirectory: true) }
@@ -152,6 +163,8 @@ public enum ShareError: Error, Equatable, Sendable {
     case unsupported(String)
     case destinationRemoved
     case cancelled
+    /// A coordination lock stayed taken past the extension's deadline: nothing was saved, try again.
+    case busy
     case io(String)
 }
 
@@ -179,6 +192,7 @@ extension ShareError {
         case .unsupported(let s): "unsupported: \(ShareTargetIndex.sanitizeCode(s))"
         case .destinationRemoved: "destination removed"
         case .cancelled: "cancelled"
+        case .busy: "busy"
         case .io(let s): "io: \(ShareTargetIndex.sanitizeCode(s))"
         }
     }
@@ -311,11 +325,19 @@ public enum ShareTargetIndex {
     /// The existing index is kept (the app still needs it to retire removed destinations after a restart) but marked
     /// stale, so the extension offers nothing from it: a destination removed meanwhile is never offered.
     public static func recordPublishSkipped(_ reason: String, in area: ShareArea, now: Date = Date()) {
-        if var file = try? readFile(from: area, allowStale: true) {
+        var markFailure: String?
+        do {
+            var file = try readFile(from: area, allowStale: true)
             file.stale = sanitizeCode(reason)
-            if let data = try? JSONEncoder().encode(file) { try? area.writeFile(data, to: area.targetsURL) }
+            try area.writeFile(JSONEncoder().encode(file), to: area.targetsURL)
+        } catch ShareError.noWorkspaces {
+            // No index yet: nothing to mark, and the extension already offers nothing.
+        } catch {
+            // The stale mark could not be written (index unreadable, or protected while the phone is locked): say so.
+            markFailure = PublishStatus.code(error)
         }
-        PublishStatus.record(.init(at: now.timeIntervalSince1970, result: "skipped: \(reason)", targets: 0), in: area)
+        let result = markFailure.map { "skipped: \(sanitizeCode(String(reason.prefix(60)))) mark failed: \(sanitizeCode($0))" } ?? "skipped: \(reason)"
+        PublishStatus.record(.init(at: now.timeIntervalSince1970, result: result, targets: 0), in: area)
     }
 
     /// App side: every destination in the index (stale or not, tombstoned or not), for retiring removals after a restart.
@@ -368,10 +390,16 @@ public enum ShareTargetIndex {
         let coordination = area.coordination
         var live: [ShareTarget] = []
         var lockFailure: String?
+        // One deadline for the whole load, not per target; a lock that stays taken ends the loop.
+        let deadline = Date().addingTimeInterval(area.lockTimeout)
         for t in file.targets {
             do {
-                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, { true }) == true { live.append(t) }
-            } catch { lockFailure = Self.tombstoneCode(error) }
+                let left = max(0, deadline.timeIntervalSinceNow)
+                if try coordination.ifNotRemoved(realm: t.realm, ws: t.ws, generation: t.generation, timeout: left, { true }) == true { live.append(t) }
+            } catch {
+                lockFailure = Self.tombstoneCode(error)
+                if case TombstoneError.lockFailed = error { break }
+            }
         }
         if live.isEmpty {
             if let lockFailure { throw ShareError.index(.tombstones(lockFailure)) }

@@ -55,7 +55,8 @@ final class SignSheetTests: XCTestCase {
     @MainActor
     func testBidiQuestionShowsVisibleMarkers() {
         let app = launch("sign/q3")
-        XCTAssertTrue(app.el("sign.unsafeNotice").waitForExistence(timeout: 60))
+        XCTAssertTrue(app.el("sign.unsafeWarning").waitForExistence(timeout: 60))
+        XCTAssertFalse(app.el("sign.unsafeNotice").exists, "one warning only while signing is possible")
         let text = app.el("sign.text")
         XCTAssertTrue(text.label.contains("⟨U+202E⟩"), "label: \(text.label)")
         XCTAssertTrue(text.label.contains("⟨U+202C⟩"))

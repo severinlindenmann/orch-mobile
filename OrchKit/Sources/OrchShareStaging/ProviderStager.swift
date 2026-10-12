@@ -43,7 +43,7 @@ public enum ProviderStager {
         // URL representations are values; never ask the
         // framework to turn a file URL into the contents of the referenced file.
         if type == UTType.fileURL.identifier || type == UTType.url.identifier {
-            return try await withCheckedThrowingContinuation { (c: CheckedContinuation<LoadedValue, Error>) in
+            return try await bounded { (c: Waiter<LoadedValue>) in
                 p.loadItem(forTypeIdentifier: type, options: nil) { value, error in
                     if let error { c.resume(throwing: error); return }
                     if let url = value as? URL {
@@ -61,7 +61,7 @@ public enum ProviderStager {
         }
         // Inspect the value first: requesting data for an NSURL advertised as text can
         // make Foundation read the referenced file instead of returning the URL string.
-        let url: URL? = try await withCheckedThrowingContinuation { c in
+        let url: URL? = try await bounded { (c: Waiter<URL?>) in
             p.loadItem(forTypeIdentifier: type, options: nil) { item, error in
                 if let error { c.resume(throwing: error); return }
                 if let url = item as? URL {
@@ -80,7 +80,7 @@ public enum ProviderStager {
             }
         }
         if let url { return .url(url) }
-        return try await withCheckedThrowingContinuation { (c: CheckedContinuation<LoadedValue, Error>) in
+        return try await bounded { (c: Waiter<LoadedValue>) in
             p.loadDataRepresentation(forTypeIdentifier: type) { data, error in
                 if let error { c.resume(throwing: error); return }
                 guard let data else { c.resume(returning: .other); return }
@@ -90,6 +90,47 @@ public enum ProviderStager {
         }
     }
 
+    /// Longest a single provider load may take before the save ends with an error (a stuck provider must not hold the
+    /// "saving" state forever). Tests lower it.
+    @TaskLocal public static var loadDeadline: Double = 45
+
+    /// One-shot bridge from an NSItemProvider callback to async code: ends on the callback, on task cancellation, or
+    /// at the deadline, whichever comes first, and resumes its continuation exactly once.
+    final class Waiter<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Error>?
+        private var early: Result<T, Error>?
+        private var claimed = false
+
+        /// The first caller wins and must then call `complete`.
+        func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if claimed { return false }; claimed = true; return true }
+        func install(_ c: CheckedContinuation<T, Error>) {
+            lock.lock()
+            if let early { lock.unlock(); c.resume(with: early) } else { continuation = c; lock.unlock() }
+        }
+        func complete(_ result: Result<T, Error>) {
+            lock.lock()
+            if let c = continuation { continuation = nil; lock.unlock(); c.resume(with: result) } else { early = result; lock.unlock() }
+        }
+        func resume(returning value: T) { if claim() { complete(.success(value)) } }
+        func resume(throwing error: Error) { if claim() { complete(.failure(error)) } }
+    }
+
+    @MainActor static func bounded<T: Sendable>(_ start: (Waiter<T>) -> Void) async throws -> T {
+        let waiter = Waiter<T>()
+        let seconds = loadDeadline
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<T, Error>) in
+                waiter.install(c)
+                if Task.isCancelled { waiter.resume(throwing: CancellationError()); return }
+                start(waiter)
+                DispatchQueue.global().asyncAfter(deadline: .now() + max(seconds, 0.01)) {
+                    waiter.resume(throwing: ShareError.io("provider timeout"))
+                }
+            }
+        } onCancel: { waiter.resume(throwing: CancellationError()) }
+    }
+
     /// A content type the provider genuinely advertises as data (not a URL, whose supertype is also data).
     static func advertisedDataType(_ p: NSItemProvider) -> UTType? {
         p.registeredContentTypes.first { $0.conforms(to: .data) && !$0.conforms(to: .url) }
@@ -97,15 +138,17 @@ public enum ProviderStager {
 
     @MainActor private static func copyRepresentation(_ p: NSItemProvider, type: UTType, session: StagingSession) async throws {
         let name = p.suggestedName
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+        try await bounded { (c: Waiter<Void>) in
             _ = p.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
                 guard let url else { c.resume(throwing: error ?? ShareError.unsupported("load")); return }
+                // A late callback (after Cancel or the deadline) must not stage anything.
+                guard c.claim() else { return }
                 do {
                     var display = name ?? url.lastPathComponent
                     if (display as NSString).pathExtension.isEmpty, let ext = type.preferredFilenameExtension { display += "." + ext }
                     try session.add(.providerCopy(url, name: display, type: type.identifier))
-                    c.resume()
-                } catch { c.resume(throwing: error) }
+                    c.complete(.success(()))
+                } catch { c.complete(.failure(error)) }
             }
         }
     }

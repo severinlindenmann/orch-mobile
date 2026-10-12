@@ -77,8 +77,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func waitForLifecycle() async { await lifecycleTask?.value }
     func waitForReset() async { await resetTask?.value }
 
-    private func transition(_ id: String, to state: WorkspaceLifecycle) {
+    func transition(_ id: String, to state: WorkspaceLifecycle) {
         if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
+        // Removing, removal-incomplete (quarantined) and removed workspaces never present a foreground notification.
+        if state != .live { PresentationGate.block(id) }
         lifecycle[id] = state
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
@@ -106,14 +108,24 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 resetIncomplete = false
             } catch {
                 resetIncomplete = true
+                PresentationGate.requireRebuild()
             }
         }
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
         if options.demo || persisted { _ = await startDemo() }
         if options.demoSeed, isDemo { await seedDemoWorkspaces() }
+        await ensurePresentationGate(intendedDemo: options.demo || persisted)
         // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
         if !isDemo { Task.detached { await SystemDemoNotifications().retryOwedPurges() } }
         ready = true
+    }
+
+    /// Opens the foreground-presentation gate once the workspace index has been read. The app has one index, the runtime's
+    /// (Demo or live realm alike); with no runtime and none wanted there are no workspaces and nothing to block. A wanted
+    /// runtime that did not start, or an unreadable index, leaves the gate closed; the next foreground retries.
+    func ensurePresentationGate(intendedDemo: Bool = false) async {
+        if let runtime { await runtime.rebuildPresentationGate() }
+        else if !intendedDemo { PresentationGate.openWithoutIndex() }
     }
 
     @discardableResult
@@ -142,7 +154,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         bootTask = nil
         runtime = r
         isDemo = r != nil
-        if let r { r.deviceLabel = deviceLabel }
+        if r == nil { PresentationGate.requireRebuild() }
+        if let r { r.deviceLabel = deviceLabel; await r.rebuildPresentationGate() }
         if !options.uiTesting { UserDefaults.standard.set(r != nil, forKey: Keys.demo) }
         return r
     }
@@ -289,6 +302,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
+        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: options.demo || isDemo) } }
         if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
         refreshTasks = [:]

@@ -92,6 +92,92 @@ final class LiveLifecycleTests: XCTestCase {
         task.cancel()
     }
 
+    // MARK: PresentationGate
+
+    override func setUp() { PresentationGate.defaults = UserDefaults(suiteName: "orch.tests.gate.\(UUID().uuidString)")!; PresentationGate.markRebuilt() }
+    override func tearDown() { PresentationGate.defaults = .standard; PresentationGate.markRebuilt() }
+
+    func testFailedBootKeepsTheGateClosedWithoutDemoUntilARealRebuild() async throws {
+        PresentationGate.requireRebuild()   // what a failed boot / incomplete reset records
+        XCTAssertTrue(PresentationGate.persistedUnrebuilt)
+        // Relaunch without Demo: no runtime is wanted, but the persisted flag keeps everything blocked.
+        PresentationGate.markNotRebuilt()
+        let services = LiveServices(options: options)
+        await services.ensurePresentationGate(intendedDemo: false)
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        // A successful rebuild from the index clears it.
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        await LiveServices(options: options, runtime: runtime).ensurePresentationGate()
+        XCTAssertFalse(PresentationGate.persistedUnrebuilt)
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        PresentationGate.markNotRebuilt()
+        await services.ensurePresentationGate(intendedDemo: false)
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+    }
+
+    func testGateNotRebuiltBlocksEverything() {
+        PresentationGate.markNotRebuilt()
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        PresentationGate.markRebuilt()
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+    }
+
+    func testUnreadableIndexFailsClosedUntilALaterRebuildSucceeds() async {
+        struct Unreadable: Error {}
+        PresentationGate.markNotRebuilt()
+        let failed = await PresentationGate.rebuild { throw Unreadable() }
+        XCTAssertFalse(failed)
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+        let ok = await PresentationGate.rebuild { ([], []) }
+        XCTAssertTrue(ok)
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "any", identifier: "x"))
+    }
+
+    func testRelaunchWithTombstonedWorkspaceIsBlockedAndRepairedIsNot() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let gone = SystemEntropy().id16().hex
+        _ = try await runtime.env.index.recordTombstone(ws: gone, generation: 2)
+        defer { PresentationGate.unblock(gone) }
+        PresentationGate.markNotRebuilt()   // a fresh launch: memory-only gate
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "other", identifier: "x"))
+        let services = LiveServices(options: options, runtime: runtime)
+        await services.ensurePresentationGate()
+        XCTAssertTrue(PresentationGate.isRebuilt)
+        XCTAssertTrue(PresentationGate.isBlocked(thread: gone, identifier: "x"))
+        XCTAssertFalse(PresentationGate.isBlocked(thread: "other", identifier: "x"))
+    }
+
+    func testNonLiveLifecycleStatesBlockForegroundPresentation() {
+        let services = LiveServices(options: options)
+        for state in [WorkspaceLifecycle.removing, .removalIncomplete, .removed] {
+            let ws = workspace(services)
+            XCTAssertFalse(PresentationGate.isBlocked(thread: ws.info.id, identifier: "x"))
+            services.transition(ws.info.id, to: state)
+            XCTAssertTrue(PresentationGate.isBlocked(thread: ws.info.id, identifier: "x"), "\(state)")
+            PresentationGate.unblock(ws.info.id)
+        }
+    }
+
+    func testGateRebuildBlocksTombstonedAndSkipsRepaired() {
+        let gone = SystemEntropy().id16().hex, repaired = SystemEntropy().id16().hex, live = SystemEntropy().id16().hex
+        PresentationGate.rebuild(tombstones: [(gone, 3), (repaired, 2)], workspaces: [(repaired, 3), (live, 1)])
+        defer { [gone, repaired, live].forEach(PresentationGate.unblock) }
+        XCTAssertTrue(PresentationGate.isBlocked(thread: gone, identifier: "x"))
+        XCTAssertTrue(PresentationGate.isBlocked(thread: "other", identifier: "demo/\(gone)/q"))
+        XCTAssertFalse(PresentationGate.isBlocked(thread: repaired, identifier: "x"))
+        XCTAssertFalse(PresentationGate.isBlocked(thread: live, identifier: "x"))
+    }
+
+    func testBootedRuntimeRebuildsTheGateFromTheIndexTombstones() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let ws = SystemEntropy().id16().hex
+        _ = try await runtime.env.index.recordTombstone(ws: ws, generation: 4)
+        defer { PresentationGate.unblock(ws) }
+        XCTAssertFalse(PresentationGate.isBlocked(thread: ws, identifier: "x"))
+        await runtime.rebuildPresentationGate()
+        XCTAssertTrue(PresentationGate.isBlocked(thread: ws, identifier: "x"))
+    }
+
     func testBackgroundForegroundAcrossSuspendedSubscription() async {
         let services = LiveServices(options: options)
         let api = WorkspaceStub()

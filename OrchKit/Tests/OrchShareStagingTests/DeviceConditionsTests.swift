@@ -215,7 +215,7 @@ struct ReviewRoundTests {
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("share"), withDestinationURL: elsewhere.appendingPathComponent("share"))
         let lines = ShareDiagnostics.collect(groupID: "g", root: root)
         #expect(value(lines, "Share folder") == "refused (link or not a folder)")
-        #expect(value(lines, "Index file") == "missing")
+        #expect(value(lines, "Index file") == "refused")
         #expect(value(lines, "Index decode") == "io \(ENOTDIR) ENOTDIR")
         #expect(value(lines, "Tombstone lock") == "skipped (no share folder)")
     }
@@ -253,6 +253,19 @@ struct ReviewRoundTests {
         ShareTargetIndex.recordPublishSkipped("tombstones: corrupt", in: area)
         #expect(throws: ShareError.noWorkspaces) { try ShareTargetIndex.load(from: area) }
         #expect(ShareTargetIndex.PublishStatus.read(from: area)?.result == "skipped: tombstones: corrupt")
+    }
+
+    @Test func failedStaleMarkIsRecordedInTheStatus() throws {
+        let area = ShareArea(shareGroupRoot: privateRoot())
+        try ShareTargetIndex.publish([target()], to: area)
+        // An unreadable index (here a link) cannot be marked stale: the status must say so, not just "skipped".
+        let other = area.shareGroupRoot.appendingPathComponent("other.json")
+        try Data("{}".utf8).write(to: other)
+        try FileManager.default.removeItem(at: area.targetsURL)
+        try FileManager.default.createSymbolicLink(at: area.targetsURL, withDestinationURL: other)
+        ShareTargetIndex.recordPublishSkipped("tombstones: corrupt", in: area)
+        let result = try #require(ShareTargetIndex.PublishStatus.read(from: area)?.result)
+        #expect(result == "skipped: tombstones: corrupt mark failed: io 62 ELOOP")
     }
 
     @Test func stagingErrorsNeverCarryPaths() {
