@@ -47,8 +47,10 @@ extension DropTests {
         XCTAssertTrue(app.buttons["drop.open"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["drop.open"].isEnabled)
         app.buttons["drop.open"].tap()
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10))
-        app.buttons["Done"].tap()
+        // QuickLook's close button is labelled "Done" on older iOS and "close" on newer; its identifier is stable.
+        let done = app.buttons.matching(NSPredicate(format: "identifier == 'QLOverlayDoneButtonAccessibilityIdentifier' OR label == 'Done'")).firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 10))
+        done.tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.el("drop.item.d-empty").tap()
         XCTAssertTrue(app.staticTexts["This file is empty."].waitForExistence(timeout: 10))
