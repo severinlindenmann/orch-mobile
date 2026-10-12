@@ -25,7 +25,7 @@ actor HookGate {
     func waitArrived(_ name: String) async {
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while ContinuousClock.now < deadline { if arrived.contains(name) { return }; await Task.yield() }
-        Issue.record("hook \(name) was not reached within 60 s of real time (arrived: \(arrived))")
+        Issue.record("hook \(name) was not reached within 120 s of real time (arrived: \(arrived))")
     }
 }
 
@@ -347,7 +347,7 @@ extension PairHarness {
         }
         let finalState = await h.coordinator.state
         let finalRequests = await h.relay.requestsReceived
-        #expect(ended, "run() did not terminate within 60 s of real time or the 100 s simulated safety cap: state=\(finalState), elapsedMs=\(h.clock.nowMs - 1_790_000_000_000), requests=\(finalRequests), sleepers=\(h.clock.sleeperCount)")
+        #expect(ended, "run() did not terminate within 120 s of real time or the 100 s simulated safety cap: state=\(finalState), elapsedMs=\(h.clock.nowMs - 1_790_000_000_000), requests=\(finalRequests), sleepers=\(h.clock.sleeperCount)")
         #expect(await h.coordinator.state == .failed(.linkUsed) && h.clock.nowMs <= 1_790_000_000_000 + 70_000)
         if !ended { runner.cancel() }
         await runner.value

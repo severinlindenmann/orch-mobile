@@ -80,7 +80,7 @@ import OrchProtocol
         #expect(clock.nowMs == 1_000)
         let done = Flag()
         let task = Task { try await clock.sleep(for: .seconds(10)); done.set() }
-        while clock.sleeperCount == 0 { await Task.yield() }
+        guard await waitForSleeper(clock) else { return }
         clock.advance(by: .seconds(9))
         await Task.yield()
         #expect(!done.value && clock.sleeperCount == 1)
@@ -89,7 +89,7 @@ import OrchProtocol
         #expect(done.value && clock.nowMs == 11_000)
         // Cancellation wakes a sleeper with CancellationError.
         let t2 = Task { try await clock.sleep(for: .seconds(100)) }
-        while clock.sleeperCount == 0 { await Task.yield() }
+        guard await waitForSleeper(clock) else { return }
         t2.cancel()
         await #expect(throws: CancellationError.self) { try await t2.value }
         #expect(clock.sleeperCount == 0)
@@ -107,7 +107,7 @@ import OrchProtocol
         // The other order: registered, then cancelled; and cancelled twice.
         let id2 = clock.beginSleep()
         let parked = Task { try await clock.awaitSleep(id2, until: clock.now.advanced(by: .seconds(100))) }
-        while clock.sleeperCount == 0 { await Task.yield() }
+        guard await waitForSleeper(clock) else { return }
         clock.cancelSleep(id2); clock.cancelSleep(id2)
         await #expect(throws: CancellationError.self) { try await parked.value }
         #expect(clock.sleeperCount == 0)
@@ -139,4 +139,14 @@ final class Flag: @unchecked Sendable {
     private let lock = NSLock(); private var v = false
     var value: Bool { lock.withLock { v } }
     func set() { lock.withLock { v = true } }
+}
+
+/// Waits (real time, capped) for a sleeper to park on `clock`; records an issue instead of spinning until the CI job timeout.
+func waitForSleeper(_ clock: TestClock, seconds: Int = 120) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+    while clock.sleeperCount == 0 {
+        if ContinuousClock.now >= deadline { Issue.record("no sleeper parked on the test clock after \(seconds) s of real time"); return false }
+        await Task.yield()
+    }
+    return true
 }
