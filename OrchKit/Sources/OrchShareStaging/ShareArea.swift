@@ -54,26 +54,39 @@ public struct ShareArea: Sendable {
     // for a symbolic link fails the walk, and a swapped-in real directory is still inside the share area.
 
     /// Components of `url` below `shareDir`; nil when `url` is outside it or has an unusable component.
+    ///
+    /// Purely lexical: never `standardizedFileURL`, which drops a leading `/private` only when the path EXISTS. On a device
+    /// the App Group container is `/private/var/mobile/…`, so an existing `share/` and a not-yet-written `targets.json`
+    /// (or a new staging job directory) normalised differently and every create was refused as "outside share dir".
     func components(of url: URL) -> [String]? {
-        let base = shareDir.standardizedFileURL.pathComponents
-        let target = url.standardizedFileURL.pathComponents
+        let base = Self.lexical(shareDir)
+        let target = Self.lexical(url)
         guard target.count >= base.count, Array(target.prefix(base.count)) == base else { return nil }
         let rel = Array(target.dropFirst(base.count))
         guard rel.allSatisfy({ (try? ShareFS.checkName($0)) != nil }) else { return nil }
         return rel
     }
 
+    /// Absolute path components without the root, empty and `.` entries (no filesystem access). `..` is kept so the walk
+    /// refuses it. Darwin's `/private/{var,tmp,etc}` and `/{var,tmp,etc}` name the same directories (root-owned links),
+    /// so the `private` prefix is dropped from both sides deterministically.
+    static func lexical(_ url: URL) -> [String] {
+        var parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init).filter { $0 != "." }
+        if parts.count >= 2, parts[0] == "private", ["var", "tmp", "etc"].contains(parts[1]) { parts.removeFirst() }
+        return parts
+    }
+
     /// Opens `url` (a directory below `shareDir`, or `shareDir` itself) through the walk; `create` makes missing
     /// components with Complete protection, excluded from backup.
     func openDir(_ url: URL, create: Bool = false) throws -> DirFD {
         guard let rel = components(of: url) else { throw ShareError.io("outside share dir") }
-        return try ShareFS.walk(root: shareDir.standardizedFileURL, rel, create: create)
+        return try ShareFS.walk(root: shareDir, rel, create: create)
     }
 
     /// The verified parent directory of `url` and its last component.
     func openParent(_ url: URL, create: Bool = false) throws -> (dir: DirFD, name: String) {
         guard let rel = components(of: url), let last = rel.last else { throw ShareError.io("outside share dir") }
-        return (try ShareFS.walk(root: shareDir.standardizedFileURL, Array(rel.dropLast()), create: create), last)
+        return (try ShareFS.walk(root: shareDir, Array(rel.dropLast()), create: create), last)
     }
 
     func ensureDirectory(_ dir: URL) throws { _ = try openDir(dir, create: true) }
@@ -115,7 +128,7 @@ public struct ShareArea: Sendable {
     func safeRemove(_ url: URL) -> Bool {
         guard let rel = components(of: url), let last = rel.last else { return false }
         do {
-            let parent = try ShareFS.walk(root: shareDir.standardizedFileURL, Array(rel.dropLast()))
+            let parent = try ShareFS.walk(root: shareDir, Array(rel.dropLast()))
             return ShareFS.removeTree(parent, last)
         } catch ShareFS.ReadFailure.notFound { return true }
         catch { return false }
