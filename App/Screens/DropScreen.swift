@@ -127,6 +127,7 @@ struct DropScreen: View {
 
 struct DropRow: View {
     @ScaledMetric(relativeTo: .body) private var iconBox = 36.0
+    @Environment(\.dynamicTypeSize) private var typeSize
     let item: DropItem
     let workspaces: [WorkspaceInfo]
 
@@ -154,9 +155,10 @@ struct DropRow: View {
                 Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
                     .font(OF.meta).foregroundStyle(OC.textMuted)
                 // Compact status line. Plain stacks (no custom Layout): chips keep their natural height inside a list row.
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: OS.s2) { statusParts(item) }
+                if typeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: OS.s1) { statusParts(item) }
+                } else {
+                    HStack(spacing: OS.s2) { statusParts(item) }
                 }
                 if item.quarantineJob != nil {
                     Label("Destination removed. Choose another destination.", systemImage: "exclamationmark.triangle")
@@ -179,6 +181,7 @@ private func statusParts(_ item: DropItem) -> some View {
         if item.hasSignedExpiry {
             let left = Fmt.timeLeft(item.expires)
             Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
+                .lineLimit(1).minimumScaleFactor(0.8)
             if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn).fixedSize() }
         } else {
             Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)

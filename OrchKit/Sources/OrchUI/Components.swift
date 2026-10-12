@@ -48,8 +48,10 @@ public struct StatusChip: View {
     }
     public var body: some View {
         Label(text, systemImage: systemImage)
+            .labelStyle(.titleAndIcon)           // a List row would otherwise be free to pick icon-only
             .font(OF.meta)
             .foregroundStyle(color)
+            .lineLimit(2)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
             .background(OC.soft(color), in: Capsule())
             .fixedSize(horizontal: false, vertical: true)   // natural height inside list rows and stacks
