@@ -25,15 +25,18 @@ public enum ShareDiagnostics {
         let area = ShareArea(shareGroupRoot: root)
         // fd-relative only (module rule): a `share` or `targets.json` swapped for a link is refused, never followed.
         var folderPresent = false
+        var folderRefused = false
         do {
             let dir = try area.openDir(area.shareDir)
             folderPresent = true
             out.append(Line("Share folder", "present, protection \(protection(fd: dir.fd))"))
         } catch {
-            out.append(Line("Share folder", fsCode(error, missing: "missing")))
+            let code = fsCode(error, missing: "missing")
+            folderRefused = code != "missing"
+            out.append(Line("Share folder", code))
         }
         out.append(Line("Path check", area.components(of: area.targetsURL) == ["targets.json"] ? "ok" : "refused"))
-        out.append(Line("Index file", folderPresent ? indexFile(area) : "missing"))
+        out.append(Line("Index file", folderPresent ? indexFile(area) : (folderRefused ? "refused" : "missing")))
 
         if let s = ShareTargetIndex.PublishStatus.read(from: area) {
             out.append(Line("Last app publish", "\(stamp(Date(timeIntervalSince1970: s.at))): \(s.result), \(s.targets) targets"))

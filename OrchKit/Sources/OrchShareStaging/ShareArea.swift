@@ -325,11 +325,19 @@ public enum ShareTargetIndex {
     /// The existing index is kept (the app still needs it to retire removed destinations after a restart) but marked
     /// stale, so the extension offers nothing from it: a destination removed meanwhile is never offered.
     public static func recordPublishSkipped(_ reason: String, in area: ShareArea, now: Date = Date()) {
-        if var file = try? readFile(from: area, allowStale: true) {
+        var markFailure: String?
+        do {
+            var file = try readFile(from: area, allowStale: true)
             file.stale = sanitizeCode(reason)
-            if let data = try? JSONEncoder().encode(file) { try? area.writeFile(data, to: area.targetsURL) }
+            try area.writeFile(JSONEncoder().encode(file), to: area.targetsURL)
+        } catch ShareError.noWorkspaces {
+            // No index yet: nothing to mark, and the extension already offers nothing.
+        } catch {
+            // The stale mark could not be written (index unreadable, or protected while the phone is locked): say so.
+            markFailure = PublishStatus.code(error)
         }
-        PublishStatus.record(.init(at: now.timeIntervalSince1970, result: "skipped: \(reason)", targets: 0), in: area)
+        let result = markFailure.map { "skipped: \(sanitizeCode(String(reason.prefix(60)))) mark failed: \(sanitizeCode($0))" } ?? "skipped: \(reason)"
+        PublishStatus.record(.init(at: now.timeIntervalSince1970, result: result, targets: 0), in: area)
     }
 
     /// App side: every destination in the index (stale or not, tombstoned or not), for retiring removals after a restart.
