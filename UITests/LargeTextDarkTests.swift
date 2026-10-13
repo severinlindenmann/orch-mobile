@@ -109,15 +109,17 @@ final class LargeTextAX5Tests: LargeTextBase {
 enum LargeTextRunner {
     @MainActor
     static func run(_ t: LargeTextBase, _ size: LargeTextBase.Size) {
+        // STEP16_ONLY=name1,name2 (via TEST_RUNNER_STEP16_ONLY) limits a local run to some screens; unset runs all.
+        let only = ProcessInfo.processInfo.environment["STEP16_ONLY"]?.split(separator: ",").map(String.init)
+        let screens: [(String, (LargeTextBase, LargeTextBase.Size, Bool) -> Void)] = [
+            ("home", { home($0, $1, dark: $2) }), ("question", { questionOptions($0, $1, dark: $2) }),
+            ("sign", { signNormal($0, $1, dark: $2) }), ("signUnsafe", { signUnsafe($0, $1, dark: $2) }),
+            ("drop", { drop($0, $1, dark: $2) }), ("pairing", { pairing($0, $1, dark: $2) }),
+            ("settings", { settings($0, $1, dark: $2) }), ("workspaceSettings", { workspaceSettings($0, $1, dark: $2) }),
+            ("shareStatus", { shareStatus($0, $1, dark: $2) })
+        ]
         for dark in [false, true] {
-            home(t, size, dark: dark)
-            questionOptions(t, size, dark: dark)
-            signNormal(t, size, dark: dark)
-            signUnsafe(t, size, dark: dark)
-            drop(t, size, dark: dark)
-            pairing(t, size, dark: dark)
-            settings(t, size, dark: dark)
-            workspaceSettings(t, size, dark: dark)
+            for (name, run) in screens where only == nil || only?.contains(name) == true { run(t, size, dark) }
         }
     }
 
@@ -297,5 +299,35 @@ enum LargeTextRunner {
         t.assertReachable(hosted, hosted.buttons["settings.leave"], "Leave (hosted workspace)")
         t.shot(hosted, "settings-hosted", size, dark: dark)
         hosted.terminate()
+    }
+
+    /// The share extension's unreadable / no-workspaces screens (the same view source the extension compiles), with Details expanded.
+    @MainActor
+    static func shareStatus(_ t: LargeTextBase, _ size: LargeTextBase.Size, dark: Bool) {
+        for (kind, id, name) in [("unreadable", "share.status.unreadable", "share-status"), ("none", "share.status.none", "share-status-none")] {
+            let app = t.open("share-status/\(kind)", size, dark: dark, seed: false)
+            let message = app.el(id)
+            XCTAssertTrue(message.waitForExistence(timeout: 60), "\(kind) message")
+            t.assertFitsWidth(app, message, "status message")
+            t.assertNoEllipsis(message, "status message")
+            t.assertReachable(app, app.buttons["share.cancel"], "Cancel")
+            XCTAssertFalse(app.buttons["share.save"].isEnabled, "Save stays disabled")
+            t.shot(app, name, size, dark: dark)
+            let details = app.el("share.status.details")
+            t.assertReachable(app, details, "Details")
+            let toggle = app.buttons["Details"]
+            (toggle.exists ? toggle : details).tap()
+            let last = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'destinations'")).firstMatch
+            XCTAssertTrue(t.scrollReveal(app, last), "last Details line reachable")
+            XCTAssertTrue(last.isHittable, "last Details line hittable")
+            t.assertFitsWidth(app, last, "last Details line")
+            let long = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Index file'")).firstMatch
+            if t.scrollReveal(app, long) {
+                t.assertFitsWidth(app, long, "long Details line")
+                t.assertNoEllipsis(long, "long Details line")
+            }
+            t.shot(app, name + "-details", size, dark: dark)
+            app.terminate()
+        }
     }
 }

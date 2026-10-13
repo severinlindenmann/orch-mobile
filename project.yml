@@ -20,7 +20,11 @@ targets:
   Orch:
     type: application
     platform: iOS
-    sources: [App]
+    sources:
+      - App
+      # the share extension's status screens, rendered by the DEBUG share-status route (step 16 layout checks)
+      - path: ShareExtension/ShareStatusViews.swift
+        group: ShareExtension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch
