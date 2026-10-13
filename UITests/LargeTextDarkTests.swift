@@ -2,7 +2,7 @@ import XCTest
 
 /// Owner e2e step 16: Dynamic Type XL, XXXL and AX5 in light and dark on the real Demo stack. Every screen asserts reachability and
 /// layout (not only screenshots): essential controls hittable after scrolling, nothing wider than the screen, no "…" in option labels
-/// or the hosted marker, nothing hidden behind the tab bar. Screenshots are written to STEP16_SHOTS (default /private/tmp/claude-501/step16-shots).
+/// or the hosted marker, nothing hidden behind the tab bar. Screenshots are written to $STEP16_SHOTS when it is set (to regenerate docs/screens).
 class LargeTextBase: XCTestCase {
     enum Size: String, CaseIterable {
         case xl = "UICTContentSizeCategoryXL"
@@ -28,9 +28,9 @@ class LargeTextBase: XCTestCase {
         let screenshot = app.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
-        attachment.lifetime = .keepAlways
+        attachment.lifetime = .deleteOnSuccess
         add(attachment)
-        let dir = ProcessInfo.processInfo.environment["STEP16_SHOTS"] ?? "/private/tmp/claude-501/step16-shots"
+        guard let dir = ProcessInfo.processInfo.environment["STEP16_SHOTS"] else { return }   // regenerate docs/screens only on request
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: dir + "/" + name + ".png"))
     }

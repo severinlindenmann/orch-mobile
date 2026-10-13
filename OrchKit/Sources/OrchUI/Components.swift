@@ -93,11 +93,14 @@ public struct HostedMarker: View {
 public struct DemoChip: View {
     private let compact: Bool
     /// `compact`: the single-word "Demo" badge for tight headers (the explanation lives in the simulation notice below).
+    @Environment(\.dynamicTypeSize) private var typeSize
     public init(compact: Bool = false) { self.compact = compact }
     public var body: some View {
+        // One line that never compresses, as before; at accessibility sizes it wraps instead of outgrowing its container.
+        let ax = typeSize.isAccessibilitySize
         Label(compact ? "Demo" : "Demo · simulated", systemImage: "theatermasks")
             .font(OF.meta).foregroundStyle(OC.demo)
-            .lineLimit(2).fixedSize(horizontal: false, vertical: true)   // never wider than its container at AX sizes
+            .lineLimit(ax ? 2 : 1).fixedSize(horizontal: !ax, vertical: true)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
             .chipBackground(OC.soft(OC.demo))
             .accessibilityLabel("Demo mode, simulated")
