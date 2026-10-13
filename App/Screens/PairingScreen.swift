@@ -185,13 +185,15 @@ struct PairingScreen: View {
                     .keyboardType(.URL)
                     .padding(OS.s3).background(OC.surface, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
                     .accessibilityIdentifier("pair.paste")
-                HStack {
+                // Stacked at accessibility sizes: side by side, "Use link" wrapped mid-word.
+                (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: OS.s2)) : AnyLayout(HStackLayout())) {
                     // PasteButton reads the clipboard only when the user taps it.
                     PasteButton(payloadType: String.self) { strings in
                         if let s = strings.first { link = s }
                     }
                     Button("Use link") { model.submitLink(link) }
                         .buttonStyle(.bordered)
+                        .fixedSize(horizontal: true, vertical: false)
                         .disabled(link.trimmingCharacters(in: .whitespaces).isEmpty)
                         .accessibilityIdentifier("pair.submit")
                 }

@@ -28,7 +28,7 @@ struct QuestionScreen: View {
                 if let q = ws.question(id: questionID) {
                     Text(verbatim: "\(q.displayTicket) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
                         .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
-                        .background(OC.surface2, in: Capsule())
+                        .background(OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")

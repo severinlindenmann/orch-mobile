@@ -208,8 +208,9 @@ enum LargeTextRunner {
         let confirm = app.buttons["sign.confirm"]
         scrollSignSheetToEnd(app, confirm)
         XCTAssertTrue(confirm.isHittable && confirm.isEnabled, "Sign reachable at the end")
-        XCTAssertTrue(warning.isHittable, "unsafe warning visible next to Sign")
-        XCTAssertFalse(app.el("sign.unsafeNotice").exists, "one warning only")
+        // The footer scrolls with the content here, so a warning is also pinned by Sign (security: a warning whenever Sign is on screen).
+        XCTAssertTrue(app.el("sign.unsafeStrip").isHittable, "pinned unsafe warning strip visible next to Sign")
+        XCTAssertTrue(app.el("sign.unsafeNotice").exists, "notice near the top of the scroll content")
         t.assertReachable(app, app.buttons["sign.cancel"], "Cancel")
         t.shot(app, "sign-unsafe-end", size, dark: dark)
         app.terminate()
@@ -232,8 +233,12 @@ enum LargeTextRunner {
         let compose = app.buttons["drop.compose"]
         XCTAssertTrue(compose.exists && compose.isHittable, "Send button reachable")
         t.shot(app, "drop", size, dark: dark)
-        t.scrollToEnd(app)
         let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.'"))
+        // The end-of-scroll test compares screenshots, which a loaded machine can fool mid-momentum: repeat until the last row settles.
+        for _ in 0..<4 {
+            t.scrollToEnd(app)
+            if rows.count > 0, app.tabBars.firstMatch.exists, rows.element(boundBy: rows.count - 1).frame.maxY <= app.tabBars.firstMatch.frame.minY + 1 { break }
+        }
         if rows.count > 0 { t.assertAboveTabBar(app, rows.element(boundBy: rows.count - 1), "last drop row") }
         t.shot(app, "drop-end", size, dark: dark)
         app.terminate()
@@ -344,17 +349,25 @@ final class UnsafeWarningPinnedTests: LargeTextBase {
             XCTAssertTrue(confirm.waitForExistence(timeout: 60), "\(size.tag) Sign")
             XCTAssertTrue(strip.exists && strip.isHittable, "\(size.tag): strip visible at the top")
             XCTAssertTrue(app.el("sign.unsafeNotice").exists, "\(size.tag): in-scroll notice near the top")
+            let warning = app.el("sign.unsafeWarning")
+            var reachedRiskyState = false
+            func check(_ step: String) {
+                XCTAssertTrue(!confirm.isHittable || strip.isHittable || warning.isHittable, "\(size.tag) \(step): Sign on screen without any warning")
+                XCTAssertTrue(strip.isHittable, "\(size.tag) \(step): strip visible")
+                if confirm.isHittable && !warning.isHittable { reachedRiskyState = true }   // Sign visible, footer warning block scrolled away
+            }
             LargeTextRunner.scrollSignSheetToEnd(app, confirm)
             XCTAssertTrue(confirm.isHittable && confirm.isEnabled, "\(size.tag): Sign armed at the end")
-            XCTAssertTrue(strip.isHittable, "\(size.tag): strip visible next to Sign")
             assertFitsWidth(app, strip, "pinned strip")
             XCTAssertLessThan(strip.frame.height, app.frame.height * 0.25, "\(size.tag): strip stays compact")
-            for _ in 0..<2 {   // back up about half a screen
-                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-                    .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
-                XCTAssertTrue(strip.isHittable, "\(size.tag): strip visible while scrolling back up")
-                XCTAssertTrue(!confirm.isHittable || strip.isHittable, "\(size.tag): Sign never shown without a warning")
+            check("end")
+            for i in 0..<6 {   // back up in small steps (about half a screen overall)
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+                    .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+                check("back up \(i)")
             }
+            // Reported, not asserted: at some sizes the footer warning block always sits beside Sign, so the state may not exist.
+            print("STEP16-RISKY-STATE \(size.tag): \(reachedRiskyState ? "reached" : "NOT reached")")
             app.terminate()
         }
     }
