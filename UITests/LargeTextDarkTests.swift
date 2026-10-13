@@ -331,3 +331,31 @@ enum LargeTextRunner {
         }
     }
 }
+
+/// Opus security review: with the footer inside the scroll (XL+ unsafe, XXXL+), the unsafe warning must stay on screen whenever Sign can be.
+/// A compact strip is pinned outside the scroll view; scroll to the end (Sign armed), then back up, and the strip is still visible.
+final class UnsafeWarningPinnedTests: LargeTextBase {
+    @MainActor
+    func testStripStaysVisibleWhileSignIsReachable() {
+        for size in [Size.xl, .xxxl, .ax5] {
+            let app = open("sign/q3", size, dark: false)
+            let strip = app.el("sign.unsafeStrip")
+            let confirm = app.buttons["sign.confirm"]
+            XCTAssertTrue(confirm.waitForExistence(timeout: 60), "\(size.tag) Sign")
+            XCTAssertTrue(strip.exists && strip.isHittable, "\(size.tag): strip visible at the top")
+            XCTAssertTrue(app.el("sign.unsafeNotice").exists, "\(size.tag): in-scroll notice near the top")
+            LargeTextRunner.scrollSignSheetToEnd(app, confirm)
+            XCTAssertTrue(confirm.isHittable && confirm.isEnabled, "\(size.tag): Sign armed at the end")
+            XCTAssertTrue(strip.isHittable, "\(size.tag): strip visible next to Sign")
+            assertFitsWidth(app, strip, "pinned strip")
+            XCTAssertLessThan(strip.frame.height, app.frame.height * 0.25, "\(size.tag): strip stays compact")
+            for _ in 0..<2 {   // back up about half a screen
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+                    .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
+                XCTAssertTrue(strip.isHittable, "\(size.tag): strip visible while scrolling back up")
+                XCTAssertTrue(!confirm.isHittable || strip.isHittable, "\(size.tag): Sign never shown without a warning")
+            }
+            app.terminate()
+        }
+    }
+}

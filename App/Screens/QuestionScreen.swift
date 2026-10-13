@@ -218,7 +218,7 @@ struct SignSheet: View {
                 .padding(OS.s3)
                 .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(OC.brand, lineWidth: 2))
-                if review.hasUnsafeContent, !footerShowsUnsafeWarning(review) {
+                if review.hasUnsafeContent, !footerShowsUnsafeWarning(review) || footerInScroll(review) {
                     Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(OF.meta).foregroundStyle(OC.warn)
@@ -255,6 +255,17 @@ struct SignSheet: View {
         if !footerInScroll(review) {
             Divider()
             footer(review).padding(OS.s4).background(OC.surface)
+        } else if footerShowsUnsafeWarning(review) {
+            // The footer scrolls with the content here, so Sign can be on screen while its warning block is scrolled away:
+            // keep one short warning pinned outside the scroll view whenever a signature is possible.
+            Divider()
+            Label("Check hidden characters", systemImage: "exclamationmark.triangle.fill")
+                .font(OF.meta.weight(.semibold)).foregroundStyle(OC.warn)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, OS.s4).padding(.vertical, OS.s2)
+                .background(OC.soft(OC.warn))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("sign.unsafeStrip")
         }
     }
 
