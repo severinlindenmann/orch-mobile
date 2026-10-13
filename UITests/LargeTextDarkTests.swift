@@ -234,10 +234,14 @@ enum LargeTextRunner {
         XCTAssertTrue(compose.exists && compose.isHittable, "Send button reachable")
         t.shot(app, "drop", size, dark: dark)
         let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'drop.item.'"))
-        // The end-of-scroll test compares screenshots, which a loaded machine can fool mid-momentum: repeat until the last row settles.
-        for _ in 0..<4 {
-            t.scrollToEnd(app)
-            if rows.count > 0, app.tabBars.firstMatch.exists, rows.element(boundBy: rows.count - 1).frame.maxY <= app.tabBars.firstMatch.frame.minY + 1 { break }
+        // Mid-screen drags until nothing moves for two checks in a row (a loaded machine can fool a single screenshot compare).
+        var still = 0, last = app.screenshot().pngRepresentation, tries = 0
+        while still < 2 && tries < 60 {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
+            let now = app.screenshot().pngRepresentation
+            still = now == last ? still + 1 : 0
+            last = now; tries += 1
         }
         if rows.count > 0 { t.assertAboveTabBar(app, rows.element(boundBy: rows.count - 1), "last drop row") }
         t.shot(app, "drop-end", size, dark: dark)

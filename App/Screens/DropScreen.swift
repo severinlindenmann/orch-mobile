@@ -181,7 +181,7 @@ private func statusParts(_ item: DropItem) -> some View {
         if item.hasSignedExpiry {
             let left = Fmt.timeLeft(item.expires)
             Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
-                .lineLimit(1).minimumScaleFactor(0.8)
+                .lineLimit(2).minimumScaleFactor(0.8).fixedSize(horizontal: false, vertical: true)   // wraps at AX sizes, never "expires in 1 w…"
             if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn).fixedSize() }
         } else {
             Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)
