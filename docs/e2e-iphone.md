@@ -35,7 +35,7 @@ Build 3 (from f7cd52d) was uploaded but not handed out, because develop CI was r
 | 13 | Large share | blocked by 12 | not tested (optional) | |
 | 14 | Lock during share | blocked by 12 | not tested (optional) | |
 | 15 | Notifications | FAIL (no discoverable trigger) | build 4: arrives, not replaced; build 5: PASS | #55, #63 |
-| 16 | Large text, dark mode | delegated to Simulator validation | Simulator PASS (2026-10-12), partial: share-extension screen not covered | branch test/step16-large-text-dark |
+| 16 | Large text, dark mode | delegated to Simulator validation | Simulator PASS (2026-10-13): XL, XXXL, AX5, light + dark; real device open | step 16 PR |
 | 17 | Key custody label | PASS ("Secure Enclave", label only) | | |
 | 18 | Locked key | UNVERIFIED (no hardware diagnostics) | | |
 | 19a | Remove with "Pretend offline" | FAIL ("Remove incomplete") | build 4: PASS | #55, #60 |
@@ -77,7 +77,7 @@ unsafe-content Demo question (hidden-character chips, single warning, hosted mar
 scrolling to the end, Cancel reachable, unsafe options refused sheet), Drop list and compose sheet, Pairing entry and compare screen,
 Settings (last row above the tab bar), workspace Settings incl. Demo controls (Leave reachable) and a client-hosted workspace.
 Each screen asserts element reachability and that nothing runs past the screen edges; XL, XXXL and AX5 all end with 0 failures.
-Screenshots (half size): `docs/screens/step16-<screen>-<xl|xxxl|ax5>-<light|dark>.png`, all three sizes, both themes.
+Screenshots (half size, JPEG): `docs/screens/step16-<screen>-<xl|xxxl|ax5>-<light|dark>.jpg`, all three sizes, both themes.
 The share extension's unreadable / no-workspaces screens (incl. expanded Details) are covered too: `share-status`, `share-status-none` and their `-details` shots.
 
 Bugs found and fixed (restyle only; signed text, SafeText rules and arming/scroll-to-end gating untouched):

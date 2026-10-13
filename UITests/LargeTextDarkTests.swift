@@ -351,7 +351,7 @@ final class UnsafeWarningPinnedTests: LargeTextBase {
             let strip = app.el("sign.unsafeStrip")
             let confirm = app.buttons["sign.confirm"]
             XCTAssertTrue(confirm.waitForExistence(timeout: 60), "\(size.tag) Sign")
-            XCTAssertTrue(strip.exists && strip.isHittable, "\(size.tag): strip visible at the top")
+            XCTAssertTrue(strip.exists && strip.isHittable, "\(size.tag): strip visible (pinned by Sign)")
             XCTAssertTrue(app.el("sign.unsafeNotice").exists, "\(size.tag): in-scroll notice near the top")
             let warning = app.el("sign.unsafeWarning")
             var reachedRiskyState = false
