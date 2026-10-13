@@ -13,9 +13,20 @@ struct OrchApp: App {
         }
     }
 
+    #if DEBUG
+    private static func shareStatusKind(_ route: String?) -> ShareProblemView.Kind? {
+        switch route {
+        case "share-status/unreadable": .unreadable
+        case "share-status/none": .noWorkspaces
+        default: nil
+        }
+    }
+    #endif
+
     @ViewBuilder private var root: some View {
         #if DEBUG
         if options.pushHarness { PushHarnessView(material: options.pushMaterial) }
+        else if let kind = Self.shareStatusKind(options.initialRoute) { ShareStatusPreview(kind: kind) }
         else if options.uiPreview { HomeScreen(services: PreviewWorld(demo: options.demo), options: options) }
         else { AppRoot(options: options) }
         #else

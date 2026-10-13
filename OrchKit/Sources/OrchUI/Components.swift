@@ -39,6 +39,23 @@ public struct CodeDisplay: View {
     }
 }
 
+/// Capsule for one-line chips; a rounded rectangle at accessibility sizes, where the label wraps and a capsule's ends cut through the text.
+private struct ChipBackground: ViewModifier {
+    let fill: Color
+    @Environment(\.dynamicTypeSize) private var typeSize
+    func body(content: Content) -> some View {
+        if typeSize.isAccessibilitySize {
+            content.background(fill, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
+        } else {
+            content.background(fill, in: Capsule())
+        }
+    }
+}
+
+private extension View {
+    func chipBackground(_ fill: Color) -> some View { modifier(ChipBackground(fill: fill)) }
+}
+
 public struct StatusChip: View {
     private let text: String
     private let systemImage: String
@@ -53,7 +70,7 @@ public struct StatusChip: View {
             .foregroundStyle(color)
             .lineLimit(2)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
-            .background(OC.soft(color), in: Capsule())
+            .chipBackground(OC.soft(color))
             .fixedSize(horizontal: false, vertical: true)   // natural height inside list rows and stacks
     }
 }
@@ -68,7 +85,7 @@ public struct HostedMarker: View {
             .font(OF.meta)
             .foregroundStyle(OC.hosted)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1 + 1)
-            .background(OC.soft(OC.hosted), in: Capsule())
+            .chipBackground(OC.soft(OC.hosted))
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -76,13 +93,16 @@ public struct HostedMarker: View {
 public struct DemoChip: View {
     private let compact: Bool
     /// `compact`: the single-word "Demo" badge for tight headers (the explanation lives in the simulation notice below).
+    @Environment(\.dynamicTypeSize) private var typeSize
     public init(compact: Bool = false) { self.compact = compact }
     public var body: some View {
+        // One line that never compresses, as before; at accessibility sizes it wraps instead of outgrowing its container.
+        let ax = typeSize.isAccessibilitySize
         Label(compact ? "Demo" : "Demo · simulated", systemImage: "theatermasks")
             .font(OF.meta).foregroundStyle(OC.demo)
-            .lineLimit(1).fixedSize(horizontal: true, vertical: true)
+            .lineLimit(ax ? 2 : 1).fixedSize(horizontal: !ax, vertical: true)
             .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
-            .background(OC.soft(OC.demo), in: Capsule())
+            .chipBackground(OC.soft(OC.demo))
             .accessibilityLabel("Demo mode, simulated")
     }
 }

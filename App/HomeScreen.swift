@@ -287,6 +287,7 @@ struct HomeContent: View {
     @Binding var path: [Route]
     let onAdd: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var typeSize
     private var home: any HomeModel { services.home }
 
     var body: some View {
@@ -315,26 +316,50 @@ struct HomeContent: View {
         .foregroundStyle(OC.text)
     }
 
-    private var header: some View {
-        HStack(spacing: OS.s3) {
-            OrbitMark(size: 30)
-            Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
-            if home.isDemo { DemoChip(compact: true) }
-            Spacer(minLength: 0)
-            Button { path.append(.settings) } label: {
-                Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+    @ViewBuilder private var header: some View {
+        if typeSize.isAccessibilitySize {
+            // The one-row header is wider than the screen at AX sizes and pulled the whole page past the edges.
+            VStack(alignment: .leading, spacing: OS.s2) {
+                HStack(spacing: OS.s3) {
+                    OrbitMark(size: 30)
+                    Spacer(minLength: 0)
+                    headerButtons
+                }
+                Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
+                if home.isDemo { DemoChip(compact: true) }
             }
-            .foregroundStyle(OC.textMuted)
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("home.settings")
-            Button(action: onAdd) {
-                Image(systemName: "plus").font(.title3.weight(.semibold))
-                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        } else {
+            HStack(spacing: OS.s3) {
+                OrbitMark(size: 30)
+                Text("orch").font(OF.display).accessibilityAddTraits(.isHeader)
+                if home.isDemo { DemoChip(compact: true) }
+                Spacer(minLength: 0)
+                headerButtons
             }
-            .foregroundStyle(OC.brand)
-            .accessibilityLabel("Add workspace")
-            .accessibilityIdentifier("home.add")
         }
+    }
+
+    @ViewBuilder private var headerButtons: some View {
+        Button { path.append(.settings) } label: {
+            Image(systemName: "gearshape").font(.title3).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        }
+        .foregroundStyle(OC.textMuted)
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("home.settings")
+        Button(action: onAdd) {
+            Image(systemName: "plus").font(.title3.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        }
+        .foregroundStyle(OC.brand)
+        .accessibilityLabel("Add workspace")
+        .accessibilityIdentifier("home.add")
+    }
+
+    /// Icon beside the text; at accessibility sizes the icon sits above it and the chevron goes, so the text keeps the full card width.
+    private func cardLayout<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: OS.s2))
+                                                  : AnyLayout(HStackLayout(spacing: OS.s3))
+        return layout { content() }
     }
 
     private var stale: Bool { home.workspaces.contains { !$0.isLive } }
@@ -342,7 +367,7 @@ struct HomeContent: View {
     private func needsYouStrip(_ oldest: (question: Question, workspace: WorkspaceInfo)) -> some View {
         let count = home.needsYouCount
         return TabAwareLink(route: .needsYou) {
-            HStack(spacing: OS.s3) {
+            cardLayout {
                 Image(systemName: "questionmark.bubble.fill").font(.body.weight(.semibold))
                     .foregroundStyle(OC.onBrand).frame(width: iconBox, height: iconBox)
                     .background(OC.brand, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -351,10 +376,12 @@ struct HomeContent: View {
                     Text(verbatim: (stale ? "Last known: " : "") + (count == 1 ? "1 needs you" : "\(count) need you"))
                         .font(OF.section).foregroundStyle(OC.text)
                     Text(verbatim: "\(oldest.workspace.displayName) · \(oldest.question.firstLine)")
-                        .font(OF.body).foregroundStyle(OC.textMuted).lineLimit(2)
+                        .font(OF.body).foregroundStyle(OC.textMuted).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.brand)
+                if !typeSize.isAccessibilitySize {
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.brand)
+                }
             }
             .padding(OS.s4)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -368,7 +395,7 @@ struct HomeContent: View {
 
     private func pendingRow(_ d: DecisionStatus) -> some View {
         NavigationLink(value: Route.question(workspace: d.workspaceID, id: d.questionID, autoSign: false)) {
-            HStack(spacing: OS.s3) {
+            cardLayout {
                 let retry = d.outcome == .needsRetry
                 Image(systemName: retry ? "exclamationmark.arrow.circlepath" : "clock.arrow.circlepath").foregroundStyle(retry ? OC.warn : OC.info)
                 VStack(alignment: .leading, spacing: OS.s1) {
@@ -376,8 +403,10 @@ struct HomeContent: View {
                         .font(OF.section).foregroundStyle(retry ? OC.warn : OC.info)
                     Text(retry ? "Tap to send it again" : "Tap to see where it stands").font(OF.meta).foregroundStyle(OC.textMuted)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.textMuted)
+                if !typeSize.isAccessibilitySize {
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.textMuted)
+                }
             }
             .padding(OS.s4).orchCard()
         }
@@ -387,14 +416,16 @@ struct HomeContent: View {
 
     private var dropCard: some View {
         TabAwareLink(route: .drop) {
-            HStack(spacing: OS.s3) {
+            cardLayout {
                 Image(systemName: "tray.and.arrow.down").foregroundStyle(OC.brand)
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text("Drop").font(OF.section)
                     Text(verbatim: dropLine).font(OF.meta).foregroundStyle(OC.textMuted)
                 }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.textMuted)
+                if !typeSize.isAccessibilitySize {
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(OC.textMuted)
+                }
             }
             .padding(OS.s4)
             .orchCard()

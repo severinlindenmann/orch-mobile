@@ -210,24 +210,15 @@ private struct ShareComposeView: View {
         case .loading:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         case .noWorkspaces:
-            VStack(spacing: 12) {
-                Message(text: "Open orch and pair a workspace", detail: "Then share again. Nothing was saved.", id: "share.status.none")
-                    .frame(maxHeight: 200)
-                DetailsDisclosure(lines: model.details).padding(.horizontal)
-                Spacer()
-            }
+            ShareProblemView(kind: .noWorkspaces, reason: "", lines: model.details)
         case .unreadable:
-            VStack(spacing: 12) {
-                Message(text: "orch can't read its workspaces", detail: "Open orch and try again. Nothing was saved.\n(\(model.unreadableReason))", id: "share.status.unreadable")
-                    .frame(maxHeight: 200)
-                DetailsDisclosure(lines: model.details).padding(.horizontal)
-                Spacer()
-            }
+            ShareProblemView(kind: .unreadable, reason: model.unreadableReason, lines: model.details)
         case .saved:
-            Message(text: "Saved. Open orch to send.", detail: nil, id: "share.status.saved")
+            ShareStatusMessage(text: "Saved. Open orch to send.", detail: nil, id: "share.status.saved")
+                .frame(maxHeight: .infinity)
         case .failed(let text):
             VStack {
-                Message(text: text, detail: nil, id: "share.status.failed")
+                ShareStatusMessage(text: text, detail: nil, id: "share.status.failed").frame(maxHeight: .infinity)
                 Button("Try again") { model.retry() }.accessibilityIdentifier("share.retry")
             }
         case .choosing, .saving:
@@ -263,43 +254,5 @@ private struct ShareComposeView: View {
             }
             .disabled(model.phase == .saving)
         }
-    }
-}
-
-private struct Message: View {
-    let text: String
-    let detail: String?
-    let id: String
-    var body: some View {
-        VStack(spacing: 8) {
-            Text(text).font(.headline).multilineTextAlignment(.center).accessibilityIdentifier(id)
-            if let detail { Text(detail).font(.subheadline).foregroundStyle(OC.textMuted).multilineTextAlignment(.center) }
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// "Details" on the unreadable screen: the ShareDiagnostics lines (no paths, names or content), selectable for support.
-private struct DetailsDisclosure: View {
-    let lines: [ShareDiagnostics.Line]
-    var body: some View {
-        DisclosureGroup("Details") {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(lines) { line in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(verbatim: line.label).font(.caption).foregroundStyle(OC.textMuted)
-                            Text(verbatim: line.value).font(.caption.monospaced())
-                        }
-                        .accessibilityElement(children: .combine)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-            }
-            .frame(maxHeight: 320)
-        }
-        .accessibilityIdentifier("share.status.details")
     }
 }

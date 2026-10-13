@@ -35,7 +35,7 @@ Build 3 (from f7cd52d) was uploaded but not handed out, because develop CI was r
 | 13 | Large share | blocked by 12 | not tested (optional) | |
 | 14 | Lock during share | blocked by 12 | not tested (optional) | |
 | 15 | Notifications | FAIL (no discoverable trigger) | build 4: arrives, not replaced; build 5: PASS | #55, #63 |
-| 16 | Large text, dark mode | delegated to Simulator validation | open | |
+| 16 | Large text, dark mode | delegated to Simulator validation | Simulator PASS (2026-10-13): XL, XXXL, AX5, light + dark; real device open | step 16 PR |
 | 17 | Key custody label | PASS ("Secure Enclave", label only) | | |
 | 18 | Locked key | UNVERIFIED (no hardware diagnostics) | | |
 | 19a | Remove with "Pretend offline" | FAIL ("Remove incomplete") | build 4: PASS | #55, #60 |
@@ -45,7 +45,7 @@ Build 3 (from f7cd52d) was uploaded but not handed out, because develop CI was r
 
 Every failure from session 1 is fixed on device as of build 5. Still open:
 - 13/14 untested;
-- 16 not yet validated;
+- 16 validated on the Simulator only (share-extension screen and a real device pass still open);
 - 18/20 unverified on hardware;
 - 8: the explicit code comparison is unconfirmed.
 
@@ -68,3 +68,38 @@ Every failure from session 1 is fixed on device as of build 5. Still open:
 - b. "Not approved on your Mac" (pairing rejection) is shown in green; it should be warning styling.
 - c. Long monospaced question text is "visually painful". The exact-text and scroll-to-end rules stay.
 - d. Hidden-character chips wrap in the middle of a chip.
+
+## Step 16: large text and dark mode (Simulator PASS, 2026-10-13; real-device pass still open)
+
+Simulator evidence only (iPhone Simulator, Demo stack). `UITests/LargeTextDarkTests.swift` runs XL, XXXL and AX5 (accessibilityXXXL),
+each in light and dark: Home (incl. scrolled to the end above the tab bar), question options (no "…"), sign sheet normal and the
+unsafe-content Demo question (hidden-character chips, single warning, hosted marker not squeezed, Sign enabled and hittable after
+scrolling to the end, Cancel reachable, unsafe options refused sheet), Drop list and compose sheet, Pairing entry and compare screen,
+Settings (last row above the tab bar), workspace Settings incl. Demo controls (Leave reachable) and a client-hosted workspace.
+Each screen asserts element reachability and that nothing runs past the screen edges; XL, XXXL and AX5 all end with 0 failures.
+Screenshots (half size, JPEG): `docs/screens/step16-<screen>-<xl|xxxl|ax5>-<light|dark>.jpg`, all three sizes, both themes.
+The share extension's unreadable / no-workspaces screens (incl. expanded Details) are covered too: `share-status`, `share-status-none` and their `-details` shots.
+
+Bugs found and fixed (restyle only; signed text, SafeText rules and arming/scroll-to-end gating untouched):
+- Sign sheet, unsafe content: the pinned footer's warning block was truncated ("Check it before you…") and left too little scroll area;
+  at XXXL the pinned footer left a third of the screen. The footer now joins the scroll content from XL (unsafe) / XXXL (always).
+- AX5 Home: the one-row header ran wider than the screen and pushed the whole page past both edges; it now stacks. DemoChip wraps.
+- AX5 workspace cards: a long chip laid out on one line wider than the card; FlowLayout now bounds chips to the row.
+- AX5 Pairing: the pinned Demo bar took about half the screen and truncated; it now scrolls with the content.
+
+- Share extension unreadable / no-workspaces screen: the Details disclosure sat in a fixed 200 pt box beside a scroll view; it is now one scrolling page.
+- AX5 Pairing: "Use link" wrapped mid-word next to the Paste button; the two buttons now stack.
+- AX5 Home: the Needs-you and Drop cards (and the pending-answer card) squeezed their text between icon and chevron ("6 need you" on three lines, "Laptop · Ena…", "work-/spaces"); at accessibility sizes the icon sits above the text and the chevron goes.
+- AX5 chips (Demo, Hosted by, status) kept a capsule shape when wrapped so text spilled past the tint; they are a rounded rectangle at accessibility sizes.
+- AX5 Drop rows: "expires in 1 w…" was truncated; it wraps now.
+- Sign sheet (security review): with the footer scrolling inside the content (XL+ unsafe, XXXL+), Sign could be on screen with its warning scrolled away. A compact "Check hidden characters" strip is pinned at the bottom, by Sign, whenever a signature is possible. `UnsafeWarningPinnedTests` scrolls to the end and back; the state "Sign visible, footer warning block scrolled away" is reached only at AX5 (at XL and XXXL the block always sits beside Sign), and the strip is visible in every step at all three sizes.
+
+The share extension itself (the real process) is driven by ShareExtensionTests; the Step 16 check renders the same view source (`ShareExtension/ShareStatusViews.swift`) through the DEBUG route `share-status/unreadable|none`, because the unreadable state cannot be produced in the real extension on a simulator.
+
+Remaining (not fixed): tab-bar translucency over scrolled content at AX5, and low-contrast grey text in Settings (visual review notes); the share sheet title "Share to orch" truncates to "Share t…" in the system toolbar at XXXL and AX5 (system chrome between Cancel and Save to send). Real-device pass (physical iPhone, real share sheet, VoiceOver) is still open.
+Test-only: `--hold-reconcile` launch flag (DEBUG) disables the timed background reconcile (see flaky test below).
+
+Flaky `testReopenedPendingSubmissionKeepsSubmittedOption`: root cause was the app's own timed background reconcile of the stored
+decision (20 s in UI tests), which could settle the decision mid-test (before the test pressed "Check again"), removing the pending
+row the test was waiting on. The test now launches with `--hold-reconcile` and waits for state with 30 s timeouts. 10 of 10 passed
+before the fix in one local loop (the race is timing dependent) and 10 of 10 after; the fix removes the timer race rather than relying on luck.

@@ -28,7 +28,7 @@ struct QuestionScreen: View {
                 if let q = ws.question(id: questionID) {
                     Text(verbatim: "\(q.displayTicket) · asked \(Fmt.relative(q.created))").font(OF.meta).foregroundStyle(OC.textMuted)
                         .padding(.horizontal, OS.s3).padding(.vertical, OS.s1)
-                        .background(OC.surface2, in: Capsule())
+                        .background(OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     SafeTextView(q.text)
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
@@ -218,7 +218,7 @@ struct SignSheet: View {
                 .padding(OS.s3)
                 .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(OC.brand, lineWidth: 2))
-                if review.hasUnsafeContent, !footerShowsUnsafeWarning(review) {
+                if review.hasUnsafeContent, !footerShowsUnsafeWarning(review) || footerInScroll(review) {
                     Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(OF.meta).foregroundStyle(OC.warn)
@@ -235,7 +235,7 @@ struct SignSheet: View {
                 ExactTextDisclosure(review: review)
                 SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID,
                               optionID: review.optionID, contentHash: review.contentHash)
-                if typeSize.isAccessibilitySize { footer(review) }
+                if footerInScroll(review) { footer(review) }
             }
             .padding(OS.s4)
         }
@@ -252,10 +252,28 @@ struct SignSheet: View {
             try? await Task.sleep(for: .milliseconds(800))
             if !Task.isCancelled { armedRevision = review.revision }
         }
-        if !typeSize.isAccessibilitySize {
+        if !footerInScroll(review) {
             Divider()
             footer(review).padding(OS.s4).background(OC.surface)
+        } else if footerShowsUnsafeWarning(review) {
+            // The footer scrolls with the content here, so Sign can be on screen while its warning block is scrolled away:
+            // keep one short warning pinned outside the scroll view whenever a signature is possible.
+            Divider()
+            Label("Check hidden characters", systemImage: "exclamationmark.triangle.fill")
+                .font(OF.meta.weight(.semibold)).foregroundStyle(OC.warn)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, OS.s4).padding(.vertical, OS.s2)
+                .background(OC.soft(OC.warn))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("sign.unsafeStrip")
         }
+    }
+
+    /// Accessibility sizes, XXXL, and the unsafe-content footer from XL up (its warning block takes half the screen and truncated; at XXXL the
+    /// pinned footer left a ~third-of-screen scroll viewport), keep the
+    /// footer at the end of the scroll content instead of pinned. Arming still needs the scroll end, which now includes the footer.
+    private func footerInScroll(_ review: ReviewValue) -> Bool {
+        typeSize.isAccessibilitySize || typeSize >= .xxxLarge || (review.hasUnsafeContent && typeSize >= .xLarge)
     }
 
     /// The content hash prefix in four-character groups so two fingerprints can be compared at a glance.
@@ -308,7 +326,7 @@ struct SignSheet: View {
                             Label("Hidden or look-alike characters", systemImage: "exclamationmark.triangle.fill")
                                 .font(OF.section).foregroundStyle(OC.warn)
                             Text("This text has characters you cannot see or that look like other letters. They are marked, and the exact text is open above. Check it before you sign.")
-                                .font(OF.meta).foregroundStyle(OC.text)
+                                .font(OF.meta).foregroundStyle(OC.text).fixedSize(horizontal: false, vertical: true)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(OS.s3)
