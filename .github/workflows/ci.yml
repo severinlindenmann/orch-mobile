@@ -35,6 +35,7 @@ jobs:
         env:
           LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
         timeout-minutes: 20
+      - run: scripts/check-no-test-hooks.sh
       - run: scripts/check-extension-links.sh
       - run: scripts/test-check-extension-links.sh
   app:

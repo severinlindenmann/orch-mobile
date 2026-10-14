@@ -27,7 +27,11 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
     private var polls = 0
     private var posts = 0
     private let throttled: Int
-    init(_ inner: any RelayTransport, throttled: Int) { self.inner = inner; self.throttled = throttled }
+    private let empties: Int
+    private var waits: [Int?] = []
+    /// After the throttled polls, the next `empties` polls are answered `{chunks:[]}` at once (a relay that ends long polls early).
+    init(_ inner: any RelayTransport, throttled: Int, empties: Int = 0) { self.inner = inner; self.throttled = throttled; self.empties = empties }
+    var waitsSeen: [Int?] { lock.withLock { waits } }
     var pollCount: Int { lock.withLock { polls } }
     var postCount: Int { lock.withLock { posts } }
     var context: RealmContext { inner.context }
@@ -40,7 +44,8 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
         return try await inner.bridgePost(envelope, route: route, session: session)
     }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
-        let n = lock.withLock { polls += 1; return polls }
+        let n = lock.withLock { polls += 1; waits.append(wait); return polls }
+        if n > throttled, n <= throttled + empties { return try WireReply(status: 200, headers: ["content-type": "application/json"], body: HostAPI.json(["chunks": .array([])])) }
         if n <= throttled {
             if n % 2 == 1 {
                 return try WireReply(status: 429, headers: ["content-type": "application/json", "retry-after": "2"], body: HostAPI.json(["error": "rate_limited"]))
@@ -86,6 +91,15 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
         #expect(rec.object?["o"]?.object?["person_id"]?.string == mine.hex)
         #expect(sender.requests.count == 2)
         #expect(sender.requests[0].target.hasSuffix("/revocation") && sender.requests[1].target.hasSuffix("/revocation?after=cursor1"))
+    }
+
+    @Test func revocationsCollectsEveryMatchingPairAcrossPages() async throws {
+        let mine = ID16.random(), other = ID16.random()
+        let sender = ScriptedSender { _, n in
+            n == 1 ? (try? self.page([mine, other], next: "c1"))! : (try? self.page([mine], next: nil))!
+        }
+        let all = try await RelayClient(transport: transport(sender)).revocations(device: ID16.random(), person: mine)
+        #expect(all.count == 2)
     }
 
     @Test func revocationPageWalkIsBounded() async throws {
@@ -167,5 +181,18 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
         #expect(throttling.postCount == 1)                    // one request, never re-sent
         #expect(throttling.pollCount >= 4)
         #expect(counter.value == 1)
+    }
+
+    @Test func earlyEmptyLongPollsDoNotTimeTheExchangeOut() async throws {
+        let w = try await World.make()
+        await w.host.setHandler({ _ in .response(status: 200, headers: [:], data: Data()) })
+        // 8 instant empty answers to `wait=25` polls: charging 25 s each would exceed the 30 s deadline after two of them.
+        let t = ThrottlingPollTransport(w.transport, throttled: 0, empties: 8)
+        let phone = try await w.makePhone(timeout: .seconds(30), transport: t, longPollSeconds: 25)
+        let s = phone.session
+        let response = try await w.serve(phone) { try await s.exchange(meta: httpGet) }
+        #expect(response.status == 200)
+        #expect(t.pollCount >= 9)
+        #expect(t.waitsSeen.first == 25)
     }
 }

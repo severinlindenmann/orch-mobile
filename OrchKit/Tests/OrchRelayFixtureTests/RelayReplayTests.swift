@@ -312,6 +312,7 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         #expect(reply.headers == want, "\(id) headers \(reply.headers)")
         // the fixtures are cj bytes, so the relay's bytes must be identical
         var expectedJSON = try #require(c.response["json"]?.jsonValue)
+        // TODO(#68): drop this mapping when the whole fixture directory is resynced from orch-relay.
         // The vendored copy of revocation_get.json (orch-relay 04da0e7) predates the relay's paginated shape (orch-relay 772d7b0 has
         // `{pairs:[{person_id,reason,revocation,provenance}],next}` for the same record). Until the fixture directory is re-copied as a
         // whole (a separate change: manifest, skip list and vectors move together), the old `{record}` success body is mapped to it.

@@ -23,17 +23,17 @@ import Testing
     }
 
     @Test func targetsThatCouldChangeTheHostAreRefusedBeforeIO() async throws {
-        let s = try StubServer(); defer { s.stop() }
+        let s = try await StubServer.start(); defer { s.stop() }
         let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
-        for t in ["//evil.example/x", "http://evil.example/x", "x", "/a b", "/a#f", "/a\\b", ""] {
+        for t in ["//evil.example/x", "http://evil.example/x", "x", "/a b", "/a#f", "/a\\b", "", "/a<b", "/a>b", "/a|b", "/a{b}", "/a\"b", "/a^b", "/a`b", "/a[b]", "/a%", "/a%z", "/a%zz", "/a%2", "/a?b=%zz", "/a?b?c", "/a\u{e9}", "/a\nb", "/a\u{0}b"] {
             await #expect(throws: TransportError.invalidArgument) { _ = try await sender.send(self.get(t)) }
         }
         #expect(s.requests.isEmpty)
     }
 
     @Test func aRedirectIsRefusedAndNeverFollowed() async throws {
-        let other = try StubServer(); defer { other.stop() }
-        let s = try StubServer(); defer { s.stop() }
+        let other = try await StubServer.start(); defer { other.stop() }
+        let s = try await StubServer.start(); defer { s.stop() }
         let to = other.origin + "/landing"
         s.handle { _ in .raw(StubServer.http(302, headers: ["Location": to], body: "")) }
         let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
@@ -50,8 +50,70 @@ import Testing
         #expect(HostAPI.failure(of: g) == .badReply)
     }
 
+    @Test func targetAllowListAcceptsRealRelayTargets() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
+        for t in ["/v2/workspaces/00ff/bridge/aa?after=3&wait=25", "/v2/devices/ab/revocation?after=ab_-Z9&limit=32", "/a%2Fb", "/healthz"] {
+            let r = try await sender.send(get(t))
+            #expect(r.status == 200)
+        }
+    }
+
+    @Test func aCompressedResponseIsRefusedAtTheHeaders() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
+        for enc in ["gzip", "deflate", "br", "GZIP", "gzip, identity"] {
+            // Garbage that is not valid compressed data. URLSession's own gzip and br decoders may fail on it before the delegate sees
+            // the headers (then it is `.disconnected`); otherwise the header check refuses it. Either way no data is returned.
+            // The real-bomb test below pins the header check itself.
+            s.handle { _ in .raw(StubServer.http(200, headers: ["Content-Encoding": enc], body: String(repeating: "z", count: 64))) }
+            do { _ = try await sender.send(self.get("/bomb")); Issue.record("\(enc) was accepted") }
+            catch let e as TransportError { #expect(e == .responseTooLarge || e == .disconnected) }
+        }
+        #expect(s.requests.allSatisfy { $0.headers["accept-encoding"] == "identity" })
+        s.handle { _ in .raw(StubServer.http(200, headers: ["Content-Encoding": "identity"], body: "{}")) }
+        let ok = try await sender.send(get("/plain"))
+        #expect(ok.status == 200)
+    }
+
+    /// A real gzip bomb (512 MiB of zeros in about 0.5 MB), served with `Content-Encoding: gzip`. It must be refused without the
+    /// decoded bytes ever being buffered: the error is `responseTooLarge` and the process stays small.
+    @Test func aRealGzipBombIsRefusedWithoutDecoding() async throws {
+        let bomb = try Self.gzipOfZeros(mebibytes: 512)
+        #expect(bomb.count < 2 << 20)
+        let s = try await StubServer.start(); defer { s.stop() }
+        var raw = Data("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\nContent-Length: \(bomb.count)\r\nConnection: close\r\n\r\n".utf8)
+        raw.append(bomb)
+        let response = raw
+        s.handle { _ in .raw(response) }
+        let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
+        await #expect(throws: TransportError.responseTooLarge) { _ = try await sender.send(self.get("/bomb")) }
+        // Refused at the headers: the delegate was never handed a decoded chunk (unfixed, it receives one of hundreds of MiB first).
+        #expect(sender.largestChunkSeen == 0)
+    }
+
+    static func gzipOfZeros(mebibytes: Int) throws -> Data {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "head -c \(mebibytes << 20) /dev/zero | gzip -9"]
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return data
+    }
+
+    @Test func aRequestBodyIsReadBeforeTheStubAnswers() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        s.handle { _ in .raw(StubServer.http(413, body: "{}")) }
+        let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
+        let r = try await sender.send(get("/big", method: "POST", body: Data(repeating: 1, count: 1 << 20)))
+        #expect(r.status == 413)
+    }
+
     @Test func aBodyOverTheCapIsCutOffWhileReading() async throws {
-        let s = try StubServer(); defer { s.stop() }
+        let s = try await StubServer.start(); defer { s.stop() }
         let sender = try URLSessionRequestSender(loopbackOrigin: s.origin, maxResponseBytes: 4096)
         // a declared length over the cap
         s.handle { _ in .raw(StubServer.http(200, body: String(repeating: "x", count: 5000))) }
@@ -71,7 +133,7 @@ import Testing
     }
 
     @Test func connectionLossAndTimeoutsAreDisconnected() async throws {
-        let s = try StubServer(); defer { s.stop() }
+        let s = try await StubServer.start(); defer { s.stop() }
         let sender = try URLSessionRequestSender(loopbackOrigin: s.origin, requestTimeout: 0.5, resourceTimeout: 2)
         s.handle { _ in .truncated(Data("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc".utf8)) }
         await #expect(throws: TransportError.disconnected) { _ = try await sender.send(self.get("/cut")) }
@@ -84,7 +146,7 @@ import Testing
     }
 
     @Test func cancellationStopsAHungRequest() async throws {
-        let s = try StubServer(); defer { s.stop() }
+        let s = try await StubServer.start(); defer { s.stop() }
         s.handle { _ in .hang }
         let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
         let t = Task { try await sender.send(self.get("/hang")) }
@@ -94,7 +156,7 @@ import Testing
     }
 
     @Test func sendsOnlyTheHeadersTheRequestCarriesAndKeepsNoCookies() async throws {
-        let s = try StubServer(); defer { s.stop() }
+        let s = try await StubServer.start(); defer { s.stop() }
         s.handle { _ in .raw(StubServer.http(200, headers: ["Set-Cookie": "a=b", "Content-Type": "application/json"], body: "{}")) }
         let sender = try URLSessionRequestSender(loopbackOrigin: s.origin)
         _ = try await sender.send(get("/first"))

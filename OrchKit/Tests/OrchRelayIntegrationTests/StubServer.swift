@@ -26,17 +26,36 @@ final class StubServer: @unchecked Sendable {
 
     var origin: String { "http://127.0.0.1:\(port)" }
 
-    init() throws {
+    private init(listener: NWListener) { self.listener = listener }
+
+    /// Binds a loopback listener on a free port and returns once it is ready (no thread blocks waiting for it).
+    static func start() async throws -> StubServer {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
-        listener = try NWListener(using: params)
-        let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
-        listener.newConnectionHandler = { [unowned self] c in self.accept(c) }
-        listener.start(queue: queue)
-        // Test setup runs off the cooperative pool's critical path only briefly (a loopback bind); bounded wait.
-        guard ready.wait(timeout: .now() + 5) == .success, let p = listener.port?.rawValue else { throw URLError(.cannotConnectToHost) }
-        port = p
+        let server = StubServer(listener: try NWListener(using: params))
+        server.listener.newConnectionHandler = { [weak server] c in
+            if let server { server.accept(c) } else { c.cancel() }
+        }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let once = OnceFlag()
+            server.listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready: if once.take() { cont.resume() }
+                case .failed(let e): if once.take() { cont.resume(throwing: e) }
+                case .cancelled: if once.take() { cont.resume(throwing: URLError(.cancelled)) }
+                default: break
+                }
+            }
+            server.listener.start(queue: server.queue)
+        }
+        guard let p = server.listener.port?.rawValue else { throw URLError(.cannotConnectToHost) }
+        server.port = p
+        return server
+    }
+
+    private final class OnceFlag: @unchecked Sendable {
+        private let lock = NSLock(); private var taken = false
+        func take() -> Bool { lock.withLock { if taken { return false }; taken = true; return true } }
     }
 
     func handle(_ h: @escaping @Sendable (Request) -> Behaviour) { lock.withLock { handler = h } }
@@ -62,7 +81,8 @@ final class StubServer: @unchecked Sendable {
     }
 
     private func read(_ c: NWConnection, _ buf: Data) {
-        c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, done, err in
+        c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, err in
+            guard let self else { c.cancel(); return }
             var b = buf
             if let d = data { b.append(d) }
             if let r = b.range(of: Data("\r\n\r\n".utf8)) {
@@ -70,10 +90,14 @@ final class StubServer: @unchecked Sendable {
                 let first = head[0].split(separator: " ")
                 var headers: [String: String] = [:]
                 for l in head.dropFirst() { if let i = l.firstIndex(of: ":") { headers[l[..<i].lowercased()] = l[l.index(after: i)...].trimmingCharacters(in: .whitespaces) } }
+                // Read the whole request body before answering, so the client's write never meets a closed socket (a RST can
+                // discard an unread reply).
+                let length = Int(headers["content-length"] ?? "") ?? 0
+                if b.count - r.upperBound < length, err == nil, !done { self.read(c, b); return }
                 let req = Request(method: String(first[0]), target: String(first[1]), headers: headers)
-                let h: @Sendable (Request) -> Behaviour = lock.withLock { hits[req.target, default: 0] += 1; seen.append(req); return handler }
-                respond(c, h(req))
-            } else if err != nil || done { c.cancel() } else { read(c, b) }
+                let h: @Sendable (Request) -> Behaviour = self.lock.withLock { self.hits[req.target, default: 0] += 1; self.seen.append(req); return self.handler }
+                self.respond(c, h(req))
+            } else if err != nil || done { c.cancel() } else { self.read(c, b) }
         }
     }
 
@@ -85,12 +109,12 @@ final class StubServer: @unchecked Sendable {
         case .endless(let n):
             let head = Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n".utf8)
             let chunk = Data(String(n, radix: 16).utf8) + Data("\r\n".utf8) + Data(repeating: 0x78, count: n) + Data("\r\n".utf8)
-            c.send(content: head, completion: .contentProcessed { [self] e in if e == nil { stream(c, chunk, sent: 0) } else { c.cancel() } })
+            c.send(content: head, completion: .contentProcessed { [weak self] e in guard let self else { return };  if e == nil { self.stream(c, chunk, sent: 0) } else { c.cancel() } })
         }
     }
 
     private func stream(_ c: NWConnection, _ chunk: Data, sent: Int) {
         guard sent < 256 << 20 else { c.cancel(); return }
-        c.send(content: chunk, completion: .contentProcessed { [self] e in if e == nil { stream(c, chunk, sent: sent + chunk.count) } else { c.cancel() } })
+        c.send(content: chunk, completion: .contentProcessed { [weak self] e in if let self, e == nil { self.stream(c, chunk, sent: sent + chunk.count) } else { c.cancel() } })
     }
 }
