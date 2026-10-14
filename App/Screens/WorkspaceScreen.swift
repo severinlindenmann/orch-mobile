@@ -18,7 +18,7 @@ struct WorkspaceScreen: View {
     }
 
     private var segments: [WorkspaceSegment] {
-        model.info.allowsTerminal ? WorkspaceSegment.allCases : WorkspaceSegment.allCases.filter { $0 != .terminal }
+        WorkspaceSegment.allCases.filter { ($0 != .terminal || model.info.allowsTerminal) && ($0 != .files || services.capabilities.drop) }
     }
 
     var body: some View {
@@ -29,7 +29,8 @@ struct WorkspaceScreen: View {
             switch segment {
             case .questions: questions
             case .tickets: tickets
-            case .files: files
+            case .files where services.capabilities.drop: files
+            case .files: Section { RouteUnavailable(text: "Files aren't available for this workspace realm.") }
             case .terminal: terminal
             }
         }
@@ -46,10 +47,10 @@ struct WorkspaceScreen: View {
         }
         .sheet(isPresented: $newTicket) { NewTicketSheet(model: model) { newTicket = false } }
         .sheet(isPresented: $composing) {
-            DropComposeSheet(model: services.drop, preset: workspaceID) {}
+            if services.capabilities.drop { DropComposeSheet(model: services.drop, preset: workspaceID) {} }
         }
         .task(id: segment) {
-            if segment == .files { await services.drop.refreshDrop() }
+            if segment == .files, services.capabilities.drop { await services.drop.refreshDrop() }
         }
     }
 

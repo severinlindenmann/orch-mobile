@@ -39,7 +39,7 @@ final class LiveDropTests: XCTestCase {
 
     func testTextOpensExpireWhileDetailRemainsActive() async throws {
         let (services, drop) = try await fixture()
-        let runtime = try XCTUnwrap(services.runtime)
+        let runtime = try XCTUnwrap(services.demo)
         for (name, mime, body) in [("note.txt", "text/plain", "private note"),
                                    ("link.txt", "text/uri-list", "https://example.com/private")] {
             let object = try await drop.service.send(Data(body.utf8), name: name, mime: mime)
@@ -138,7 +138,7 @@ final class LiveDropTests: XCTestCase {
             if alarm {
                 await drop.alarmCleanup?.value
             } else {
-                let runtime = try XCTUnwrap(services.runtime)
+                let runtime = try XCTUnwrap(services.demo)
                 runtime.clock.advance(milliseconds: file.deadlineMs - runtime.clock.nowMs)
                 services.setActive(false); await services.waitForLifecycle()
                 services.setActive(true); await services.waitForShareActivation()
@@ -178,7 +178,7 @@ final class LiveDropTests: XCTestCase {
 
     func testForegroundPurgesAndResumesSamePendingIdentity() async throws {
         let (services, drop) = try await fixture()
-        let runtime = try XCTUnwrap(services.runtime)
+        let runtime = try XCTUnwrap(services.demo)
         runtime.faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "GET " + HostAPI.base + "/drop/")
         await drop.send(.init(workspaceID: drop.workspace!.info.id, attachments: [], note: "recover me"))
         services.setActive(false); await services.waitForLifecycle()

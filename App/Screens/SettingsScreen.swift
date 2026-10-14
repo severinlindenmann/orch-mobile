@@ -15,12 +15,16 @@ struct SettingsScreen: View {
                 TextField("Device label", text: Binding(get: { model.deviceLabel }, set: { model.deviceLabel = $0 }))
                     .accessibilityIdentifier("settings.deviceLabel")
                 LabeledContent("Key custody", value: model.custody)
-                LabeledContent("Notifications", value: notificationText)
-                if model.notificationStatus == .denied {
+                if services.capabilities.push {
+                    LabeledContent("Notifications", value: notificationText)
+                } else {
+                    LabeledContent("Updates", value: "While orch is open")
+                }
+                if services.capabilities.push, model.notificationStatus == .denied {
                     Button("Open iOS Settings") { model.openNotificationSettings() }
                         .accessibilityIdentifier("settings.notifications.openSettings")
                 }
-                if !model.pushDiagnostics.isEmpty {
+                if services.capabilities.push, !model.pushDiagnostics.isEmpty {
                     Text(verbatim: model.pushDiagnostics).font(OF.meta).foregroundStyle(OC.textMuted)
                         .accessibilityIdentifier("settings.push.diagnostics")
                 }
@@ -49,8 +53,8 @@ struct SettingsScreen: View {
                     .accessibilityIdentifier("settings.workspace.\(ws.id)")
                 }
             }
-            if model.isDemo { demoSection }
-            Section { SimulationNotice() }
+            if services.capabilities.demoControls { demoSection }
+            if services.capabilities.demoControls { Section { SimulationNotice() } }
             Section("If you lose a device") {
                 VStack(alignment: .leading, spacing: OS.s2) {
                     Label("Revocation is different from leaving", systemImage: "exclamationmark.shield").font(OF.section)
@@ -147,12 +151,14 @@ struct WorkspaceSettingsScreen: View {
                     LabeledContent("Host", value: ws.displayHost)
                     LabeledContent("Allowed here", value: ws.scopes.map(\.rawValue).sorted().joined(separator: ", "))
                 }
-                Section {
-                    Toggle("Notifications", isOn: Binding(get: { ws.notificationsOn },
-                                                          set: { model.setNotifications($0, workspaceID: ws.id) }))
-                        .accessibilityIdentifier("settings.notifications")
+                if services.capabilities.push {
+                    Section {
+                        Toggle("Notifications", isOn: Binding(get: { ws.notificationsOn },
+                                                              set: { model.setNotifications($0, workspaceID: ws.id) }))
+                            .accessibilityIdentifier("settings.notifications")
+                    }
                 }
-                if model.isDemo {
+                if services.capabilities.demoControls {
                     Section("Demo") {
                         Toggle("Pretend this iPhone is offline", isOn: $simulateOffline)
                             .accessibilityIdentifier("demo.offline")

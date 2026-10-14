@@ -30,17 +30,26 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var notificationStatus: NotificationStatus = .notAsked
     private(set) var pushDiagnostics = ""
     private(set) var pendingServerCleanups: [PendingServerCleanup] = []
+    /// What this realm offers (Drop, share, push, Demo controls). Features are gated on these, never on `isDemo`.
+    let capabilities: RealmCapabilities
+    let realm: Realm
+    /// Invalidated when the realm is left or retired: late completions check it before they write, sign or register anything.
+    @ObservationIgnored private(set) var lifetime = RealmLifetime()
+    /// Set by `RealmController`: realm transitions go through it. Without one (unit tests) the services transition in place.
+    @ObservationIgnored weak var transitions: (any RealmTransitions)?
     @ObservationIgnored private(set) var cleanupStore: ServerCleanupStore
     var cleanupDefaults: UserDefaults { resetFlags }
     /// The server-side half of Leave (push unsubscribe, membership removal). Demo simulates it; it throws while offline.
     @ObservationIgnored var serverCleanup: (PendingServerCleanup) async throws -> Void = { _ in }
     var pairingScenario: PairingScenario = .firstTime
     var signOutcome: SignOutcome = .accepted
-    @ObservationIgnored private(set) var runtime: DemoRuntime?
+    @ObservationIgnored private(set) var runtime: (any RealmRuntime)?
+    /// The Demo interface of the runtime; nil outside Demo. Everything Demo-only goes through it.
+    var demo: (any DemoControls)? { runtime as? any DemoControls }
     @ObservationIgnored var beforeWorkspaceRemoval: ((String) -> Bool)?
     @ObservationIgnored var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)?
     @ObservationIgnored private var resetTask: Task<Void, Never>?
-    @ObservationIgnored private var bootTask: Task<DemoRuntime?, Never>?
+    @ObservationIgnored private var bootTask: Task<(any RealmRuntime)?, Never>?
     @ObservationIgnored private var submitted: [String: ReviewValue] = [:]
     /// Keyed "<workspace hex>/<decision hex>"; an entry is removed when its task ends.
     @ObservationIgnored private var reconcileTasks: [String: Task<Void, Never>] = [:]
@@ -51,21 +60,21 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private(set) var lifecycle: [String: WorkspaceLifecycle] = [:]
     private(set) var active = true
     @ObservationIgnored private var refreshTasks: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored private var failedReset: DemoRuntime?
+    @ObservationIgnored private var failedReset: (any RealmRuntime)?
     private(set) var resetIncomplete = false
     @ObservationIgnored private let resetFlags: UserDefaults
     @ObservationIgnored private var resetRevision = 0
     // Injection points exercise failure boundaries without weakening the runtime availability check.
-    @ObservationIgnored var wipeWorkspace: (DemoRuntime, LiveWorkspace) async throws -> Void = { runtime, ws in
+    @ObservationIgnored var wipeWorkspace: (any RealmRuntime, LiveWorkspace) async throws -> Void = { runtime, ws in
         try await runtime.wipe(workspace: ws.workspaceID, generation: ws.generation)
     }
-    @ObservationIgnored var resetRuntime: (DemoRuntime) async throws -> Void = { try await $0.reset() }
+    @ObservationIgnored var resetRuntime: (any RealmRuntime) async throws -> Void = { try await $0.shutdown() }
 
     @ObservationIgnored var finishInterruptedReset: () async throws -> Void = { try await DemoRuntime.finishInterruptedReset() }
 
     func state(for id: String) -> WorkspaceLifecycle { lifecycle[id] ?? .removed }
     func isLive(_ id: String) -> Bool { state(for: id) == .live }
-    func canUse(_ id: String) -> Bool { active && isLive(id) }
+    func canUse(_ id: String) -> Bool { lifetime.isActive && active && isLive(id) }
     func register(_ ws: LiveWorkspace) {
         ws.services = self
         // A re-paired workspace is a new membership: an old cleanup must never reach it.
@@ -85,17 +94,20 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
 
-    init(options: LaunchOptions, runtime: DemoRuntime? = nil, resetFlags: UserDefaults? = nil) {
+    init(options: LaunchOptions, runtime: (any RealmRuntime)? = nil, resetFlags: UserDefaults? = nil,
+         realm: Realm = .demo, capabilities: RealmCapabilities = .demo) {
+        self.realm = realm; self.capabilities = capabilities
         self.resetFlags = resetFlags ?? (options.uiTesting
             ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
         self.options = options; self.runtime = runtime; self.isDemo = runtime != nil
-        cleanupStore = ServerCleanupStore(defaults: self.resetFlags)
+        cleanupStore = ServerCleanupStore(defaults: self.resetFlags, realm: realm)
         pendingServerCleanups = cleanupStore.load()
     }
 
     // MARK: Boot
 
-    func boot() async {
+    /// `enterDemo`: the Welcome choice "Try Demo" (the controller boots a fresh realm for it) instead of a launch flag or persisted entry.
+    func boot(enterDemo: Bool = false) async {
         guard !ready else { return }
         let defaults = UserDefaults.standard
         // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
@@ -112,7 +124,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             }
         }
         let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
-        if options.demo || persisted { _ = await startDemo() }
+        if options.demo || persisted || enterDemo { _ = await startDemo() }
         if options.demoSeed, isDemo { await seedDemoWorkspaces() }
         await ensurePresentationGate(intendedDemo: options.demo || persisted)
         // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
@@ -129,7 +141,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     @discardableResult
-    private func startDemo() async -> DemoRuntime? {
+    private func startDemo() async -> (any RealmRuntime)? {
         if let bootTask {
             let revision = resetRevision
             let result = await bootTask.value
@@ -145,7 +157,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let runtime { return runtime }
         guard failedReset == nil else { return nil }
         let revision = resetRevision
-        let task = Task { () -> DemoRuntime? in
+        let task = Task { () -> (any RealmRuntime)? in
             do { return try await DemoRuntime.boot(temporaryStorage: self.options.uiTesting) } catch { return nil }
         }
         bootTask = task
@@ -155,22 +167,26 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         runtime = r
         isDemo = r != nil
         if r == nil { PresentationGate.requireRebuild() }
-        if let r { r.deviceLabel = deviceLabel; await r.rebuildPresentationGate() }
+        if let r {
+            r.deviceLabel = deviceLabel; await r.rebuildPresentationGate()
+            // Committed workspaces of an earlier launch (none in Demo: its boot wipes the previous realm).
+            for handle in (try? await r.restoreWorkspaces()) ?? [] { workspaceJoined(handle, lifetime: lifetime) }
+        }
         if !options.uiTesting { UserDefaults.standard.set(r != nil, forKey: Keys.demo) }
         return r
     }
 
     /// The running Demo, booting it first when "Try Demo" is still starting it.
-    func demoRuntime() async -> DemoRuntime? {
-        if let runtime { return runtime }
-        if isDemo || bootTask != nil { return await startDemo() }
+    func demoRuntime() async -> (any DemoControls)? {
+        if let demo { return demo }
+        if isDemo || bootTask != nil { return await startDemo() as? any DemoControls }
         return nil
     }
 
     /// DEBUG UI tests only: pairs the two Demo workspaces through the same pairing model, with the Demo humans' explicit actions
     /// played by this loop, on a fast Demo clock.
     private func seedDemoWorkspaces() async {
-        guard let runtime else { return }
+        guard let runtime = demo else { return }
         runtime.speed = 10
         defer { runtime.speed = 1 }
         for _ in 0..<2 {
@@ -215,44 +231,46 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     func resolveWorkspace(_ raw: String) -> String? {
         if let ws = live.first(where: { $0.info.id == raw }) { return ws.info.id }
-        guard let runtime else { return nil }
-        return live.first { ws in runtime.entry(for: ws.workspaceID)?.kind.alias == raw }?.info.id
+        guard let demo else { return nil }
+        return live.first { ws in demo.entry(for: ws.workspaceID)?.kind.alias == raw }?.info.id
     }
 
     func resolveQuestion(_ raw: String) -> (workspaceID: String, questionID: String)? {
         for ws in live {
             if ws.questions.contains(where: { $0.id == raw }) { return (ws.info.id, raw) }
-            if let id = runtime?.entry(for: ws.workspaceID)?.aliases[raw] { return (ws.info.id, id.hex) }
+            if let id = demo?.entry(for: ws.workspaceID)?.aliases[raw] { return (ws.info.id, id.hex) }
         }
         return nil
     }
 
     // MARK: Workspaces
 
-    func workspaceJoined(_ handle: JoinedHandle) {
+    /// A completed pairing (or a restored workspace). `lifetime` is the realm lifetime the pairing started in: a join that completes
+    /// after that realm was left or retired is dropped and builds nothing (no workspace, no Drop service, no session).
+    func workspaceJoined(_ handle: JoinedHandle, lifetime joinedIn: RealmLifetime) {
+        guard joinedIn === lifetime, lifetime.isActive, let runtime else { return }
         let j = handle.joined
         guard !live.contains(where: { $0.workspaceID == j.workspace }) else { return }
-        guard let entry = runtime?.entry(for: j.workspace) else { return }
-        entry.joined = true
-        let kind: DemoRuntime.Kind? = entry.kind
+        let demo = self.demo
+        let entry = demo?.entry(for: j.workspace)
+        // Demo knows its fake hosts by name; any other realm uses the verified join identity and "Your Mac" (no authenticated host label).
+        if demo != nil, entry == nil { return }
+        demo?.markJoined(j.workspace)
+        let kind = entry?.kind
         let info = WorkspaceInfo(
-            id: j.workspace.hex, name: j.name, host: kind?.hostLabel ?? "Demo Mac", hue: kind.map { $0.rawValue } ?? live.count,
+            id: j.workspace.hex, name: j.name, host: kind?.hostLabel ?? "Your Mac", hue: kind.map { $0.rawValue } ?? live.count,
             hostedBy: j.hosted.marker ? (j.hosted.hostedBy ?? "(unknown)") : nil, clientHosted: j.hosted.marker,
-            scopes: Mapping.scopes(j.scopes), connection: .online, primaryLabel: "Demo Mac", notificationsOn: true)
+            scopes: Mapping.scopes(j.scopes), connection: .online, primaryLabel: demo != nil ? "Demo Mac" : "Your Mac",
+            notificationsOn: capabilities.push)
         let ws = LiveWorkspace(workspaceID: j.workspace, generation: j.generation, api: BridgeWorkspaceAPI(session: j.session), info: info)
         ws.services = self
         ws.downloadContainer = j.downloadContainer
-        ws.draftURL = runtime?.draftURL(workspace: j.workspace)
-        if let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
+        ws.draftURL = runtime.draftURL(workspace: j.workspace)
+        // No Drop capability, no Drop: the service is never constructed, not merely hidden.
+        if capabilities.drop, let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
         Task {
-            if kind == .laptop, let drop = ws.drop {
-                do {
-                    let object = try await DemoSetup.seedDropSending(drop.service)
-                    guard drop.usable else { return }
-                    drop.aliases[object.descriptor.object.hex] = "d-sending"
-                } catch { if drop.usable { drop.report(error) } }
-            }
+            if let drop = ws.drop { await demo?.seedDropFixture(into: drop, workspace: j.workspace) }
             await ws.drop?.refresh()
         }
         ws.start()
@@ -322,7 +340,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             guard active, self.active else { return }
             // Local retention is independent of relay authorization and Drop alarms.
             for ws in workspaces where ws.info.lifecycle != .removed {
-                do { try await ws.downloadContainer?.purgeExpiredDownloads(nowMs: ws.drop?.alarm == true ? .max : (self.runtime?.clock.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000))) }
+                do { try await ws.downloadContainer?.purgeExpiredDownloads(nowMs: ws.drop?.alarm == true ? .max : (self.runtime?.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000))) }
                 catch { ws.drop?.status = "Local cleanup needs retry" }
             }
             for ws in workspaces where self.canUse(ws.info.id) {
@@ -362,11 +380,16 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         return DropSummary(newCount: unread.count, lastName: unread.last?.name)
     }
 
-    func enterDemo() { Task { await startDemo() } }
+    func enterDemo() {
+        if let transitions { transitions.realmEnterDemo() } else { Task { await startDemo() } }
+    }
 
     // MARK: Pending decisions (U8)
 
-    func recordSubmission(_ review: ReviewValue) { submitted[review.questionID + "/" + review.optionID] = review }
+    func recordSubmission(_ review: ReviewValue) {
+        guard lifetime.isActive else { return }
+        submitted[review.questionID + "/" + review.optionID] = review
+    }
 
     func storedDecision(workspace: LiveWorkspace, questionID: String) async -> ID16? {
         guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return nil }
@@ -374,6 +397,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func refreshPending(reconcile: Bool = false) async {
+        guard lifetime.isActive else { return }
         var out: [DecisionStatus] = []
         for ws in live where canUse(ws.info.id) {
             // A store error is not an empty list: keep what is shown until the next read succeeds.
@@ -430,6 +454,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func decisionSettled(workspace: LiveWorkspace) async {
+        guard lifetime.isActive else { return }
         await workspace.refresh()
         await refreshPending()
     }
@@ -438,14 +463,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// True once when "Review fails to load" is armed: the next review read is treated as failed (nothing is signed or stored).
     func takeDemoReadFailure() -> Bool {
-        guard isDemo, signOutcome == .loadFails else { return false }
+        guard capabilities.demoControls, isDemo, signOutcome == .loadFails else { return false }
         signOutcome = .accepted
         return true
     }
 
     func applyDemoSignControl(workspace: LiveWorkspace, questionID: String, optionID: String) async {
         let outcome = signOutcome
-        guard workspace.usable, outcome != .accepted, outcome != .loadFails, let runtime,
+        guard workspace.usable, outcome != .accepted, outcome != .loadFails, let runtime = demo,
               let host = runtime.entry(for: workspace.workspaceID)?.host, let qid = ID16(hex: questionID) else { return }
         signOutcome = .accepted              // one-shot
         switch outcome {
@@ -469,7 +494,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
     }
 
-    var deviceLocked: Bool { runtime?.lock.isLocked ?? false }
+    var deviceLocked: Bool { demo?.lock.isLocked ?? false }
 
     // MARK: DropModel (simulated: no Drop service yet)
 
@@ -512,7 +537,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         for task in Array(refreshTasks.values) { await task.value }
     }
     func eligibleShareDestination(_ id: String) -> Bool {
-        canUse(id) && live.first(where: { $0.info.id == id })?.drop?.canOperate == true
+        capabilities.share && canUse(id) && live.first(where: { $0.info.id == id })?.drop?.canOperate == true
     }
     func stopShareJob(_ job: StagedJob, inbox: ShareInbox, workspaceID: String) async throws {
         guard eligibleShareDestination(workspaceID), let drop = live.first(where: { $0.info.id == workspaceID })?.drop else { throw DropError.suspended }
@@ -566,7 +591,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var custody: String { DefaultCustody.isSecureEnclave ? "Secure Enclave" : "Software key (Simulator)" }
 
     func setNotifications(_ on: Bool, workspaceID: String) {
-        guard isLive(workspaceID) else { return }
+        guard capabilities.push, isLive(workspaceID) else { return }
         live.first { $0.info.id == workspaceID }?.setNotifications(on)
         if on, notificationStatus == .notAsked { Task { await ensureNotificationPermission() } }
     }
@@ -582,32 +607,40 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Reads the real OS status (so a denial from an earlier run shows up) and, for a real installation that is allowed,
     /// attempts APNs registration. Demo never registers with APNs: there is no relay behind it.
     func refreshNotificationStatus() async {
-        let state = await PushPermission.current()
+        // Without the push capability nothing here touches the OS: no permission read, no APNs registration.
+        guard capabilities.push else { notificationStatus = .notAsked; pushDiagnostics = ""; return }
+        let state = await currentPermission()
         notificationStatus = map(state)
-        if !isDemo, notificationStatus == .allowed { PushPermission.registerForAPNs() }
+        if !isDemo, notificationStatus == .allowed { registerForAPNs() }
         pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
     }
 
     /// Asks the system once (never at launch) and waits for the answer.
     @discardableResult
     private func ensureNotificationPermission() async -> NotificationStatus {
+        guard capabilities.push else { return notificationStatus }
         if let notificationPermissionOverride { return await notificationPermissionOverride() }
         let state = await PushPermission.requestIfNeeded()
         notificationStatus = map(state)
-        if !isDemo, notificationStatus == .allowed { PushPermission.registerForAPNs() }
+        if !isDemo, notificationStatus == .allowed { registerForAPNs() }
         pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
         return notificationStatus
     }
 
+    /// Reads the OS permission and registers with APNs. Injected so a test can prove a realm without push never calls either.
+    @ObservationIgnored var currentPermission: () async -> PushPermission.State = { await PushPermission.current() }
+    @ObservationIgnored var registerForAPNs: () -> Void = { PushPermission.registerForAPNs() }
+
     func openNotificationSettings() { PushPermission.openSystemSettings() }
 
     func demoSendPush(workspaceID: String) {
-        guard isLive(workspaceID) else { return }
+        guard capabilities.demoControls, isLive(workspaceID) else { return }
         Task { await sendDemoNotification(workspaceID: workspaceID, delay: 1) }
     }
 
     /// Settings -> Demo controls: one tap, short delay so the tester can lock the phone or go home.
     func demoSendNotification() async {
+        guard capabilities.demoControls else { return }
         guard let ws = live.first(where: { isLive($0.info.id) }) else {
             demoPushResult = "Pair a Demo workspace first."
             return
@@ -618,7 +651,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     static let demoNotificationDelay: TimeInterval = 8
 
     private func sendDemoNotification(workspaceID: String, delay: TimeInterval) async {
-        guard let ws = live.first(where: { $0.info.id == workspaceID }), let runtime else { return }
+        guard let ws = live.first(where: { $0.info.id == workspaceID }), let runtime = demo else { return }
         demoPushResult = "Checking notification permission…"
         let status = await ensureNotificationPermission()
         guard status == .allowed else {
@@ -705,11 +738,26 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     /// Wipes the Demo realm through the real reset path and leaves Demo.
-    func resetThisiPhone() { teardown(thenDemo: false) }
-    func exitDemo() { teardown(thenDemo: false) }
-    func resetDemoData() { teardown(thenDemo: true) }
+    func resetThisiPhone() { leaveRealm(thenDemo: false) }
+    func exitDemo() { leaveRealm(thenDemo: false) }
+    func resetDemoData() { leaveRealm(thenDemo: true) }
 
-    private func teardown(thenDemo: Bool) {
+    private func leaveRealm(thenDemo: Bool) {
+        if let transitions { transitions.realmLeave(thenDemo: thenDemo) } else { teardown(thenDemo: thenDemo) }
+    }
+
+    /// Ends this realm's lifetime without wiping anything: every late completion that still holds this instance becomes inert.
+    /// Used when a transition replaces the whole service graph.
+    func retire() {
+        lifetime.invalidate()
+        reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
+        refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
+        demoLockRelease?.cancel()
+    }
+
+    /// The in-place realm exit (also what `RealmController` drives). The lifetime is invalidated first, before any await.
+    func teardown(thenDemo: Bool) {
+        lifetime.invalidate()
         resetRevision += 1
         let revision = resetRevision
         let pendingBoot = bootTask
@@ -757,6 +805,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 }
 
+/// The realm transitions a `RealmController` performs on behalf of the services' own Welcome/Settings actions.
+@MainActor
+protocol RealmTransitions: AnyObject {
+    func realmEnterDemo()
+    func realmLeave(thenDemo: Bool)
+}
+
 /// A review for a workspace that is no longer on this iPhone: it can load nothing.
 @MainActor @Observable
 final class UnavailableReviewModel: QuestionReviewModel {
@@ -775,7 +830,7 @@ final class UnavailableReviewModel: QuestionReviewModel {
 #if DEBUG
 extension LiveServices {
     func demoDropPending() async {
-        guard options.uiTesting, let runtime, let drop = live.first(where: { $0.info.scopes.contains(.operate) })?.drop,
+        guard options.uiTesting, let runtime = demo, let drop = live.first(where: { $0.info.scopes.contains(.operate) })?.drop,
               let id = drop.workspace?.info.id else { return }
         for _ in 0..<100 where live.contains(where: { !($0.drop?.verifying.isEmpty ?? true) || $0.drop?.loading == true }) {
             try? await Task.sleep(for: .milliseconds(100))
@@ -785,11 +840,11 @@ extension LiveServices {
         await drop.send(.init(workspaceID: id, attachments: [], note: "Foreground recovery bytes"))
     }
     func demoDropReject() async {
-        guard options.uiTesting, let runtime else { return }
+        guard options.uiTesting, let runtime = demo else { return }
         do { try await runtime.env.relay.demoRejectNextDrop() } catch { shareStatus = "Could not arm Demo fault" }
     }
     func demoDropInbox() async {
-        guard options.uiTesting, let runtime, let ws = live.first(where: { $0.info.scopes.contains(.operate) }),
+        guard options.uiTesting, let runtime = demo, let ws = live.first(where: { $0.info.scopes.contains(.operate) }),
               let entry = runtime.entry(for: ws.workspaceID) else { return }
         do {
             try await entry.host.demoInboxDrop(relay: runtime.env.relay, transport: runtime.env.transport, session: entry.session)
@@ -799,7 +854,7 @@ extension LiveServices {
     func demoDropExpire() {
         guard options.uiTesting else { return }
         setActive(false)
-        runtime?.fastForward(seconds: 604801)
+        demo?.fastForward(seconds: 604801)
         setActive(true)
     }
 }

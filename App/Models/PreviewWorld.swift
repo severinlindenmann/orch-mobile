@@ -7,6 +7,7 @@ import Observation
 final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, ShareWorld {
     func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? { nil }
     var isDemo: Bool
+    var capabilities: RealmCapabilities = .demo
     var workspaces: [WorkspaceInfo] = []
     var questions: [Question] = []
     var tickets: [Ticket] = []

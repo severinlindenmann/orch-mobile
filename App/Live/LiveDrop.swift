@@ -37,7 +37,7 @@ final class LiveDrop {
     var previewURL: URL?
     @ObservationIgnored private(set) var alarmCleanup: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
-    var nowMs: Int64 { workspace?.services?.runtime?.clock.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000) }
+    var nowMs: Int64 { workspace?.services?.runtime?.nowMs ?? Int64(Date().timeIntervalSince1970 * 1000) }
     var locked: Bool { workspace?.services?.deviceLocked ?? true }
     var usable: Bool { workspace?.usable == true && !alarm && !unauthorized && !locked }
 

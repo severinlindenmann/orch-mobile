@@ -39,7 +39,7 @@ struct QuestionScreen: View {
                         answers(q, info)
                     }
                     SignedDetails(workspaceID: q.workspaceID, questionID: q.id, contentHash: q.contentHash)
-                    SimulationNotice()
+                    if services.capabilities.demoControls { SimulationNotice() }
                 } else {
                     EmptyState(systemImage: "questionmark.circle", title: "This question is no longer available")
                 }
@@ -402,7 +402,7 @@ struct SignSheet: View {
             Text("This unlocked iPhone signs with its device key.")
                 .font(OF.meta).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 .accessibilityIdentifier("sign.footnote")
-            SimulationNotice()
+            if review.isDemo { SimulationNotice() }
         }
     }
 

@@ -42,7 +42,7 @@ struct HomeScreen: View {
     /// With tabs, Drop / Settings / Questions are tabs, never a second copy pushed on Home: switch tabs instead.
     private func select(_ route: Route) {
         switch route {
-        case .drop: dropPath = []; tab = .drop
+        case .drop where services.capabilities.drop: dropPath = []; tab = .drop
         case .settings: settingsPath = []; tab = .settings
         case .needsYou: questionsPath = []; tab = .questions
         default: break
@@ -69,7 +69,7 @@ struct HomeScreen: View {
         guard let first = source.first else { return }
         let rest = Array(source.dropFirst())
         switch first {
-        case .drop: dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
+        case .drop where services.capabilities.drop: dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
         case .settings: settingsPath = rest; tab = .settings
         case .needsYou: questionsPath = rest; tab = .questions
         default: path = source
@@ -142,9 +142,11 @@ struct HomeScreen: View {
                     .tabItem { Label("Questions", systemImage: "questionmark.bubble") }
                     .badge(services.home.needsYouCount)
                     .tag(AppTab.questions)
-                tabStack($dropPath) { DropScreen(services: services, startComposing: composeOnDropTab) }
-                    .tabItem { Label("Drop", systemImage: "tray.and.arrow.down") }
-                    .tag(AppTab.drop)
+                if services.capabilities.drop {
+                    tabStack($dropPath) { DropScreen(services: services, startComposing: composeOnDropTab) }
+                        .tabItem { Label("Drop", systemImage: "tray.and.arrow.down") }
+                        .tag(AppTab.drop)
+                }
                 tabStack($settingsPath) { SettingsScreen(services: services, path: $settingsPath) }
                     .tabItem { Label("Settings", systemImage: "gearshape") }
                     .tag(AppTab.settings)
@@ -210,8 +212,9 @@ private struct RouteView: View {
         case .question(let ws, let id, let autoSign):
             QuestionScreen(services: services, workspaceID: ws, questionID: id, autoSign: autoSign)
         case .ticket(let ws, let key): TicketScreen(services: services, workspaceID: ws, key: key)
-        case .drop: DropScreen(services: services, startComposing: composeDrop)
-        case .dropItem(let id): DropItemScreen(services: services, itemID: id)
+        case .drop where services.capabilities.drop: DropScreen(services: services, startComposing: composeDrop)
+        case .dropItem(let id) where services.capabilities.drop: DropItemScreen(services: services, itemID: id)
+        case .drop, .dropItem: RouteUnavailable(text: "Drop isn't available for this workspace realm.")
         case .shareFixture:
             #if DEBUG
             ShareFixtureScreen(openDrop: { path.append(.drop) })
@@ -226,6 +229,15 @@ private struct RouteView: View {
 }
 
 // MARK: Welcome / empty
+
+/// A stale or deep route to a surface the realm does not offer.
+struct RouteUnavailable: View {
+    let text: String
+    var body: some View {
+        EmptyState(systemImage: "nosign", title: "Not available", detail: text)
+            .accessibilityIdentifier("route.unavailable")
+    }
+}
 
 struct WelcomeScreen: View {
     let onDemo: () -> Void
@@ -308,8 +320,8 @@ struct HomeContent: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("home.workspace.\(ws.id)")
                 }
-                dropCard
-                SimulationNotice()
+                if services.capabilities.drop { dropCard }
+                if services.capabilities.demoControls { SimulationNotice() }
             }
             .padding(OS.s4)
         }

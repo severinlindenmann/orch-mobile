@@ -145,6 +145,8 @@ protocol SettingsModel: AnyObject, Observable {
 /// Entry point screens receive (A4): never FakeHost or custody.
 @MainActor
 protocol AppServices: AnyObject {
+    /// What the active realm offers. Screens gate features on these, never on `isDemo`.
+    var capabilities: RealmCapabilities { get }
     var home: any HomeModel { get }
     var drop: any DropModel { get }
     var settings: any SettingsModel { get }

@@ -394,7 +394,7 @@ final class LiveLifecycleTests: XCTestCase {
             XCTAssertTrue(flags.bool(forKey: "orch.demo.resetPending"))
             attempts += 1
             if attempts == 1 { throw ViewError.offline }
-            try await retained.reset()
+            try await retained.shutdown()
         }
         services.exitDemo(); await bounded { await services.waitForReset() }
         XCTAssertNil(services.runtime)
@@ -454,7 +454,7 @@ final class LiveLifecycleTests: XCTestCase {
                 await gate.wait()
                 throw ViewError.offline
             }
-            try await retained.reset()
+            try await retained.shutdown()
         }
         services.exitDemo()
         await waitUntil { await gate.entered }
@@ -588,5 +588,34 @@ final class LiveLifecycleTests: XCTestCase {
         let unknown = await services.leave(workspaceID: "unknown", simulateOffline: false)
         XCTAssertTrue(missingRuntime.incomplete)
         XCTAssertTrue(unknown.incomplete)
+    }
+}
+
+// MARK: Realm lifetime fence
+
+extension LiveLifecycleTests {
+    func testDecisionCompletingAfterTheRealmWasRetiredIsDropped() async {
+        let services = LiveServices(options: LaunchOptions.parse(arguments: ["--ui-testing"], debug: true))
+        let api = WorkspaceStub()
+        let ws = workspaceForRealmTests(services, api: api)
+        XCTAssertTrue(services.canUse(ws.info.id))
+        services.retire()
+        XCTAssertFalse(services.canUse(ws.info.id))
+        // A decision settling late would refresh the workspace and the pending list: neither happens once the lifetime ended.
+        await services.decisionSettled(workspace: ws)
+        await services.refreshPending()
+        let entered = await api.suspension.entered
+        XCTAssertFalse(entered)
+        XCTAssertTrue(services.pendingDecisions.isEmpty)
+        XCTAssertTrue(services.review(workspaceID: ws.info.id, questionID: "q", optionID: "a") is UnavailableReviewModel)
+    }
+
+    private func workspaceForRealmTests(_ services: LiveServices, api: WorkspaceStub) -> LiveWorkspace {
+        let id = SystemEntropy().id16()
+        let info = WorkspaceInfo(id: id.hex, name: "Test", host: "Mac", hue: 0, hostedBy: nil, clientHosted: false,
+                                 scopes: [.look, .operate, .decide], connection: .online, primaryLabel: "Mac", notificationsOn: true)
+        let ws = LiveWorkspace(workspaceID: id, generation: 1, api: api, info: info)
+        services.register(ws)
+        return ws
     }
 }

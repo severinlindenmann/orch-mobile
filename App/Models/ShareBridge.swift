@@ -5,6 +5,8 @@ import OrchShareStaging
 /// What the share bridge needs from the workspace world: the preview fake and the live Demo services both conform.
 @MainActor
 protocol ShareWorld: AnyObject {
+    /// `capabilities.share` off: no destinations are published and nothing is imported or uploaded for this realm.
+    var capabilities: RealmCapabilities { get }
     var isDemo: Bool { get }
     var workspaces: [WorkspaceInfo] { get }
     var beforeWorkspaceRemoval: ((String) -> Bool)? { get set }
@@ -111,7 +113,7 @@ final class ShareBridge {
             let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
             let target = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
             nextTracked[ws.id] = target
-            if (!world.isDemo || publishDemo) && world.eligibleShareDestination(ws.id) {
+            if world.capabilities.share, !world.isDemo || publishDemo, world.eligibleShareDestination(ws.id) {
                 next[ws.id] = target
             }
         }
