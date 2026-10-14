@@ -72,6 +72,8 @@ public struct WorkspaceSessionConfig: Sendable {
     public var container: WorkspaceContainer
     public var vault: RealmVault
     public var transport: any RelayTransport
+    /// A monotonic clock: poll accounting measures real elapsed time with it. Live wiring must pass `ContinuousClock()` (never a wall-clock
+    /// derived one); `TestClock` is for tests.
     public var clock: any Clock<Duration>
     public var wall: any WallClock
     public var entropy: any Entropy

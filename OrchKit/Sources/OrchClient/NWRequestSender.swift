@@ -15,6 +15,10 @@ import Security
 /// - One request per connection, `Connection: close`. It sends exactly the `WireRequest` headers plus `Host`, `Content-Length` (when
 ///   there is a body), `Accept-Encoding: identity`, `Connection: close` and a fixed `User-Agent`. A `WireRequest` carrying one of those
 ///   names (or any framing or hop-by-hop field) is refused with `invalidArgument`. It never sends `Expect`.
+/// - Reply headers: the client reads only `retry-after` from the wire (and callers/tests may read `content-type` and `location`).
+///   Repeats of framing and security-relevant headers (`content-length`, `transfer-encoding`, `content-encoding`, `content-type`,
+///   `retry-after`, `location`) are kept, so a conflicting repeat is refused; repeats of any other header (`Set-Cookie`, `Server-Timing`
+///   behind a CDN) keep their first value and drop the rest, so they can never fail a request.
 /// - The request is never replayed: a lost connection is `TransportError.disconnected` and the caller decides (WorkspaceSession's
 ///   uncertain-request logic stays in charge).
 /// - TLS: Network.framework does NOT apply App Transport Security, so this sender enforces https and TLS 1.2 or newer itself.
@@ -93,7 +97,8 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
                                                "upgrade", "te", "trailer", "proxy-authorization", "proxy-connection", "keep-alive"]
 
     static func requestHead(_ r: WireRequest, host: String) throws -> Data {
-        guard !r.method.isEmpty, r.method.utf8.allSatisfy({ $0 >= 0x41 && $0 <= 0x5A }) else { throw TransportError.invalidArgument }
+        // only the methods the relay protocol uses: no HEAD (a body-less reply would break the framing rules) and no CONNECT
+        guard ["GET", "POST", "PUT", "DELETE"].contains(r.method) else { throw TransportError.invalidArgument }
         guard r.target.hasPrefix("/"), !r.target.hasPrefix("//"), allowed(r.target) else { throw TransportError.invalidArgument }
         var s = "\(r.method) \(r.target) HTTP/1.1\r\nHost: \(host)\r\nUser-Agent: orch-mobile\r\nAccept-Encoding: identity\r\nConnection: close\r\n"
         for (name, value) in r.headers.sorted(by: { $0.key < $1.key }) {
@@ -148,7 +153,6 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
         var idle: DispatchWorkItem?
         var total: DispatchWorkItem?
         var started = false
-        var sending = true
 
         init(sender: NWRequestSender, head: Data, body: Data) {
             self.sender = sender; self.head = head; self.body = body
@@ -199,20 +203,13 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
                 receive()
                 sendHead()
             case .failed: finish(.failure(TransportError.disconnected))
-            case .waiting(let e):
-                // `waiting` is Network.framework's "this path is not usable (yet)": a refused or unreachable peer is final for us (no
-                // retry, no waiting for a better path); anything else (a transient path change) is left to the idle timeout.
-                if Self.isFinal(e) { finish(.failure(TransportError.disconnected)) }
+            case .waiting:
+                // `waiting` is Network.framework's "no usable path (yet)": offline, refused, unreachable. It is final for us (the old
+                // `waitsForConnectivity = false`): no waiting for a better path, so a late connection can never send a request after
+                // the caller was told it failed.
+                finish(.failure(TransportError.disconnected))
             case .cancelled: finish(.failure(TransportError.disconnected))
             default: break
-            }
-        }
-
-        private static func isFinal(_ e: NWError) -> Bool {
-            switch e {
-            case .posix(let c): [.ECONNREFUSED, .ECONNRESET, .EHOSTUNREACH, .ENETUNREACH, .EHOSTDOWN, .ETIMEDOUT, .EADDRNOTAVAIL, .EPERM, .EACCES].contains(c)
-            case .dns, .tls: true
-            default: false
             }
         }
 
@@ -230,18 +227,18 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
                 self.sender.queue.async { guard self.result == nil else { return }
                     // A failed write is not yet a failed exchange: a server may answer early and close while the upload is still going.
                     // Stop writing and let the read side say what arrived (an error there is `.disconnected`).
-                    if e != nil { self.sending = false; return }
+                    if e != nil { return }
                     self.armIdle(); self.sendBody(from: 0) }
             })
         }
 
         private func sendBody(from offset: Int) {
-            guard result == nil, offset < body.count else { sending = false; return }
+            guard result == nil, offset < body.count else { return }
             let end = min(offset + NWRequestSender.readBufferBytes, body.count)
             connection?.send(content: body.subdata(in: offset..<end), completion: .contentProcessed { [weak self] e in
                 guard let self else { return }
                 self.sender.queue.async { guard self.result == nil else { return }
-                    if e != nil { self.sending = false; return }
+                    if e != nil { return }
                     self.armIdle(); self.sendBody(from: end) }
             })
         }
@@ -272,7 +269,7 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
         }
 
         private func completeReply() {
-            do { finish(.success(try WireReply(status: parser.status, headerFields: parser.fields, body: parser.body))) }
+            do { finish(.success(try WireReply(status: parser.status, headerFields: parser.replyFields, body: parser.body))) }
             catch { finish(.failure(TransportError.disconnected)) }
         }
 

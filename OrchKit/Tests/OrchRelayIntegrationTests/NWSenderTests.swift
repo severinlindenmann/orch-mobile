@@ -74,6 +74,48 @@ import Testing
         #expect(seen.headers["accept-encoding"] == "identity" && seen.headers["connection"] == "close" && seen.headers["host"] == "127.0.0.1:\(s.port)")
     }
 
+    @Test func onlyTheMethodsTheProtocolUsesAreAllowed() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        let snd = try sender(s)
+        for m in ["HEAD", "CONNECT", "TRACE", "OPTIONS", "PATCH", "get", "G ET", ""] {
+            await #expect(throws: TransportError.invalidArgument) { _ = try await snd.send(self.get("/x", method: m)) }
+        }
+        for m in ["GET", "POST", "PUT", "DELETE"] { #expect(try await snd.send(get("/x", method: m)).status == 200) }
+    }
+
+    @Test func repeatedHeadersNeverFailARequestUnlessTheyAreFramingOrSecurityRelevant() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        let snd = try sender(s)
+        // CDN-style repeats of headers the client never reads: first value kept, no failure
+        s.handle { _ in .raw(Self.resp(200, ["Set-Cookie: a=1", "Set-Cookie: b=2", "Server-Timing: x;dur=1", "Server-Timing: y;dur=2", "Via: 1", "Via: 2", "Content-Length: 0"])) }
+        let r = try await snd.send(get("/x"))
+        #expect(r.header("set-cookie") == "a=1" && r.header("server-timing") == "x;dur=1" && r.header("via") == "1")
+        // equal repeats of strict headers are fine, conflicting ones are refused
+        s.handle { _ in .raw(Self.resp(200, ["Content-Type: application/json", "content-type: application/json", "Retry-After: 3", "Content-Length: 0"])) }
+        #expect(try await snd.send(get("/x")).header("retry-after") == "3")
+        for (name, repeated) in [("content-type", ["Content-Type: a", "Content-Type: b"]), ("retry-after", ["Retry-After: 1", "Retry-After: 2"]), ("location", ["Location: /a", "Location: /b"])] {
+            try await expectDisconnected(Self.resp(302, repeated + ["Content-Length: 0"]), name)
+        }
+    }
+
+    @Test func chunkedOnHTTP10IsRefused() async throws {
+        try await expectDisconnected(Data("HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".utf8), "1.0 chunked")
+        let s = try await StubServer.start(); defer { s.stop() }
+        s.handle { _ in .raw(Data("HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nab".utf8)) }
+        #expect(try await sender(s).send(get("/x")).body == Data("ab".utf8))
+    }
+
+    @Test func aLargeHeadBlockIsScannedIncrementally() throws {
+        var raw = Data("HTTP/1.1 200 OK\r\n".utf8)
+        for i in 0..<400 { raw += Data("X-\(i): \(String(repeating: "v", count: 30))\r\n".utf8) }     // ~16 KiB of fields...
+        raw = Data("HTTP/1.1 200 OK\r\n".utf8) + Data((0..<60).map { "X-\($0): \(String(repeating: "v", count: 200))\r\n" }.joined().utf8) + Data("Content-Length: 1\r\n\r\nz".utf8)
+        var p = HTTP1ResponseParser(maxBody: 10)
+        for b in raw { try p.feed(Data([b])) }                     // one byte at a time: linear, and the terminator is found across reads
+        #expect(p.isComplete && p.body == Data("z".utf8))
+        var bare = HTTP1ResponseParser(maxBody: 10)
+        #expect(throws: HTTP1ResponseParser.Failure.self) { for b in Data("HTTP/1.1 200 OK\r\nX: a\nb: c\r\n\r\n".utf8) { try bare.feed(Data([b])) } }
+    }
+
     // MARK: redirects
 
     @Test func aRedirectIsReturnedNotFollowed() async throws {
@@ -317,8 +359,11 @@ import Testing
         let s = try await StubServer.start()
         let port = s.port
         s.stop()
-        let dead = try NWRequestSender(loopbackOrigin: "http://127.0.0.1:\(port)", requestTimeout: 1, resourceTimeout: 2)
+        // idle limit far above the assertion: `.waiting` (refused / no path) must be final at once, not after the idle timeout
+        let dead = try NWRequestSender(loopbackOrigin: "http://127.0.0.1:\(port)", requestTimeout: 30, resourceTimeout: 60)
+        let t0 = ContinuousClock.now
         await #expect(throws: TransportError.disconnected) { _ = try await dead.send(self.get("/x")) }
+        #expect(ContinuousClock.now - t0 < .seconds(5))
     }
 
     @Test func cancellationMapsToCancellationErrorOnlyForTheCaller() async throws {

@@ -114,7 +114,7 @@ final class RunningRelay: @unchecked Sendable {
         try? FileManager.default.removeItem(at: dataDir)
     }
 
-    private static func freePort() throws -> UInt16 {
+    static func freePort() throws -> UInt16 {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw RelayStartError(description: "socket") }
         defer { close(fd) }

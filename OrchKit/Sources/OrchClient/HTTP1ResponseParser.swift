@@ -48,6 +48,8 @@ struct HTTP1ResponseParser {
     private var phase = Phase.head
     private var buffer: [UInt8] = []
     private var trailerLines = 0, trailerBytes = 0
+    private var headScanned = 0                   // bytes of `buffer` already searched and line-ending checked
+    private var isHTTP10 = false
     private var interimCount = 0, interimBytes = 0
     private var chunkCount = 0, overhead = 0
     private(set) var status = 0
@@ -55,6 +57,16 @@ struct HTTP1ResponseParser {
     private(set) var body = Data()
 
     init(maxBody: Int) { self.maxBody = maxBody }
+
+    /// Headers that frame the reply or that a caller may act on: a repeat of one of these is kept so a conflicting repeat is refused.
+    static let strictRepeats: Set<String> = ["content-length", "transfer-encoding", "content-encoding", "content-type", "retry-after", "location"]
+
+    /// The fields for the `WireReply`: strict headers keep every occurrence; any other repeated header keeps its first value.
+    var replyFields: [(name: String, value: String)] {
+        var seen = Set<String>(), out: [(name: String, value: String)] = []
+        for f in fields where Self.strictRepeats.contains(f.name) || seen.insert(f.name).inserted { out.append(f) }
+        return out
+    }
 
     var isComplete: Bool { if case .done = phase { return true }; return false }
 
@@ -87,17 +99,20 @@ struct HTTP1ResponseParser {
     // MARK: head
 
     private mutating func parseHead() throws {
-        guard let end = Self.find(crlfcrlf: buffer) else {
+        // Resume from where the last read stopped (a terminator can straddle the boundary: 3 bytes back), not from the start.
+        let from = max(headScanned - 3, 0)
+        guard let end = Self.find(crlfcrlf: buffer, from: from) else {
             if buffer.count >= Self.maxHeaderBlock { throw Failure.violation("header block over 16 KiB") }
             // a bare LF can already be seen without the terminator
-            try Self.checkNoBareLineEndings(buffer, complete: false)
+            try Self.checkNoBareLineEndings(buffer, from: max(headScanned - 1, 0), complete: false)
+            headScanned = buffer.count
             return
         }
         guard end + 4 <= Self.maxHeaderBlock else { throw Failure.violation("header block over 16 KiB") }
         let block = Array(buffer[0..<end])
         let rest = Array(buffer[(end + 4)...])
-        buffer = []
-        try Self.checkNoBareLineEndings(block, complete: true)
+        buffer = []; headScanned = 0
+        try Self.checkNoBareLineEndings(block, from: 0, complete: true)
         let lines = Self.splitCRLF(block)
         try parseStatus(lines[0])
         if (100...199).contains(status) { try skipInterim(lines: lines, block: block.count + 4, rest: rest); return }
@@ -127,7 +142,7 @@ struct HTTP1ResponseParser {
             if lower.hasPrefix("content-length") || lower.hasPrefix("transfer-encoding") { throw Failure.violation("framing on an interim reply") }
         }
         status = 0
-        buffer = rest
+        buffer = rest; headScanned = 0
         if !rest.isEmpty { try parseHead() }
     }
 
@@ -140,6 +155,7 @@ struct HTTP1ResponseParser {
         let code = Int(u[9] - 0x30) * 100 + Int(u[10] - 0x30) * 10 + Int(u[11] - 0x30)
         guard (100...599).contains(code) else { throw Failure.violation("status \(code)") }
         status = code
+        isHTTP10 = s.hasPrefix("HTTP/1.0 ")
     }
 
     private mutating func chooseFraming() throws {
@@ -156,7 +172,7 @@ struct HTTP1ResponseParser {
         if status == 304 { phase = .done; return }
         if status == 205, !te.isEmpty { throw Failure.violation("framing on 205") }
         if !te.isEmpty {
-            guard te.count == 1, te[0].lowercased() == "chunked" else { throw Failure.violation("transfer-encoding") }
+            guard !isHTTP10, te.count == 1, te[0].lowercased() == "chunked" else { throw Failure.violation("transfer-encoding") }
             phase = .chunkSize
         } else if let c = cl.first {
             var d = Array(c.utf8)
@@ -230,9 +246,9 @@ struct HTTP1ResponseParser {
         return line
     }
 
-    private static func find(crlfcrlf b: [UInt8]) -> Int? {
+    private static func find(crlfcrlf b: [UInt8], from: Int) -> Int? {
         guard b.count >= 4 else { return nil }
-        var i = 0
+        var i = from
         while i + 3 < b.count {
             if b[i] == 0x0D, b[i + 1] == 0x0A, b[i + 2] == 0x0D, b[i + 3] == 0x0A { return i }
             i += 1
@@ -240,8 +256,9 @@ struct HTTP1ResponseParser {
         return nil
     }
 
-    private static func checkNoBareLineEndings(_ b: [UInt8], complete: Bool) throws {
-        for (i, c) in b.enumerated() {
+    private static func checkNoBareLineEndings(_ b: [UInt8], from: Int, complete: Bool) throws {
+        for i in from..<b.count {
+            let c = b[i]
             if c == 0x0A, i == 0 || b[i - 1] != 0x0D { throw Failure.violation("bare LF") }
             if c == 0x0D, i + 1 < b.count, b[i + 1] != 0x0A { throw Failure.violation("bare CR") }
             if c == 0x0D, i + 1 == b.count, complete { throw Failure.violation("bare CR") }
