@@ -112,9 +112,9 @@ public struct RelayClient: Sendable {
         return found
     }
 
-    /// The first record of `revocations(device:person:)`; use `revocations` when the caller verifies, so a forged first record
-    /// cannot hide a genuine later one.
-    public func revocation(device: ID16, person: ID16) async throws -> JSONValue {
+    /// The first record of `revocations(device:person:)` (tests only: production callers use `revocations` and verify each, so a forged first record
+    /// cannot hide a genuine later one).
+    package func revocation(device: ID16, person: ID16) async throws -> JSONValue {
         try await revocations(device: device, person: person)[0]
     }
 }

@@ -853,9 +853,14 @@ public actor WorkspaceSession {
                 let left = max(cfg.responseTimeout - waited, .seconds(1)).components.seconds
                 wait = Int(min(Int64(w), max(left, 1)))
             }
-            let pollStartMs = cfg.wall.nowMs
-            let reply = try await withRelay { s in try await cfg.transport.bridgePoll(route: route, after: after, wait: wait, session: s) }
-            let pollElapsed = Duration.milliseconds(max(cfg.wall.nowMs - pollStartMs, 0))
+            // Charge what the poll really took (monotonic session clock), unconditionally and right away: a relay that holds a poll
+            // far past the `wait` it was given (or past a 429/503) cannot stretch the response deadline.
+            var polled: WireReply?
+            let pollElapsed = try await cfg.clock.measure {
+                polled = try await withRelay { s in try await cfg.transport.bridgePoll(route: route, after: after, wait: wait, session: s) }
+            }
+            guard let reply = polled else { throw SessionError.badResponse }
+            waited += pollElapsed
             // Section 19.6: 429 and 503 on a poll do not end the request. Keep polling the same rid after Retry-After (at least 1 s),
             // within the same response deadline; any other failure is thrown as before.
             if reply.status == 429 || reply.status == 503 {
@@ -910,9 +915,8 @@ public actor WorkspaceSession {
                 progress = table[row.rid] ?? progress
             }
             if advanced { continue }
-            // Charge the time the poll really took (an early answer costs little), never the requested wait. A relay that answers an
-            // empty long poll at once would otherwise be hammered, so a poll that returned in under a second also sleeps `pollInterval`.
-            if wait != nil { waited += pollElapsed }
+            // An early answer costs little, so a relay that answers an empty long poll at once would be hammered: a poll that
+            // returned in under a second also sleeps `pollInterval`.
             if waited >= cfg.responseTimeout { return .timeout }
             if wait != nil, pollElapsed >= .seconds(1) { continue }
             try await cfg.clock.sleep(for: cfg.pollInterval)

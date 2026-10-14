@@ -4,15 +4,15 @@ import OrchCustody
 import OrchProtocol
 @testable import OrchClient
 
-/// The phone client's real code paths (RelayClient -> RoutedRelayTransport -> URLSessionRequestSender) against a locally started
+/// The phone client's real code paths (RelayClient -> RoutedRelayTransport -> NWRequestSender) against a locally started
 /// orch-relay. Skipped unless `ORCH_RELAY_INTEGRATION=1` and the relay checkout and `uv` exist (see `RealRelayHarness.swift`).
 @Suite(.serialized, .enabled(if: RealRelayEnvironment.available, "set ORCH_RELAY_INTEGRATION=1 with an orch-relay checkout and uv"))
 struct RealRelayTests {
     struct Rig {
         let relay: RunningRelay
         let context: RealmContext
-        let sender: URLSessionRequestSender
-        let transport: RoutedRelayTransport<URLSessionRequestSender>
+        let sender: NWRequestSender
+        let transport: RoutedRelayTransport<NWRequestSender>
         let client: RelayClient
         let identity: DeviceIdentity
         let deviceID: ID16
@@ -22,7 +22,7 @@ struct RealRelayTests {
         static func start() async throws -> Rig {
             let relay = try await RunningRelay.start()
             let ctx = try RealmContext.liveLoopbackForTesting(origin: relay.origin)
-            let sender = try URLSessionRequestSender(loopbackOrigin: relay.origin)
+            let sender = try NWRequestSender(loopbackOrigin: relay.origin)
             let transport = try RoutedRelayTransport(context: ctx, origin: ctx.origin, sender: sender, clientAddress: "127.0.0.1")
             let custody = SoftwareCustody(vault: SecretVault(group: .keys, backend: InMemoryVaultBackend()))
             let id = try ctx.deviceIdentity(custody: custody, createIfMissing: true)

@@ -29,6 +29,10 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
     private let throttled: Int
     private let empties: Int
     private var waits: [Int?] = []
+    /// When set, every poll holds for `holdMs` on this clock before it answers (a relay that sits on polls far past the `wait` it was given).
+    var holdClock: TestClock?
+    var holdMs: Int64 = 0
+    var holdStatus = 200
     /// After the throttled polls, the next `empties` polls are answered `{chunks:[]}` at once (a relay that ends long polls early).
     init(_ inner: any RelayTransport, throttled: Int, empties: Int = 0) { self.inner = inner; self.throttled = throttled; self.empties = empties }
     var waitsSeen: [Int?] { lock.withLock { waits } }
@@ -45,6 +49,11 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
     }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
         let n = lock.withLock { polls += 1; waits.append(wait); return polls }
+        if let c = holdClock {
+            c.advance(milliseconds: holdMs)
+            if holdStatus == 429 { return try WireReply(status: 429, headers: ["content-type": "application/json", "retry-after": "1"], body: HostAPI.json(["error": "rate_limited"])) }
+            return try WireReply(status: 200, headers: ["content-type": "application/json"], body: HostAPI.json(["chunks": .array([])]))
+        }
         if n > throttled, n <= throttled + empties { return try WireReply(status: 200, headers: ["content-type": "application/json"], body: HostAPI.json(["chunks": .array([])])) }
         if n <= throttled {
             if n % 2 == 1 {
@@ -194,5 +203,21 @@ final class ThrottlingPollTransport: RelayTransport, @unchecked Sendable {
         #expect(response.status == 200)
         #expect(t.pollCount >= 9)
         #expect(t.waitsSeen.first == 25)
+    }
+
+    /// A hostile relay holds each poll ~59 s (empty, or 429): the real elapsed time is charged at once, so the 30 s deadline holds.
+    @Test func pollsHeldPastTheDeadlineStillEndTheExchange() async throws {
+        for (status, wait) in [(200, nil), (200, 25), (429, nil)] as [(Int, Int?)] {
+            let w = try await World.make()
+            await w.host.setHandler({ _ in .response(status: 200, headers: [:], data: Data()) })
+            let t = ThrottlingPollTransport(w.transport, throttled: 0)
+            let phone = try await w.makePhone(timeout: .seconds(30), transport: t, longPollSeconds: wait)
+            t.holdClock = phone.clock; t.holdMs = 59_000; t.holdStatus = status
+            let s = phone.session
+            do { _ = try await w.serve(phone) { try await s.exchange(meta: httpGet) }; Issue.record("expected the exchange to give up (\(status), \(String(describing: wait)))") }
+            catch {}
+            // without charging, 30 s of deadline at 0.5 s per poll would allow ~60 polls; charged, the second poll ends it
+            #expect(t.pollCount <= 3, "status \(status) wait \(String(describing: wait)): \(t.pollCount) polls")
+        }
     }
 }

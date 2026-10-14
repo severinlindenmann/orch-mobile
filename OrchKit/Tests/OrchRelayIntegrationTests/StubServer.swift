@@ -13,6 +13,12 @@ final class StubServer: @unchecked Sendable {
         case hang
         /// Send the bytes, then close without finishing the body.
         case truncated(Data)
+        /// Send each piece with its own write, `gapMs` apart, then close (fragmentation).
+        case pieces([Data], gapMs: Int)
+        /// Send `prefix`, then one byte every `everyMs` until the peer goes away (slow loris).
+        case trickle(prefix: Data, everyMs: Int)
+        /// Send the bytes and keep the connection open.
+        case bytesThenHang(Data)
     }
 
     private let listener: NWListener
@@ -23,6 +29,8 @@ final class StubServer: @unchecked Sendable {
     private var handler: @Sendable (Request) -> Behaviour = { _ in .raw(StubServer.http(200, body: "{}")) }
     private var connections: [NWConnection] = []
     private(set) var port: UInt16 = 0
+    /// false: answer as soon as the request head is complete, without waiting for its body (an early final response).
+    var readsRequestBody = true
 
     var origin: String { "http://127.0.0.1:\(port)" }
 
@@ -93,7 +101,7 @@ final class StubServer: @unchecked Sendable {
                 // Read the whole request body before answering, so the client's write never meets a closed socket (a RST can
                 // discard an unread reply).
                 let length = Int(headers["content-length"] ?? "") ?? 0
-                if b.count - r.upperBound < length, err == nil, !done { self.read(c, b); return }
+                if readsRequestBody, b.count - r.upperBound < length, err == nil, !done { self.read(c, b); return }
                 let req = Request(method: String(first[0]), target: String(first[1]), headers: headers)
                 let h: @Sendable (Request) -> Behaviour = self.lock.withLock { self.hits[req.target, default: 0] += 1; self.seen.append(req); return self.handler }
                 self.respond(c, h(req))
@@ -103,13 +111,36 @@ final class StubServer: @unchecked Sendable {
 
     private func respond(_ c: NWConnection, _ b: Behaviour) {
         switch b {
-        case .raw(let d): c.send(content: d, completion: .contentProcessed { _ in c.cancel() })
+        case .raw(let d):
+            // an early reply (request body unread) is closed late, so the client's reset-free read of it is not racing a RST
+            let linger = readsRequestBody ? 0 : 300
+            c.send(content: d, completion: .contentProcessed { [weak self] _ in
+                if linger == 0 { c.cancel() } else { self?.queue.asyncAfter(deadline: .now() + .milliseconds(linger)) { c.cancel() } }
+            })
         case .truncated(let d): c.send(content: d, completion: .contentProcessed { _ in c.cancel() })
         case .hang: break
+        case .bytesThenHang(let d): c.send(content: d, completion: .contentProcessed { _ in })
+        case .pieces(let ps, let gap): sendPieces(c, ps[...], gap)
+        case .trickle(let prefix, let every):
+            c.send(content: prefix, completion: .contentProcessed { [weak self] e in if let self, e == nil { self.trickle(c, every) } else { c.cancel() } })
         case .endless(let n):
             let head = Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n".utf8)
             let chunk = Data(String(n, radix: 16).utf8) + Data("\r\n".utf8) + Data(repeating: 0x78, count: n) + Data("\r\n".utf8)
             c.send(content: head, completion: .contentProcessed { [weak self] e in guard let self else { return };  if e == nil { self.stream(c, chunk, sent: 0) } else { c.cancel() } })
+        }
+    }
+
+    private func sendPieces(_ c: NWConnection, _ ps: ArraySlice<Data>, _ gap: Int) {
+        guard let first = ps.first else { c.cancel(); return }
+        c.send(content: first, completion: .contentProcessed { [weak self] e in
+            guard let self, e == nil else { c.cancel(); return }
+            self.queue.asyncAfter(deadline: .now() + .milliseconds(gap)) { self.sendPieces(c, ps.dropFirst(), gap) }
+        })
+    }
+
+    private func trickle(_ c: NWConnection, _ every: Int) {
+        queue.asyncAfter(deadline: .now() + .milliseconds(every)) { [weak self] in
+            c.send(content: Data([0x20]), completion: .contentProcessed { e in if let self, e == nil { self.trickle(c, every) } else { c.cancel() } })
         }
     }
 
