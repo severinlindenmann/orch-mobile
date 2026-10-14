@@ -82,7 +82,6 @@ struct RealRelayTests {
         let ws = ID16.random()
         func check(_ name: String, _ call: () async throws -> Void) async {
             do { try await call(); Issue.record("\(name) unexpectedly succeeded") }
-            catch ClientError.relay(let r) { #expect([403, 404].contains(r.status), "\(name): \(r)") }
             catch { Issue.record("\(name): \(error)") }
         }
         await check("card") { _ = try await rig.client.card(workspace: ws, session: s) }
@@ -153,11 +152,12 @@ struct RealRelayTests {
         #expect(unknown?.code == .notFound)
     }
 
-    @Test func aRelayReplyIsNeverFollowedElsewhere() async throws {
+    @Test func aRelayRedirectIsRefusedNotFollowed() async throws {
         let rig = try await Rig.start(); defer { rig.relay.stop() }
-        // a trailing-slash route is the relay's (FastAPI) own redirect shape when it has one; either way no redirect is followed
+        // FastAPI answers a trailing-slash path with a 307 to the slash-less one: the sender returns it and does not follow it.
         let reply = try await rig.sender.send(WireRequest(method: "GET", target: "/healthz/", clientAddress: "127.0.0.1"))
-        #expect(!(300...399).contains(reply.status) || reply.header("location") != nil)
-        #expect(reply.status != 0)
+        #expect(reply.status == 307)
+        #expect(reply.header("location") != nil)
+        #expect(HostAPI.failure(of: reply) == .badReply)
     }
 }
