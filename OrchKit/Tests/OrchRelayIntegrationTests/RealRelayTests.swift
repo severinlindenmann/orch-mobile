@@ -82,6 +82,7 @@ struct RealRelayTests {
         let ws = ID16.random()
         func check(_ name: String, _ call: () async throws -> Void) async {
             do { try await call(); Issue.record("\(name) unexpectedly succeeded") }
+            catch ClientError.relay(let r) { #expect([403, 404].contains(r.status), "\(name): \(r)") }
             catch { Issue.record("\(name): \(error)") }
         }
         await check("card") { _ = try await rig.client.card(workspace: ws, session: s) }
