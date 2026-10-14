@@ -6,7 +6,8 @@ import OrchProtocol
 /// bridge-tunnelled HOST views, `/v2/snapshot` and friends, is a different thing and is unchanged.)
 public enum HostAPI {
     public static let base = "/v2"
-    public static let maxJSONBytes = 2 << 20
+    /// Protocol section 19: the relay sends at most 4 MiB per response on every route.
+    public static let maxJSONBytes = 4 << 20
 
     // MARK: requests
 
@@ -96,9 +97,39 @@ public enum HostAPI {
         return v
     }
 
-    public static func revocation(_ body: Data) throws -> JSONValue {
-        guard let v = try exact(body, ["record"])["record"] else { throw ClientError.badReply }
-        return v
+    /// One held `(person, revocation)` pair of a device id. `provenance` is the relay's own label, never a decision input.
+    public struct RevocationPair: Equatable, Sendable {
+        public enum Provenance: String, Sendable { case registry, chain, feed }
+        public let personID: ID16
+        public let reason: String
+        /// The signed revocation record, unverified: the caller verifies it under the pinned person key.
+        public let revocation: JSONValue
+        public let provenance: Provenance
+    }
+
+    /// `GET /v2/devices/{d}/revocation`: `{"pairs": [...], "next": cursor|null}`; `next` is opaque and goes back as `after`.
+    public struct RevocationPage: Equatable, Sendable {
+        public let pairs: [RevocationPair]
+        public let next: String?
+    }
+
+    public static func revocationPage(_ body: Data) throws -> RevocationPage {
+        let o = try exact(body, ["pairs", "next"])
+        guard let list = o["pairs"]?.array, list.count <= 32 else { throw ClientError.badReply }
+        let pairs = try list.map { e -> RevocationPair in
+            guard let m = e.object, Set(m.keys) == ["person_id", "reason", "revocation", "provenance"],
+                  let person = m["person_id"]?.string.flatMap({ ID16(hex: $0) }), let reason = m["reason"]?.string,
+                  let rev = m["revocation"], rev.object != nil,
+                  let prov = m["provenance"]?.string.flatMap({ RevocationPair.Provenance(rawValue: $0) }) else { throw ClientError.badReply }
+            return RevocationPair(personID: person, reason: reason, revocation: rev, provenance: prov)
+        }
+        let next: String?
+        switch o["next"] {
+        case .some(.null): next = nil
+        case .some(.string(let s)) where !s.isEmpty && s.utf8.count <= 512: next = s
+        default: throw ClientError.badReply
+        }
+        return RevocationPage(pairs: pairs, next: next)
     }
 
     /// `{"requests": [signed cert_request]}` (unverified: the primary checks each one, section 8.4 step 2).
@@ -132,6 +163,10 @@ public enum HostAPI {
     /// Maps a non-2xx reply: a section 14 relay refusal (`{"error": code, ...}` with its documented fields only and a status
     /// that code may carry) or `badReply`. Sealed host refusals never come through here.
     public static func failure(of reply: WireReply) -> ClientError {
+        // The relay is a FastAPI app: a route it does not have answers `{"detail":"Not Found"}`, not a section 14 refusal. That is
+        // "no such route" (the same meaning a missing resource has), not a malformed reply.
+        if reply.status == 404, let v = try? StrictJSON.parse(reply.body, maxBytes: maxJSONBytes), let o = v.object,
+           o.count == 1, o["detail"]?.string == "Not Found" { return .relay(RelayRefusal(status: 404, code: .notFound)) }
         guard let v = try? StrictJSON.parse(reply.body, maxBytes: maxJSONBytes), let o = v.object, o.allKeysASCII2,
               let code = o["error"]?.string,
               let r = RelayRefusal(status: reply.status, code: code, fields: o, retryAfter: retryAfter(reply)) else { return .badReply }

@@ -35,16 +35,16 @@ private struct Forwarder: RelayTransport {
     func challenge() async throws -> WireReply { try await t.challenge() }
     func login(_ b: Data) async throws -> WireReply { try await t.login(b) }
     func pairingPost(_ e: Data, route: PairRoute) async throws -> WireReply { try await t.pairingPost(e, route: route) }
-    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await t.pairingPoll(route: route, after: after) }
+    func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try await t.pairingPoll(route: route, after: after, wait: wait) }
     func bridgePost(_ e: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try await t.bridgePost(e, route: route, session: session) }
-    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply { try await t.bridgePoll(route: route, after: after, session: session) }
+    func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try await t.bridgePoll(route: route, after: after, wait: wait, session: session) }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply { try await t.grants(workspaceID: workspaceID, epoch: epoch, session: session) }
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try await t.memberList(workspaceID: workspaceID, session: session) }
     func card(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try await t.card(workspaceID: workspaceID, session: session) }
     func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply { try await t.cardKey(workspaceID: workspaceID, cardSequence: cardSequence, session: session) }
     func registerPush(_ b: Data, session: RelaySession) async throws -> WireReply { try await t.registerPush(b, session: session) }
     func unregisterPush(_ b: Data, session: RelaySession) async throws -> WireReply { try await t.unregisterPush(b, session: session) }
-    func revocation(deviceID: ID16) async throws -> WireReply { try await t.revocation(deviceID: deviceID) }
+    func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply { try await t.revocation(deviceID: deviceID, after: after, limit: limit) }
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply { try await t.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session) }
     func dropList(_ q: Data, session: RelaySession) async throws -> WireReply { try await t.dropList(q, session: session) }
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply { try await t.dropGet(objectID: objectID, version: version, part: part, session: session) }

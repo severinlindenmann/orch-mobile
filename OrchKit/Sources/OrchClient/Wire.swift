@@ -109,9 +109,10 @@ public protocol RelayTransport: Sendable {
     func challenge() async throws -> WireReply
     func login(_ body: Data) async throws -> WireReply
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
-    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply
+    /// `wait` is the long-poll seconds (0...25, section 19); nil sends no `wait` (an immediate answer).
+    func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply
     func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply
-    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply
+    func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply
     func card(workspaceID: ID16, session: RelaySession) async throws -> WireReply
@@ -119,7 +120,8 @@ public protocol RelayTransport: Sendable {
     func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply
     func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply
     /// A revocation record is a public, PK-signed object: this route takes no session (a revoked device has none).
-    func revocation(deviceID: ID16) async throws -> WireReply
+    /// `after` is the relay's opaque page cursor (`next` of the previous page) and `limit` the page size (1...32); nil sends neither.
+    func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply
     /// Ends a session (`POST /v2/session/logout`). Best effort: callers ignore failure. Transports without the route keep the default.
     func logout(session: RelaySession) async throws -> WireReply
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
@@ -147,6 +149,11 @@ extension RelayTransport {
 }
 
 public extension RelayTransport {
+    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await pairingPoll(route: route, after: after, wait: nil) }
+    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply {
+        try await bridgePoll(route: route, after: after, wait: nil, session: session)
+    }
+    func revocation(deviceID: ID16) async throws -> WireReply { try await revocation(deviceID: deviceID, after: nil, limit: nil) }
     func logout(session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
 }
 

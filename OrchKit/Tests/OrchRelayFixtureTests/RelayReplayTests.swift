@@ -311,7 +311,15 @@ func personSigner(_ person: ID16) throws -> SoftwareSigner {
         let want = Dictionary(uniqueKeysWithValues: (c.response["headers"]?.object ?? [:]).compactMap { k, v in v.string.map { (k.lowercased(), $0) } })
         #expect(reply.headers == want, "\(id) headers \(reply.headers)")
         // the fixtures are cj bytes, so the relay's bytes must be identical
-        let expected = try canonicalJSON(try #require(c.response["json"]?.jsonValue))
+        var expectedJSON = try #require(c.response["json"]?.jsonValue)
+        // The vendored copy of revocation_get.json (orch-relay 04da0e7) predates the relay's paginated shape (orch-relay 772d7b0 has
+        // `{pairs:[{person_id,reason,revocation,provenance}],next}` for the same record). Until the fixture directory is re-copied as a
+        // whole (a separate change: manifest, skip list and vectors move together), the old `{record}` success body is mapped to it.
+        if f.fileName == "revocation_get.json", c.response["status"]?.int == 200, let rec = expectedJSON.object?["record"], let o = rec.object?["o"]?.object {
+            expectedJSON = .object(["pairs": .array([.object(["person_id": o["person_id"] ?? .null, "reason": o["reason"] ?? .null, "revocation": rec,
+                                                              "provenance": "registry"])]), "next": .null])
+        }
+        let expected = try canonicalJSON(expectedJSON)
         #expect(reply.body == expected, "\(id) body \(text)")
     }
 

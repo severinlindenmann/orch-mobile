@@ -267,9 +267,9 @@ let rid = ID16(hex: "ffeeddccbbaa99887766554433221100")!
             "POST \(R)/push/register", "POST \(R)/push/unregister",
             "GET \(R)/devices/\(rid.hex)/revocation",
             "POST \(R)/drop/list", "GET \(R)/drop/\(rid.hex)/versions/3/wraps"])
-        // Pairing needs no bearer; the PUT route is protocol section 10.6 unchanged.
+        // Pairing needs no bearer; every Drop route, the PUT included, sits under /v2.
         #expect(s.requests[2].header("authorization") == nil)
         _ = try await t.dropPut(objectID: rid, ifMatch: 2, body: Data(), session: session)
-        #expect(s.requests.last!.method == "PUT" && s.requests.last!.target == "/drop/\(rid.hex)/versions" && s.requests.last!.header("if-match") == "2")
+        #expect(s.requests.last!.method == "PUT" && s.requests.last!.target == "\(R)/drop/\(rid.hex)/versions" && s.requests.last!.header("if-match") == "2")
     }
 }

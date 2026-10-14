@@ -157,16 +157,16 @@ private struct OtherTransport: RelayTransport {
     func challenge() async throws -> WireReply { try no() }
     func login(_ body: Data) async throws -> WireReply { try no() }
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try no() }
-    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try no() }
+    func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try no() }
     func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try no() }
-    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply { try no() }
+    func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try no() }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply { try no() }
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try no() }
     func card(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try no() }
     func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply { try no() }
     func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try no() }
     func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try no() }
-    func revocation(deviceID: ID16) async throws -> WireReply { try no() }
+    func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply { try no() }
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply { try no() }
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try no() }
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply { try no() }

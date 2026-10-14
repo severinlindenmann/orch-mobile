@@ -503,7 +503,8 @@ public actor FakeRelay: RequestSender {
         case (_, _) where Self.directoryRoute(r.method, s) != nil:
             let d = Self.directoryRoute(r.method, s)!
             return try await directory(r, route: d.route, ident: d.ident, query)
-        case (_, _) where s.first == "drop": return try dropRoute(r, s, query)
+        // /v2/drop/...: GET and list are the read routes; PUT and claim are the protocol routes (spelled under /v2 like the rest).
+        case (_, _) where s.first == "drop": return try dropRoute(r, s, query, protocolRoute: r.method == "PUT" || (r.method == "POST" && s.last == "claim"))
         default: return refuse(404, .notFound)
         }
     }

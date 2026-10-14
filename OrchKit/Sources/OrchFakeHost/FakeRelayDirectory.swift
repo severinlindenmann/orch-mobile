@@ -207,7 +207,7 @@ extension FakeRelay {
             guard type == "application/json", let v = try? StrictJSON.parse(r.body, maxBytes: cap) else { throw Fail(.malformed) }
             body = v
         }
-        let allowed: Set<String> = route == "grants" ? ["epoch"] : route == "card_key" ? ["card_seq"] : route == "feed" ? ["after", "limit", "next"] : []
+        let allowed: Set<String> = route == "grants" ? ["epoch"] : route == "card_key" ? ["card_seq"] : route == "feed" ? ["after", "limit", "next"] : route == "revocation" ? ["after", "limit"] : []
         guard let q = queryItems(query, allowed: allowed) else { throw Fail(.malformed) }
         var id: ID16?
         if let ident {
@@ -223,8 +223,16 @@ extension FakeRelay {
             return try recover(body: body, raw: r.body, now: now, device: id!)
         case "revocation":
             try rate("revocation-read", r.clientAddress, durationMs: Self.minuteMs, cap: 60, now: now)
+            // The real relay's shape (directory.py `revocation_pairs`): `{pairs, next}` with `?after=&limit=` (limit 1...32). This fake holds
+            // one pair per device, so a valid `after` (any non-empty base64url) is a page past it: empty, `next` null. First page and no pair: 404.
+            if let l = q["limit"] { guard let n = HostAPI.parseDecimal(l), (1...32).contains(n) else { throw Fail(.malformed) } }
+            if let a = q["after"] {
+                guard !a.isEmpty, B64U.decode(a) != nil else { throw Fail(.malformed) }
+                return ["pairs": .array([]), "next": .null]
+            }
             guard let row = revocationRows[id!], row.record != .null else { throw Fail(.notFound) }
-            return ["record": row.record]
+            return ["pairs": .array([.object(["person_id": .string(row.personID.hex), "reason": .string(row.reason), "revocation": row.record,
+                                              "provenance": "registry"])]), "next": .null]
         case "card" where r.method == "PUT":
             return try cardPut(id!, body: body, r: r, now: now, address: r.clientAddress)
         default:

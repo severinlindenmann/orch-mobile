@@ -123,7 +123,7 @@ import OrchTestVectors
         let w = try await World.make()
         let c = RelayClient(transport: w.transport)
         // The record route is session-less; before any revocation there is nothing to find.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.revocation(device: w.phoneID) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.revocation(device: w.phoneID, person: Identifiers.personID(w.primary.publicKey)) }
         #expect(await w.relay.sessionCount() == 2)                // the phone's and the host's
         let rec = try await w.primary.revoke(device: w.phoneID)
         try await w.relay.publishRevocation(rec)
@@ -141,7 +141,7 @@ import OrchTestVectors
         let r = try await w.transport.login(HostAPI.loginBody(challenge: ch.challenge, kind: .device, id: w.phoneID, signature: wrong))
         #expect(r.status == 401 && errorCode(r) == "bad_signature")
         // The record is fetched with no session at all, verifies with the pinned PK, and is the device's own.
-        let fetched = try await c.revocation(device: w.phoneID)
+        let fetched = try await c.revocation(device: w.phoneID, person: Identifiers.personID(w.primary.publicKey))
         let p = try Revocation.verify(fetched, personKey: w.primary.publicKey, cert: DeviceCertificate.verify(w.phoneCert, personKey: w.primary.publicKey, nowMs: w.clock.nowMs).identity)
         #expect(p.deviceID == w.phoneID)
         // Raw: no Authorization header is needed, and a junk one is ignored rather than trusted or refused.
@@ -149,10 +149,10 @@ import OrchTestVectors
             var h: [String: String] = [:]; if let auth { h["Authorization"] = auth }
             let raw = try await w.relay.send(WireRequest(method: "GET", target: "/v2/devices/\(w.phoneID.hex)/revocation", headers: h, clientAddress: "a"))
             let keys = Set(try json(raw).keys)
-            #expect(raw.status == 200 && keys == ["record"])
+            #expect(raw.status == 200 && keys == ["pairs", "next"])
         }
         // A device that was not revoked has no record: 404, for the same route.
-        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.revocation(device: w.primaryID) }
+        await #expect(throws: ClientError.relay(RelayRefusal(status: 404, code: .notFound))) { _ = try await c.revocation(device: w.primaryID, person: Identifiers.personID(w.primary.publicKey)) }
         // Revocation drops what the device held: its grants, its card-key wrap, its queued requests.
         #expect(await w.relay.grantCount(workspace: w.ws, device: w.phoneID) == 0)
         #expect(await w.relay.hasCardKeyWrap(workspace: w.ws, device: w.phoneID, cardSeq: 1) == false)
