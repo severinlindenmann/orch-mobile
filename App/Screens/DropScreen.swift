@@ -29,6 +29,7 @@ struct DropScreen: View {
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("drop.direction")
                 .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: OS.s4, bottom: 0, trailing: OS.s4))
             }
             Section {
                 ForEach(model.workspaces.filter { $0.lifecycle != .live }) { ws in
@@ -97,6 +98,7 @@ struct DropScreen: View {
         }
         .scrollContentBackground(.hidden)
         .background(OC.bg)
+        .listSectionSpacing(.compact)   // title, direction control and the first file sit close together
         .contentMargins(.bottom, 24, for: .scrollContent)
         .toolbarBackground(.visible, for: .tabBar)
         .toolbarBackground(.regularMaterial, for: .tabBar)
@@ -139,6 +141,15 @@ struct DropRow: View {
         }
     }
 
+    private func metadata(_ ws: WorkspaceInfo?) -> String {
+        var parts = [ws?.displayName ?? ""]
+        if item.verified {
+            parts.append(Fmt.bytes(item.bytes))
+            parts.append(item.hasSignedExpiry ? "expires " + Fmt.relative(item.expires) : "no signed expiry")
+        }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
     var body: some View {
         let ws = workspaces.first { $0.id == item.workspaceID }
         HStack(alignment: .top, spacing: OS.s3) {
@@ -152,9 +163,11 @@ struct DropRow: View {
                     Text(verbatim: item.displayName).font(OF.section).lineLimit(2)
                     if item.blocked { Image(systemName: "exclamationmark.shield.fill").foregroundStyle(OC.danger).accessibilityLabel("Verification alarm") }
                 }
-                Text(verbatim: item.verified ? "\(ws?.displayName ?? "") · \(Fmt.bytes(item.bytes))" : (ws?.displayName ?? ""))
+                // One metadata block: source, size and expiry together (wraps at AX sizes), then the status chips.
+                Text(verbatim: metadata(ws))
                     .font(OF.meta).foregroundStyle(OC.textMuted)
-                // Compact status line. Plain stacks (no custom Layout): chips keep their natural height inside a list row.
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)   // wraps at AX sizes, never "expires in 1 w…"
+                // Plain stacks (no custom Layout): chips keep their natural height inside a list row.
                 if typeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: OS.s1) { statusParts(item) }
                 } else {
@@ -180,11 +193,7 @@ private func statusParts(_ item: DropItem) -> some View {
         StatusChip("Verified", systemImage: "checkmark.shield", color: OC.ok).fixedSize()
         if item.hasSignedExpiry {
             let left = Fmt.timeLeft(item.expires)
-            Text(verbatim: "expires " + Fmt.relative(item.expires)).font(OF.meta).foregroundStyle(OC.textMuted)
-                .lineLimit(2).minimumScaleFactor(0.8).fixedSize(horizontal: false, vertical: true)   // wraps at AX sizes, never "expires in 1 w…"
             if left.urgent { StatusChip(left.text, systemImage: "clock", color: OC.warn).fixedSize() }
-        } else {
-            Text("no signed expiry").font(OF.meta).foregroundStyle(OC.textMuted)
         }
     } else {
         StatusChip("Metadata not verified", systemImage: "exclamationmark.triangle", color: OC.danger)
