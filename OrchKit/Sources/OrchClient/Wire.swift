@@ -169,4 +169,6 @@ public enum TransportError: Error, Equatable, Sendable {
     case invalidArgument
     /// The connection was lost; whether the relay committed the request is unknown.
     case disconnected
+    /// The response body went past the sender's cap. The read was aborted; nothing was parsed.
+    case responseTooLarge
 }

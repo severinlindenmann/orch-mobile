@@ -81,12 +81,36 @@ public struct RealmContext: Sendable {
         self.realm = realm; self.origin = origin; self.pinnedOwner = pinnedOwner; self.generation = generation
     }
 
-    /// A live context for one reviewed relay origin. The Demo origin and any `.invalid` host are refused.
+    /// A live context for one reviewed relay origin. Production origins are `https` only: the section 7.1 loopback `http`
+    /// spellings are valid for the protocol (`RelayURL`) but are refused here, so a shipped build can never talk plaintext.
+    /// The Demo origin and any `.invalid` host are refused.
     public static func live(origin: String, pinnedOwner: SigningPublicKey? = nil) throws -> RealmContext {
-        guard RelayURL.isValid(origin) else { throw RealmViolation.invalidOrigin }
+        guard origin.hasPrefix("https://"), RelayURL.isValid(origin) else { throw RealmViolation.invalidOrigin }
         guard !Self.isDemoLooking(origin) else { throw RealmViolation.crossRealmOrigin }
         return RealmContext(realm: .live, origin: origin, pinnedOwner: pinnedOwner)
     }
+
+    #if DEBUG
+    /// TEST-ONLY admission of a loopback relay (`http://127.0.0.1:<port>` or `http://[::1]:<port>`) for integration tests
+    /// against a locally started orch-relay.
+    ///
+    /// Why this cannot reach a Release app build: (1) the whole declaration sits inside `#if DEBUG`, so it does not exist in
+    /// a Release compile of OrchClient; (2) it is `package` access, so even in a Debug build only code in the OrchKit
+    /// package (its test targets) can call it, never the App target, which sees `public` API only; (3) `live(origin:)`,
+    /// the only public route to a live context, requires `https://`. The port is required (a port-less `http://127.0.0.1`
+    /// is refused) and `localhost` is excluded because it can resolve to a non-loopback address.
+    package static func liveLoopbackForTesting(origin: String, pinnedOwner: SigningPublicKey? = nil) throws -> RealmContext {
+        guard Self.isLoopbackHTTP(origin) else { throw RealmViolation.invalidOrigin }
+        return RealmContext(realm: .live, origin: origin, pinnedOwner: pinnedOwner)
+    }
+
+    /// `http://127.0.0.1:<port>` or `http://[::1]:<port>`, valid under `RelayURL`, with an explicit port.
+    package static func isLoopbackHTTP(_ origin: String) -> Bool {
+        guard RelayURL.isValid(origin) else { return false }
+        for prefix in ["http://127.0.0.1:", "http://[::1]:"] where origin.hasPrefix(prefix) { return true }
+        return false
+    }
+    #endif
 
     public static func demo(_ capability: DemoCapability) -> RealmContext {
         RealmContext(realm: .demo, origin: DemoRelay.origin, pinnedOwner: nil, generation: capability.generation)
