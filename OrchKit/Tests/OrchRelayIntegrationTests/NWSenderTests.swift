@@ -106,14 +106,24 @@ import Testing
     }
 
     @Test func aLargeHeadBlockIsScannedIncrementally() throws {
-        var raw = Data("HTTP/1.1 200 OK\r\n".utf8)
-        for i in 0..<400 { raw += Data("X-\(i): \(String(repeating: "v", count: 30))\r\n".utf8) }     // ~16 KiB of fields...
-        raw = Data("HTTP/1.1 200 OK\r\n".utf8) + Data((0..<60).map { "X-\($0): \(String(repeating: "v", count: 200))\r\n" }.joined().utf8) + Data("Content-Length: 1\r\n\r\nz".utf8)
+        let raw = Data("HTTP/1.1 200 OK\r\n".utf8) + Data((0..<60).map { "X-\($0): \(String(repeating: "v", count: 200))\r\n" }.joined().utf8) + Data("Content-Length: 1\r\n\r\nz".utf8)
         var p = HTTP1ResponseParser(maxBody: 10)
         for b in raw { try p.feed(Data([b])) }                     // one byte at a time: linear, and the terminator is found across reads
         #expect(p.isComplete && p.body == Data("z".utf8))
         var bare = HTTP1ResponseParser(maxBody: 10)
         #expect(throws: HTTP1ResponseParser.Failure.self) { for b in Data("HTTP/1.1 200 OK\r\nX: a\nb: c\r\n\r\n".utf8) { try bare.feed(Data([b])) } }
+        var bareCR = HTTP1ResponseParser(maxBody: 10)
+        #expect(throws: HTTP1ResponseParser.Failure.self) { for b in Data("HTTP/1.1 200 OK\r\nX: a\rb: c\r\n\r\n".utf8) { try bareCR.feed(Data([b])) } }
+    }
+
+    /// Every wire-header name the client reads must be a `strictRepeats` header, so a conflicting repeat of it is refused rather than
+    /// silently resolved to the first value. Update BOTH lists when the client starts reading another reply header.
+    static let wireHeadersTheClientReads: Set<String> = ["retry-after"]     // HostAPI.retryAfter; (content-type in WorkspaceSession is a bridge header)
+
+    @Test func everyWireHeaderTheClientReadsIsAStrictRepeat() {
+        #expect(Self.wireHeadersTheClientReads.isSubset(of: HTTP1ResponseParser.strictRepeats))
+        // the framing headers the parser itself acts on are strict too
+        #expect(["content-length", "transfer-encoding", "content-encoding"].allSatisfy(HTTP1ResponseParser.strictRepeats.contains))
     }
 
     // MARK: redirects

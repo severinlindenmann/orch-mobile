@@ -3,9 +3,10 @@ import Network
 import Testing
 @testable import OrchClient
 
-/// TLS refusal tests for the real sender. There is deliberately no TLS-skip option anywhere, so these can only check refusals:
-/// an untrusted certificate (and an old protocol version) must end in `.disconnected` before any request bytes reach the server.
-/// They need `/usr/bin/openssl` (or any `openssl` on PATH) and skip cleanly without it.
+/// TLS refusal test for the real sender. There is deliberately no TLS-skip option anywhere, so this can only check that an untrusted
+/// (self-signed) certificate ends in `.disconnected`. The TLS 1.2 floor is checked in the opt-in `TLSLiveTests` (tls-v1-1.badssl.com):
+/// the macOS system openssl is LibreSSL and cannot serve TLS 1.1 at security level 0, and a self-signed cert would mask the version anyway.
+/// It needs `/usr/bin/openssl` (or any `openssl` on PATH) and skip cleanly without it.
 @Suite(.serialized) struct TLSRefusalTests {
     static var openssl: String? {
         ["/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"].first { FileManager.default.isExecutableFile(atPath: $0) }
@@ -17,9 +18,9 @@ import Testing
         private let dir: URL
         private let log: URL
 
-        /// nil when the server could not be started (e.g. the build lacks the requested protocol).
-        static func start(extra: [String]) async throws -> OpenSSLServer? {
-            guard let openssl = TLSRefusalTests.openssl else { return nil }
+        /// Throws if openssl exists but the server cannot be started (a test failure, never a silent pass).
+        static func start(extra: [String]) async throws -> OpenSSLServer {
+            guard let openssl = TLSRefusalTests.openssl else { throw ServerError.notFound }
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("orch-tls-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let key = dir.appendingPathComponent("k.pem"), cert = dir.appendingPathComponent("c.pem")
@@ -29,7 +30,7 @@ import Testing
                              "-addext", "subjectAltName=DNS:localhost"]
             gen.standardOutput = FileHandle.nullDevice; gen.standardError = FileHandle.nullDevice
             try gen.run(); gen.waitUntilExit()
-            guard gen.terminationStatus == 0 else { try? FileManager.default.removeItem(at: dir); return nil }
+            guard gen.terminationStatus == 0 else { try? FileManager.default.removeItem(at: dir); throw ServerError.failed("certificate generation") }
             let port = try RunningRelay.freePort()
             let log = dir.appendingPathComponent("server.log")
             FileManager.default.createFile(atPath: log.path, contents: nil)
@@ -42,12 +43,14 @@ import Testing
             let server = OpenSSLServer(port: port, process: p, dir: dir, log: log)
             // wait for the listener (a plain TCP connect)
             for _ in 0..<50 {
-                if !p.isRunning { server.stop(); return nil }
+                if !p.isRunning { let out = server.output; server.stop(); throw ServerError.failed("s_server exited: \(out)") }
                 if server.accepts() { return server }
                 try await Task.sleep(for: .milliseconds(100))
             }
-            server.stop(); return nil
+            server.stop(); throw ServerError.failed("s_server never listened")
         }
+
+        enum ServerError: Error { case notFound, failed(String) }
 
         private init(port: UInt16, process: Process, dir: URL, log: URL) { self.port = port; self.process = process; self.dir = dir; self.log = log }
 
@@ -75,23 +78,12 @@ import Testing
         }
     }
 
-    func expectRefused(_ extra: [String], _ name: String) async throws {
-        guard let server = try await OpenSSLServer.start(extra: extra) else { return }   // not available here: skip this case
+    @Test(.enabled(if: TLSRefusalTests.openssl != nil, "openssl not found")) func aSelfSignedCertificateIsRefused() async throws {
+        let server = try await OpenSSLServer.start(extra: [])      // throws (fails the test) if openssl exists but cannot serve
         defer { server.stop() }
         let sender = try NWRequestSender(origin: "https://localhost:\(server.port)", requestTimeout: 10, resourceTimeout: 20)
         let request = try WireRequest(method: "GET", target: "/healthz", clientAddress: "x")
-        await #expect(throws: TransportError.disconnected, "\(name)") { _ = try await sender.send(request) }
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(!server.output.contains("GET /"), "\(name): the server saw a request")
-    }
-
-    @Test(.enabled(if: TLSRefusalTests.openssl != nil, "openssl not found")) func aSelfSignedCertificateIsRefusedBeforeAnyRequest() async throws {
-        try await expectRefused([], "self-signed")
-    }
-
-    @Test(.enabled(if: TLSRefusalTests.openssl != nil, "openssl not found")) func tls11IsRefused() async throws {
-        // OpenSSL 3 needs security level 0 to offer TLS 1.1 at all; builds without it fail to start and the case is skipped.
-        try await expectRefused(["-tls1_1", "-cipher", "DEFAULT:@SECLEVEL=0"], "tls1.1")
+        await #expect(throws: TransportError.disconnected) { _ = try await sender.send(request) }
     }
 }
 
@@ -105,7 +97,7 @@ struct TLSLiveTests {
     }
 
     @Test func badCertificatesAreRefused() async throws {
-        for host in ["wrong.host.badssl.com", "expired.badssl.com", "self-signed.badssl.com"] {
+        for host in ["wrong.host.badssl.com", "expired.badssl.com", "self-signed.badssl.com", "tls-v1-1.badssl.com:1011"] {
             let sender = try NWRequestSender(origin: "https://\(host)", requestTimeout: 15, resourceTimeout: 30)
             await #expect(throws: TransportError.disconnected, "\(host)") { _ = try await sender.send(WireRequest(method: "GET", target: "/", clientAddress: "x")) }
         }

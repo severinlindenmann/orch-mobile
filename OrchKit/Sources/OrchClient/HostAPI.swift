@@ -176,6 +176,8 @@ public enum HostAPI {
     /// `Retry-After` as a strict decimal of delta-seconds (no sign, no leading zero, no whitespace beyond what the header
     /// parser already trimmed, no HTTP-date), clamped to 1...3600. Anything else is "no hint", never a negative or huge wait.
     static func retryAfter(_ reply: WireReply) -> Int? {
+        // `retry-after` must stay in `HTTP1ResponseParser.strictRepeats` (a conflicting repeat is refused); the test
+        // `everyWireHeaderTheClientReadsIsAStrictRepeat` lists every wire header the client reads.
         guard let h = reply.header("retry-after"), let v = parseDecimal(h) else { return nil }
         return Int(min(max(v, 1), 3600))
     }

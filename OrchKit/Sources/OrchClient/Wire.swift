@@ -51,6 +51,8 @@ public struct WireReply: Sendable, Equatable {
         self.body = body
     }
 
+    /// A reply header by name. Repeats of headers a caller acts on are refused upstream (`HTTP1ResponseParser.strictRepeats`); any other
+    /// repeated header holds its first value here, so add a header to `strictRepeats` before reading it.
     public func header(_ name: String) -> String? {
         headers[String(decoding: name.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 32 : $0 }, as: UTF8.self)]
     }
