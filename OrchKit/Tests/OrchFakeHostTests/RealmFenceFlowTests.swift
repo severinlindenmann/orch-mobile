@@ -71,9 +71,11 @@ final class TripWall: WallClock, @unchecked Sendable {
         if case .ready = s { Issue.record("join completed after the realm ended") }
         #expect(try await h.env.index.workspaces().isEmpty)
         #expect(try await h.env.index.profile(ws: h.wsHex) == nil)
-        #expect(h.vaultItems.map(\.purpose).filter { $0 != "pairing" } == [], "no key or grant is kept (the pairing record stays for the realm wipe)")
-        #expect(h.deviceCert == nil, "cert")
         #expect(!h.wsDirExists, "dir")
+        // The participant's own rollback deletes are fenced too (a successor realm shares these ids), so what it staged in the vault
+        // stays until the teardown path, which holds an unfenced view, wipes the realm.
+        try h.vault.wipe(realm: .demo)
+        #expect(h.vaultItems.isEmpty && h.deviceCert == nil)
         if case .failed(.realm(.staleGeneration)) = s {} else { Issue.record("unexpected state \(s)") }
     }
 

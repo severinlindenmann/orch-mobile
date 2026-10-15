@@ -158,11 +158,20 @@ import OrchStore
         try await db.execute("CREATE TABLE t(a INTEGER)")
         await #expect(throws: (any Error).self) { _ = try await db.query("INSERT INTO t(a) VALUES(1)") }
         #expect(try await db.query("SELECT a FROM t").isEmpty)
+        for bad in ["BEGIN", "PRAGMA user_version=1", "PRAGMA user_version", "ATTACH DATABASE ':memory:' AS x", "SAVEPOINT s", "DELETE FROM t",
+                    "WITH x AS (SELECT 1) INSERT INTO t(a) SELECT * FROM x"] {
+            await #expect(throws: (any Error).self, "\(bad)") { _ = try await db.query(bad) }
+        }
+        #expect(try await db.query("WITH x(a) AS (SELECT 1) SELECT a FROM x").count == 1)
+        #expect(try await db.query("SELECT * FROM pragma_journal_mode").count == 1)
+        try await db.execute("INSERT INTO t(a) VALUES(2)")          // the connection is not left in a denied state
+        #expect(try await db.query("SELECT a FROM t").count == 1)
     }
 
     @Test func vaultPutsAndStoreWritesAreFenced() async throws {
         let c = try RealmContext.live(origin: "https://relay.example.org")
-        let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend()).scoped(to: .live, fence: c.generation)
+        let raw = SecretVault(group: .keys, backend: InMemoryVaultBackend())
+        let vault = raw.scoped(to: .live, fence: c.generation)
         try vault.put(Data([1]), purpose: "a")
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-fence-" + UUID().uuidString)
         let layout = try StoreLayout(appRoot: base.appendingPathComponent("app"), pushGroupRoot: base.appendingPathComponent("push"),
@@ -180,7 +189,13 @@ import OrchStore
         await #expect(throws: RealmViolation.staleGeneration) { try await db.transaction { tx in try tx.execute("INSERT INTO meta(key,value) VALUES('k3',1)") } }
         let keys = try await db.query("SELECT key FROM meta WHERE key IN ('k','k2','k3')").compactMap { $0.text("key") }
         #expect(keys == ["k"])
-        try vault.delete(purpose: "a")                          // removal is never refused
+        // deletes and wipes of a participant's view are fenced too (a successor realm's items share these ids) ...
+        #expect(throws: RealmViolation.staleGeneration) { try vault.delete(purpose: "a") }
+        #expect(throws: RealmViolation.staleGeneration) { try vault.wipe() }
+        #expect(try vault.get(purpose: "a") == Data([1]))
+        // ... while the reset/teardown path's unfenced view still removes
+        try raw.scoped(to: .live).delete(purpose: "a")
+        #expect((try? raw.scoped(to: .live).get(purpose: "a")) == nil)
         #expect(throws: StoreError.fenceMismatch) { try container.bind(fence: RealmGeneration()) }
     }
 }

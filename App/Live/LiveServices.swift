@@ -779,6 +779,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Used when a transition replaces the whole service graph.
     func retire() {
         retired = true
+        runtime?.invalidate()          // idempotent: a retired graph's realm is over
         lifetime.invalidate()
         reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]

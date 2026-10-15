@@ -878,7 +878,7 @@ public actor PairingCoordinator: RealmParticipant {
             await lockGate()
             do {
                 // a stale realm writes no alarm row: its wipe supersedes it (the index fence refuses it as well)
-                guard cfg.context.generation.isCurrent else { throw RealmViolation.staleGeneration }
+                guard cfg.context.generation.isCurrent, indexFenceOK else { throw RealmViolation.staleGeneration }
                 try await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin, phase: "alarm",
                                                            terminal: "alarm:" + kind.rawValue, detail: alarm.primaryLabel, startedMs: r.startedMs,
                                                            updatedMs: nowMs, createdKeys: r.createdKeys))
@@ -1310,7 +1310,7 @@ extension PairingCoordinator {
             restoreCert()
             // Keep the approval for a retryable timeout. Terminal/cancel cleanup owns the pairing record.
             for item in (try? cfg.vault.ids()) ?? [] where item.realm == cfg.context.realm && item.ws == wsHex && item.purpose != "pairing" {
-                try? cfg.vault.delete(item)
+                try? vault.delete(item: item)
             }
             await cfg.index.containers.suspendAll(ws: wsHex)
             if let dir = try? cfg.index.layout.wsDir(wsHex) { try? FileManager.default.removeItem(at: dir) }

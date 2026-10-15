@@ -693,6 +693,7 @@ public actor WorkspaceSession: RealmParticipant {
     private func runDriver(_ row: Row, isResend: Bool) async throws -> BridgeResponse {
         let logical = row.logical
         if let t = inflight[logical] { return try await t.value }
+        guard !closed else { throw SessionError.staleGeneration }          // closed by realm shutdown: no new drivers
         let t = Task { () -> BridgeResponse in
             let result: Result<BridgeResponse, Error>
             do { result = .success(try await self.drive(row, isResend: isResend)) } catch { result = .failure(error) }
@@ -1124,6 +1125,7 @@ extension WorkspaceSession {
 
     private func driveDecision(_ id: ID16, first: Row? = nil, explicit: Bool = false) async throws -> DecisionOutcome {
         if let t = decisionDrivers[id] { return try await t.value }
+        guard !closed else { throw SessionError.staleGeneration }
         let t = Task { try await self.performDecision(id, first: first, explicit: explicit) }
         decisionDrivers[id] = t
         defer { decisionDrivers[id] = nil }
@@ -1259,7 +1261,7 @@ extension WorkspaceSession {
         if case .connection(let state) = event { connectionState = state }
         if case .snapshot = event, !subscribers.isEmpty { snapshotsEmitted += 1 }
         for c in subscribers.values { c.yield(event) }
-        if case .invalidated = event, foreground, !subscribers.isEmpty, hintRefresh == nil {
+        if case .invalidated = event, foreground, !closed, !subscribers.isEmpty, hintRefresh == nil {
             let identity = UUID(); hintIdentity = identity
             hintRefresh = Task {
                 await self.refreshViews()
@@ -1270,6 +1272,7 @@ extension WorkspaceSession {
     package func eventStream() -> AsyncStream<WorkspaceEvent> {
         let id = UUID()
         let (stream, continuation) = AsyncStream<WorkspaceEvent>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        if closed { continuation.finish(); return stream }               // after realm shutdown the stream ends at once
         subscribers[id] = continuation
         if let cachedSnapshot { snapshotsEmitted += 1; continuation.yield(.snapshot(cachedSnapshot)) }
         continuation.yield(.connection(connectionState))

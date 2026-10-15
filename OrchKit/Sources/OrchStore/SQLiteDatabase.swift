@@ -90,6 +90,20 @@ final class SQLiteHandle: @unchecked Sendable {
     @discardableResult
     func run(_ sql: String, _ params: [SQLValue] = [], readOnly: Bool = false) throws -> (rows: [SQLRow], changes: Int) {
         guard let db else { throw SQLiteError.closed }
+        if readOnly {
+            // `query` reads only: a leading SELECT/WITH, no transaction control or ATTACH/DETACH (the authorizer runs at prepare; a PRAGMA statement fails the leading-keyword check, while the
+            // read-only table-valued `pragma_*` functions inside a SELECT are fine),
+            // and finally the statement must report itself read-only.
+            let head = sql.drop(while: \.isWhitespace).prefix(6).uppercased()
+            guard head.hasPrefix("SELECT") || head.hasPrefix("WITH") else { throw SQLiteError.misuse("query is not read-only") }
+            sqlite3_set_authorizer(db, { _, action, _, _, _, _ in
+                switch action {
+                case SQLITE_TRANSACTION, SQLITE_SAVEPOINT, SQLITE_ATTACH, SQLITE_DETACH: return SQLITE_DENY
+                default: return SQLITE_OK
+                }
+            }, nil)
+        }
+        defer { if readOnly { sqlite3_set_authorizer(db, nil, nil) } }
         var stmt: OpaquePointer?
         var rest = ""
         let rc: Int32 = sql.withCString { c in
@@ -105,7 +119,7 @@ final class SQLiteHandle: @unchecked Sendable {
         }
         guard let stmt else { throw SQLiteError.misuse("empty statement") }
         defer { sqlite3_finalize(stmt) }
-        if readOnly, sqlite3_stmt_readonly(stmt) == 0, !sql.drop(while: \.isWhitespace).uppercased().hasPrefix("PRAGMA") { throw SQLiteError.misuse("query is not read-only") }
+        if readOnly, sqlite3_stmt_readonly(stmt) == 0 { throw SQLiteError.misuse("query is not read-only") }
         // sqlite prepares only the first statement; silently dropping the rest would hide bugs
         // (e.g. a multi-statement migration recorded as applied with half its effect).
         if !rest.allSatisfy({ $0.isWhitespace || $0 == ";" }) {

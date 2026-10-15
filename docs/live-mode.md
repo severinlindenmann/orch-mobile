@@ -81,8 +81,13 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
    takes the same lock, so nothing that passed the check is running when it returns and nothing starts later. Enforced once per resource:
    custody leases (`LeasedSigner`/`LeasedKeyAgreer`, also re-leased by `WorkspaceSession.init`), transport send (check immediately before
    `sender.send`; an await cannot be held under the lock), the workspace store (`SQLiteDatabase` writes and transactions, BEGIN..COMMIT
-   inside the fence, bound to the container by `WorkspaceSession.init` and by pairing), vault `put` (`RealmVault.fenced`), and the pairing
-   commit (`commitJoin`, `savePairing` with the fence). Reads, deletes and wipes stay open so the teardown wipe still works.
+   inside the fence, bound to the container by `WorkspaceSession.init`), the pairing index (the fence is bound to the `WorkspaceIndex`
+   itself: `addWorkspace`, `savePairing`, `commitJoin` apply it, wipe-type writes never do), and the vault views handed to sessions and
+   coordinators (`put`, `delete` and `wipe` are fenced, because a successor realm reuses the same ids). Only the reset/teardown path
+   holds unfenced views, so the wipe still works. `SQLiteDatabase.query` is read-only (SELECT/WITH, authorizer denies transaction
+   control, ATTACH and PRAGMA).
+   Rule: at most one externally visible effect per fenced body, placed last (a body that signs and then writes is one critical section;
+   a body that wrote and then sent could not be undone).
 2. **Done (PR B1): synchronous `RealmRuntime.invalidate()`** is called by `LiveServices.teardown` (after the `retired` guard, before any
    await). Sessions and pairing coordinators register with the realm generation (weakly; `DropService` is not a participant), and
    `RealmContext.shutdownParticipants` cancels them concurrently in unstructured tasks and returns on "all finished" or the deadline
@@ -90,6 +95,8 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
    do the same in `shutdown`. Rule: a runtime owns exactly one `RealmContext`; `WorkspaceSession.init` requires its transport and context
    to share one generation, and a `WorkspaceIndex` or container accepts one fence only. Known limit: a signature or SQLite transaction in
    flight holds the gate, so `invalidate()` can wait that long (a Touch ID prompt must not run inside `perform`; phase 3).
+   - **B2 note:** `LiveRuntime` must close its index (and containers) the way `DemoSetup.reset` does, and bind the index to the
+     context's generation at construction.
    - **M3 (open, B2):** a boot in progress must be invalidated at teardown. Create the realm context synchronously and make it reachable
      (for example on the controller) before the boot task starts, so `teardown` can invalidate it before the runtime exists.
    - **L6 (open, B2):** Live writes outside OrchClient (push material `VaultPushSink`, share staging, the draft file) must go through
