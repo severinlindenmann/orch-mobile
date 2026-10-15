@@ -97,7 +97,8 @@ public struct AnswerDisplay: Equatable, Sendable {
         self.qid = qid; self.hash = hash; self.option = option; self.text = text; self.to = to
         self.why = why; self.recommended = recommended; self.blocking = blocking
     }
-    public init(_ r: F1Question.Reviewed, option: String?, text: PhoneEvents.PreparedText?) {
+    public init(_ r: F1Question.Reviewed, option: String?, text: PhoneEvents.PreparedText?) throws {
+        if let option, !r.question.options.contains(where: { $0.key.bytesEqual(option) }) { throw PhoneEvents.Failure.unknownOption }
         self.init(qid: r.qid, hash: r.hash, option: option, text: text?.value, to: r.question.to, why: r.question.why,
                   recommended: r.question.recommended, blocking: r.question.blocking)
     }

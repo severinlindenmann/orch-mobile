@@ -80,11 +80,13 @@ import Testing
     /// vector fails this test until it is classified. (The refusals themselves are host/model rules; only the signature is checkable here.)
     @Test func everyRefusedCaseSignatureIsClassified() throws {
         let expectedValid: [String: Bool] = [
-            "question_stale": true, "members_stale": true, "bad_base": true, "sig_invalid": false, "device_scope": false,   // device_scope: not signed by dk_sevp1
-           
+            "question_stale": true, "members_stale": true, "bad_base": true, "sig_invalid": false,
             "duplicate_id": true, "taken_key": true, "abandoned_replayed": true,
         ]
-        let cases = v["refused"].items
+        // device_scope is a settings.changed event with log "workspace": core signs it under orch/v2/sig/ws-event|, not a phone event
+        let all = v["refused"].items
+        let cases = all.filter { $0["log"].str != "workspace" }
+        #expect(all.count - cases.count == 1)
         #expect(cases.count == expectedValid.count)
         for c in cases {
             let s = c["submitted"]
@@ -137,6 +139,17 @@ import Testing
         #expect(Set(ev.event.keys) == ["actor", "auth", "based_on", "hash", "hash_v", "id", "option", "question", "roster_v", "sig", "text", "type", "v"])
         #expect(ev.event["based_on"] == .string(base))
         #expect(ev.event["roster_v"] == .int(3))
+    }
+
+    @Test func workspaceLogIsNotATicketEventLog() {
+        #expect(throws: PhoneEvents.Failure.badTicketUID) { try PhoneEvents.signingBytes(event: [:], log: "workspace", workspace: wsid) }
+    }
+
+    @Test func displayOptionMustBeOneOfTheQuestionsOptions() throws {
+        let r = try reviewedQuestion()
+        #expect((try? AnswerDisplay(r, option: "csv", text: nil)) != nil)
+        #expect((try? AnswerDisplay(r, option: nil, text: pt("t"))) != nil)
+        #expect((try? AnswerDisplay(r, option: "nope", text: nil)) == nil)
     }
 
     @Test func snapshotValuesTravelInsideReviewed() {

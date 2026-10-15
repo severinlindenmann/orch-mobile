@@ -164,6 +164,8 @@ public enum PhoneEvents {
 
     /// `"orch/v2/sig/ticket-event|" || cj({"contract":1, "event":E, "log":uid, "suite":2, "workspace_id":W})`, E without `sig`.
     public static func signingBytes(event: [String: JSONValue], log: String, workspace: ID16) throws -> Data {
+        // core refuses the ticket-event label with log "workspace" (workspace events sign under ws-event)
+        guard ULID.isValid(log) else { throw Failure.badTicketUID }
         let body = try canonicalJSON(["contract": 1, "event": .object(event), "log": .string(log), "suite": 2, "workspace_id": .string(workspace.hex)])
         return Data(Label.sigTicketEvent.utf8) + body
     }

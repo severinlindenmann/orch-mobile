@@ -15,6 +15,8 @@ The F1 sign sheet must NOT render host or phone-authored text raw. It MUST route
 Labels and costs fail closed: a label or cost the sheet cannot render safely refuses the review (no sign sheet), per 11A.14 14.5 ("never signs what it did not render").
 `AnswerDisplay`/`CreationDisplay` equality for the auto re-sign is byte-exact; the sheet must show the same strings it signs.
 
+The caller must pass `basedOn` (`doc.head.head`) and `rosterV` (`members_v`) to `F1Question.reviewed` from the SAME `ticket.get` snapshot as the question itself.
+
 A core-parity `suspicious()` (invisible and bidi marking as in orch-core `canon/text.py`) needs data the phone does not have yet: `MARK_RANGES` (leading mark) and
 `CF_RANGES` (format characters) from orch-core `_unicode16.py`. Plan: add both blocks to `BLOCKS` in `Scripts/gen_unicode16_swift.py`, regenerate, and port `suspicious()` and
 `show_invisible()` with core's vectors (`text.json` has no `suspicious` cases yet: ask core for some).
