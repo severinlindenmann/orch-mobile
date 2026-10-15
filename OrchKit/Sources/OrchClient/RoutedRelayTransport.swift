@@ -22,11 +22,12 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     private var R: String { HostAPI.base }
 
     private func request(_ method: String, _ target: String, body: Data = Data(), contentType: String? = nil,
-                         session: RelaySession? = nil, extra: [String: String] = [:]) throws -> WireRequest {
+                         session: RelaySession? = nil, extra: [String: String] = [:], bodyFile: URL? = nil,
+                         options: RequestOptions = RequestOptions()) throws -> WireRequest {
         var h = extra
         if let ct = contentType { h["content-type"] = ct }
         if let s = session { h["authorization"] = "Bearer " + (try Self.checked(s.token)) }
-        return try WireRequest(method: method, target: target, headers: h, body: body, clientAddress: clientAddress)
+        return try WireRequest(method: method, target: target, headers: h, body: body, clientAddress: clientAddress, bodyFile: bodyFile, options: options)
     }
 
     /// A bearer token is visible ASCII with no space: it goes into a header and must not smuggle another.
@@ -53,8 +54,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         try await send(request(method, target, body: body, contentType: "application/octet-stream", session: session, extra: extra))
     }
 
-    private func get(_ target: String, session: RelaySession? = nil) async throws -> WireReply {
-        try await send(request("GET", target, session: session))
+    private func get(_ target: String, session: RelaySession? = nil, options: RequestOptions = RequestOptions()) async throws -> WireReply {
+        try await send(request("GET", target, session: session, options: options))
     }
 
     public func challenge() async throws -> WireReply { try await json("POST", "/session/challenge", HostAPI.json()) }
@@ -125,11 +126,21 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         return try await get("\(R)/devices/\(deviceID.hex)/revocation" + (items.isEmpty ? "" : "?" + items.joined(separator: "&")))
     }
 
+    /// Drop moves up to 26 MiB: the relay's slowest accepted transfer is 64 KiB/s (10 minutes at most), so the deadline of a Drop body is
+    /// 60 s plus `bytes / 64 KiB/s`, capped at the relay's own 10 minutes plus the same 60 s. Everything else keeps the sender's default.
+    static func dropDeadline(bytes: Int) -> TimeInterval { min(60 + Double(max(bytes, 0)) / 65536.0, 660) }
+    static var dropBlobResponseCap: Int { DropFrame.maxBlobBytes }
+
     public func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
-        // TODO(orch-4e): Drop routes are not in protocol-v2 section 19 yet (the relay serves none). All of them sit under /v2 so the
-        // spelling is at least consistent; the final paths are still orch-4e's call.
-        try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", body: body, contentType: "application/json", session: session,
-                               extra: ["if-match": String(ifMatch)]))
+        try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", body: body, contentType: "application/octet-stream", session: session,
+                               extra: ["if-match": String(ifMatch)], options: RequestOptions(resourceTimeout: Self.dropDeadline(bytes: body.count))))
+    }
+
+    public func dropPut(objectID: ID16, ifMatch: UInt32, bodyFile: URL, session: RelaySession) async throws -> WireReply {
+        let size = (try? FileManager.default.attributesOfItem(atPath: bodyFile.path)[.size] as? Int) ?? nil
+        guard let size, size >= DropFrame.prefixLength else { throw TransportError.invalidArgument }
+        return try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", contentType: "application/octet-stream", session: session,
+                               extra: ["if-match": String(ifMatch)], bodyFile: bodyFile, options: RequestOptions(resourceTimeout: Self.dropDeadline(bytes: size))))
     }
 
     public func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/drop/list", query, session: session) }
@@ -150,7 +161,19 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
 
     public func createAccount(_ body: Data) async throws -> WireReply { try await json("POST", "/accounts", body) }
 
+    public func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply {
+        var items: [String] = []
+        if let a = after { items.append("after=\(a)") }
+        if let l = limit {
+            guard (1...256).contains(l) else { throw TransportError.invalidArgument }
+            items.append("limit=\(l)")
+        }
+        return try await get("\(R)/drop/\(objectID.hex)/descriptors" + (items.isEmpty ? "" : "?" + items.joined(separator: "&")), session: session)
+    }
+
     public func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply {
-        try await get("\(R)/drop/\(objectID.hex)/versions/\(version)/\(part.rawValue)", session: session)
+        // a blob reply may be a whole 26 MiB ORD2 object: a per-request cap and a body-scaled deadline, nothing else is raised
+        try await get("\(R)/drop/\(objectID.hex)/versions/\(version)/\(part.rawValue)", session: session,
+                      options: part == .blob ? RequestOptions(maxResponseBytes: Self.dropBlobResponseCap, resourceTimeout: Self.dropDeadline(bytes: Self.dropBlobResponseCap)) : RequestOptions())
     }
 }

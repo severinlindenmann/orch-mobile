@@ -129,7 +129,7 @@ file handling and its own caches still need a device spike; no unmanaged copy is
 
 Compose keeps picked file/photo bytes only in memory; document reads happen inside security-scoped
 access. Photo import tasks are owned and cancelled on dismissal, background, Leave/reset or destination loss; late results check cancellation and lifecycle before publication. Limits use actual byte counts. Note-only sends are UTF-8 and attached notes
-are metadata transcripts. Each send uses one UUID with stable attachment UUIDs. `sealSend` commits every ciphertext upload row atomically before any network side effect; interruption before sealing completes stores nothing and shows “Not sent”. Pending draft bytes are cleared on background. `confirmedUploads` exposes durable read-back success; a listed descriptor alone is never displayed as confirmed. Failed and pending uploads
+are metadata transcripts. Each send uses one UUID with stable attachment UUIDs. `sealSend` commits every ciphertext upload row atomically before any network side effect; interruption before sealing completes stores nothing and shows “Not sent”. Pending draft bytes are cleared on background. `confirmedUploads` exposes durable success of the signed-descriptor read-back (signature and canonical bytes equal to what was sealed); a listed descriptor, a 2xx or a list state alone is never displayed as confirmed. Failed and pending uploads
 retain their durable identities for Retry/Stop or foreground recovery. Inbox Claim is
 explicit and operate-only; unavailable keys never imply that an item is unclaimed.
 

@@ -27,6 +27,8 @@ import Security
 ///   code never resolves a name itself, so what Network.framework connects to is what the TLS name was checked against.
 /// - Plain TCP exists only for the DEBUG + `package` loopback initializer used by the integration tests (see
 ///   `RealmContext.liveLoopbackForTesting`); a Release build has no such initializer.
+/// - Per request (`WireRequest.options`): a larger response cap and a longer absolute deadline, both bounded (64 MiB, one hour); the
+///   Drop routes use them, everything else keeps the defaults. A request body may be streamed from a file (`WireRequest.bodyFile`).
 /// - Timeouts: `requestTimeout` is the idle limit (connect included; no byte moved for that long) and `resourceTimeout` the absolute
 ///   deadline, which trickled bytes do not extend. The relay long-polls for at most 25 s, so the 60 s and 120 s defaults leave margin.
 /// - Errors: connection loss, refused connection, timeout, a malformed or unsupported reply and a body that ends early are
@@ -83,12 +85,60 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
     }
 
     public func send(_ request: WireRequest) async throws -> WireReply {
-        let head = try Self.requestHead(request, host: hostHeader)
         try Task.checkCancellation()
-        let exchange = Exchange(sender: self, head: head, body: request.body)
+        let source: BodySource
+        if let file = request.bodyFile {
+            guard request.body.isEmpty else { throw TransportError.invalidArgument }
+            source = try BodySource.file(file)
+        } else { source = .data(request.body) }
+        let maxResponse: Int, deadline: TimeInterval
+        do {
+            maxResponse = try Self.checked(request.options.maxResponseBytes, default: maxResponseBytes, ceiling: Self.ceilingResponseBytes)
+            deadline = try Self.checked(request.options.resourceTimeout, default: resourceTimeout, ceiling: Self.ceilingResourceTimeout)
+        } catch { source.close(); throw error }
+        let head: Data
+        do { head = try Self.requestHead(request, host: hostHeader, bodyLength: source.length) } catch { source.close(); throw error }
+        let exchange = Exchange(sender: self, head: head, body: source, maxResponseBytes: maxResponse, resourceTimeout: deadline)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<WireReply, Error>) in exchange.start(cont) }
         } onCancel: { exchange.cancelByCaller() }
+    }
+
+    /// Per-request overrides are bounded: a caller cannot ask for an unbounded buffer or an unbounded wait.
+    static let ceilingResponseBytes = 64 << 20
+    static let ceilingResourceTimeout: TimeInterval = 3600
+    private static func checked<T: Comparable & Numeric>(_ value: T?, default d: T, ceiling: T) throws -> T {
+        guard let value else { return d }
+        guard value > 0, value <= ceiling else { throw TransportError.invalidArgument }
+        return value
+    }
+
+    /// The request body: bytes, or a file read in `readBufferBytes` pieces as the connection takes them.
+    enum BodySource {
+        case data(Data)
+        case file(handle: FileHandle, length: Int)
+
+        var length: Int { switch self { case .data(let d): d.count; case .file(_, let n): n } }
+
+        static func file(_ url: URL) throws -> BodySource {
+            guard url.isFileURL, let handle = try? FileHandle(forReadingFrom: url) else { throw TransportError.invalidArgument }
+            guard let size = try? handle.seekToEnd(), (try? handle.seek(toOffset: 0)) != nil, size <= UInt64(Int32.max) else {
+                try? handle.close(); throw TransportError.invalidArgument
+            }
+            return .file(handle: handle, length: Int(size))
+        }
+
+        /// The next piece from `offset` (the connection takes them strictly in order); nil when the file ended early or failed.
+        func piece(from offset: Int, upTo end: Int) -> Data? {
+            switch self {
+            case .data(let d): return d.subdata(in: offset..<end)
+            case .file(let h, _):
+                guard let d = try? h.read(upToCount: end - offset), d.count == end - offset else { return nil }
+                return d
+            }
+        }
+
+        func close() { if case .file(let h, _) = self { try? h.close() } }
     }
 
     // MARK: request
@@ -96,7 +146,7 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
     private static let managed: Set<String> = ["host", "content-length", "transfer-encoding", "connection", "accept-encoding", "user-agent", "expect",
                                                "upgrade", "te", "trailer", "proxy-authorization", "proxy-connection", "keep-alive"]
 
-    static func requestHead(_ r: WireRequest, host: String) throws -> Data {
+    static func requestHead(_ r: WireRequest, host: String, bodyLength: Int) throws -> Data {
         // only the methods the relay protocol uses: no HEAD (a body-less reply would break the framing rules) and no CONNECT
         guard ["GET", "POST", "PUT", "DELETE"].contains(r.method) else { throw TransportError.invalidArgument }
         guard r.target.hasPrefix("/"), !r.target.hasPrefix("//"), allowed(r.target) else { throw TransportError.invalidArgument }
@@ -105,7 +155,7 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
             guard !managed.contains(name), !name.hasPrefix("proxy-") else { throw TransportError.invalidArgument }
             s += "\(name): \(value)\r\n"
         }
-        if !r.body.isEmpty || r.method == "POST" || r.method == "PUT" { s += "Content-Length: \(r.body.count)\r\n" }
+        if bodyLength > 0 || r.method == "POST" || r.method == "PUT" { s += "Content-Length: \(bodyLength)\r\n" }
         return Data((s + "\r\n").utf8)
     }
 
@@ -145,7 +195,8 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
     private final class Exchange: @unchecked Sendable {
         let sender: NWRequestSender
         let head: Data
-        let body: Data
+        let body: BodySource
+        let resourceTimeout: TimeInterval
         var parser: HTTP1ResponseParser
         var connection: NWConnection?
         var cont: CheckedContinuation<WireReply, Error>?
@@ -154,9 +205,9 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
         var total: DispatchWorkItem?
         var started = false
 
-        init(sender: NWRequestSender, head: Data, body: Data) {
-            self.sender = sender; self.head = head; self.body = body
-            parser = HTTP1ResponseParser(maxBody: sender.maxResponseBytes)
+        init(sender: NWRequestSender, head: Data, body: BodySource, maxResponseBytes: Int, resourceTimeout: TimeInterval) {
+            self.sender = sender; self.head = head; self.body = body; self.resourceTimeout = resourceTimeout
+            parser = HTTP1ResponseParser(maxBody: maxResponseBytes)
         }
 
         func start(_ c: CheckedContinuation<WireReply, Error>) {
@@ -190,7 +241,7 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
             armIdle()
             let t = DispatchWorkItem { [weak self] in self?.finish(.failure(TransportError.disconnected)) }
             total = t
-            sender.queue.asyncAfter(deadline: .now() + sender.resourceTimeout, execute: t)
+            sender.queue.asyncAfter(deadline: .now() + resourceTimeout, execute: t)
             c.start(queue: sender.queue)
         }
 
@@ -233,9 +284,11 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
         }
 
         private func sendBody(from offset: Int) {
-            guard result == nil, offset < body.count else { return }
-            let end = min(offset + NWRequestSender.readBufferBytes, body.count)
-            connection?.send(content: body.subdata(in: offset..<end), completion: .contentProcessed { [weak self] e in
+            guard result == nil, offset < body.length else { return }
+            let end = min(offset + NWRequestSender.readBufferBytes, body.length)
+            // a file that ended early cannot be completed: the declared length would never arrive, so the exchange fails now
+            guard let piece = body.piece(from: offset, upTo: end) else { return finish(.failure(TransportError.disconnected)) }
+            connection?.send(content: piece, completion: .contentProcessed { [weak self] e in
                 guard let self else { return }
                 self.sender.queue.async { guard self.result == nil else { return }
                     if e != nil { return }
@@ -293,6 +346,7 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
         private func finish(_ r: Result<WireReply, Error>) {
             guard result == nil else { return }
             result = r
+            body.close()
             idle?.cancel(); total?.cancel()
             connection?.stateUpdateHandler = nil
             connection?.cancel()

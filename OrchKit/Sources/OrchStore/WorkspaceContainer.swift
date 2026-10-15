@@ -255,18 +255,32 @@ public actor WorkspaceContainer {
 
 
 extension WorkspaceContainer {
-    public func acceptDropChain(object: String, chain: [Data]) async throws {
+    /// The persisted head version of a Drop object, nil when none was accepted yet. A chain walk starts there, not at version 1.
+    public func dropHeadVersion(object: String) async throws -> UInt32? {
         try StoreLayout.validate(ws: object)
-        guard !chain.isEmpty, chain.count <= 1024 else { throw DropStoreError.rollback }
+        guard let n = try await database().query("SELECT version FROM drop_heads WHERE object=?", [.text(object)]).first?.int("version"),
+              n > 0, n <= Int64(UInt32.max) else { return nil }
+        return UInt32(n)
+    }
+
+    public func acceptDropChain(object: String, chain: [Data]) async throws {
+        try await acceptDropChain(object: object, firstVersion: 1, chain: chain)
+    }
+
+    /// `chain[i]` is the hash of version `firstVersion + i`. A suffix must still contain the persisted head and agree with it.
+    public func acceptDropChain(object: String, firstVersion: UInt32, chain: [Data]) async throws {
+        try StoreLayout.validate(ws: object)
+        guard !chain.isEmpty, chain.count <= 1024, firstVersion >= 1, Int64(firstVersion) + Int64(chain.count) - 1 <= 1024 else { throw DropStoreError.rollback }
+        let first = Int(firstVersion), last = first + chain.count - 1
         let layout = self.layout, ws = self.ws, generation = self.generation
         try await database().transaction { tx in
             try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
                 if let previous = try tx.query("SELECT version,hash FROM drop_heads WHERE object=?", [.text(object)]).first {
-                    guard let n = previous.int("version"), n > 0, n <= chain.count,
-                          previous.blob("hash") == chain[Int(n) - 1] else { throw DropStoreError.rollback }
-                }
+                    guard let n = previous.int("version"), Int(n) >= first, Int(n) <= last,
+                          previous.blob("hash") == chain[Int(n) - first] else { throw DropStoreError.rollback }
+                } else if first > 1 { throw DropStoreError.rollback }
                 try tx.execute("INSERT INTO drop_heads(object,version,hash) VALUES(?,?,?) ON CONFLICT(object) DO UPDATE SET version=excluded.version,hash=excluded.hash",
-                               [.text(object), .int(Int64(chain.count)), .blob(chain.last!)])
+                               [.text(object), .int(Int64(last)), .blob(chain.last!)])
                 try Self.purgeDownloads(tx, directory: directory, nowMs: nil)
             }
         }

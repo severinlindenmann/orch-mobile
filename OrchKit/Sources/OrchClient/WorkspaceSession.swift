@@ -814,7 +814,7 @@ public actor WorkspaceSession: RealmParticipant {
 
     /// The bounded answer to the relay's unsigned `stale_epoch` hint: refetch the signed grants and member list (P3-D8). Returns the
     /// confirmed epoch; never raises it from the hint. A newer confirmed epoch resets the limiter (a relay cannot forge one).
-    private func refetchForEpochHint() async throws -> UInt32 {
+    package func refetchForEpochHint() async throws -> UInt32 {
         let before = try await currentEpoch()          // read before the limiter decides, so no suspension separates admit and fetch
         let now = sessionAge()
         guard epochHintLimiter.admit(at: now) else {
