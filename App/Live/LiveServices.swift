@@ -36,7 +36,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Committed Live workspaces `LiveRuntime` could not rebuild at restore (kept on disk): surfaced in Live Home.
     private(set) var skippedWorkspaceCount = 0
     private(set) var liveNotice: String?
-    var liveInstalled: Bool { hasLiveInstall }
+    /// Observed by the views: the install record lives in `UserDefaults`, which SwiftUI cannot track, so every change of it bumps this.
+    private var installRevision = 0
+    var liveInstalled: Bool { _ = installRevision; return hasLiveInstall }
     var liveProblem: String? { liveBootError }
     private(set) var pendingDecisions: [DecisionStatus] = []
     private(set) var lastChecked = Date()
@@ -218,6 +220,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// What a successful Live wipe also removes: the install record and the realm's pending server cleanups.
     private func clearLiveRealmRecords() {
         installStore.clear()
+        installRevision += 1
         ServerCleanupStore(defaults: resetFlags, realm: .live).clear()
     }
 
@@ -323,6 +326,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         do { created = try LiveRuntime(install: install, storage: storage) }
         catch { installStore.clear(); throw error }
         attach(created)
+        installRevision += 1
         created.deviceLabel = deviceLabel
         #if DEBUG
         created.bootGate = liveBootGate

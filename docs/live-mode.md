@@ -1,6 +1,6 @@
 # Live mode
 
-Status: adopted design, 14 Oct 2026. PR A (realm boundary and capabilities), PR B1 (realm generation fence) and PR B2a (`LiveRuntime`, restore, realm-wide wipe; no user-facing Live entry) are implemented; B2b (Live entry and pairing UI) and PR C are planned below.
+Status: adopted design, 14 Oct 2026. PR A (realm boundary and capabilities), PR B1 (realm generation fence) and PR B2a (`LiveRuntime`, restore, realm-wide wipe; no user-facing Live entry) and PR B2b (Live entry and Live pairing UI, below) are implemented; PR C is planned below.
 Origin: a Codex design proposal, edited to the owner's decisions.
 
 ## Decisions
@@ -145,24 +145,78 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
 
 9. **Done (B2a): a no-realm boot does not retire Live destinations** (`completeShareRemovals` retires only Demo's). Original text: **A no-realm boot must not retire Live destinations.** Today `completeShareRemovals()` retires every persisted entry when the boot ends with no realm. That is safe while only Demo exists, because Demo is wiped at every boot anyway. Once Live exists, a failed or absent runtime (a boot error, `resetIncomplete`, a Live restore that fails offline or before first unlock) must not tombstone `"live"` destinations, because that burns their generation for good. A no-realm boot retires only realms whose storage is wiped at boot (Demo). Live destinations are retired only by an explicit Leave Live or Reset.
 
-## Before Live entry (B2b) can ship
+## Live entry (PR B2b, implemented)
 
-Findings of the B2a review that belong to the entry flow (nothing writes a `LiveInstall` before B2b, so none is reachable yet):
+Owner decisions (15 Oct 2026): one relay origin and one owner per Live install; invitations by QR or paste only (no universal links yet);
+the QR carries `orch://pair?relay=<origin>#v2.…` (decisions D-3, amended); an `orch://` open always lands on a review screen; no http
+loopback in the app; Drop, push and share stay off in Live; the Simulator uses software custody for now.
 
-1. **Owner pin (Opus M1).** Write the owner pin before, or atomically with, `commitJoin`; or derive it at boot from the committed profiles and refuse
-   a boot where they disagree. Restore already skips a workspace whose owner differs from the pinned one (tested); the pin itself must be written
-   reliably.
-2. **Install before secrets (Opus M2).** Persist `LiveInstall` BEFORE any Live keychain item or index row exists. Before writing a fresh install
-   record, run `wipe(realm: .live)` on both vault groups plus `custody.delete(realm: .live)`: keychain items survive an uninstall, and orphaned device
-   keys would otherwise be reused.
-3. **`LiveInstallStore.save` must throw** and fail the join (Sonnet LOW 7). No silent `try?`.
-4. **Skipped workspaces (Opus L2)** (`LiveRuntime.skipped`) must be surfaced in the UI.
-5. **Install record location (Opus L3).** Consider moving `LiveInstall` into the `.keys` keychain group (ThisDeviceOnly, no backups), and bind the
-   epoch so an old card cannot be rolled back.
-6. **Stuck-wipe escape (Opus L4).** A force reset for when the index cannot open or the keychain is unavailable.
-7. **Fence by construction (Opus L6).** Make a Live `RealmVault` carry a non-optional fence.
-8. **Known limit (Sonnet LOW 10).** A Live install whose keychain is unavailable cannot be left (the wipe fails closed); it shows as a failed start
-   until the keychain is back.
+* **Welcome** offers "Try Demo" and "Pair your Mac" ("Connect to orch on your Mac. Your Mac approves this iPhone.").
+* **Intake (`LiveIntake`, owned by `AppRoot`, presented above the realm's view graph).** Scanner, paste and `onOpenURL` (cold launch included:
+  held until the realm booted) all end in one function that parses with `PairingLink.parse` and classifies BEFORE any network access:
+  `review` (Welcome, or Live with the same origin), `switchOffer` (Demo active: the link is held in memory; "Leave Demo and pair your Mac"
+  with a destructive confirmation, then the REVIEW of the held link, never an automatic connect), `refused` (not `https`, a Demo origin,
+  another origin than the existing install's, an unfinished transition or wipe). The review shows the origin read-only (ASCII/punycode) and
+  "Connect"; Connect is the first moment anything is written or sent.
+* **Scanner.** VisionKit `DataScannerViewController` (iOS 18: every supported device has it; AVFoundation is not needed as a fallback). The
+  Simulator or a denied camera shows why scanning is unavailable and offers "Paste link instead" (`ScannerAvailability`).
+  `NSCameraUsageDescription` and `CFBundleURLTypes` (`orch`) come from `project.yml`.
+* **Live pairing.** `LivePairingModel(services:link:)` runs the coordinator from `LiveRuntime.makeCoordinator()` through the existing
+  `PairingScreen` states (connecting, host comparison, primary wait/comparison, joining, ready). Ready shows the verified workspace name,
+  the granted scopes and "Updates arrive while orch is open." A pairing ended by its realm (`staleGeneration`) is a cancel.
+* **Entry ordering (`LiveServices.liveRuntimeForPairing`).** (1) the origin must be an `https` Live origin and no other realm or unfinished
+  wipe may be active; (2) orphans are wiped first: `RealmWipe.run(index: nil)` = `wipe(realm: .live)` on both vault groups,
+  `custody.delete(realm: .live)` and the Live files (the keychain survives an uninstall, a keychain that cannot be read stops the entry
+  here); (3) the install record is persisted with a THROWING `LiveInstallStore.save` (it must read back), a failure fails the flow with
+  nothing left behind; (4) only then the runtime is created and booted. So no Live keychain item or index row exists without an install record.
+* **Owner pin: derive at boot.** The record is written before the first pairing without an owner. `LiveRuntime.boot` derives the pin from the
+  committed profiles (`agreedOwner`): none committed, nothing to record; one owner, recorded with a throwing save (a failed write shows a
+  notice and is retried at the next launch; the join is not undone); more than one owner, the boot is refused (`ownerDisagreement`, nothing
+  rebuilt, nothing erased, Leave Live is the way out). With a pin recorded, a profile of another owner is not rebuilt (skipped, reason
+  `owner`) and shown in Live Home. The first join also records the pin right after it (best effort); the boot derivation is the durable
+  guarantee, so a crash between `commitJoin` and the record write is repaired at the next launch. The coordinator's stored device
+  certificate refuses a second owner meanwhile.
+* **Install record location (Opus L3): not moved to the `.keys` keychain group, on purpose.** It is read synchronously in many places and
+  by per-launch preference suites in UI tests, and a keychain-resident record would SURVIVE an uninstall while the app's data does not,
+  leaving a Live install with no index that pins a stale origin forever. `UserDefaults` goes away with the app, and keychain leftovers are
+  handled by the orphan wipe above. The epoch rollback binding is not implemented (a restored backup of the preferences could roll the
+  pin back to nil; the boot derivation then re-pins from the profiles).
+* **Live Home** never shows Welcome once an install exists: real workspace cards, Questions and Tickets, last checked, "Updates arrive while
+  orch is open.", and "N workspaces couldn't be verified. Leave and pair again" for restore skips (`LiveRuntime.skipped`). A Live with no
+  workspace (cancelled pairing, failed start) shows the way to pair again, the reason it is not running and Settings.
+* **Settings.** Realm section (Live: read-only origin, custody, connection and last check, build; no secrets or tokens), "Leave Live" and
+  "Leave Live and try Demo" (confirmation), "Leave Demo and pair your Mac" in Demo. A Live leave ends on Welcome with "Removed from this
+  iPhone; finish removing it on your Mac." (never a server-side claim).
+* **Stuck-wipe escape.** The recovery card of an unfinished wipe offers "Erase Live data on this iPhone" (confirmation): it removes the Live
+  files without the keychain or the index (`LiveServices.forceEraseLive`), clears the gate and the record and goes to Welcome. Keychain
+  items that could not be reached are removed by the orphan wipe at the next Live entry.
+* **`startLive` refuses a retired graph** (`guard !retired`, Opus L1 of #71).
+* **Scene lifecycle.** `AppRoot` owns the scene phase: workspaces pause (existing `setActive`) and the Live pairing on screen cancels its
+  polling and hides comparison codes (`obscured`); on return the state is re-read and polling resumes with the coordinator's original
+  deadlines. Not done: re-verification beyond that re-read, hiding Live Home content while the device is locked (protected data), and
+  the share/push parts (capabilities are off).
+
+Tests: `AppTests/LiveRuntimeTests.swift` (install ordering and crash windows, save failure, origin refusal with a request counter, owner pin
+derive/disagreement/mismatch, force erase, intake classification incl. Demo hold and cold launch, controller transitions, pairing pause) and
+`UITests/LiveEntryTests.swift` (paste, review, Connect, pairing screen, different origin, scanner unavailable, orch:// at launch, Demo switch,
+Leave Live). **Not covered, by design of the fakes:** a Live join to `ready` against FakeHost. FakeHost and FakePrimary sign with Demo authorities
+and a live realm refuses those by design (`crossRealmCertificate`), so the UI tests stop at "Connecting" behind a relay that never answers
+(`--live-test-relay`, DEBUG, `LiveTransport.unreachableForUITests`, covered by `scripts/check-no-test-hooks.sh`). The `ready` and Live Home with a
+real workspace are covered by restore tests; the end-to-end join needs a real relay and Mac (PR C).
+
+## Before Live entry (B2b) can ship: status
+
+Findings of the B2a review that belong to the entry flow. All done in B2b except where noted.
+
+1. **Done.** Owner pin (Opus M1): derived at boot from committed profiles with refusal on disagreement, plus an early write after the first join.
+2. **Done.** Install before secrets (Opus M2): orphan wipe, then the record, then the runtime.
+3. **Done.** `LiveInstallStore.save` throws and fails the join (Sonnet LOW 7).
+4. **Done.** Skipped workspaces (Opus L2) are shown in Live Home.
+5. **Documented, not done.** Install record location (Opus L3): stays in `UserDefaults` (reasons above); epoch binding open.
+6. **Done (minimum).** Stuck-wipe escape (Opus L4): "Erase Live data on this iPhone" from the recovery card.
+7. **Open.** Fence by construction (Opus L6): make a Live `RealmVault` carry a non-optional fence.
+8. **Known limit (Sonnet LOW 10).** A Live install whose keychain is unavailable cannot be left through the normal wipe (it fails closed); it shows
+   as a failed start, and the escape in 6 removes the files meanwhile.
 
 ## Priorities and risks
 
@@ -180,8 +234,9 @@ Findings of the B2a review that belong to the entry flow (nothing writes a `Live
   fence, realm-scoped cleanup, tests. Demo unchanged; Live is not reachable (no Live entry on Welcome, no Live networking).
 * **PR B1 (done), PR B2a (done):** fence inside OrchClient; transport factory, `LiveRuntime`, restoration, complete Live wipe and its gate,
   the Before-Live blockers above.
-* **PR B2b, Live entry (open).** Welcome entry; `orch://` URL scheme and `onOpenURL` into the review screen; paste; in-app scanner; Live pairing UI
-  (`LivePairingModel` without the Demo-only coordinator, writing the `LiveInstall` record on Connect); `reader_decl` pair meta v2; passphrase
-  custody for the Simulator (orch-core #465); scene and protected-data lifecycle ownership in `AppRoot`; "Leave Live" in Settings. Live becomes
-  reachable only together with these, restoration and the complete wipe (done).
-* **PR C, hardening.** Diagnostics screen, real device round trip, restart and lost-response tests, link-opening decision, documentation updates.
+* **PR B2b, Live entry (done).** Welcome entry, `orch://` and `onOpenURL` into the review screen, paste, in-app scanner, Live pairing UI, install record
+  ordering, owner pin, Settings (realm, Leave Live, switching), minimum scene lifecycle (above).
+* **PR C, hardening (open).** `reader_decl` pair meta v2 (H12d); passphrase custody for the Simulator (orch-core #465); host-api v1 on the core
+  operations; real relay end to end (a Live join to ready, restart and lost-response tests, a real device round trip); fence by construction
+  for the Live `RealmVault` (L6); install record epoch binding; protected-data handling of Live Home; diagnostics screen; link-opening decision
+  (universal links); documentation updates.
