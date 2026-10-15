@@ -40,10 +40,10 @@ public enum PhoneRetryTable {
 
     static let classA: Set<String> = [
         "stale_epoch", "stale_timestamp", "stale_sequence", "no_answer", "silence",
-        "timeout", "cancelled", "store.busy", "lock.busy", "busy", "rate.limited", "quota.host", "host.restarting", "conn.overloaded",
+        "timeout", "relay.timeout", "relay.silence", "relay.stale_epoch_hint", "cancelled", "store.busy", "lock.busy", "busy", "rate.limited", "quota.host", "host.restarting", "conn.overloaded",
         "outcome.unknown",
     ]
-    static let classB: Set<String> = ["already_done.unknown", "rid_conflict", "outcome.pending", "pending", "idem.expired"]
+    static let classB: Set<String> = ["already_done.unknown", "already_done", "rid_conflict", "outcome.pending", "pending", "idem.expired"]
     static let classCAuto: Set<String> = ["members.stale", "ticket.key_not_next"]
     static let classCReview: Set<String> = ["event.bad_base", "question.stale", "event.expired", "event.abandoned"]
     static let classD: Set<String> = [

@@ -42,3 +42,15 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
   `person_alice.sig` seeds and the two ids it uses. Extracted 2026-10-15 by script, no value edited. Re-extract (or re-vendor the whole file) together with the next relay re-vendor.
 - `f1/reader_kat_1.json`: orch-core `plugins/orch-core/tests/vectors/f1/reader_kat_1.json` at origin/develop `c0fdb989` (last commit touching the f1 directory: `33e7206ece74bcc78cf7b113a46f08d844756b98`), copied unmodified.
   `f1/labels.json` already carries `sig_reader_decl`.
+
+## r2/r2_framing.json (R2 bridge framing for column R, orch-core 11A.5 "As built in R2")
+
+- Source: orch-core `plugins/orch-core/tests/relay/r2_vectors/r2_framing.json` at origin/develop `ae4198c6de462d5cbff08da6e8f137aac0f43842` (orch-core #467
+  merged; last commit touching the file: `012c519b1440389467c04f4bb44e16e0a63ab207`), 37 cases, generated there by `scripts/gen_r2_framing_vectors.py`.
+- Copied: 2026-10-15, unmodified. Re-copy and update this note; never edit by hand.
+- sha256: `53c0cbc3c7a94297036b1159eebbaf587d5954475921af958373161a8ba81dba`
+- Consumed by `OrchClientTests/R2FramingVectorTests` (all 37 cases: request opens under the vector key and carries the named meta; every response
+  chunk passes `Bridge.checkResponse`; the assembled answer is the vector's Result or refusal with the closed per-code field sets and its retry
+  class; `constants` and `tables` (ops, meta keys, auth, proto and host refusal fields, retry classes and contexts) against the phone's own).
+- The vectors' read Results come from a test fake in core: only the framing is normative there (11A.5). The shapes of the individual ops are
+  host section 0.8.

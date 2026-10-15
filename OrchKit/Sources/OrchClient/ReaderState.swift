@@ -118,8 +118,8 @@ public enum ReaderGate {
 }
 
 /// The single injection point of `rd` into a column-R request (protocol v2 8.6: a field of the sealed request meta, never read by the
-/// relay). TODO(R2, orch-core #467): `WorkspaceSessionConfig.sendsReaderDigest` is switched on by the R2 framing wiring; until then
-/// no request carries it.
+/// relay). R2 (orch-core #467, merged): the field is `rd` in the request meta `{"op","args","idem"?,"rd"?}` (`R2.requestMeta`), and
+/// `WorkspaceSessionConfig.sendsReaderDigest` is on for paired (Live and Demo) sessions.
 ///
 /// Semantics: with `overwrite: false` (a same-rid re-seal, a byte-identical resend) a meta that already has `rd` keeps its FIRST value
 /// (protocol 8.6: a resend carries the `rd` of its first send); with `overwrite: true` (a NEW rid replacing a refused attempt) the

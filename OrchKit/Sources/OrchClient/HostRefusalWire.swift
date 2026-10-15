@@ -26,6 +26,7 @@ public extension HostRefusal {
         case .otherPerson: "other_person"
         case .certInvalid: "cert_invalid"
         case .certExpired: "cert_expired"
+        case .host(let code, _, _, _): code
         }
     }
 
@@ -39,6 +40,10 @@ public extension HostRefusal {
         case .staleEpoch(let e): o["epoch"] = .int(Int64(e))
         case .alreadyAnswered(let l, let at): o["by_device_label"] = .string(l); o["at_ms"] = .int(at)
         case .questionChanged(let h): o["content_hash"] = .string(B64U.encode(h))
+        case .host(_, let retryable, let seqs, let nextKey):
+            o["retryable"] = .bool(retryable)
+            if let seqs { o["seqs"] = .array(seqs.map { .int($0) }) }
+            if let nextKey { o["next_key"] = .string(nextKey) }
         default: break
         }
         return .object(o)
@@ -80,7 +85,56 @@ public extension HostRefusal {
         case "question_changed":
             guard rest == ["content_hash"], let h = m["content_hash"]?.string.flatMap({ B64U.decode($0, length: 32) }) else { return nil }
             self = .questionChanged(contentHash: h)
-        default: return nil
+        default: guard let r = Self.hostCode(code, m) else { return nil }; self = r
         }
+    }
+
+    /// The code spellings the R2 sheet's `retryable` field is checked against: a dotted section 0.6 code, or one of the undotted codes of
+    /// `framing.RETRY`.
+    private static func isHostCode(_ code: String) -> Bool {
+        let u = Array(code.utf8)
+        guard (1...64).contains(u.count) else { return false }
+        func lower(_ c: UInt8) -> Bool { c >= 0x61 && c <= 0x7A }
+        func word(_ c: UInt8) -> Bool { lower(c) || (c >= 0x30 && c <= 0x39) || c == 0x5F }
+        let parts = u.split(separator: 0x2E, omittingEmptySubsequences: false)
+        guard parts.allSatisfy({ !$0.isEmpty && lower($0.first!) && $0.allSatisfy(word) }) else { return false }
+        return parts.count >= 2 || PhoneRetryTable.knownCodes.contains(where: { $0.utf8.elementsEqual(u) })
+    }
+
+    /// `{"refusal": code, "retryable": bool, "seqs"?: [int], "next_key"?: Key}` and nothing else (host section 0.6 code, 11A.5).
+    /// `retryable` must equal what the code's class derives (A and B true, C and D false); `internal` and `outcome.unknown_idem` depend on
+    /// a context the answer does not carry, so either value is accepted for those two. `seqs` is a non-empty list of positive integers
+    /// (the events that LANDED), `next_key` only for `ticket.key_not_next`.
+    private static func hostCode(_ code: String, _ m: [String: JSONValue]) -> HostRefusal? {
+        guard isHostCode(code), let retryable = m["retryable"]?.bool,
+              Set(m.keys).isSubset(of: ["refusal", "retryable", "seqs", "next_key"]) else { return nil }
+        let contextual = code.bytesEqual("internal") || code.bytesEqual("outcome.unknown_idem")
+        if !contextual {
+            let derived = PhoneRetryTable.classify(code, PhoneRefusalContext(eventID: "", hostNowMs: 0)).retryable
+            guard retryable == derived else { return nil }
+        }
+        var seqs: [Int64]?
+        if let s = m["seqs"] {
+            guard let a = s.array, (1...1024).contains(a.count) else { return nil }
+            var out: [Int64] = []
+            for v in a { guard let n = v.int, n >= 1, n <= maxSafeInt else { return nil }; out.append(n) }
+            seqs = out
+        }
+        var nextKey: String?
+        if let k = m["next_key"] {
+            guard code.bytesEqual("ticket.key_not_next"), let s = k.string, (1...64).contains(s.utf8.count), validTicketKeyShape(s) else { return nil }
+            nextKey = s
+        }
+        return .host(code: code, retryable: retryable, seqs: seqs, nextKey: nextKey)
+    }
+
+    /// A ticket key as a display hint: `[A-Z][A-Z0-9]*-[0-9]+`. The `Key` type of host 0.1 says four or more digits, but the R2 vector
+    /// (`ticket_key_not_next`) carries `DEMO-42`, and `next_key` is advisory (never a reservation, never bound), so the shape is checked
+    /// loosely and only the length is capped.
+    private static func validTicketKeyShape(_ s: String) -> Bool {
+        let u = Array(s.utf8)
+        guard let dash = u.firstIndex(of: 0x2D), dash >= 1, u.count - dash - 1 >= 1 else { return false }
+        guard let f = u.first, f >= 0x41, f <= 0x5A else { return false }
+        return u[..<dash].allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) } && u[(dash + 1)...].allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
     }
 }

@@ -12,4 +12,9 @@ public enum Vectors {
     public static func f1(_ name: String) -> Data {
         try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("f1/\(name).json"))
     }
+
+    /// orch-core R2 framing vectors `plugins/orch-core/tests/relay/r2_vectors/r2_framing.json` (see PROVENANCE.md).
+    public static var r2Framing: Data {
+        try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("r2/r2_framing.json"))
+    }
 }

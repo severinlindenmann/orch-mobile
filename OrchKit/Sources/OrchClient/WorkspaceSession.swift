@@ -977,11 +977,16 @@ public actor WorkspaceSession: RealmParticipant {
                         return .refusal(refusal, fetchGrants: a.fetchGrants, offsetAdopted: a.offsetMs != nil)
                     }
                     if first == nil {
-                        guard let m = a.meta.object, Set(m.keys) == ["status", "headers"], let st = m["status"]?.int, (100...599).contains(st),
-                              let hs = m["headers"]?.object else { throw SessionError.badResponse }
-                        var headers: [String: String] = [:]
-                        for (k, v) in hs { guard let s = v.string else { throw SessionError.badResponse }; headers[k] = s }
-                        first = (Int(st), headers)
+                        if R2.isOKMeta(a.meta) {
+                            // R2 (host 11A.5): chunk 0 meta exactly {"status":"ok"}, the data across the chunks is cj(Result)
+                            first = (200, [:])
+                        } else {
+                            guard let m = a.meta.object, Set(m.keys) == ["status", "headers"], let st = m["status"]?.int, (100...599).contains(st),
+                                  let hs = m["headers"]?.object else { throw SessionError.badResponse }
+                            var headers: [String: String] = [:]
+                            for (k, v) in hs { guard let s = v.string else { throw SessionError.badResponse }; headers[k] = s }
+                            first = (Int(st), headers)
+                        }
                     } else if a.meta.object?.isEmpty != true { throw SessionError.badResponse }
                     body.append(a.data)
                     if body.count > Self.maxResponseBytes { throw SessionError.tooLarge }

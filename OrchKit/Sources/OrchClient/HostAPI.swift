@@ -338,6 +338,10 @@ public enum HostRefusal: Error, Equatable, Sendable {
     case alreadyAnswered(byDeviceLabel: String, atMs: Int64)
     case questionChanged(contentHash: Data)
     case pairingClosed, otherPerson, certInvalid, certExpired
+    /// A host section 0.6 code on a column-R answer (11A.5 "As built in R2"): `retryable` is always present and DERIVED from the code's
+    /// retry class; `seqs` only for a write whose events landed; `nextKey` only for `ticket.key_not_next` (advisory). No message,
+    /// no request text.
+    case host(code: String, retryable: Bool, seqs: [Int64]?, nextKey: String?)
 }
 
 /// What a client call throws once a reply has been understood. Relay and host refusals are never conflated.
