@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OrchShareStaging
 
 /// Owns the active realm and replaces its entire service graph on every transition (decision: one active realm, explicit destructive
 /// switch). The view layer keys on `epoch`, so navigation stacks, sheets and pairing presentations of the outgoing realm are dropped
@@ -27,6 +28,11 @@ final class RealmController: RealmTransitions {
     /// Bumps on every graph replacement; the root view uses it as its identity.
     private(set) var epoch = 0
     private(set) var booted = false
+    /// A visible explanation when a requested realm could not start (shown over Welcome).
+    private(set) var notice: String?
+    /// The share extension's App Group area (nil where the group is unavailable: unit tests, unsigned builds).
+    @ObservationIgnored var shareArea: ShareArea? = FileManager.default
+        .containerURL(forSecurityApplicationGroupIdentifier: ShareBridge.groupIdentifier).map { ShareArea(shareGroupRoot: $0) }
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private var transitionTask: Task<Void, Never>?
     /// Builds the next realm's services (a test seam).
@@ -71,42 +77,66 @@ final class RealmController: RealmTransitions {
     func realmEnterDemo() {
         // Already in Demo (e.g. a forced Welcome route over a Demo launch): nothing to replace.
         guard state == .welcome, transitionTask == nil else { return }
-        state = .starting
+        notice = nil
+        let label = services.deviceLabel
         let next = makeServices(options, defaults)
+        next.deviceLabel = label
         replaceServices(with: next)
-        transitionTask = Task { [weak self] in
-            await next.boot(enterDemo: true, launch: false)
-            guard let self else { return }
-            self.transitionTask = nil
-            guard self.services === next else { return }
-            self.publish()
-        }
+        state = .starting
+        transitionTask = Task { [weak self] in await self?.bootDemo(next) }
     }
 
-    /// Demo -> Welcome (or -> Demo again for "Reset Demo data"): the outgoing realm is wiped completely first. A failed wipe parks the
-    /// controller in `recoveryRequired` with the outgoing realm still in place; the destination is never activated meanwhile.
+    /// Boots `next` into Demo. A Demo that cannot start leaves a visible notice instead of silently landing on Welcome.
+    private func bootDemo(_ next: LiveServices) async {
+        await next.boot(enterDemo: true, launch: false)
+        transitionTask = nil
+        guard services === next else { return }
+        if !next.isDemo && !next.resetIncomplete { notice = "Demo could not start. Try again." }
+        publish()
+    }
+
+    /// Leaves the current realm completely, then lands on Welcome, or boots Demo again when `thenDemo` ("Reset Demo data").
+    ///
+    /// Ordering: everything that can still reach the outgoing realm is cut off synchronously, before any await: the share destinations
+    /// are retired, the outgoing view graph is dropped (`epoch`), and its lifetime is invalidated. Then the wipe runs. A failed wipe
+    /// parks the controller in `recoveryRequired` with the outgoing realm still in place; the destination is never activated meanwhile.
     func realmLeave(thenDemo: Bool) {
         guard state != .leaving, state != .starting else { return }
         let outgoing = services
+        let label = outgoing.deviceLabel
+        notice = nil
+        retireShareTargets()
         state = .leaving
-        epoch += 1                 // the outgoing view graph (navigation, sheets, pairing) goes now
-        outgoing.teardown(thenDemo: false)
+        epoch += 1
+        outgoing.teardown()
         transitionTask = Task { [weak self] in
             await outgoing.waitForReset()
             guard let self else { return }
-            self.transitionTask = nil
-            guard self.services === outgoing else { return }
+            guard self.services === outgoing else { self.transitionTask = nil; return }
             if outgoing.resetIncomplete {
+                self.transitionTask = nil
                 self.state = .recoveryRequired
                 self.epoch += 1
                 return
             }
             let next = self.makeServices(self.options, self.defaults)
+            next.deviceLabel = thenDemo ? label : "iPhone"
             self.replaceServices(with: next)
-            await next.boot(launch: false)
-            self.state = .welcome
-            if thenDemo { self.realmEnterDemo() }
+            if thenDemo {
+                self.state = .starting
+                await self.bootDemo(next)       // the one boot of the target realm; waitForTransition covers it
+            } else {
+                await next.boot(launch: false)
+                self.transitionTask = nil
+                self.publish()
+            }
         }
+    }
+
+    /// Publishes an empty share index so the extension offers no destination of the outgoing realm. Synchronous and independent of any view.
+    private func retireShareTargets() {
+        guard let area = shareArea else { return }
+        try? ShareTargetIndex.publish([], to: area)
     }
 
     func waitForTransition() async { await transitionTask?.value }

@@ -8,6 +8,7 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func shareIdentity(of workspaceID: String) -> (ws: String, generation: Int64)? { nil }
     var isDemo: Bool
     var capabilities: RealmCapabilities = .demo
+    var shareRealm: String { isDemo ? "demo" : "live" }
     var workspaces: [WorkspaceInfo] = []
     var questions: [Question] = []
     var tickets: [Ticket] = []

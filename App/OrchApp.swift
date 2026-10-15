@@ -59,6 +59,12 @@ struct AppRoot: View {
                     .accessibilityIdentifier("app.starting")
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let notice = realm.notice {
+                Text(notice).font(.footnote).padding(8).frame(maxWidth: .infinity).background(OC.bg)
+                    .accessibilityIdentifier("realm.notice")
+            }
+        }
         .task {
             await realm.boot()
             if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: realm.services) }

@@ -42,13 +42,14 @@ final class RealmBoundaryTests: XCTestCase {
         XCTAssertTrue(all.drop && all.share && all.push && all.demoControls)
         let none = RealmCapabilities.none
         XCTAssertFalse(none.drop || none.share || none.push || none.demoControls)
-        XCTAssertEqual(LiveServices(options: options).capabilities, .demo)
+        XCTAssertEqual(LiveServices(options: options).capabilities, .none)      // no realm attached: nothing is offered
         XCTAssertEqual(PreviewWorld(demo: true).capabilities, .demo)
     }
 
     func testWithoutDropCapabilityNoLiveDropIsBuiltAndNothingIsShareable() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)
-        let services = LiveServices(options: options, runtime: runtime, capabilities: noOptionalSurfaces)
+        runtime.capabilities = noOptionalSurfaces
+        let services = LiveServices(options: options, runtime: runtime)
         let model = await pair(services)
         guard case .ready = model.state else { return XCTFail("pairing did not finish: \(model.state)") }
         let ws = try XCTUnwrap(services.live.first)
@@ -71,7 +72,7 @@ final class RealmBoundaryTests: XCTestCase {
     }
 
     func testWithoutPushCapabilityNeitherPermissionNorAPNsIsTouched() async {
-        let services = LiveServices(options: options, capabilities: noOptionalSurfaces)
+        let services = LiveServices(options: options)     // no realm attached
         var reads = 0, registrations = 0
         services.currentPermission = { reads += 1; return .authorized }
         services.registerForAPNs = { registrations += 1 }
@@ -80,15 +81,6 @@ final class RealmBoundaryTests: XCTestCase {
         XCTAssertEqual(registrations, 0)
         XCTAssertEqual(services.notificationStatus, .notAsked)
         XCTAssertEqual(services.pushDiagnostics, "")
-    }
-
-    func testPushCapableInstallationStillRegistersWhenAllowed() async {
-        let services = LiveServices(options: options)      // no runtime: not Demo
-        var registrations = 0
-        services.currentPermission = { .authorized }
-        services.registerForAPNs = { registrations += 1 }
-        await services.refreshNotificationStatus()
-        XCTAssertEqual(registrations, 1)
     }
 
     func testShareBridgeOffersNoDestinationsWithoutShareCapability() throws {
@@ -202,5 +194,50 @@ final class RealmBoundaryTests: XCTestCase {
         await controller.waitForTransition()
         XCTAssertEqual(controller.state, .welcome)
         XCTAssertFalse(controller.services.isDemo)
+    }
+
+    func testResetDemoDataKeepsTheDeviceLabelAndWaitsForTheSecondBoot() async {
+        let controller = RealmController(options: options)
+        await controller.boot()
+        controller.realmEnterDemo()
+        await controller.waitForTransition()
+        controller.services.deviceLabel = "Severin's iPhone"
+        let first = controller.services
+        controller.realmLeave(thenDemo: true)
+        await controller.waitForTransition()
+        XCTAssertEqual(controller.state, .demo)          // the transition ended only after the second Demo boot
+        XCTAssertFalse(controller.services === first)
+        XCTAssertTrue(controller.services.isDemo)
+        XCTAssertEqual(controller.services.deviceLabel, "Severin's iPhone")
+        XCTAssertEqual(controller.services.demo?.deviceLabel, "Severin's iPhone")
+    }
+
+    func testLeaveRetiresShareTargetsSynchronouslyBeforeAnyAwait() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("realm-retire-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let area = ShareArea(shareGroupRoot: root)
+        let controller = RealmController(options: options)
+        controller.shareArea = area
+        await controller.boot()
+        controller.realmEnterDemo()
+        await controller.waitForTransition()
+        try ShareTargetIndex.publish([ShareTarget(realm: "demo", ws: String(repeating: "a", count: 32), name: "Laptop", hue: 0, generation: 1)], to: area)
+        XCTAssertEqual(try ShareTargetIndex.load(from: area).count, 1)
+        controller.realmLeave(thenDemo: false)
+        // No await has happened since the leave began: the extension already has no destination of the outgoing realm.
+        XCTAssertThrowsError(try ShareTargetIndex.load(from: area))
+        await controller.waitForTransition()
+    }
+
+    func testCapabilitiesAndRealmFollowTheAttachedRuntime() async throws {
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime)
+        XCTAssertEqual(services.realm, .demo)
+        XCTAssertTrue(services.isDemo)
+        XCTAssertEqual(services.capabilities, .demo)
+        services.exitDemo(); await services.waitForReset()
+        XCTAssertNil(services.realm)
+        XCTAssertFalse(services.isDemo)
+        XCTAssertEqual(services.capabilities, .none)
     }
 }

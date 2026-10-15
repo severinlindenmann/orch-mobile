@@ -17,7 +17,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     let options: LaunchOptions
     private(set) var ready = false
-    private(set) var isDemo = false
+    /// Derived from the attached runtime's realm, never from "a runtime exists".
+    var isDemo: Bool { runtime?.realm == .demo }
     private(set) var live: [LiveWorkspace] = []
     private(set) var pendingDecisions: [DecisionStatus] = []
     private(set) var lastChecked = Date()
@@ -30,14 +31,18 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var notificationStatus: NotificationStatus = .notAsked
     private(set) var pushDiagnostics = ""
     private(set) var pendingServerCleanups: [PendingServerCleanup] = []
-    /// What this realm offers (Drop, share, push, Demo controls). Features are gated on these, never on `isDemo`.
-    let capabilities: RealmCapabilities
-    let realm: Realm
+    /// What the attached realm offers (Drop, share, push, Demo controls), derived from its runtime. A graph with no realm (Welcome,
+    /// recovery) offers nothing: no push registration, no share destinations, no Drop. Features are gated on these, never on `isDemo`.
+    var capabilities: RealmCapabilities { runtime?.capabilities ?? .none }
+    /// The realm of the attached runtime; nil while no realm is attached.
+    var realm: Realm? { runtime?.realm }
+    var shareRealm: String { realm?.rawValue ?? "live" }
     /// Invalidated when the realm is left or retired: late completions check it before they write, sign or register anything.
     @ObservationIgnored private(set) var lifetime = RealmLifetime()
-    /// Set by `RealmController`: realm transitions go through it. Without one (unit tests) the services transition in place.
+    /// Set by `RealmController`: realm transitions go through it. Without one (unit tests) leaving only tears this graph down.
     @ObservationIgnored weak var transitions: (any RealmTransitions)?
-    @ObservationIgnored private(set) var cleanupStore: ServerCleanupStore
+    /// Per realm; nil until a realm is attached.
+    @ObservationIgnored private(set) var cleanupStore: ServerCleanupStore?
     var cleanupDefaults: UserDefaults { resetFlags }
     /// The server-side half of Leave (push unsubscribe, membership removal). Demo simulates it; it throws while offline.
     @ObservationIgnored var serverCleanup: (PendingServerCleanup) async throws -> Void = { _ in }
@@ -78,7 +83,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func register(_ ws: LiveWorkspace) {
         ws.services = self
         // A re-paired workspace is a new membership: an old cleanup must never reach it.
-        pendingServerCleanups = cleanupStore.remove(ws: ws.workspaceID.hex)
+        pendingServerCleanups = cleanupStore?.remove(ws: ws.workspaceID.hex) ?? []
         PresentationGate.unblock(ws.workspaceID.hex)
         lifecycle[ws.info.id] = .live
         live.append(ws)
@@ -94,20 +99,28 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if state != .live { refreshTasks[id]?.cancel(); refreshTasks[id] = nil }
     }
 
-    init(options: LaunchOptions, runtime: (any RealmRuntime)? = nil, resetFlags: UserDefaults? = nil,
-         realm: Realm = .demo, capabilities: RealmCapabilities = .demo) {
-        self.realm = realm; self.capabilities = capabilities
+    init(options: LaunchOptions, runtime: (any RealmRuntime)? = nil, resetFlags: UserDefaults? = nil) {
         self.resetFlags = resetFlags ?? (options.uiTesting
             ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
-        self.options = options; self.runtime = runtime; self.isDemo = runtime != nil
-        cleanupStore = ServerCleanupStore(defaults: self.resetFlags, realm: realm)
-        pendingServerCleanups = cleanupStore.load()
+        self.options = options
+        if let runtime { attach(runtime) }
+    }
+
+    /// Binds the realm's runtime: capabilities and the realm-scoped cleanup list follow it.
+    private func attach(_ r: any RealmRuntime) {
+        runtime = r
+        let store = ServerCleanupStore(defaults: resetFlags, realm: r.realm)
+        cleanupStore = store
+        pendingServerCleanups = store.load()
     }
 
     // MARK: Boot
 
     /// `enterDemo`: the Welcome choice "Try Demo" (the controller boots a fresh realm for it) instead of a launch flag or persisted entry.
     /// `launch`: this is the app's first realm, so launch flags and the persisted Demo entry apply; a realm created by a later transition starts exactly as asked.
+    /// Whether this graph's own boot asked for Demo (launch flag, persisted entry or Welcome choice).
+    @ObservationIgnored private(set) var wantsDemo = false
+
     func boot(enterDemo: Bool = false, launch: Bool = true) async {
         guard !ready else { return }
         let defaults = UserDefaults.standard
@@ -124,8 +137,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 PresentationGate.requireRebuild()
             }
         }
+        if resetIncomplete {
+            // An unfinished wipe blocks every realm, even a requested Demo: recovery comes first.
+            wantsDemo = false
+            await ensurePresentationGate(intendedDemo: false)
+            ready = true
+            return
+        }
         let persisted = launch && !options.uiTesting && defaults.bool(forKey: Keys.demo)
-        let wantsDemo = (launch && options.demo) || persisted || enterDemo
+        wantsDemo = (launch && options.demo) || persisted || enterDemo
         if wantsDemo { _ = await startDemo() }
         if launch, options.demoSeed, isDemo { await seedDemoWorkspaces() }
         await ensurePresentationGate(intendedDemo: wantsDemo)
@@ -166,8 +186,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let r = await task.value
         guard revision == resetRevision else { return nil }
         bootTask = nil
-        runtime = r
-        isDemo = r != nil
+        if let r { attach(r) }
         if r == nil { PresentationGate.requireRebuild() }
         if let r {
             r.deviceLabel = deviceLabel; await r.rebuildPresentationGate()
@@ -322,7 +341,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
-        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: options.demo || isDemo) } }
+        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: wantsDemo) } }
         if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
         refreshTasks = [:]
@@ -686,11 +705,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     // MARK: Pending server cleanup (U9)
 
     private func enqueueServerCleanup(ws: String, generation: Int64) {
-        pendingServerCleanups = cleanupStore.add(PendingServerCleanup(ws: ws, generation: generation, since: Date()))
+        pendingServerCleanups = cleanupStore?.add(PendingServerCleanup(ws: ws, generation: generation, since: Date())) ?? []
     }
 
     /// Back online: tries each pending server-side cleanup once. Successes leave the list; failures stay for the next try.
     func retryServerCleanup() async {
+        guard let cleanupStore else { return }
         for item in cleanupStore.load() {
             do { try await serverCleanup(item); pendingServerCleanups = cleanupStore.remove(ws: item.ws, generation: item.generation) }
             catch { continue }
@@ -742,10 +762,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Wipes the Demo realm through the real reset path and leaves Demo.
     func resetThisiPhone() { leaveRealm(thenDemo: false) }
     func exitDemo() { leaveRealm(thenDemo: false) }
+    /// "Reset Demo data" is leave-then-Demo: only a `RealmController` can do the second half, so without one it is a no-op.
     func resetDemoData() { leaveRealm(thenDemo: true) }
 
     private func leaveRealm(thenDemo: Bool) {
-        if let transitions { transitions.realmLeave(thenDemo: thenDemo) } else { teardown(thenDemo: thenDemo) }
+        if let transitions { transitions.realmLeave(thenDemo: thenDemo) }
+        else if !thenDemo { teardown() }
     }
 
     /// Ends this realm's lifetime without wiping anything: every late completion that still holds this instance becomes inert.
@@ -758,10 +780,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     /// The in-place realm exit (also what `RealmController` drives). The lifetime is invalidated first, before any await.
-    func teardown(thenDemo: Bool) {
+    func teardown() {
         lifetime.invalidate()
         resetRevision += 1
-        let revision = resetRevision
         let pendingBoot = bootTask
         bootTask = nil
         let old = runtime
@@ -775,9 +796,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
         demoLockRelease?.cancel()
         resetFlags.set(true, forKey: Keys.resetPending)
-        pendingServerCleanups = cleanupStore.clear()   // the device identity goes with it; nothing is left to clean up from here
-        isDemo = false
-        deviceLabel = thenDemo ? deviceLabel : "iPhone"
+        pendingServerCleanups = cleanupStore?.clear() ?? []   // the device identity goes with it; nothing is left to clean up from here
+        cleanupStore = nil
+        deviceLabel = "iPhone"
         if !options.uiTesting { UserDefaults.standard.set(false, forKey: Keys.demo) }
         let previous = resetTask
         resetTask = Task { [weak self] in
@@ -793,7 +814,6 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 for id in self.lifecycle.keys { self.transition(id, to: .removed) }
                 self.resetFlags.set(false, forKey: Keys.resetPending)
                 self.resetIncomplete = false
-                if thenDemo, revision == self.resetRevision { await self.startDemoAfterReset() }
             } catch {
                 self.resetIncomplete = true
                 for id in self.lifecycle.keys { self.transition(id, to: .removalIncomplete) }
@@ -801,10 +821,6 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
     }
 
-    private func startDemoAfterReset() async {
-        resetTask = nil
-        _ = await startDemo()
-    }
 }
 
 /// The realm transitions a `RealmController` performs on behalf of the services' own Welcome/Settings actions.

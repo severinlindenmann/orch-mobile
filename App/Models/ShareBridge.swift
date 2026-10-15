@@ -7,7 +7,8 @@ import OrchShareStaging
 protocol ShareWorld: AnyObject {
     /// `capabilities.share` off: no destinations are published and nothing is imported or uploaded for this realm.
     var capabilities: RealmCapabilities { get }
-    var isDemo: Bool { get }
+    /// The realm of this graph ("demo" or "live"), taken from its attached runtime, not from `isDemo`.
+    var shareRealm: String { get }
     var workspaces: [WorkspaceInfo] { get }
     var beforeWorkspaceRemoval: ((String) -> Bool)? { get set }
     var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)? { get set }
@@ -64,7 +65,7 @@ final class ShareBridge {
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }
 
-    var realm: String { world.isDemo ? "demo" : "live" }
+    var realm: String { world.shareRealm }
 
     /// Removals whose tombstone is not yet durable (retried on every publish).
     var unfinishedRemovals: Int { (try? inbox.pendingRemovals().count) ?? 0 }
@@ -113,7 +114,7 @@ final class ShareBridge {
             let top = tombstones.filter { $0.realm == realm && $0.ws == hex }.map(\.generation).max() ?? 0
             let target = ShareTarget(realm: realm, ws: hex, name: ws.name, hue: ws.hue, generation: identity?.generation ?? top + 1)
             nextTracked[ws.id] = target
-            if world.capabilities.share, !world.isDemo || publishDemo, world.eligibleShareDestination(ws.id) {
+            if world.capabilities.share, realm != "demo" || publishDemo, world.eligibleShareDestination(ws.id) {
                 next[ws.id] = target
             }
         }
@@ -129,7 +130,7 @@ final class ShareBridge {
                 } else {
                     // The OTHER realm's entries: a live app retires stale Demo targets (Demo storage is wiped each boot), but Demo
                     // must never tombstone live targets (that would burn their generation and kill the destination for good).
-                    guard !world.isDemo, old.realm == "demo" else { continue }
+                    guard realm == "live", old.realm == "demo" else { continue }
                 }
                 try inbox.recordRemoval(TombstoneRecord(realm: old.realm, ws: old.ws, generation: old.generation))
             }
@@ -139,7 +140,7 @@ final class ShareBridge {
         published = next
         listed = Set(next.keys)
         // While Demo is active the persisted LIVE destinations stay visible (the extension labels Demo ones); imports are realm-checked.
-        let kept = world.isDemo ? persisted.filter { $0.realm == "live" } : []
+        let kept = realm == "demo" ? persisted.filter { $0.realm == "live" } : []
         // publish records its own outcome (index-status.json) for the on-device diagnostics, so try? loses nothing.
         try? ShareTargetIndex.publish(world.workspaces.compactMap { next[$0.id] } + kept, to: area)
         lastPurge = inbox.purgeTombstoned()

@@ -18,12 +18,22 @@ Origin: a Codex design proposal, edited to the owner's decisions.
 
 `AppRoot` owns a `RealmController` with the states welcome, starting, demo, live, leaving and recoveryRequired. A transition replaces
 the whole realm's service graph (a new `LiveServices`) and view graph (the root view is keyed on the controller's `epoch`), so
-navigation stacks, sheets and pairing presentations of the outgoing realm go with it. The outgoing services are retired first.
+navigation stacks, sheets and pairing presentations of the outgoing realm go with it.
+
+Ordering on a leave, all synchronous before the first await: the share index is published empty (the extension offers no destination of
+the outgoing realm, independent of any view), the view graph is dropped (`epoch`), and the outgoing `RealmLifetime` is invalidated.
+Then the wipe runs. While the state is `.leaving` or `.starting` the root shows only the `app.starting` spinner: Home is blank by
+design, so no stale handle is reachable from a view. After a successful wipe the target realm is booted once: Welcome, or Demo for
+"Reset Demo data" (`thenDemo`), which keeps the device label and ends the transition only after the Demo boot completes. A Demo that
+cannot start shows a notice over Welcome. An unfinished wipe at launch blocks every realm, even with `--demo`; recovery comes first.
 
 * `RealmRuntime`: what the app needs from a realm's runtime: coordinator construction, workspace restoration, wipe and shutdown
   (plus clock, presentation gate and draft location). `DemoRuntime` conforms; `LiveRuntime` will.
 * `DemoControls`: everything Demo-only (scenario, fake host and primary, faults and lock simulation, notification simulation, Drop
   fixture seeding). Only `DemoRuntime` conforms; non-Demo code reaches it through `LiveServices.demo`.
+* Realm and capabilities are tied to the attached runtime: a graph with no runtime (Welcome, recovery) has no realm and no
+  capabilities (no push registration, no share, no Drop). `isDemo` is derived from the runtime's realm, and `ShareWorld` takes its
+  realm from the graph.
 * `RealmCapabilities` on `AppServices`: `drop`, `share`, `push`, `demoControls`. Demo has all on. Gated: Drop tab, card, routes and the
   workspace Files segment (stale routes show "Not available"); share extension destinations and import work; APNs registration and the
   permission prompt themselves; Demo controls and `SimulationNotice`. `LiveDrop` is not constructed when `drop` is off.
@@ -61,6 +71,21 @@ preserving uncertain decisions and ticket submission identities.
 
 Scene and protected-data lifecycle ownership moves to `AppRoot`: both workspace and pairing polling suspend in background, reviews
 are invalidated and comparison codes hidden; resume verifies and keeps the original deadlines.
+
+## Before Live (PR B) can ship
+
+PR A is a boundary for Demo; the following are blockers for making Live reachable (Opus review).
+
+1. **Realm generation fence inside OrchClient (H1).** The app-level `RealmLifetime` only guards app code. The Live `RealmContext`,
+   custody and transport must check a realm-level generation themselves with `perform()` semantics, as `DemoGeneration` does, so a
+   stale handle cannot sign or write after Leave.
+2. **Synchronous `RealmRuntime.invalidate()`** is the first statement of teardown. The runtime tracks every pairing coordinator and
+   every `WorkspaceSession`, and `shutdown` cancels and awaits them, so a late pairing commit or decision sign cannot survive
+   Leave Live.
+3. **`retire()` (L1)** must not be used on a realm with live sessions, or must be completed to stop and drain them.
+4. **Pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
+5. **Failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.
+6. Done in PR A, listed for completeness: stale share destinations are retired synchronously at leave.
 
 ## Priorities and risks
 

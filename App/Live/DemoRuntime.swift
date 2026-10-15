@@ -41,6 +41,7 @@ final class DemoRuntime: DemoControls {
     }
 
     var realm: Realm { .demo }
+    var capabilities: RealmCapabilities = .demo
     var nowMs: Int64 { clock.nowMs }
     let notifications: DemoNotifications
     let clock: TestClock
