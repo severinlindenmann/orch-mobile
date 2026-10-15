@@ -270,6 +270,107 @@ private func phoneChunks(_ c: [String: JSONValue], _ v: R2Vectors) throws -> [R2
         #expect(byName["already_done_on_a_read"]!["retry_class"] == "B")
     }
 
+    // MARK: C2b writes
+
+    /// The vector's write request as a `SignedPhoneEvent` (signing bytes recomputed from the event, the vector's signature kept).
+    private func vectorWrite(_ c: [String: JSONValue]) throws -> SignedPhoneEvent? {
+        guard let meta = c["request_meta"]?.object, let op = meta["op"]?.string, ["answer", "new_ticket"].contains(op),
+              let args = meta["args"]?.object, let log = args["log"]?.string, let ev = args["events"]?.array?.first?.object,
+              let id = ev["id"]?.string, let idem = meta["idem"]?.string, idem == id, let sigText = ev["sig"]?.string,
+              let sig = B64U.decode(sigText, length: 64) else { return nil }
+        var unsigned = ev; unsigned["sig"] = nil
+        let bytes = try PhoneEvents.signingBytes(event: unsigned, log: log, workspace: v.workspace)
+        return SignedPhoneEvent(kind: op == "answer" ? .questionAnswered : .ticketCreated, log: log, id: id, event: ev,
+                                bytes: try canonicalJSON(.object(ev)), signingBytes: bytes, digest: PhoneEvents.digest(signingBytes: bytes), signature: sig)
+    }
+
+    @Test func writeMetaIsTheVectorsRequestMetaBytewise() throws {
+        var checked = 0
+        for c in v.cases {
+            let name = c["name"]!.string!
+            guard let e = try vectorWrite(c) else { continue }
+            var want = c["request_meta"]!.object!; want["rd"] = nil
+            let got = try R2.writeMeta(e)
+            #expect(try canonicalJSON(got) == canonicalJSON(.object(want)), "\(name)")
+            // `rd` joins at the injection point only
+            #expect(got.object?["rd"] == nil)
+            checked += 1
+        }
+        #expect(checked >= 8)
+    }
+
+    @Test func theVectorsDeviceSignatureVerifiesOverTheRecomputedBytes() throws {
+        let pub = try SigningPublicKey(x963: B64U.decode(v.root.object!["device"]!.object!["dk_sig_pub"]!.string!)!)
+        let label = Label.sigTicketEvent
+        let byName = Dictionary(uniqueKeysWithValues: v.cases.map { ($0["name"]!.string!, $0) })
+        for (name, valid) in [("answer_write", true), ("new_ticket", true), ("write_sig_invalid", false)] {
+            let e = try vectorWrite(byName[name]!)!
+            #expect(Signature.verify(pub, signature: e.signature, label: label, message: Data(e.signingBytes.dropFirst(label.utf8.count))) == valid, "\(name)")
+        }
+    }
+
+    @Test func writeMetaRefusesWhatTheHostWouldNot() throws {
+        let byName = Dictionary(uniqueKeysWithValues: v.cases.map { ($0["name"]!.string!, $0) })
+        let g = try vectorWrite(byName["answer_write"]!)!
+        func with(kind: SignedPhoneEvent.Kind? = nil, log: String? = nil, id: String? = nil, event: [String: JSONValue]? = nil) -> SignedPhoneEvent {
+            SignedPhoneEvent(kind: kind ?? g.kind, log: log ?? g.log, id: id ?? g.id, event: event ?? g.event, bytes: g.bytes,
+                             signingBytes: g.signingBytes, digest: g.digest, signature: g.signature)
+        }
+        // op against event type
+        #expect(throws: HostWriteError.opMismatch) { try R2.writeMeta(with(kind: .ticketCreated)) }
+        // idem against the event id
+        #expect(throws: HostWriteError.idemMismatch) { try R2.writeMeta(with(id: "01M3250V00BHNMJWQANVEZD5GN")) }
+        #expect(throws: HostWriteError.logMismatch) { try R2.writeMeta(with(log: "nope")) }
+        var unsigned = g.event; unsigned["sig"] = nil
+        #expect(throws: HostWriteError.malformedEvent) { try R2.writeMeta(with(event: unsigned)) }
+        // a grant-shaped string in the event is refused by the shared meta checks
+        var grant = g.event; grant["option"] = "gr_00000000000000000000000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        #expect(throws: R2.MetaError.grantSecretInArgs) { try R2.writeMeta(with(event: grant)) }
+    }
+
+    @Test func writeResultParsesTheSuccessAnswer() throws {
+        let byName = Dictionary(uniqueKeysWithValues: v.cases.map { ($0["name"]!.string!, $0) })
+        for (name, seq) in [("answer_write", Int64(2)), ("new_ticket", Int64(1))] {
+            let e = try vectorWrite(byName[name]!)!
+            guard case .result(let r) = try R2.assemble(try phoneChunks(byName[name]!, v)) else { Issue.record("not a result"); continue }
+            let w = try WriteResult(parsing: r, expecting: e)
+            #expect(w.seq == seq && w.log == e.log && !w.duplicate, "\(name)")
+            // not ours: another log is not evidence
+            let other = SignedPhoneEvent(kind: e.kind, log: "01M3250V00NHWB5XA23Q4CM98S", id: e.id, event: e.event, bytes: e.bytes, signingBytes: e.signingBytes,
+                                         digest: e.digest, signature: e.signature)
+            #expect(throws: ViewError.malformed) { _ = try WriteResult(parsing: r, expecting: other) }
+        }
+        let e = try vectorWrite(byName["answer_write"]!)!
+        func result(_ data: String, exit: Int = 0) throws -> HostResult {
+            try HostResult(parsing: Data("{\"data\":\(data),\"exit\":\(exit)}".utf8))
+        }
+        let log = e.log
+        #expect(try WriteResult(parsing: try result("{\"log\":\"\(log)\",\"seqs\":[3]}"), expecting: e).seq == 3)
+        for bad in ["{\"log\":\"\(log)\",\"seqs\":[]}", "{\"log\":\"\(log)\",\"seqs\":[0]}", "{\"log\":\"\(log)\",\"seqs\":[1,2]}",
+                    "{\"log\":\"\(log)\"}", "{\"seqs\":[1]}", "{\"log\":\"\(log)\",\"seqs\":[1],\"extra\":1}", "{\"log\":\"\(log)\",\"seqs\":[\"1\"]}",
+                    "{\"log\":\"\(log)\",\"seqs\":[1.5]}", "[]", "null"] {
+            #expect(throws: ViewError.malformed, "\(bad)") { _ = try WriteResult(parsing: try result(bad), expecting: e) }
+        }
+        #expect(throws: ViewError.malformed) { _ = try WriteResult(parsing: try result("{\"log\":\"\(log)\",\"seqs\":[1]}", exit: 5), expecting: e) }
+    }
+
+    @Test func outcomeResultsOfTheVectorsParse() throws {
+        let byName = Dictionary(uniqueKeysWithValues: v.cases.map { ($0["name"]!.string!, $0) })
+        func outcome(_ n: String) throws -> OutcomeResult {
+            guard case .result(let r) = try R2.assemble(try phoneChunks(byName[n]!, v)) else { throw ViewError.malformed }
+            return try OutcomeResult(r.data)
+        }
+        let committed = try outcome("outcome_get_committed")
+        #expect(committed.state == .committed && committed.exit == 0)
+        let landed = try WriteResult(parsing: committed.result!, expecting: try vectorWrite(byName["new_ticket"]!)!)
+        #expect(landed.seq == 1)
+        let partial = try outcome("outcome_get_partial")
+        #expect(partial.state == .partial && partial.seqs == [7] && partial.errorCode == "invalid.input")
+        let failed = try outcome("outcome_get_failed")
+        #expect(failed.state == .failed && failed.seqs == nil && failed.errorCode == "ticket.exists")
+        #expect(try outcome("outcome_get_pending").state == .pending)
+    }
+
     @Test func readerRefusalShapesOfH12d3() {
         func m(_ code: String, _ extra: [String: JSONValue]) -> JSONValue {
             var o: [String: JSONValue] = ["refusal": .string(code), "retryable": false]
