@@ -86,7 +86,7 @@ extension FakeHost {
         return try await r.w.serve(r.p, steps: steps) { try await api.answer(s, option: option) }
     }
 
-    func rows(_ p: Phone, _ sql: String) async throws -> [SQLRow] { try await p.container.database().query(sql) }
+    func rows(_ p: Phone, _ sql: String, _ args: [SQLValue] = []) async throws -> [SQLRow] { try await p.container.database().query(sql, args) }
 
     /// A new session over the same storage (an app relaunch); the old one goes to the background first so it sends nothing more.
     func relaunch(_ r: Rig, hooks: Hooks? = nil) async throws -> Phone {
@@ -472,6 +472,49 @@ extension FakeHost {
         #expect(r.ops.value("answer") - posted <= 2)       // one driver's re-seals, not two
     }
 
+    /// K1 is refused C-auto (the host misreports it), the review re-signs K2, and then K1 is delivered late and lands. `delayK2`: K2 is
+    /// still unresolved when K1 lands (the `earlier` branch of settlement); otherwise K2 is refused `question.answered` by K1's landing.
+    /// Either way the review is landed WITH K1, and K2's refusal does not override it.
+    @Test(arguments: [false, true])
+    func anEarlierAttemptLandingAfterTheReSignWins(_ delayK2: Bool) async throws {
+        let stash = RequestBox()
+        let r = try await rig { req, host in
+            guard req.meta.object?["op"] == "answer" else { return nil }
+            guard let k1 = stash.request else {
+                stash.request = req
+                return .refuse(.host(code: "members.stale", retryable: false, seqs: nil, nextKey: nil))
+            }
+            if !stash.delivered { stash.delivered = true; _ = await host.handleView(k1) }          // K1, late
+            return delayK2 ? .refuse(.alreadyDone(status: "unknown")) : nil
+        }
+        let out = try await answer(r)
+        let k1 = try #require(stash.request?.meta.object?["idem"]?.string)
+        if delayK2 {
+            #expect(out == .checking)
+            // K1 is an earlier attempt still unresolved on this phone (as a creation's key race leaves it)
+            try await r.p.container.database().execute("UPDATE pe_attempts SET state='sent' WHERE idem=?", [.text(k1)])
+            let settled = try await settleAll(r, r.p)
+            guard case .landed = settled.first else { Issue.record("\(settled)"); return }
+        } else {
+            guard case .landed = out else { Issue.record("\(out)"); return }
+        }
+        #expect(try await rows(r.p, "SELECT landed_idem FROM pe_reviews").first?.text("landed_idem") == k1)
+        #expect(try await rows(r.p, "SELECT state FROM pe_attempts WHERE idem=?", [.text(k1)]).first?.text("state") == "landed")
+        #expect(r.hooks.count("pe.sign") == 2)
+        #expect(await r.w.host.loggedCount() == 1)
+    }
+
+    /// The last-moment check: the app goes to the background while `prepare` is suspended (key recovery, offset, database): no signature.
+    @Test func backgroundDuringPreparationSignsNothing() async throws {
+        let r = try await rig()
+        let session = r.p.session
+        await session.setBeforeWriteTransaction { await session.setForeground(false) }
+        await #expect(throws: ViewError.invalidReview) { _ = try await answer(r) }
+        #expect(r.hooks.count("pe.sign") == 0)
+        #expect(try await rows(r.p, "SELECT * FROM pe_attempts").isEmpty)
+        #expect(r.ops.value("answer") == 0)
+    }
+
     @Test func aLaterRefusalNeverOverwritesALanding() async throws {
         let r = try await rig()
         guard case .landed = try await answer(r) else { Issue.record("not landed"); return }
@@ -556,4 +599,12 @@ final class SessionBox: @unchecked Sendable {
         get { lock.withLock { s } }
         set { lock.withLock { s = newValue } }
     }
+}
+
+final class RequestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var r: HostRequest?
+    private var d = false
+    var request: HostRequest? { get { lock.withLock { r } } set { lock.withLock { r = newValue } } }
+    var delivered: Bool { get { lock.withLock { d } } set { lock.withLock { d = newValue } } }
 }

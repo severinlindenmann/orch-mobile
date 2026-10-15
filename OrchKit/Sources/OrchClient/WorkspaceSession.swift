@@ -210,6 +210,11 @@ public actor WorkspaceSession: RealmParticipant {
     /// Tests only: injects failures inside atomic decision preparation and attempt replacement.
     package var crashHook: (@Sendable (String) throws -> Void)?
     package func setCrashHook(_ h: (@Sendable (String) throws -> Void)?) { crashHook = h }
+    #if DEBUG
+    /// Tests only: runs (and is awaited) right before a write's signing transaction, after `prepare`'s own suspensions.
+    var beforeWriteTransaction: (@Sendable () async -> Void)?
+    package func setBeforeWriteTransaction(_ h: (@Sendable () async -> Void)?) { beforeWriteTransaction = h }
+    #endif
     static let maxResponseBytes = 8 << 20
 
     public init(_ config: WorkspaceSessionConfig) async throws {
@@ -609,7 +614,8 @@ public actor WorkspaceSession: RealmParticipant {
     /// active, the framed meta minus `rd` byte-equal to `cj(R2.writeMeta(stored event))`, and the window holding. Any other write meta is
     /// `writesUnavailable`, in Live and Demo alike.
     func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
-                 clearExhausted: Bool = false, reuseRid: Bool = false, write: WriteBuild? = nil) async throws -> Row {
+                 clearExhausted: Bool = false, reuseRid: Bool = false, write: WriteBuild? = nil,
+                 lastMoment: (() throws -> Void)? = nil) async throws -> Row {
         try Task.checkCancellation()
         try await ensureCurrent()
         // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it while `sendsReaderDigest` is on
@@ -642,6 +648,11 @@ public actor WorkspaceSession: RealmParticipant {
         // `reuseRid`: the relay refused the old attempt as a NEW rid (unsigned stale_epoch hint); the new seal keeps its rid.
         let rid = reuseRid ? (old ?? entropy.id16()) : entropy.id16(), salt = entropy.bytes(16)
         let db = try await cfg.container.database()
+        #if DEBUG
+        if write != nil, let h = beforeWriteTransaction { await h() }
+        #endif
+        // a write: the caller's last-moment check, after every suspension above and with none before the transaction
+        if write != nil { try lastMoment?() }
         let row = try await db.transaction { tx in
             var plaintext = plaintext
             var attempt: String?
@@ -722,7 +733,7 @@ public actor WorkspaceSession: RealmParticipant {
     package func resolveUncertain(logical: ID16) async throws -> Int {
         try await cfg.container.database().transaction { tx in
             try tx.execute("DELETE FROM meta WHERE key=?", [.text(Self.exhaustedKey(logical))])
-            return try tx.execute("DELETE FROM bridge_requests WHERE logical=? AND state='uncertain'", [.text(logical.hex)])
+            return try tx.execute("DELETE FROM bridge_requests WHERE logical=? AND state='uncertain' AND attempt IS NULL", [.text(logical.hex)])
         }
     }
 
@@ -747,7 +758,11 @@ public actor WorkspaceSession: RealmParticipant {
     }
 
     /// Gives up on a request (the caller decided it no longer matters).
-    package func discard(rid: ID16) async throws { try await deleteRow(rid) }
+    package func discard(rid: ID16) async throws {
+        // a write's row goes only with its attempt's terminal evidence
+        try await cfg.container.database().execute("DELETE FROM bridge_requests WHERE rid=? AND attempt IS NULL", [.text(rid.hex)])
+        monotonicAge[rid] = nil
+    }
 
     // MARK: response validation (protocol 8.8)
 

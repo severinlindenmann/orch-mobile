@@ -290,6 +290,11 @@ extension FakeHost {
             guard req.data.isEmpty else { return .refuse(.malformed) }
             // not an R2 op: the closed table has no `http`; kept only as the bridge tests' vehicle (a plain 404)
             return reply(["host_api": 0, "error": "not_found"], 404)
+        case "answer":
+            // the FakeHost's OWN shape check of a write's meta (never only the client's): {op, args{...}, idem, rd?}, no data
+            guard Set(m.keys).isSubset(of: ["op", "args", "idem", "rd"]), m["args"]?.object != nil, m["idem"]?.string != nil, req.data.isEmpty
+            else { return hostRefusal("invalid.input") }
+            fallthrough
         default:
             // an R2 request: the host's own meta checks first, then the closed table's scope, then the op
             let checked: (op: String, spec: R2.OpSpec, args: [String: JSONValue], idem: String?, rd: String?)

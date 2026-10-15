@@ -252,7 +252,7 @@ extension WorkspaceSession {
     func refuseUnattachedWrite(_ plaintext: Data) throws {
         guard let meta = try? Bridge.unframe(plaintext).meta.object, let op = meta["op"]?.string,
               R2.allOps.first(where: { $0.key.utf8.elementsEqual(op.utf8) })?.value.kind == .write else { return }
-        if !cfg.enforcesOpTable, op == "new_ticket", meta["creation_id"] != nil { return }
+        if !cfg.enforcesOpTable, cfg.context.realm == .demo, op == "new_ticket", meta["creation_id"] != nil { return }
         throw ViewError.writesUnavailable
     }
 
@@ -379,7 +379,12 @@ extension WorkspaceSession {
                                       unsigned: unsigned, origin: "tap", signer: cfg.identity.sig, actor: actor, pub: cfg.identity.publicKeys.sig,
                                       workspace: workspace, clock: WriteClock(wallMs: now, offsetMs: offset, monoMs: 0), hook: crashHook)
         resignEligibility[reviewID] = UUID()
-        do { _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build) }
+        // re-checked right before the signing transaction, after every suspension of `prepare`: still foreground, the same review
+        // lifecycle, and nothing (lock, inactive, protected data) ended the tap's eligibility
+        let lastMoment: () throws -> Void = { [unowned self] in
+            guard self.foreground, lifecycle == self.reviewLifecycle, self.resignEligibility[reviewID] != nil else { throw ViewError.invalidReview }
+        }
+        do { _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build, lastMoment: lastMoment) }
         catch WriteGateError.notCurrent { resignEligibility[reviewID] = nil; throw ViewError.invalidReview }
         catch { resignEligibility[reviewID] = nil; throw error }
         return try await reviewDriver(reviewID)
@@ -638,7 +643,11 @@ extension WorkspaceSession {
                 // who answered? If it was this very event, that is our landing
                 let snap = try StoredSnapshot(bytes: rv.snapshot)
                 if let qid = ID16(hex: snap.qid), let q = try? await readQuestion(qid, hint: snap.locator).question, let r = q.resolution {
-                    if r.decisionID.bytesEqual(a.idem) { try await recordLanding(rv, a, seq: nil, src: "log"); return }
+                    // the counting answer is one of THIS review's attempts (this one, or an earlier one delivered late): that is our
+                    // landing, and it wins over the refusal of the later attempt
+                    if let mine = try await loadAttempts(rv.review).first(where: { r.decisionID.bytesEqual($0.idem) }) {
+                        try await recordLanding(rv, mine, seq: nil, src: "log"); return
+                    }
                     try await recordDefinite(rv, a, code: code, cls: cls, src: src, outcome: .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs))
                 } else {
                     try await recordDefinite(rv, a, code: code, cls: cls, src: src, outcome: .refused(code: code))
@@ -769,8 +778,12 @@ extension WorkspaceSession {
         let build = Self.attemptBuild(.resign(review: rv.review, expectIdem: a.idem, expectVer: rv.ver), unsigned: proposed, origin: "auto",
                                       signer: cfg.identity.sig, actor: actor, pub: cfg.identity.publicKeys.sig, workspace: workspace,
                                       clock: WriteClock(wallMs: now, offsetMs: offset, monoMs: 0), hook: crashHook)
-        do { _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build) }
+        let lastMoment: () throws -> Void = { [unowned self] in
+            guard self.foreground, self.resignEligibility[rv.review] == token else { throw WriteGateError.eligibilityLost }
+        }
+        do { _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build, lastMoment: lastMoment) }
         catch WriteGateError.notCurrent { return false }
+        catch WriteGateError.eligibilityLost { return false }
         return true
     }
 
