@@ -92,6 +92,12 @@ public actor WorkspaceContainer {
             "INSERT OR IGNORE INTO sealing_blocked(epoch) SELECT value FROM meta WHERE key='wk_commit_conflict'",
             "DELETE FROM meta WHERE key='wk_commit_conflict'",
         ]),
+        // P3-D40 (protocol 19.10): the relay push registration of this workspace, one per APNs environment. The id is the device's
+        // (16 random bytes, hex) and is persisted BEFORE the request so a lost reply retries the same body (idempotent 200).
+        // `confirmed_ms` is NULL until the relay answered 200 for exactly this id and token.
+        Migration(version: 14, statements: [
+            "CREATE TABLE push_registrations (env TEXT PRIMARY KEY, registration_id TEXT NOT NULL, token TEXT NOT NULL, confirmed_ms INTEGER)",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {
@@ -364,3 +370,40 @@ public enum DropStoreError: Error, Sendable { case rollback, expired }
 
 /// A member list that would roll back the one this device last accepted (P3-D6).
 public enum MemberListHeadError: Error, Equatable, Sendable { case rollback, conflict, epochFell, rotationRequired, wkCommitConflict }
+
+
+/// The relay push registration of one workspace (P3-D40). Not a secret (the token is an APNs address, not a credential), but it lives in
+/// the workspace store so the realm fence guards its writes and the workspace wipe removes it.
+public struct PushRegistrationRow: Equatable, Sendable {
+    public let env: String
+    public let registrationID: String
+    public let token: String
+    public let confirmedMs: Int64?
+    public init(env: String, registrationID: String, token: String, confirmedMs: Int64?) {
+        self.env = env; self.registrationID = registrationID; self.token = token; self.confirmedMs = confirmedMs
+    }
+}
+
+extension WorkspaceContainer {
+    public func pushRegistration(env: String) async throws -> PushRegistrationRow? {
+        try await database().query("SELECT env, registration_id, token, confirmed_ms FROM push_registrations WHERE env=?", [.text(env)]).first.flatMap {
+            guard let e = $0.text("env"), let id = $0.text("registration_id"), let t = $0.text("token") else { return nil }
+            return PushRegistrationRow(env: e, registrationID: id, token: t, confirmedMs: $0.int("confirmed_ms"))
+        }
+    }
+
+    /// Records the id and token about to be sent (unconfirmed). Replaces the row of this environment.
+    public func savePushRegistration(env: String, registrationID: String, token: String) async throws {
+        try await database().execute("INSERT INTO push_registrations(env, registration_id, token, confirmed_ms) VALUES(?,?,?,NULL) ON CONFLICT(env) DO UPDATE SET registration_id=excluded.registration_id, token=excluded.token, confirmed_ms=NULL",
+                                     [.text(env), .text(registrationID), .text(token)])
+    }
+
+    /// The relay answered 200 for exactly this id: only then is it confirmed.
+    public func confirmPushRegistration(env: String, registrationID: String, nowMs: Int64) async throws {
+        try await database().execute("UPDATE push_registrations SET confirmed_ms=? WHERE env=? AND registration_id=?", [.int(nowMs), .text(env), .text(registrationID)])
+    }
+
+    public func clearPushRegistrations() async throws {
+        try await database().execute("DELETE FROM push_registrations", [])
+    }
+}

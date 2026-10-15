@@ -105,6 +105,15 @@ public actor FakeRelay: RequestSender {
     /// Tests: the next Drop PUTs are answered early with this refusal (nothing stored), once each.
     var dropScript: [WireReply] = []
     var dropExpirySettled: Set<ID16> = []
+    /// Push registration (P3-D40, protocol 19.10): off by default, as on a relay without push (404 `not_found` on the routes).
+    public var pushEnabled = false
+    struct PushKey: Hashable { let device: ID16, workspace: ID16, env: String, topic: String }
+    struct PushReg: Equatable { let id: ID16; let token: String }
+    var pushRegs: [PushKey: PushReg] = [:]
+    /// Tests: the next push answers (consumed one per request, before any other check) in place of the route.
+    var pushScript: [WireReply] = []
+    /// Tests: how many register requests were answered 200 / how many were refused, for asserting "refresh is free".
+    var pushRegisterCalls = 0
     var dropUploadWindows: [ID16: Window] = [:]
     private var challenges: [Data: Int64] = [:]
     package var sessions: [String: Session] = [:]
@@ -525,6 +534,7 @@ public actor FakeRelay: RequestSender {
             return try await directory(r, route: d.route, ident: d.ident, query)
         // /v2/drop/...: every Drop route is under /v2 (P3-D1, protocol 19.9); the unprefixed section 10.5/10.6 spellings are gone.
         case (_, _) where s.first == "drop": return try dropRoute(r, s, query)
+        case ("POST", 2) where s[0] == "push" && (s[1] == "register" || s[1] == "unregister"): return pushRoute(r, s[1], query)
         default: return refuse(404, .notFound)
         }
     }

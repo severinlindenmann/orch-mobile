@@ -117,4 +117,32 @@ public struct RelayClient: Sendable {
     package func revocation(device: ID16, person: ID16) async throws -> JSONValue {
         try await revocations(device: device, person: person)[0]
     }
+
+    // MARK: push registration (P3-D40, protocol 19.10)
+
+    /// `POST /v2/push/register`. `token` is the b64u APNs token (32..100 bytes decoded). 200 echoes `{registration_id, registered: true}`;
+    /// anything else is thrown: 404 `not_found` (push is off on this relay), 403 `not_eligible` / `revoked`, 409 `registration_conflict`,
+    /// 429 `rate_limited`.
+    public func registerPush(workspace: ID16, registrationID: ID16, env: String, topic: String, token: String, session: RelaySession) async throws {
+        guard let raw = B64U.decode(token), (32...100).contains(raw.count), ["sandbox", "production"].contains(env), !topic.isEmpty else {
+            throw TransportError.invalidArgument
+        }
+        let body = HostAPI.json(["workspace_id": .string(workspace.hex), "registration_id": .string(registrationID.hex), "env": .string(env),
+                                 "topic": .string(topic), "token": .string(token)])
+        let o = try HostAPI.exact(try HostAPI.expect(try await transport.registerPush(body, session: session)), ["registration_id", "registered"])
+        guard o["registration_id"]?.string == registrationID.hex, o["registered"]?.bool == true else { throw ClientError.badReply }
+    }
+
+    /// `POST /v2/push/unregister`. `registrationID` nil sends `null`: every registration of this device in the workspace (idempotent, also
+    /// for an absent id, and allowed without membership, so it works after the host removed this device).
+    public func unregisterPush(workspace: ID16, registrationID: ID16?, session: RelaySession) async throws {
+        let body = HostAPI.json(["workspace_id": .string(workspace.hex), "registration_id": registrationID.map { .string($0.hex) } ?? .null])
+        let o = try HostAPI.exact(try HostAPI.expect(try await transport.unregisterPush(body, session: session)), ["registration_id", "registered"])
+        guard o["registered"]?.bool == false else { throw ClientError.badReply }
+        switch o["registration_id"] {
+        case .some(.null): guard registrationID == nil else { throw ClientError.badReply }
+        case .some(.string(let h)): guard registrationID == nil || h == registrationID?.hex, ID16(hex: h) != nil else { throw ClientError.badReply }
+        default: throw ClientError.badReply
+        }
+    }
 }
