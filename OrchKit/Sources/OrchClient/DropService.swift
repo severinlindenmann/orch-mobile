@@ -16,6 +16,10 @@ public enum DropError: Error, Equatable, Sendable {
     case retryLater(afterSeconds: Int)
     /// 409 `rotation_required`: the host has a rotation due; retry after it rotated.
     case rotationPending
+    /// The relay answers 410 for an object whose signed expiry has NOT passed here (a document, or a file inside its lifetime). The
+    /// relay may be lying or the host retired it: the row stays pending, is not retried for an hour, and is listed by `stalledUploads`
+    /// ("Removed by the host? Retry or discard").
+    case possiblyRemoved
 
     fileprivate var terminalUpload: Bool {
         switch self {
@@ -195,7 +199,13 @@ public actor DropService {
     private var migration: Task<Void, Error>?
     private func migrateLegacyUploads() async throws {
         if let running = migration { return try await running.value }
-        let task = Task { try await self.performMigration() }
+        let id = UUID()
+        running.insert(id)
+        let task = Task {
+            defer { self.running.remove(id) }
+            try await self.sweepStagedFrames()
+            try await self.performMigration()
+        }
         migration = task
         do { try await task.value } catch { migration = nil; throw error }
     }
@@ -206,6 +216,7 @@ public actor DropService {
             guard let object = row.text("object").flatMap(ID16.init(hex:)), let n = row.int("version"), n > 0, n <= Int64(UInt32.max),
                   let revision = row.int("revision") else { continue }
             let version = UInt32(n)
+            try await check()
             guard let body = try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=? AND revision=?",
                                                 [.text(object.hex), .int(n), .int(revision)]).first?.blob("body") else { continue }
             guard let legacy = DropFrame.legacyParts(body), let frame = try? DropFrame.encode(descriptor: legacy.descriptor, wraps: legacy.wraps, blob: legacy.blob) else {
@@ -232,9 +243,6 @@ public actor DropService {
     private(set) var card: VerifiedCard
     private let ownerKey: SigningPublicKey?
     let certificates: [ID16: DeviceCertificate]
-    /// An upload row that the relay refused with a back-off (`storage full`, `rate limited`) is not retried before this wall time.
-    private var backoffUntil: [String: Int64] = [:]
-    private var legacyMigrated = false
     public static let maxPlaintextBytes = 25 << 20
     public static let maxVersions = 1024
     /// A file lives 7 days (the relay accepts `(now, now + 7 d + 300 s]`); the phone seals 10 minutes short of that, a margin for clock
@@ -424,10 +432,12 @@ public actor DropService {
         }
     }
 
-    /// Most pages and objects one refresh walks: at the relay's limit of 64 per page this is 4 096 objects, far above any workspace's
-    /// 256 documents and 4 096 live versions; a relay that never ends the walk is `tooLarge`, not a hang.
-    static let maxListPages = 64
+    /// Bounds of one list walk. Live objects (at most 4 096 live versions per workspace) are capped apart from tombstones, which need no
+    /// verification and stay listed 30 days: at the relay's 1 000 new objects per workspace per day that is up to 30 000 of them. The
+    /// page cap holds both at the relay's 64 per page (640 pages = 40 960 entries); a relay that never ends the walk is `tooLarge`.
+    static let maxListPages = 640
     static let maxListObjects = 4096
+    static let maxListTombstones = 32768
 
     public func listVerifiedRows(_ direction: Direction = .received) async throws -> DropListing {
         // Nested operations and unstructured children retain the admitting lifecycle epoch.
@@ -457,8 +467,9 @@ public actor DropService {
                 guard let entry = try? ListEntry(row) else { blockedCount += 1; continue }
                 if let known = entries[entry.object] { if entry.version >= known.version { entries[entry.object] = entry } }
                 else { entries[entry.object] = entry; order.append(entry.object) }
-                guard entries.count <= Self.maxListObjects else { throw DropError.tooLarge }
             }
+            let tombstones = entries.values.filter { $0.state == "expired" || $0.state == "retired" }.count
+            guard entries.count - tombstones <= Self.maxListObjects, tombstones <= Self.maxListTombstones else { throw DropError.tooLarge }
             switch page["next"] {
             case .some(.null): after = nil
             case .some(.int(let n)):
@@ -659,7 +670,7 @@ public actor DropService {
         return try await upload(object: object, version: parent + 1)
     }
 
-    /// Recover every pending row independently; stale uncommitted bodies get a fresh DEK.
+    /// Recover every pending row independently; a stale uncommitted body has its `wk` wrap re-wrapped (same DEK, same blob), never resealed.
     public func resumeUploads() async throws -> [DropUploadResult] {
         // Nested operations and unstructured children retain the admitting lifecycle epoch.
         if Self.operationEpoch == nil {
@@ -697,7 +708,7 @@ public actor DropService {
             if retry {
                 try await self.check()
                 await self.clearBackoff(key)
-                try await db.execute("UPDATE drop_uploads SET done=0,failure=NULL WHERE object=? AND version=? AND done=2", [.text(object.hex), .int(Int64(version))])
+                try await db.execute("UPDATE drop_uploads SET done=0,failure=NULL WHERE object=? AND version=? AND (done=2 OR (done=0 AND failure IS NOT NULL))", [.text(object.hex), .int(Int64(version))])
             }
             try await self.honourBackoff(key)
             return try await self.uploadCurrent(object: object, version: version)
@@ -719,6 +730,7 @@ public actor DropService {
         switch error {
         case .storageFull(_, let s): seconds = s
         case .retryLater(let s): seconds = s
+        case .possiblyRemoved: seconds = 3600
         default: return
         }
         backoffs[key] = (DropUpload.addMs(session.cfg.wall.nowMs, Int64(max(1, seconds)) * 1000), error)
@@ -732,16 +744,39 @@ public actor DropService {
         guard head.done != 2 else { throw DropError.conflict }
         do { return try await performUpload(object: object, version: version, head: head, attempt: attempt) }
         catch {
-            if let e = error as? DropError {
-                recordBackoff("upload:\(object.hex):\(version)", e)
-                // A relay status is a hint: `expired` ends a pending upload for good only when the SIGNED expiry has passed here too.
-                let terminal = e == .expired ? (head.parts.descriptor.object?["o"]?.object?["expires_ms"]?.int).map { $0 <= session.cfg.wall.nowMs } ?? false : e.terminalUpload
-                if terminal {
-                    try await check()
-                    try await db.execute("UPDATE drop_uploads SET done=2,failure=? WHERE object=? AND version=? AND revision=? AND done=0", [.text(String(describing: e)), .text(object.hex), .int(Int64(version)), .int(head.revision)])
+            guard var e = error as? DropError else { throw error }
+            // A relay status is a hint: `expired` ends a pending upload for good only when the SIGNED expiry has passed here too.
+            // Otherwise the row stays pending behind a long back-off and is flagged for the user (no endless re-GET).
+            var terminal = e.terminalUpload
+            if e == .expired {
+                terminal = (head.parts.descriptor.object?["o"]?.object?["expires_ms"]?.int).map { $0 <= session.cfg.wall.nowMs } ?? false
+                if !terminal {
+                    e = .possiblyRemoved
+                    try? await db.execute("UPDATE drop_uploads SET failure='possibly_removed' WHERE object=? AND version=? AND revision=? AND done=0",
+                                          [.text(object.hex), .int(Int64(version)), .int(head.revision)])
                 }
             }
-            throw error
+            recordBackoff("upload:\(object.hex):\(version)", e)
+            if terminal {
+                try await check()
+                try await db.execute("UPDATE drop_uploads SET done=2,failure=? WHERE object=? AND version=? AND revision=? AND done=0", [.text(String(describing: e)), .text(object.hex), .int(Int64(version)), .int(head.revision)])
+            }
+            throw e
+        }
+    }
+
+    /// Pending uploads the relay claims are gone while their signed expiry has not passed ("Removed by the host? Retry or discard").
+    /// Data only: they stay `done=0`, so `retryUpload`/`discardUpload` and a later `resumeUploads` still work.
+    public func stalledUploads() async throws -> [DropUploadFailure] {
+        if Self.operationEpoch == nil {
+            return try await Self.$operationEpoch.withValue(lifecycleEpoch) { try await self.stalledUploads() }
+        }
+        try requireAvailable()
+        try await check()
+        let rows = try await session.cfg.container.database().query("SELECT object,version,failure FROM drop_uploads WHERE done=0 AND failure IS NOT NULL")
+        return try rows.map { row in
+            guard let id = row.text("object").flatMap(ID16.init(hex:)), let n = row.int("version"), n > 0, n <= UInt32.max else { throw DropError.malformed }
+            return DropUploadFailure(object: id, version: UInt32(n), reason: row.text("failure") ?? "stalled")
         }
     }
 
@@ -760,7 +795,7 @@ public actor DropService {
         }
     }
 
-    /// Only these uploads have passed exact descriptor and blob read-back.
+    /// Only these uploads have passed the signed-descriptor read-back (canonical bytes equal to what was sealed).
     public func confirmedUploads() async throws -> [DropUploadIdentity] {
         // Nested operations and unstructured children retain the admitting lifecycle epoch.
         if Self.operationEpoch == nil {
@@ -842,15 +877,57 @@ public actor DropService {
         try await db.execute("DELETE FROM drop_imports WHERE job=?", [.text(job.manifest.jobID)])
     }
 
-    /// The stored frame written to a private temp file, so the PUT streams it from disk: the sender never holds the 26 MiB again.
-    /// The bytes are sealed ciphertext; the file goes as soon as the request ended.
-    private func stageFrame(_ object: ID16, _ version: UInt32, revision: Int64) async throws -> URL {
+    static let stagePrefix = "orch-drop-"
+    /// Staged frames live in their own directory, so the sweep never walks the shared temp directory.
+    static var stageDirectory: URL { FileManager.default.temporaryDirectory.appendingPathComponent("orch-drop-staging", isDirectory: true) }
+    /// Staging files older than this are leftovers of a crashed run (an upload lasts at most 11 minutes).
+    static let stageMaxAge: TimeInterval = 15 * 60
+
+    /// Removes leftover staged frames at service start. Only files older than `stageMaxAge`, so a second service in the process keeps its
+    /// in-flight upload.
+    private func sweepStagedFrames() async throws {
+        await Task.detached(priority: .utility) {
+            let fm = FileManager.default, dir = Self.stageDirectory
+            for url in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] where url.lastPathComponent.hasPrefix(Self.stagePrefix) {
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                if Date().timeIntervalSince(modified) > Self.stageMaxAge { try? fm.removeItem(at: url) }
+            }
+        }.value
+    }
+
+    private static let windowBytes = 1 << 20
+    /// The blob/frame of a stored upload in 1 MiB `substr` windows (never whole), from byte `from` (0-based) of a body of `total` bytes.
+    /// The revision is part of every query, so a row that changed mid-way ends the read instead of mixing two bodies.
+    private func forEachWindow(_ object: ID16, _ version: UInt32, revision: Int64, from: Int = 0, total: Int, _ body: (Data) async throws -> Void) async throws {
         let db = try await session.cfg.container.database()
-        guard let frame = try await db.query("SELECT body FROM drop_uploads WHERE object=? AND version=? AND revision=?",
-                                             [.text(object.hex), .int(Int64(version)), .int(revision)]).first?.blob("body") else { throw DropError.abandoned }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("orch-drop-\(UUID().uuidString)")
-        guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw DropError.unavailableKey }
-        do { try frame.write(to: url) } catch { try? FileManager.default.removeItem(at: url); throw error }
+        var offset = from
+        while offset < total {
+            try await check()
+            let n = min(Self.windowBytes, total - offset)
+            guard let w = try await db.query("SELECT substr(body,?,?) AS w FROM drop_uploads WHERE object=? AND version=? AND revision=?",
+                                             [.int(Int64(offset + 1)), .int(Int64(n)), .text(object.hex), .int(Int64(version)), .int(revision)]).first?.blob("w"),
+                  w.count == n else { throw DropError.abandoned }
+            try await body(w)
+            offset += n
+        }
+    }
+
+    /// The stored frame written to a private temp file, so the PUT streams it from disk: the phone never holds the 26 MiB. It is copied in
+    /// 1 MiB `substr` windows, and the file IO runs off the actor. The bytes are sealed ciphertext; the file goes when the request ended.
+    private func stageFrame(_ object: ID16, _ version: UInt32, revision: Int64, total: Int) async throws -> URL {
+        try? FileManager.default.createDirectory(at: Self.stageDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let url = Self.stageDirectory.appendingPathComponent(Self.stagePrefix + UUID().uuidString)
+        guard FileManager.default.createFile(atPath: url.path, contents: nil,
+                                             attributes: [.posixPermissions: 0o600, .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]) else {
+            throw CocoaError(.fileWriteUnknown)         // local disk trouble: not a key problem, not terminal
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try await forEachWindow(object, version, revision: revision, total: total) { window in
+                try await Task.detached(priority: .utility) { try handle.write(contentsOf: window) }.value
+            }
+        } catch { try? FileManager.default.removeItem(at: url); throw error }
         return url
     }
 
@@ -876,6 +953,10 @@ public actor DropService {
         let prefix = try DropFrame.prefix(descriptor: head.parts.descriptor, wraps: wraps.map(\.json))
         let db = try await session.cfg.container.database()
         try await check()
+        // The stored blob must still be what the signed descriptor commits to before this row is rewritten around it.
+        var hash = SHA256()
+        try await forEachWindow(object, version, revision: head.revision, from: head.parts.blobOffset, total: head.total) { hash.update(data: $0) }
+        guard Data(hash.finalize()) == descriptor.contentHash else { throw DropError.integrity }
         // SQLite has no blob concatenation: `||` yields text with the same bytes, `CAST ... AS BLOB` makes it a blob again. The length is
         // checked inside the transaction, so a frame that did not come out byte-exact never replaces the sealed one.
         let expected = prefix.count + head.parts.blobLength, blobOffset = head.parts.blobOffset + 1, revision = head.revision
@@ -912,10 +993,24 @@ public actor DropService {
         let members = try await membership(operate: true)
         let s = try await auth()
         let parts = head.parts
-        guard let signed = Optional(parts.descriptor), parts.blobLength <= DropFrame.maxBlobBytes else { throw DropError.malformed }
+        let signed = parts.descriptor
+        guard parts.blobLength <= DropFrame.maxBlobBytes else { throw DropError.malformed }
         let descriptor = try verify(signed, members: members)
         guard descriptor.object == object, descriptor.version == version, descriptor.contentLen == Int64(parts.blobLength) else { throw DropError.malformed }
         let records = try parts.wraps.map(DropWrapRecord.init(json:))
+        // Everything below talks to the relay. Only what is derived from the LOCAL row may fail an upload for good (malformed, too large);
+        // an answer the relay shaped badly is a reason to retry later, never to stamp the sealed row failed.
+        do {
+            return try await reconcileUpload(object: object, version: version, head: head, attempt: attempt, members: members, session: s,
+                                             signed: signed, descriptor: descriptor, records: records)
+        } catch DropError.malformed, DropError.tooLarge, is JSONError, ClientError.badReply {
+            throw DropError.retryLater(afterSeconds: 60)
+        }
+    }
+
+    private func reconcileUpload(object: ID16, version: UInt32, head: StoredHead, attempt: Int, members: MemberList, session s: RelaySession,
+                                 signed: JSONValue, descriptor: DropDescriptor, records: [DropWrapRecord]) async throws -> DropObject {
+        let parts = head.parts
         var stored = false
         let existing = try await get(object, version, .descriptor)
         switch existing.status {
@@ -935,11 +1030,12 @@ public actor DropService {
         default: _ = try expect(existing)
         }
         var conflictCurrent: UInt32?
+        var putSaidGone = false
         if !stored {
             do {
                 try await requireActiveUpload(object, version)
                 try await check()
-                let file = try await stageFrame(object, version, revision: head.revision)
+                let file = try await stageFrame(object, version, revision: head.revision, total: head.total)
                 defer { try? FileManager.default.removeItem(at: file) }
                 let reply = try await session.cfg.transport.dropPut(objectID: object, ifMatch: version - 1, bodyFile: file, session: s)
                 switch reply.status {
@@ -964,8 +1060,10 @@ public actor DropService {
                     case .relay(let r) where r.code == .rotationRequired || r.code == .wrapConflict: throw Self.mapped(.relay(r))
                     default: break         // anything else: reconcile by reading the descriptor back
                     }
-                case 410: break        // unauthenticated: reconcile by the descriptor read-back below; it decides, not the status
+                case 410: putSaidGone = true        // unauthenticated: reconcile by the descriptor read-back below; it decides, not the status
                 case 429: _ = try expect(reply, status: 201)
+                // A session that expired (401), a route the relay does not have (404) or a timeout (408) says nothing about the sealed bytes.
+                case 401, 404, 408: throw DropError.retryLater(afterSeconds: 30)
                 case 400..<500: throw DropError.uploadRejected(status: reply.status)
                 default: _ = try expect(reply, status: 201)
                 }
@@ -978,15 +1076,16 @@ public actor DropService {
         let readBack = try await get(object, version, .descriptor)
         if readBack.status == 404, let conflictCurrent { throw DropError.versionConflict(current: conflictCurrent) }
         if readBack.status == 403 { throw DropError.uploadRejected(status: 403) }
+        if readBack.status == 404, putSaidGone { throw DropError.expired }      // handled by the caller as a hint (never terminal alone)
         let committed = try parse(readBack, fields: ["descriptor"])
         guard try canonicalJSON(committed["descriptor"]!) == canonicalJSON(signed) else {
             if let conflictCurrent { throw DropError.versionConflict(current: conflictCurrent) }
             throw DropError.conflict
         }
-        let result = try await verified(signed, wraps: parts.wraps, members: membership())
+        // The signed-descriptor read-back confirms the upload; record that first, so a later bad chain page cannot fail a stored upload.
         try await check()
-        try await session.cfg.container.database().execute("UPDATE drop_uploads SET done=1,failure=NULL WHERE object=? AND version=? AND revision=? AND done=0", [.text(object.hex), .int(Int64(version)), .int(head.revision)])
-        return result
+        try await self.session.cfg.container.database().execute("UPDATE drop_uploads SET done=1,failure=NULL WHERE object=? AND version=? AND revision=? AND done=0", [.text(object.hex), .int(Int64(version)), .int(head.revision)])
+        return try await verified(signed, wraps: parts.wraps, members: membership())
     }
 
     /// The phone asks the host to claim; only the host signs the §10.5 claim.

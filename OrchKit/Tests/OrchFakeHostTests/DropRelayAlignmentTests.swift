@@ -241,7 +241,7 @@ struct DropAlignmentWorld {
         try await db.execute("INSERT INTO drop_abandoned(key) VALUES(?)", [.text(oldKey)])
         let results = try await a.service.resumeUploads()
         #expect(results.count == 1)
-        if case .success = results[0].result { Issue.record("an abandoned upload was sent") }
+        if case .failure(let e) = results[0].result { #expect(e as? DropError == .abandoned) } else { Issue.record("an abandoned upload was sent") }
         #expect(await a.sender.requests("PUT", containing: "/versions").isEmpty)
     }
 
@@ -301,8 +301,14 @@ struct DropAlignmentWorld {
     @Test func a410IsExpiredForGoodOnlyOnceTheSignedExpiryHasPassed() async throws {
         let a = try await DropAlignmentWorld.make()
         await a.w.relay.scriptNextDropPut(try dropJSONReply(410, ["error": "expired"]))
-        await #expect(throws: (any Error).self) { _ = try await a.service.send(Data("late".utf8), name: "late") }
+        await #expect(throws: DropError.possiblyRemoved) { _ = try await a.service.send(Data("late".utf8), name: "late") }
         #expect(try await a.service.failedUploads().isEmpty)          // the status alone is a hint
+        #expect(try await a.service.stalledUploads().count == 1)       // but the user is told ("Removed by the host? Retry or discard")
+        // inside the back-off nothing is asked of the relay again
+        await a.sender.reset()
+        _ = try await a.service.resumeUploads()
+        let dropRequests = await a.sender.log.filter { $0.target.contains("/drop/") }
+        #expect(dropRequests.isEmpty)
         a.advance(8 * 86_400_000)
         _ = try await a.service.resumeUploads()
         #expect(try await a.service.failedUploads().first?.reason == "expired")
@@ -382,6 +388,91 @@ struct DropAlignmentWorld {
         #expect(try await blind.failedUploads().isEmpty)
     }
 
+    // MARK: relay-shaped errors never fail a sealed upload (round 2)
+
+    @Test func aHostile201OrAnUnauthorisedPutLeavesTheRowRetryable() async throws {
+        let a = try await DropAlignmentWorld.make()
+        let replies: [WireReply] = [try dropJSONReply(201, ["version": 1, "extra": true]), try dropJSONReply(201, ["nope": 1]),
+                                    try dropJSONReply(401, ["error": "unauthenticated"]), try dropJSONReply(404, ["error": "not_found"]),
+                                    try dropJSONReply(408, ["error": "malformed"])]
+        for (i, reply) in replies.enumerated() {
+            await a.w.relay.scriptNextDropPut(reply)
+            await #expect(throws: (any Error).self) { _ = try await a.service.send(Data("h\(i)".utf8), name: "h\(i)") }
+        }
+        #expect(try await a.service.failedUploads().isEmpty)
+        let rows = try await a.phone.container.database().query("SELECT done FROM drop_uploads")
+        #expect(rows.count == 5 && rows.allSatisfy { $0.int("done") == 0 })
+        a.advance(61_000)
+        let results = try await a.service.resumeUploads()
+        #expect(results.count == 5 && results.allSatisfy { if case .success = $0.result { true } else { false } })
+    }
+
+    @Test func aBadChainPageAfterTheReadBackNeverFailsAConfirmedUpload() async throws {
+        let a = try await DropAlignmentWorld.make()
+        let v1 = try await a.service.send(Data("1".utf8), name: "d", kind: .document)
+        await a.sender.intercept { r in
+            guard r.target.contains("/descriptors") else { return nil }
+            return try dropJSONReply(200, ["descriptors": "not a list", "next": .null])
+        }
+        await #expect(throws: (any Error).self) { _ = try await a.service.send(Data("2".utf8), name: "d", document: v1) }
+        #expect(try await a.service.failedUploads().isEmpty)
+        #expect(try await a.service.confirmedUploads().count == 2)
+    }
+
+    @Test func aBadDescriptorPageBeforeTheReadBackLeavesTheRowPending() async throws {
+        let a = try await DropAlignmentWorld.make()
+        await a.sender.intercept { r in
+            // a hostile read-back: the body is not the object the route promises
+            guard r.method == "GET", r.target.hasSuffix("/versions/1/descriptor") else { return nil }
+            return try dropJSONReply(200, ["descriptor": 5, "surprise": true])
+        }
+        await #expect(throws: DropError.retryLater(afterSeconds: 60)) { _ = try await a.service.send(Data("x".utf8), name: "x") }
+        #expect(try await a.service.failedUploads().isEmpty)
+    }
+
+    @Test func manyTombstonesDoNotLockTheListOut() async throws {
+        let a = try await DropAlignmentWorld.make()
+        var built: [JSONValue] = []
+        for i in 1...5000 {
+            let state: JSONValue = i % 2 == 0 ? "retired" : "expired"
+            built.append(.object(["n": .int(Int64(i)), "object_id": .string(String(format: "%032x", i)), "version": 1, "state": state,
+                                  "tombstone_until_ms": .int(4_000_000_000_000), "descriptor": .null, "wraps": [], "claimed_by": .null]))
+        }
+        let entries = built
+        await a.sender.intercept { r in
+            guard r.target.hasSuffix("/drop/list") else { return nil }
+            let after = (try StrictJSON.parse(r.body).object?["after"]?.int).map(Int.init) ?? 0
+            let page = Array(entries[after..<min(after + 64, entries.count)])
+            return try dropJSONReply(200, ["objects": .array(page), "next": after + 64 < entries.count ? .int(Int64(after + 64)) : .null])
+        }
+        let listed = try await a.service.listVerifiedRows(.sending)
+        #expect(listed.gone.count == 5000 && listed.objects.isEmpty && listed.blocked.isEmpty)
+    }
+
+    @Test func staleStagedFramesAreSweptAtServiceStart() async throws {
+        let a = try await DropAlignmentWorld.make()
+        let dir = DropService.stageDirectory
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let old = dir.appendingPathComponent("orch-drop-\(UUID().uuidString)"), fresh = dir.appendingPathComponent("orch-drop-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: old); try? FileManager.default.removeItem(at: fresh) }
+        for u in [old, fresh] { try Data([1]).write(to: u) }
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)], ofItemAtPath: old.path)
+        _ = try await a.service.resumeUploads()
+        #expect(!FileManager.default.fileExists(atPath: old.path) && FileManager.default.fileExists(atPath: fresh.path))
+    }
+
+    @Test func aCorruptedStoredBlobIsNotRewrappedOrFailed() async throws {
+        let a = try await DropAlignmentWorld.make()
+        let id = ID16.fresh(0x96), db = try await a.phone.container.database()
+        var frame = try await a.w.dropBody(id: id)
+        frame[frame.count - 1] ^= 1
+        try await db.execute("INSERT INTO drop_uploads(object,version,body,done) VALUES(?,1,?,0)", [.text(id.hex), .blob(frame)])
+        try await a.w.host.rotate(remaining: [(a.w.phone, World.all)], relay: a.w.relay, session: a.w.hostSession)
+        let results = try await a.service.resumeUploads()
+        if case .failure(let e) = try #require(results.first).result { #expect(e as? DropError == .integrity) } else { Issue.record("rewrapped a corrupted blob") }
+        #expect(try await db.query("SELECT body FROM drop_uploads WHERE object=?", [.text(id.hex)]).first?.blob("body") == frame)
+    }
+
     // MARK: a lying relay (its state is a hint)
 
     @Test func aRelayThatCallsALiveObjectRetiredOnlyHidesItAndPurgesNothing() async throws {
@@ -444,7 +535,7 @@ struct DropAlignmentWorld {
         #expect(try await a.service.confirmedUploads().count == 1 && stored.descriptor.version == 1)
         // nothing stored and the signed expiry has not passed: the row stays pending, not failed
         await a.w.relay.scriptNextDropPut(try dropJSONReply(410, ["error": "expired"]))
-        await #expect(throws: (any Error).self) { _ = try await a.service.send(Data("fake gone".utf8), name: "fg") }
+        await #expect(throws: DropError.possiblyRemoved) { _ = try await a.service.send(Data("fake gone".utf8), name: "fg") }
         #expect(try await a.service.failedUploads().isEmpty)
     }
 

@@ -309,7 +309,7 @@ public struct RelayRefusal: Error, Equatable, Sendable {
             }
         case .quotaExceeded:
             if let q = fields["quota"] {
-                guard let t = q.string, !t.isEmpty, t.utf8.count <= 32, t.utf8.allSatisfy({ ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F }) else { return nil }
+                guard let t = q.string, !t.isEmpty, t.utf8.count <= 32, t.utf8.allSatisfy({ ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x5F }) else { return nil }
                 quota = t
             }
         case .rotationRequired:

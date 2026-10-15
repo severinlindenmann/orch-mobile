@@ -246,3 +246,19 @@ Findings of the B2a review that belong to the entry flow. All done in B2b except
   operations; real relay end to end (a Live join to ready, restart and lost-response tests, a real device round trip); fence by construction
   for the Live `RealmVault` (L6); install record epoch binding; protected-data handling of Live Home; diagnostics screen; link-opening decision
   (universal links); documentation updates.
+
+## Drop wiring notes (relay alignment, `DropService`)
+
+Drop stays capability-off in Live until the relay serves the routes. When it is wired:
+
+* **List `state` is presentational.** `DropListing.gone` (`expired`, `retired`, unknown or `pruned`) comes from an unauthenticated relay
+  field. Use it only to hide or grey an item and to stop offering open/download; word it as a report ("Removed (reported by relay)",
+  "Expired"), not as fact. It must never purge local plaintext, rows or chain heads, and never stops a pending upload from being reconciled
+  by its signed-descriptor read-back. `claimed_by` is a hint as well; a download re-reads the wraps and only a wrap that opens to the
+  committed DEK counts.
+* **Stalled uploads.** `DropService.stalledUploads()` lists pending uploads whose object the relay reports gone while the signed expiry has
+  not passed ("Removed by the host? Retry or discard"); they are retried at most hourly, `retryUpload` and `discardUpload` resolve them.
+  `storageFull` and `retryLater` carry the seconds to wait; `rotationPending` means the host has a rotation due.
+* **Purge granularity (open).** `LiveDrop` calls `purgeExpiredDownloads(nowMs: .max)` (all local downloads) when ANY list entry is blocked
+  (`LiveDrop.swift` around the blocked handling and `purge()` with `alarm`). That should become per entry (the blocked object's own file
+  only); it needs a per-object purge in `WorkspaceContainer` and is left for the wiring change.
