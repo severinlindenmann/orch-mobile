@@ -74,7 +74,7 @@ private func tokenB64(_ n: UInt8, count: Int = 32) -> String { B64U.encode(Data(
         let (w, _, service) = try await setup()
         let short = await service.register(token: tokenB64(7, count: 31), env: .sandbox)
         let long = await service.register(token: tokenB64(7, count: 101), env: .sandbox)
-        for o in [short, long] { if case .failed = o {} else { Issue.record("expected failure \(o)") } }
+        #expect(short == .refused("invalid_argument") && long == .refused("invalid_argument"))
         let requests = await w.relay.pushRegisterRequests
         #expect(requests == 0)
     }

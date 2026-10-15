@@ -353,14 +353,24 @@ final class LiveRuntime: RealmRuntime {
     /// The owed half of a Leave: the workspace's session is gone, the realm's device key is not (it goes with Leave Live or Reset, which
     /// unregister before they wipe). `registration_id: null` needs no membership, so it works after the host removed this device.
     func unregisterPush(workspace: ID16) async throws {
-        try checkCurrent()
-        let identity = try context.deviceIdentity(custody: custody, createIfMissing: false)
-        switch await PushService.unregisterAll(workspace: workspace, identity: identity, transport: transport) {
-        case .removed, .pushOff, .refused: return
+        switch await unregisterPushOutcome(workspace: workspace) {
         case .failed(let why): throw LiveError.pushCleanupFailed(why)
         case .rateLimited: throw LiveError.pushCleanupFailed("rate_limited")
-        case .registered: return
+        case .removed, .pushOff, .refused, .registered: return
         }
+    }
+
+    func unregisterPushOutcome(workspace: ID16) async -> PushRegistrationOutcome {
+        do {
+            try checkCurrent()
+            let identity = try context.deviceIdentity(custody: custody, createIfMissing: false)
+            return await PushService.unregisterAll(workspace: workspace, identity: identity, transport: transport)
+        } catch { return .failed("\(error)") }
+    }
+
+    func beginWipe(workspace: ID16, generation: Int64) async throws {
+        guard let index else { throw LiveError.notBooted }
+        try await LocalWipe(index: index, hooks: storage.wipeHooks()).begin(ws: workspace.hex, generation: generation)
     }
 
     /// Completes a Live wipe that an earlier launch started and did not finish. No runtime is built: the wipe works from the layout and

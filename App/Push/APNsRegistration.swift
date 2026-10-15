@@ -11,44 +11,68 @@ import UserNotifications
 typealias APNsEnvironment = PushEnvironment
 
 extension PushEnvironment {
-    static var current: PushEnvironment? {
+    /// Resolved once per process: the signing cannot change while the app runs. An absent profile file is a TestFlight/App Store build
+    /// (production); a file that exists but cannot be read or parsed is unknown (nil), never "production by default".
+    static let current: PushEnvironment? = {
         #if targetEnvironment(simulator)
         let simulator = true
         #else
         let simulator = false
         #endif
-        let profile = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision").flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
-        return resolve(provisioningProfile: profile, isSimulator: simulator)
-    }
+        let source: ProfileSource
+        if let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") {
+            source = (try? Data(contentsOf: URL(fileURLWithPath: path))).map { .data($0) } ?? .unreadable
+        } else { source = .absent }
+        return resolve(profile: source, isSimulator: simulator)
+    }()
 }
 
-/// The APNs device token, stored once per installation (it is the same for every workspace, so it is not tagged with
-/// one; the per-workspace relay registration ids live with the session, wired later). Not a secret.
+/// The APNs device token and its environment, stored once per installation (the same token serves every workspace; the per-workspace
+/// relay registration ids live in the workspace stores). It is an address that lets whoever holds the relay's APNs key reach this
+/// device, so it is kept in a file in Application Support: excluded from backups, not in `UserDefaults` (which backs up and syncs to a
+/// restored device, where the token is not valid), protected until first unlock. Leave Live / Reset does not need to remove it: iOS issues
+/// a fresh token when the app registers again, and APNs rejects the stale one.
 struct APNsTokenStore {
-    struct Stored: Equatable, Sendable {
+    struct Stored: Equatable, Sendable, Codable {
         /// base64url, as the register body carries it (`token`).
         let token: String
         let environment: APNsEnvironment
     }
-    private let defaults: UserDefaults
-    private static let tokenKey = "orch.apns.token", envKey = "orch.apns.env"
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    private let url: URL
+    private static let legacyKeys = ["orch.apns.token", "orch.apns.env"]
 
-    var stored: Stored? {
-        guard let t = defaults.string(forKey: Self.tokenKey), let e = defaults.string(forKey: Self.envKey).flatMap(APNsEnvironment.init(rawValue:)) else { return nil }
-        return Stored(token: t, environment: e)
+    init(url: URL = APNsTokenStore.defaultURL, legacyDefaults: UserDefaults? = .standard) {
+        self.url = url
+        // The first version kept it in UserDefaults (backed up): drop that copy.
+        for k in Self.legacyKeys { legacyDefaults?.removeObject(forKey: k) }
     }
 
-    /// Returns true when the token changed (callers re-register every workspace then).
+    static var defaultURL: URL {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("apns-token.json")
+    }
+
+    var stored: Stored? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Stored.self, from: data)
+    }
+
+    /// Returns true when the token or environment changed.
     @discardableResult
     func save(deviceToken: Data, environment: APNsEnvironment) -> Bool {
         let next = Stored(token: B64U.encode(deviceToken), environment: environment)
-        guard next != stored else { return false }
-        defaults.set(next.token, forKey: Self.tokenKey); defaults.set(environment.rawValue, forKey: Self.envKey)
+        guard next != stored, let data = try? JSONEncoder().encode(next) else { return false }
+        var target = url
+        do {
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            var values = URLResourceValues(); values.isExcludedFromBackup = true
+            try target.setResourceValues(values)
+        } catch { return false }
         return true
     }
 
-    func clear() { defaults.removeObject(forKey: Self.tokenKey); defaults.removeObject(forKey: Self.envKey) }
+    func clear() { try? FileManager.default.removeItem(at: url) }
 }
 
 /// Permission and registration plumbing. Wired later: pairing calls `requestAfterFirstJoin()` once the first join is

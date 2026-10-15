@@ -4,7 +4,7 @@ import OrchProtocol
 import OrchStore
 
 /// The APNs environment a registration names (`env` of protocol 19.10). It follows the build's signing, never the build configuration.
-public enum PushEnvironment: String, Sendable, Equatable {
+public enum PushEnvironment: String, Sendable, Equatable, Codable {
     case sandbox, production
 
     /// Resolves the environment from the app's provisioning profile (`embedded.mobileprovision`, a CMS blob around an XML plist whose
@@ -13,8 +13,26 @@ public enum PushEnvironment: String, Sendable, Equatable {
     /// - No profile on a device is a TestFlight or App Store build, whose APNs tokens are production tokens.
     /// - The Simulator never registers (nil).
     public static func resolve(provisioningProfile: Data?, isSimulator: Bool) -> PushEnvironment? {
+        resolve(profile: provisioningProfile.map { .data($0) } ?? .absent, isSimulator: isSimulator)
+    }
+
+    /// What the app found where the provisioning profile belongs.
+    public enum ProfileSource: Sendable, Equatable {
+        /// No profile file: a TestFlight or App Store build.
+        case absent
+        /// A profile file exists but could not be read: unknown, so no registration (never "production by default").
+        case unreadable
+        case data(Data)
+    }
+
+    public static func resolve(profile source: ProfileSource, isSimulator: Bool) -> PushEnvironment? {
         if isSimulator { return nil }
-        guard let profile = provisioningProfile else { return .production }
+        let profile: Data
+        switch source {
+        case .absent: return .production
+        case .unreadable: return nil
+        case .data(let d): profile = d
+        }
         guard let plist = embeddedPlist(profile),
               let root = (try? PropertyListSerialization.propertyList(from: plist, options: [], format: nil)) as? [String: Any],
               let entitlements = root["Entitlements"] as? [String: Any], let aps = entitlements["aps-environment"] as? String else { return nil }
@@ -61,6 +79,7 @@ public struct PushService: Sendable {
     public init(session: WorkspaceSession) { self.session = session }
 
     public var workspace: ID16 { session.workspace }
+    public var generation: Int64 { session.generation }
 
     /// The notification extension's material for this workspace (see `WorkspaceSession.pushKeyMaterial`): pinned `WSK` x963 and
     /// `K_push(e)` per epoch.
@@ -113,11 +132,14 @@ public struct PushService: Sendable {
         if case ClientError.relay(let r) = error {
             switch r.code {
             case .notFound: return .pushOff
-            case .notEligible, .revoked, .notForThisDevice: return .refused(r.code.rawValue)
+            // Permanent: asking again changes nothing (a malformed body is a bug of this build, not a reason to retry forever).
+            case .notEligible, .revoked, .notForThisDevice, .malformed, .tooLarge: return .refused(r.code.rawValue)
             case .rateLimited, .quotaExceeded: return .rateLimited(retryAfter: r.retryAfter)
             default: return .failed(r.code.rawValue)
             }
         }
+        if case ClientError.badReply = error { return .refused("bad_reply") }
+        if case TransportError.invalidArgument = error { return .refused("invalid_argument") }
         return .failed("\(error)")
     }
 

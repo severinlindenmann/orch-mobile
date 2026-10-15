@@ -68,6 +68,10 @@ protocol RealmRuntime: AnyObject, Sendable {
     /// Unregisters this device's push registrations in `workspace` with a device session of its own, after the workspace session is gone
     /// (the owed half of a Leave). Throws when the relay could not be reached; completes when it answered or push is off. Demo: no-op.
     func unregisterPush(workspace: ID16) async throws
+    /// The same, as an outcome (never throws): what Leave drains through, with the workspace session already stopped.
+    func unregisterPushOutcome(workspace: ID16) async -> PushRegistrationOutcome
+    /// Makes the removal of one workspace durable (the wipe's tombstone) without wiping, so a relaunch finishes it. Demo: no-op.
+    func beginWipe(workspace: ID16, generation: Int64) async throws
     /// Where a workspace keeps its unsent new-ticket draft (inside its own directory, which the wipe deletes).
     func draftURL(workspace: ID16) -> URL?
 }
@@ -75,6 +79,8 @@ protocol RealmRuntime: AnyObject, Sendable {
 extension RealmRuntime {
     func makePushSink() -> VaultPushSink? { nil }
     func unregisterPush(workspace: ID16) async throws {}
+    func unregisterPushOutcome(workspace: ID16) async -> PushRegistrationOutcome { .removed }
+    func beginWipe(workspace: ID16, generation: Int64) async throws {}
 }
 
 /// Demo-only controls: scenarios, the fake host and primary, fault and lock simulation, notification simulation and Drop seeding.

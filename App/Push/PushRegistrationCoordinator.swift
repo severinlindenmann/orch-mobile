@@ -7,8 +7,8 @@ import os
 /// What the coordinator needs from one workspace's `PushService` (a fake in tests).
 protocol PushRegistering: Sendable {
     var workspace: ID16 { get }
+    var generation: Int64 { get }
     func register(token: String, env: PushEnvironment) async -> PushRegistrationOutcome
-    func unregisterAll() async -> PushRegistrationOutcome
     func keyMaterial() async throws -> (wsk: SigningPublicKey, kPush: [UInt32: Data])
 }
 
@@ -58,6 +58,9 @@ final class PushRegistrationCoordinator {
         /// This workspace is still joined and live in the SAME runtime and realm lifetime that created the coordinator (not left, removed,
         /// retired or replaced). Asked before every send, and again after every await before a result is kept.
         var isActive: (ID16) -> Bool = { _ in true }
+        /// Removes every registration of this device in a workspace through the realm transport and device key (no workspace session: it is
+        /// stopped, and its store may already carry the wipe's tombstone). Throws nothing; the outcome says what happened.
+        var unregisterDetached: (ID16) async -> PushRegistrationOutcome = { _ in .removed }
         var now: () -> Date = { Date() }
     }
 
@@ -70,9 +73,16 @@ final class PushRegistrationCoordinator {
     /// changed under it). Left workspaces are refused until they are started again (a re-pair).
     private var inFlight: [String: Task<Void, Never>] = [:]
     private var left: Set<String> = []
+    /// Set once Leave Live / Reset begins: every register and publish is refused from then on (separate from `enabled()`).
+    private(set) var closing = false
+    /// Workspaces the relay refused permanently (403, 400, an unusable reply): not asked again in this process.
+    private var suppressed: Set<String> = []
+
+    func beginClosing() { closing = true }
+    private func key(_ t: any PushRegistering) -> String { "\(t.workspace.hex)/\(t.generation)" }
 
     /// A workspace was (re)joined: it may register again.
-    func workspaceStarted(_ ws: ID16) { left.remove(ws.hex) }
+    func workspaceStarted(_ ws: ID16) { left.remove(ws.hex); suppressed.remove(ws.hex) }
 
     init(_ config: Config) { self.config = config }
 
@@ -82,11 +92,11 @@ final class PushRegistrationCoordinator {
     /// restored, and when a new epoch is accepted. A failure leaves the previous material (the extension then shows generic text).
     @discardableResult
     func publishMaterial(_ target: any PushRegistering, name: String, generation: Int64) async -> Bool {
-        guard config.enabled(), config.isActive(target.workspace), let sink = config.sink() else { return false }
+        guard !closing, config.enabled(), config.isActive(target.workspace), let sink = config.sink() else { return false }
         do {
             let m = try await target.keyMaterial()
             // The awaits above may have outlived a Leave: nothing is written for a workspace that is gone (the sink is fenced as well).
-            guard !m.kPush.isEmpty, config.enabled(), config.isActive(target.workspace) else { return false }
+            guard !m.kPush.isEmpty, !closing, config.enabled(), config.isActive(target.workspace) else { return false }
             let clipped = String(String.UnicodeScalarView(name.unicodeScalars.prefix(PushMaterial.maxNameScalars)))
             let material = try PushMaterial(generation: generation, name: clipped, wsk: m.wsk, kPush: m.kPush)
             try PushMaterialPublisher(sink: sink, realm: config.realm).publish(workspace: target.workspace, material: material)
@@ -99,23 +109,23 @@ final class PushRegistrationCoordinator {
     /// Registers this workspace at the relay when everything allows it. Idempotent: the same token is the same body (200, free).
     /// Concurrent triggers (launch, foreground, token, epoch) for one workspace share one run.
     func register(_ target: any PushRegistering) async {
-        let ws = target.workspace.hex
-        if let running = inFlight[ws] { await running.value; return }
+        let ws = target.workspace.hex, k = key(target)
+        if let running = inFlight[k] { await running.value; return }
         let run = Task { @MainActor [self] in
+            defer { inFlight[k] = nil }
             while true {
-                guard canRegister(), !left.contains(ws), config.isActive(target.workspace),
+                guard !closing, canRegister(), !left.contains(ws), !suppressed.contains(ws), config.isActive(target.workspace),
                       let env = config.environment(), let token = config.token() else { return }
                 let outcome = await target.register(token: token, env: env)
                 // Stale authorization: a result is kept only if the workspace, the realm, the environment and the token are still the ones sent.
-                guard !left.contains(ws), config.isActive(target.workspace) else { return }
+                guard !closing, !left.contains(ws), config.isActive(target.workspace) else { return }
                 guard config.environment() == env, config.token() == token else { continue }
                 record(outcome, ws: ws)
                 return
             }
         }
-        inFlight[ws] = run
+        inFlight[k] = run
         await run.value
-        inFlight[ws] = nil
     }
 
     /// Every workspace in turn (a launch, a changed token).
@@ -124,7 +134,7 @@ final class PushRegistrationCoordinator {
     }
 
     private func canRegister() -> Bool {
-        guard config.enabled(), config.permissionAllowed(), !relayPushOff else { return false }
+        guard !closing, config.enabled(), config.permissionAllowed(), !relayPushOff else { return false }
         if let until = backoffUntil, config.now() < until { return false }
         return true
     }
@@ -134,7 +144,7 @@ final class PushRegistrationCoordinator {
         case .registered: status[ws] = .registered
         case .removed: status[ws] = nil
         case .pushOff: relayPushOff = true; status[ws] = .relayPushOff
-        case .refused(let why): status[ws] = .refused(why)
+        case .refused(let why): suppressed.insert(ws); status[ws] = .refused(why)
         case .rateLimited(let after): backoffUntil = config.now().addingTimeInterval(TimeInterval(max(after ?? 300, 1))); status[ws] = .rateLimited
         case .failed(let why): status[ws] = .failed(why)
         }
@@ -150,25 +160,30 @@ final class PushRegistrationCoordinator {
         case owed
     }
 
-    /// Unregisters every registration of this device in the workspace, within `seconds`. Never throws and never waits longer.
-    func unregister(_ target: any PushRegistering, seconds: Double = 3) async -> Removal {
+    /// Unregisters every registration of this device in the workspace, within `seconds`, through the realm transport and device key. Never
+    /// throws and never waits longer. A registration still in flight is waited for first (so its request cannot land after the
+    /// unregister); if that wait runs out the cleanup is `owed`.
+    func unregister(workspace: ID16, seconds: Double = 3) async -> Removal {
         guard config.enabled(), config.environment() != nil else { return .done }
-        // From here on no registration for this workspace may start or be kept; one already running is waited for (within the bound), so
-        // its request cannot land after the unregister.
-        let ws = target.workspace.hex
-        left.insert(ws)
+        let ws = workspace.hex
+        left.insert(ws)                       // no registration for this workspace may start or be kept from here on
         let started = Date()
-        if let running = inFlight[ws] { _ = await racing(seconds: seconds) { await running.value } }
+        let running = inFlight.filter { $0.key.hasPrefix(ws + "/") }.map(\.value)
+        for r in running {
+            let waited: Void? = await racing(seconds: seconds) { await r.value }
+            if waited == nil { status[ws] = nil; return .owed }
+        }
         let remaining = max(seconds - Date().timeIntervalSince(started), 0.05)
-        let outcome = await racing(seconds: remaining) { await target.unregisterAll() }
-        status[target.workspace.hex] = nil
+        nonisolated(unsafe) let detached = config.unregisterDetached
+        let outcome = await racing(seconds: remaining) { await detached(workspace) }
+        status[ws] = nil
         return Self.removal(for: outcome)
     }
 
     nonisolated static func removal(for outcome: PushRegistrationOutcome?) -> Removal {
         switch outcome {
-        case .removed?, .pushOff?, .refused?, .registered?: .done
-        case .rateLimited?, .failed?, nil: .owed
+        case .removed?, .pushOff?, .refused?: .done
+        case .rateLimited?, .failed?, .registered?, nil: .owed
         }
     }
 

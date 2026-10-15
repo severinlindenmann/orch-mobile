@@ -290,17 +290,29 @@ asked again until the next launch. 403 `not_eligible` / `revoked`: shown, not re
 * **Epoch.** `WorkspaceSession.setEpochObserver` fires when the confirmed epoch rises (a key was installed); the coordinator republishes
   `K_push` (one keychain item per workspace, `PushMaterial`, never `WK`) in the same step. Right after a rotation, before that step,
   pushes show generic text (acceptable, A12).
-* **Leave workspace.** After the session stops and before the wipe, `registration_id: null` (all of this device's registrations in the
-  workspace; allowed without membership) with a 3 s bound. If the relay cannot be reached the cleanup is recorded in `ServerCleanupStore`
-  (workspace and generation only), shown under "Finish on your Mac", and retried by `serverCleanup` (a device session from the realm's device
-  key, `LiveRuntime.unregisterPush`) at the next Live start and on "Retry now". The wipe itself never waits on it beyond the bound.
-* **Leave Live / Reset.** Every workspace is unregistered at once before the realm is invalidated, 3 s bound. The device key goes with the
-  wipe, so nothing can be owed afterwards: if the relay was unreachable the registration ends by the host's removal of the device from the
-  member list, an APNs 410 / `BadDeviceToken`, the device's revocation, or 60 days without a refresh (protocol-v2 section 19.10 lifecycle).
+* **Leave workspace.** The wipe's tombstone is written first (`LocalWipe.begin`: the intent is durable, a relaunch finishes it), then
+  `registration_id: null` (all of this device's registrations in the workspace; allowed without membership) goes out through the realm
+  transport and the device key (the workspace session is stopped), bounded to 3 s. If the relay cannot be reached, or an in-flight
+  registration outlasts the bound, the cleanup is recorded in `ServerCleanupStore` (workspace and generation only), shown under "Finish on
+  your Mac", and retried by `serverCleanup` (`LiveRuntime.unregisterPush`) at every Live start, every foreground and on "Retry now", before
+  any registration. An owed item for a workspace that is joined again (a re-pair is a new membership) is dropped unsent, and one older than 60
+  days is dropped (the relay deletes unrefreshed registrations by then).
+* **Leave Live / Reset.** In this order: (1) synchronously, the Live reset gate is persisted, the controller is `.leaving`, the push
+  coordinator refuses every register and publish (`closing`), and every workspace is `removing` (shown as such, never presented); (2) the
+  registrations of all workspaces are removed at once through the realm transport and device key, 3 s bound; (3) the realm is invalidated and
+  wiped. A kill in step 1 or 2 is finished at relaunch, which finds the gate, skips the relay and completes the wipe. The device key goes
+  with the wipe, so nothing can be owed afterwards: if the relay was unreachable the registration ends by the host's removal of the device
+  from the member list, an APNs 410 / `BadDeviceToken`, the device's revocation, or 60 days without a refresh. A second tap with another
+  intent while this runs is refused with a visible notice.
+* **Refusals.** 403 `not_eligible` / `revoked`, 400 `malformed` and an unusable reply are permanent: that workspace is not asked again in
+  this process (a re-pair starts fresh). 429 backs off, 404 stops everything until the next launch.
+* **Stale environment.** A registration made under one APNs environment (for example a development build later replaced by TestFlight) is not
+  removed by the phone; it ends when APNs rejects its token (`BadDeviceToken` deletes it at the relay) or after 60 days. The stored token is
+  used only if it was issued for the environment the build resolves now.
 
-**APNs environment** comes from how the build is signed (`PushEnvironment.resolve`), not from the build configuration: the
+**APNs environment** comes from how the build is signed (`PushEnvironment.resolve`, resolved once per process), not from the build configuration: the
 `aps-environment` of `embedded.mobileprovision` (`development` is `sandbox`, `production` is `production`); no profile on a device (TestFlight,
-App Store) is `production`; the Simulator and a profile without the entitlement have none and never register or call the relay.
+App Store) is `production`; a profile file that exists but cannot be read or parsed, the Simulator and a profile without the entitlement have none and never register or call the relay.
 
 **Notification extension.** It reads `userInfo["o"]` as a JSON string only (`RelayPushBody.outer`), then the section 9 sealed outer with its
 3 072-byte cap; the relay's alert text (`orch` / `New activity in orch`, at most 3 175 bytes in all) is the extension's own generic text and is

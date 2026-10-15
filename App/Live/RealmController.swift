@@ -157,7 +157,11 @@ final class RealmController: RealmTransitions {
     /// are retired, the outgoing view graph is dropped (`epoch`), and its lifetime is invalidated. Then the wipe runs. A failed wipe
     /// parks the controller in `recoveryRequired` with the outgoing realm still in place; the destination is never activated meanwhile.
     func realmLeave(thenDemo requested: Bool) {
-        guard state != .leaving, state != .starting else { return }
+        guard state != .leaving, state != .starting else {
+            // A second tap while a leave runs: the first intent stands; say so when the second asked for something else.
+            if state == .leaving, requested != retryThenDemo { notice = "orch is already being removed from this iPhone. Wait for it to finish." ; publish() }
+            return
+        }
         // N1: a retry after a failed wipe goes where the failed one was going (Welcome, or Demo for "Reset Demo data").
         let thenDemo = state == .recoveryRequired ? (retryThenDemo ?? requested) : requested
         retryThenDemo = thenDemo
@@ -170,8 +174,12 @@ final class RealmController: RealmTransitions {
         else if outgoing.hasLiveInstall { retireShareTargets(realms: [Realm.live.rawValue]) }     // a Live that never started
         state = .leaving
         epoch += 1
-        outgoing.teardown()
+        // Live push: the intent is durable and the realm cut off first (`beginLeave`), the relay registrations go next (bounded), and only then
+        // is the realm invalidated and wiped. Without it the teardown starts at once, as before.
+        let drain = outgoing.beginLeave()
+        if !drain { outgoing.teardown() }
         transitionTask = Task { [weak self] in
+            if drain { await outgoing.drainPushRegistrations(); outgoing.teardown() }
             await outgoing.waitForReset()
             guard let self else { return }
             guard self.services === outgoing else { self.transitionTask = nil; return }

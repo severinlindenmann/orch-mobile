@@ -460,6 +460,7 @@ final class LiveRuntimeTests: XCTestCase {
         services.pushEnvironment = { .sandbox }
         services.pushToken = { B64U.encode(Data(repeating: 5, count: 32)) }
         services.wipeWorkspace = { _, _ in }
+        services.beginWorkspaceWipe = { _, _ in }
         services.resetRuntime = { _ in }
         let id = SystemEntropy().id16()
         let info = WorkspaceInfo(id: id.hex, name: "Test", host: "Mac", hue: 0, hostedBy: nil, clientHosted: false,
@@ -468,6 +469,7 @@ final class LiveRuntimeTests: XCTestCase {
         services.register(ws)
         let fake = push ?? FakePush(id)
         ws.push = fake
+        services.pushUnregister = { [weak ws] _ in await (ws?.push as? FakePush)?.unregisterAll() ?? .removed }
         _ = services.pushCoordinatorForLive()
         return (services, runtime, ws, fake)
     }
@@ -521,6 +523,63 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertNil(services.runtime)
         XCTAssertLessThan(Date().timeIntervalSince(started), 8, "bounded: a few seconds, then the wipe proceeds")
         await services.waitForReset()
+    }
+
+    func testKillDuringTheUnregisterWindowStillCompletesTheLeaveAtRelaunch() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, runtime, _, push) = try pushServices(rig)
+        push.unregisterDelay = 5
+        services.leaveLive(thenDemo: false)
+        // inside the window: the intent is already durable, the realm is cut off from use but not yet invalidated
+        XCTAssertTrue(rig.flags.bool(forKey: "orch.live.resetPending"))
+        XCTAssertTrue(services.leavingRealm)
+        XCTAssertTrue(services.live.allSatisfy { !services.canUse($0.info.id) })
+        XCTAssertTrue(runtime.context.isCurrent)
+        XCTAssertTrue(rig.install.exists)
+        // the process is killed here: a fresh launch finds the gate, skips the relay and completes the wipe
+        services.retire()
+        let relaunched = makeServices(rig)
+        await relaunched.boot()
+        XCTAssertFalse(relaunched.resetIncomplete)
+        XCTAssertFalse(rig.flags.bool(forKey: "orch.live.resetPending"))
+        XCTAssertFalse(rig.install.exists)
+        XCTAssertNil(relaunched.pushCoordinator)
+        XCTAssertLessThanOrEqual(push.unregisterCalls, 1, "at most the first process asked; the relaunch never contacts the relay")
+        relaunched.retire()
+    }
+
+    func testLeaveWorkspaceWritesTheWipeIntentBeforeTheUnregisterAndOwesIfItCannot() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, push) = try pushServices(rig)
+        var order: [String] = []
+        services.beginWorkspaceWipe = { _, _ in order.append("tombstone") }
+        services.pushUnregister = { _ in order.append("unregister"); return .removed }
+        _ = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertEqual(order, ["tombstone", "unregister"])
+        XCTAssertTrue(services.pendingServerCleanups.isEmpty)
+        // a tombstone that cannot be written leaves the cleanup owed, and the wipe still runs
+        let (services2, _, ws2, _) = try pushServices(rig)
+        services2.beginWorkspaceWipe = { _, _ in throw ViewError.offline }
+        let report = await services2.leave(workspaceID: ws2.info.id, simulateOffline: false)
+        XCTAssertFalse(report.incomplete)
+        XCTAssertEqual(services2.pendingServerCleanups.map(\.ws), [ws2.workspaceID.hex])
+        _ = push
+        services.retire(); services2.retire()
+    }
+
+    func testAnOwedCleanupNeverReachesAReJoinedWorkspaceAndOldOnesAreDropped() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, _) = try pushServices(rig)
+        var cleaned: [String] = []
+        services.serverCleanup = { cleaned.append($0.ws) }
+        let store = try XCTUnwrap(services.cleanupStore)
+        store.add(PendingServerCleanup(ws: ws.workspaceID.hex, generation: 0, since: Date()))          // the same workspace is joined again
+        let stale = SystemEntropy().id16().hex
+        store.add(PendingServerCleanup(ws: stale, generation: 1, since: Date().addingTimeInterval(-61 * 86_400)))
+        await services.retryServerCleanup()
+        XCTAssertTrue(cleaned.isEmpty)
+        XCTAssertTrue(services.pendingServerCleanups.isEmpty)
+        services.retire()
     }
 
     func testPushStaysOffInLiveByDefaultAndTheCoordinatorDoesNotExist() async throws {

@@ -10,6 +10,7 @@ import XCTest
 /// A workspace's push service that answers from a script.
 final class FakePush: PushRegistering, @unchecked Sendable {
     let workspace: ID16
+    var generation: Int64 { 1 }
     private let lock = NSLock()
     private var registerScript: [PushRegistrationOutcome]
     private var unregisterScript: [PushRegistrationOutcome]
@@ -47,17 +48,24 @@ final class FakePush: PushRegistering, @unchecked Sendable {
 final class PushRegistrationCoordinatorTests: XCTestCase {
     var backend = InMemoryVaultBackend()
     var enabled = true, allowed = true, active = true
+    var fakes: [ID16: FakePush] = [:]
     var env: PushEnvironment? = .sandbox
     var token: String? = B64U.encode(Data(repeating: 3, count: 32))
     var now = Date(timeIntervalSince1970: 1_800_000_000)
     final class Flag: @unchecked Sendable { var v = false }
     let flag = Flag()
 
+    func unregister(_ c: PushRegistrationCoordinator, _ f: FakePush, seconds: Double = 3) async -> PushRegistrationCoordinator.Removal {
+        fakes[f.workspace] = f
+        return await c.unregister(workspace: f.workspace, seconds: seconds)
+    }
+
     func makeCoordinator() -> PushRegistrationCoordinator {
         PushRegistrationCoordinator(.init(
             realm: "live", enabled: { [unowned self] in enabled }, environment: { [unowned self] in env }, token: { [unowned self] in flag.v ? B64U.encode(Data(repeating: 4, count: 32)) : token },
             permissionAllowed: { [unowned self] in allowed }, sink: { [unowned self] in VaultPushSink(backend: backend, realm: .live) },
-            isActive: { [unowned self] _ in active }, now: { [unowned self] in now }))
+            isActive: { [unowned self] _ in active },
+            unregisterDetached: { [unowned self] id in await fakes[id]?.unregisterAll() ?? .removed }, now: { [unowned self] in now }))
     }
 
     func testRegistersEveryWorkspaceWithTheStoredTokenAndEnvironment() async {
@@ -77,9 +85,9 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         env = .production; token = nil; await c.registerAll([a])
         token = "x"; allowed = false; await c.registerAll([a])
         XCTAssertTrue(a.registerCalls.isEmpty)
-        let r = await c.unregister(a)                                        // enabled but no environment: nothing was ever registered
+        let r = await unregister(c, a)                                        // enabled but no environment: nothing was ever registered
         env = nil
-        let skipped = await c.unregister(a)
+        let skipped = await unregister(c, a)
         XCTAssertEqual(r, .done); XCTAssertEqual(skipped, .done); XCTAssertEqual(a.unregisterCalls, 1)
     }
 
@@ -115,14 +123,14 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
 
     func testUnregisterIsBoundedAndReportsOwedWhenOffline() async {
         let c = makeCoordinator()
-        let ok = await c.unregister(FakePush())
-        let offline = await c.unregister(FakePush(unregister: [.failed("offline")]))
-        let limited = await c.unregister(FakePush(unregister: [.rateLimited(retryAfter: nil)]))
-        let off = await c.unregister(FakePush(unregister: [.pushOff]))
+        let ok = await unregister(c, FakePush())
+        let offline = await unregister(c, FakePush(unregister: [.failed("offline")]))
+        let limited = await unregister(c, FakePush(unregister: [.rateLimited(retryAfter: nil)]))
+        let off = await unregister(c, FakePush(unregister: [.pushOff]))
         XCTAssertEqual([ok, offline, limited, off], [.done, .owed, .owed, .done])
         let slow = FakePush(); slow.unregisterDelay = 30
         let started = Date()
-        let timedOut = await c.unregister(slow, seconds: 0.2)
+        let timedOut = await unregister(c, slow, seconds: 0.2)
         XCTAssertEqual(timedOut, .owed); XCTAssertLessThan(Date().timeIntervalSince(started), 5)
     }
 
@@ -152,7 +160,7 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         let reg = Task { @MainActor in await c.register(a) }
         try? await Task.sleep(for: .milliseconds(50))
         active = false                                   // the workspace is left while the request is out
-        let removal = await c.unregister(a)
+        let removal = await unregister(c, a)
         await reg.value
         XCTAssertEqual(removal, .done)
         XCTAssertNil(c.status[a.workspace.hex], "the late result is discarded")
@@ -172,6 +180,34 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         let published = await c.publishMaterial(a, name: "x", generation: 1)
         XCTAssertTrue(a.registerCalls.isEmpty); XCTAssertFalse(published)
         XCTAssertNil(try? SecretVault(group: .push, backend: backend).scoped(to: .live).get(ws: a.workspace.hex, purpose: PushMaterial.purpose))
+    }
+
+    func testClosingRefusesEveryRegisterAndPublish() async {
+        let c = makeCoordinator(), a = FakePush()
+        c.beginClosing()
+        await c.register(a)
+        let published = await c.publishMaterial(a, name: "x", generation: 1)
+        XCTAssertTrue(a.registerCalls.isEmpty); XCTAssertFalse(published)
+        XCTAssertTrue(c.closing)
+    }
+
+    func testAnInFlightRegistrationThatOutlastsTheWaitMakesTheCleanupOwed() async {
+        let c = makeCoordinator(), a = FakePush()
+        a.registerDelay = 5
+        let reg = Task { @MainActor in await c.register(a) }
+        try? await Task.sleep(for: .milliseconds(50))
+        let r = await unregister(c, a, seconds: 0.2)
+        XCTAssertEqual(r, .owed)
+        reg.cancel()
+    }
+
+    func testPermanentRefusalsAreNotRetried() async {
+        let c = makeCoordinator(), a = FakePush(register: [.refused("malformed")])
+        await c.register(a); await c.register(a); await c.registerAll([a])
+        XCTAssertEqual(a.registerCalls.count, 1)
+        c.workspaceStarted(a.workspace)                  // a re-pair starts fresh
+        await c.register(a)
+        XCTAssertEqual(a.registerCalls.count, 2)
     }
 
     func testPublishesKPushThroughTheFencedSinkAndNeverWK() async throws {

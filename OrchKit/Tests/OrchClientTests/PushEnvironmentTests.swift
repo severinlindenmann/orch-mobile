@@ -30,4 +30,10 @@ import Testing
         #expect(PushEnvironment.resolve(provisioningProfile: profile(aps: "staging"), isSimulator: false) == nil)
         #expect(PushEnvironment.resolve(provisioningProfile: Data("garbage".utf8), isSimulator: false) == nil)
     }
+
+    @Test func anUnreadableProfileFileIsUnknownNotProduction() {
+        #expect(PushEnvironment.resolve(profile: .unreadable, isSimulator: false) == nil)
+        #expect(PushEnvironment.resolve(profile: .absent, isSimulator: false) == .production)
+        #expect(PushEnvironment.resolve(profile: .data(profile(aps: "development")), isSimulator: false) == .sandbox)
+    }
 }
