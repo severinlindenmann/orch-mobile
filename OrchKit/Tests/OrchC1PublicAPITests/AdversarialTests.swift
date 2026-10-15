@@ -47,6 +47,7 @@ private struct Forwarder: RelayTransport {
     func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply { try await t.revocation(deviceID: deviceID, after: after, limit: limit) }
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply { try await t.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session) }
     func dropList(_ q: Data, session: RelaySession) async throws -> WireReply { try await t.dropList(q, session: session) }
+    func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply { try await t.dropDescriptors(objectID: objectID, after: after, limit: limit, session: session) }
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply { try await t.dropGet(objectID: objectID, version: version, part: part, session: session) }
 }
 

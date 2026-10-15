@@ -9,7 +9,7 @@ extension DropServiceTests {
     @Test(arguments: ["foreground", "list", "download"])
     func downloadedExpirySurvivesRestart(trigger: String) async throws {
         let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
-        let expiry = phone.clock.nowMs + 1000
+        let expiry = phone.clock.nowMs + 61_000
         let object = try await service.send(Data("expires".utf8), name: "note", expiresMs: expiry)
         let other = try await service.send(Data("keep".utf8), name: "keep")
         let url = try await service.download(object), kept = try await service.download(other)
@@ -36,16 +36,16 @@ extension DropServiceTests {
     func documentLocalRetentionSurvivesRestartAndRedownload(trigger: String) async throws {
         let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
         let id = ID16.fresh(0x79)
-        var body = try #require(StrictJSON.parse(await w.dropBody(id: id, kind: "document")).object)
+        var body = try DropTestFrame.json(await w.dropBody(id: id, kind: "document"))
         var descriptor = try #require(body["descriptor"]?.object?["o"]?.object)
         descriptor["expires_ms"] = .null
         body["descriptor"] = try SignedObject.sign(descriptor, kind: .dropObject, signer: w.env.device.sig).json
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 201)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: DropTestFrame.frame(body), session: w.phoneSession).status == 201)
         let object = try #require(await service.list(.sending).first)
         #expect(object.descriptor.expiresMs == nil)
         // Retention starts at download, not creation.
         phone.clock.advance(milliseconds: 1000)
-        let other = trigger == "download" ? try await service.send(Data("other".utf8), name: "other", expiresMs: phone.clock.nowMs + 1000) : nil
+        let other = trigger == "download" ? try await service.send(Data("other".utf8), name: "other", expiresMs: phone.clock.nowMs + 61_000) : nil
         let downloadedAt = phone.clock.nowMs
         let verified = try await service.downloadVerified(object)
         let url = verified.url
@@ -83,7 +83,7 @@ extension DropServiceTests {
     private func publishNext(_ w: World, parent: DropObject) async throws -> DropObject {
         let body = try await w.dropBody(id: parent.descriptor.object, parent: parent.descriptor)
         #expect(try await w.transport.dropPut(objectID: parent.descriptor.object, ifMatch: parent.descriptor.version, body: body, session: w.phoneSession).status == 201)
-        let fields = try #require(StrictJSON.parse(body).object)
+        let fields = try DropTestFrame.json(body)
         let signed = try #require(fields["descriptor"])
         return try DropObject(descriptor: DropDescriptor(object: #require(signed.object?["o"]?.object)), signed: signed,
                               wraps: #require(fields["wraps"]?.array).map(DropWrapRecord.init(json:)))
@@ -108,7 +108,9 @@ extension DropServiceTests {
     @Test(arguments: ["expiry", "newer", "wipe"])
     func purgeWinsAgainstPausedPreviewPublication(reason: String) async throws {
         let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
-        let object = try await service.send(Data("old".utf8), name: "note", expiresMs: phone.clock.nowMs + 1000, kind: .document)
+        // an expiring file for "expiry"; documents never expire (the relay refuses a document expiry)
+        let object = reason == "expiry" ? try await service.send(Data("old".utf8), name: "note", expiresMs: phone.clock.nowMs + 61_000)
+            : try await service.send(Data("old".utf8), name: "note", kind: .document)
         let gate = HookGate()
         await gate.hold("download.publish")
         await service.setHook { await gate.hit($0) }
@@ -119,7 +121,7 @@ extension DropServiceTests {
             // A second container/service models a concurrent list or foreground cleanup.
             let secondPhone = try await w.makePhone(), second = try await w.dropService(secondPhone)
             if reason == "expiry" {
-                phone.clock.advance(milliseconds: 1000); secondPhone.clock.advance(milliseconds: 1000)
+                phone.clock.advance(milliseconds: 61_000); secondPhone.clock.advance(milliseconds: 61_000)
                 try await second.purgeExpiredDownloads()
             } else {
                 _ = try await publishNext(w, parent: object)

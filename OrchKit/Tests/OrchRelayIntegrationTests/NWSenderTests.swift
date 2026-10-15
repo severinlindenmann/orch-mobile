@@ -396,6 +396,47 @@ import Testing
         await #expect(throws: TransportError.disconnected) { _ = try await snd.send(self.get("/cut")) }
     }
 
+    @Test func aPerRequestCapAllowsOneLargeReplyAndTheDefaultStaysTight() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        let body = String(repeating: "x", count: 300_000)
+        s.handle { _ in .raw(StubServer.http(200, body: body)) }
+        let snd = try sender(s, cap: 100_000)
+        await #expect(throws: TransportError.responseTooLarge) { _ = try await snd.send(self.get("/blob")) }
+        let big = try WireRequest(method: "GET", target: "/blob", body: Data(), clientAddress: "127.0.0.1", options: RequestOptions(maxResponseBytes: 400_000))
+        #expect(try await snd.send(big).body.count == 300_000)
+        for bad in [0, -1, 1 << 30] {
+            let r = try WireRequest(method: "GET", target: "/blob", body: Data(), clientAddress: "127.0.0.1", options: RequestOptions(maxResponseBytes: bad))
+            await #expect(throws: TransportError.invalidArgument) { _ = try await snd.send(r) }
+        }
+    }
+
+    @Test func aPerRequestDeadlineReplacesTheDefaultForThatRequestOnly() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        s.handle { _ in .hang }
+        let snd = try sender(s, idle: 30, total: 30)
+        let r = try WireRequest(method: "GET", target: "/slow", body: Data(), clientAddress: "127.0.0.1", options: RequestOptions(resourceTimeout: 0.5))
+        let t0 = ContinuousClock.now
+        await #expect(throws: TransportError.disconnected) { _ = try await snd.send(r) }
+        #expect(ContinuousClock.now - t0 < .seconds(10))
+    }
+
+    @Test func aFileBodyIsStreamedWithItsExactContentLength() async throws {
+        let s = try await StubServer.start(); defer { s.stop() }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("nw-body-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(repeating: 7, count: 1_000_003).write(to: url)
+        s.handle { _ in .raw(StubServer.http(201, body: "{}")) }
+        let snd = try sender(s)
+        let r = try WireRequest(method: "PUT", target: "/up", headers: ["content-type": "application/octet-stream"], body: Data(), clientAddress: "127.0.0.1", bodyFile: url)
+        #expect(try await snd.send(r).status == 201)
+        #expect(s.requests.last?.headers["content-length"] == "1000003")
+        // a file and a body together, or a missing file, are refused before any I/O
+        let both = try WireRequest(method: "PUT", target: "/up", body: Data([1]), clientAddress: "127.0.0.1", bodyFile: url)
+        await #expect(throws: TransportError.invalidArgument) { _ = try await snd.send(both) }
+        let missing = try WireRequest(method: "PUT", target: "/up", clientAddress: "127.0.0.1", bodyFile: url.appendingPathExtension("none"))
+        await #expect(throws: TransportError.invalidArgument) { _ = try await snd.send(missing) }
+    }
+
     @Test func anEarlyFinalReplyStopsTheUpload() async throws {
         let s = try await StubServer.start(); defer { s.stop() }
         s.readsRequestBody = false
