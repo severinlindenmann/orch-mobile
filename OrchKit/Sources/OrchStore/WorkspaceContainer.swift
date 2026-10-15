@@ -319,6 +319,23 @@ extension WorkspaceContainer {
         }
     }
 
+    /// Removes the local plaintext download of every object NOT in `keep` (the objects a complete verified list walk showed live). Heads
+    /// and signed descriptors stay: a purge never rewinds the chain. Files of objects in `keep` and their retention are untouched.
+    public func purgeDownloads(keeping keep: Set<String>) async throws {
+        for object in keep { try StoreLayout.validate(ws: object) }
+        let layout = self.layout, ws = self.ws, generation = self.generation
+        try await database().transaction { tx in
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                for row in try tx.query("SELECT object FROM drop_heads") {
+                    guard let object = row.text("object"), !keep.contains(object) else { continue }
+                    try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL,downloaded_at=NULL WHERE object=?", [.text(object)])
+                }
+                for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                where !keep.contains(where: { file.lastPathComponent.hasPrefix($0 + "-") }) { try FileManager.default.removeItem(at: file) }
+            }
+        }
+    }
+
     public func writeDrop(_ data: Data, object: String, version: UInt32, expiresMs: Int64?,
                           now: @Sendable @escaping () -> Int64) async throws -> URL {
         try await writeDropVerified(data, object: object, version: version, expiresMs: expiresMs, now: now).url

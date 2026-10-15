@@ -113,6 +113,57 @@ final class LiveDropTests: XCTestCase {
         services.resetThisiPhone(); await services.waitForReset()
     }
 
+    private func strayCache(_ drop: LiveDrop) async throws -> URL {
+        let stray = String(repeating: "e", count: 32), container = drop.service.downloadContainer
+        try await container.acceptDropChain(object: stray, chain: [Data([1])])
+        let now = drop.nowMs
+        return try await container.writeDropVerified(Data("stale".utf8), object: stray, version: 1, expiresMs: nil, now: { now }).url
+    }
+
+    func testCompleteWalkPurgesEveryUnlistedCacheAndKeepsTheLiveOnes() async throws {
+        let (services, drop) = try await fixture()
+        let object = try await drop.service.send(Data("keep".utf8), name: "keep")
+        await drop.refresh()
+        let id = object.descriptor.object.hex
+        await drop.open(id)
+        let live = try XCTUnwrap(drop.downloads[id])
+        let stray = try await strayCache(drop)       // an object blocked, tombstoned or absent in the walk is not in the live set
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+        await drop.refresh()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+        XCTAssertNotNil(drop.downloads[id]); XCTAssertFalse(drop.outdated)
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testIncompleteWalkPurgesNothingButCachedCopiesAreNotCurrentAndCannotBeOpened() async throws {
+        let (services, drop) = try await fixture()
+        let first = try await drop.service.send(Data("one".utf8), name: "one")
+        let second = try await drop.service.send(Data("two".utf8), name: "two")
+        await drop.refresh()
+        let id = first.descriptor.object.hex, other = second.descriptor.object.hex
+        await drop.open(id)
+        let live = try XCTUnwrap(drop.downloads[id])
+        let stray = try await strayCache(drop)
+        drop.listHook = { throw URLError(.notConnectedToInternet) }
+        await drop.refresh()
+        XCTAssertTrue(drop.outdated)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+        let row = try XCTUnwrap(drop.rows.first { $0.id == id })
+        XCTAssertTrue(row.outdated); XCTAssertNil(row.text); XCTAssertNil(drop.previewURL)
+        await drop.open(other)
+        XCTAssertNil(drop.downloads[other], "no open until a complete walk succeeds")
+        drop.listHook = nil
+        await drop.refresh()
+        XCTAssertFalse(drop.outdated)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+        await drop.open(other)
+        XCTAssertNotNil(drop.downloads[other])
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
     func testBusyAndUnknownRemovalPreserveRowsAndAlarmBlocksContent() async throws {
         let (services, drop) = try await fixture()
         let rows = drop.rows

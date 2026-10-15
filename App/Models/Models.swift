@@ -130,6 +130,8 @@ struct DropItem: Identifiable, Hashable, Sendable {
     var mime: String? = nil
     var hasSignedExpiry = true
     var blocked = false
+    /// The last list walk did not complete: a cached copy is not shown as current and cannot be opened until a complete walk succeeds.
+    var outdated = false
     var presentationID: String { alias ?? id }
 }
 

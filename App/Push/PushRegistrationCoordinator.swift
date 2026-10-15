@@ -183,9 +183,10 @@ final class PushRegistrationCoordinator {
 
     nonisolated static func removal(for outcome: PushRegistrationOutcome?) -> Removal {
         switch outcome {
-        // `bad_reply` is an answer this build could not read, not the relay saying there is nothing to remove: keep it owed.
-        case .refused("bad_reply")?: .owed
-        case .removed?, .pushOff?, .refused?: .done
+        // Only a definite answer is done: removed, push off, or the relay's 403 (the host removed this device: nothing left to ask). Anything
+        // unknown (an unreadable reply, a malformed request, a new code) stays owed.
+        case .refused(let code)?: ["not_eligible", "revoked", "not_for_this_device"].contains(code) ? .done : .owed
+        case .removed?, .pushOff?: .done
         case .rateLimited?, .failed?, .registered?, nil: .owed
         }
     }

@@ -1074,6 +1074,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let run = Task { @MainActor [self] in
             defer { cleanupRun = nil }
             for item in cleanupStore.load() {
+                // A Leave in progress owns its item (it removes it on a definite done): neither dropped nor sent from here meanwhile.
+                if state(for: item.ws) == .removing { continue }
                 if live.contains(where: { $0.workspaceID.hex == item.ws }) || Date().timeIntervalSince(item.since) > Self.owedCleanupLifetime {
                     _ = cleanupStore.remove(ws: item.ws, generation: item.generation); continue
                 }
@@ -1119,14 +1121,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         // blocks or changes the local wipe beyond the bound.
         var pushOwed = false
         if let c = pushCoordinator, ws.push != nil {
-            // The owed cleanup is durable BEFORE the window (a kill between the tombstone and the end of the wipe must not lose it) and is
-            // removed only when the relay answered done.
-            enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation)
             do {
                 try await beginWorkspaceWipe(runtime, ws)
+                // The tombstone is durable, so this workspace can never reopen: only now is the cleanup recorded as owed, before the
+                // unregister window (a kill inside it must not lose it), and removed only on a definite `.done`.
+                enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation)
                 pushOwed = await c.unregister(workspace: ws.workspaceID) == .owed
+                if !pushOwed { pendingServerCleanups = cleanupStore?.remove(ws: ws.workspaceID.hex, generation: ws.generation) ?? [] }
             } catch { pushOwed = true }       // the wipe below writes the tombstone itself; the cleanup stays owed
-            if !pushOwed { pendingServerCleanups = cleanupStore?.remove(ws: ws.workspaceID.hex, generation: ws.generation) ?? [] }
         }
         let prefix = ws.workspaceID.hex + "/"
         for (key, task) in reconcileTasks where key.hasPrefix(prefix) { task.cancel(); reconcileTasks[key] = nil; reconcileSerials[key] = nil }
@@ -1179,10 +1181,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         c.beginClosing()
         resetFlags.set(true, forKey: Keys.liveResetPending)
         drainTargets = live.map { ($0.workspaceID, $0) }
-        // Nothing reconciles in the background any more: the realm is cut off from the UI, and now from its own tasks too.
-        reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         for ws in live { transition(ws.info.id, to: .removing) }
         PresentationGate.blockAll(live.map { $0.workspaceID.hex })
+        // Only after every durable gate above: nothing reconciles in the background any more (all synchronous, no await before this point).
+        reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         return true
     }
 

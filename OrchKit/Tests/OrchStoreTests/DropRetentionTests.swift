@@ -40,4 +40,21 @@ struct DropRetentionTests {
         #expect(heads.allSatisfy { $0.int("version") == 1 })
         await #expect(throws: (any Error).self) { try await container.purgeDownloads(objects: ["../x"]) }
     }
+
+    @Test func keepingPurgeRemovesEveryObjectNotKeptAndUntrackedFiles() async throws {
+        let layout = try makeLayout(tempDir()), index = try await WorkspaceIndex(layout: layout)
+        try layout.prepareWorkspace(A)
+        let container = try await WorkspaceContainer(index: index, ws: A, generation: 1)
+        let dir = try layout.filesDir(A), C = String(repeating: "c", count: 32)
+        for id in [A, B, C] {
+            try await container.acceptDropChain(object: id, chain: [Data([1])])
+            _ = try await container.writeDropVerified(Data(id.utf8), object: id, version: 1, expiresMs: nil, now: { 1_000 })
+        }
+        try Data("x".utf8).write(to: dir.appendingPathComponent("\(String(repeating: "d", count: 32))-1"))
+        try await container.purgeDownloads(keeping: [A, B])
+        let names = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))
+        #expect(names == ["\(A)-1", "\(B)-1"])
+        let heads = try await container.database().query("SELECT object,file_version FROM drop_heads ORDER BY object")
+        #expect(heads.count == 3 && heads[2].int("file_version") == nil && heads[0].int("file_version") == 1)
+    }
 }

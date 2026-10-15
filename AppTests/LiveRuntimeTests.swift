@@ -533,6 +533,8 @@ final class LiveRuntimeTests: XCTestCase {
         // inside the window: the intent is already durable, the realm is cut off from use but not yet invalidated
         XCTAssertTrue(rig.flags.bool(forKey: "orch.live.resetPending"))
         XCTAssertTrue(services.leavingRealm)
+        XCTAssertEqual(services.pushCoordinator?.closing, true)
+        XCTAssertTrue(services.live.allSatisfy { services.state(for: $0.info.id) == .removing })
         XCTAssertTrue(services.live.allSatisfy { !services.canUse($0.info.id) })
         XCTAssertTrue(runtime.context.isCurrent)
         XCTAssertTrue(rig.install.exists)
@@ -571,9 +573,18 @@ final class LiveRuntimeTests: XCTestCase {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, ws, _) = try pushServices(rig)
         var inWindow: [String] = []
-        services.beginWorkspaceWipe = { _, _ in inWindow = services.cleanupStore?.load().map(\.ws) ?? [] }
+        var beforeTombstone: [String] = [], retried: [String] = []
+        services.beginWorkspaceWipe = { _, _ in beforeTombstone = services.cleanupStore?.load().map(\.ws) ?? [] }
+        services.serverCleanup = { retried.append($0.ws) }
+        services.pushUnregister = { _ in
+            inWindow = services.cleanupStore?.load().map(\.ws) ?? []
+            await services.retryServerCleanup()               // a retry mid-window neither sends nor drops the Leave's own item
+            return .removed
+        }
         _ = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertEqual(beforeTombstone, [], "nothing is owed before the tombstone is durable")
         XCTAssertEqual(inWindow, [ws.workspaceID.hex], "a kill inside the window finds the owed cleanup")
+        XCTAssertEqual(retried, [])
         XCTAssertTrue(services.cleanupStore?.load().isEmpty == true, "removed on done")
         let (services2, _, ws2, _) = try pushServices(rig)
         services2.pushUnregister = { _ in .failed("offline") }
@@ -588,6 +599,10 @@ final class LiveRuntimeTests: XCTestCase {
         services.startReconcile(workspace: ws, decisionID: SystemEntropy().id16())
         XCTAssertEqual(services.reconcileTaskCount, 1)
         XCTAssertTrue(services.beginLeave())
+        // ordering: everything below holds right after the synchronous call, before any await
+        XCTAssertTrue(rig.flags.bool(forKey: "orch.live.resetPending"))
+        XCTAssertEqual(services.pushCoordinator?.closing, true)
+        XCTAssertEqual(services.state(for: ws.info.id), .removing)
         XCTAssertEqual(services.reconcileTaskCount, 0)
         await services.drainPushRegistrations()
         services.retire()
