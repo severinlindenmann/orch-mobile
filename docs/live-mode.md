@@ -92,6 +92,8 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
 8. The share fence is fail-safe: if the journal write or replay fails, the index keeps its entries and is marked stale, and the next
    boot completes the removal.
 
+9. **A no-realm boot must not retire Live destinations.** Today `completeShareRemovals()` retires every persisted entry when the boot ends with no realm. That is safe while only Demo exists, because Demo is wiped at every boot anyway. Once Live exists, a failed or absent runtime (a boot error, `resetIncomplete`, a Live restore that fails offline or before first unlock) must not tombstone `"live"` destinations, because that burns their generation for good. A no-realm boot retires only realms whose storage is wiped at boot (Demo). Live destinations are retired only by an explicit Leave Live or Reset.
+
 ## Priorities and risks
 
 * P0, teardown and restoration: stale handles, interrupted wipes and restart recovery. Test delayed join completion during exit,
