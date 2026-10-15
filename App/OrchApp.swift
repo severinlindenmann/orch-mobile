@@ -82,7 +82,7 @@ struct AppRoot: View {
             await realm.boot()
             intake.realmBooted()
             #if DEBUG
-            if let url = options.openURL { intake.handle(text: url) }
+            if let url = options.openURL { intake.handle(text: url, source: .otherApp) }
             #endif
             if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: realm.services) }
         }

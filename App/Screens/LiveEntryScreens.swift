@@ -73,6 +73,7 @@ struct LiveEntryScreen: View {
     @State private var link = ""
     @State private var showScanner = false
     @State private var viaPasteButton = false
+    @FocusState private var fieldFocused: Bool
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -91,6 +92,13 @@ struct LiveEntryScreen: View {
                     .keyboardType(.URL)
                     .padding(OS.s3).background(OC.surface, in: RoundedRectangle(cornerRadius: OR.control, style: .continuous))
                     .accessibilityIdentifier("live.paste")
+                    .focused($fieldFocused)
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { fieldFocused = false }.accessibilityIdentifier("live.keyboardDone")
+                        }
+                    }
                     // The link carries the pairing secret: kept out of the app-switcher snapshot and screenshots' accessibility text.
                     .privacySensitive()
                     .opacity(scenePhase == .active ? 1 : 0)

@@ -103,7 +103,12 @@ owner-approved). Where this file and a proposal differ, this file wins. Spec gap
   leaves Demo (while Demo is active the link is held in memory and the person is offered "Leave Demo and pair your Mac" with
   a destructive confirmation); (3) the origin must be `https` (no http loopback in the app; a shipped build cannot reach
   plaintext), one relay origin and one owner per Live install, and a different origin is refused before any network access;
-  (4) the pairing itself still needs the Mac's comparison code approval, so an opened link alone cannot add anything.
+  (4) the pairing still needs the host's comparison-code approval, but that is NOT a barrier against a hostile invitation: an
+  attacker's `orch://` link names the attacker's relay and host, and that host approves its own pairing. The only barrier is the
+  review screen and the person: it shows the relay prominently, says where the link came from ("Opened from another app" /
+  "Scanned in orch" / "Pasted into orch"), never calls the unverified host "your Mac", and warns "Only continue if you just
+  started pairing on your Mac and this relay is yours." Residual risk: one careless Connect tap pairs this iPhone with a hostile
+  host (it can then show that host's questions); universal links or a relay allow-list would reduce it and are PR C.
 - D-4 No `apns-collapse-id` in the prototype (S2's safer default); replacement via the NSE + delivered-item removal.
 - D-5 Type scope (terminal) is out of P4 on the phone.
 - D-6 Workspace display name comes from the signed card, opened with the device's sealed `CK` via a provisional

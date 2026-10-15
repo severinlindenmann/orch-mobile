@@ -176,6 +176,12 @@ loopback in the app; Drop, push and share stay off in Live; the Simulator uses s
   `owner`) and shown in Live Home. The first join also records the pin right after it (best effort); the boot derivation is the durable
   guarantee, so a crash between `commitJoin` and the record write is repaired at the next launch. The coordinator's stored device
   certificate refuses a second owner meanwhile.
+* **Review-fix round (PR #72).** The review screen shows the invitation source and a warning and never says "your Mac" for the unverified
+  host; a second invitation never swaps the reviewed origin (visible banner); the paste field is privacy-sensitive, hidden when the scene is
+  inactive and cleared after use (the clipboard too when it came from the paste button); `recordOwner` is inert after a Leave; the scanner
+  asks for camera permission before showing "camera off" (device pass needed, the Simulator has no camera); `ownerDisagreement` has its own
+  copy ("two different owners ... Leave Live to start over"); the Leave notice mentions the Mac only after a join; a failed force-erase boots a
+  fresh graph so "Try again" works.
 * **Install record location (Opus L3): not moved to the `.keys` keychain group, on purpose.** It is read synchronously in many places and
   by per-launch preference suites in UI tests, and a keychain-resident record would SURVIVE an uninstall while the app's data does not,
   leaving a Live install with no index that pins a stale origin forever. `UserDefaults` goes away with the app, and keychain leftovers are

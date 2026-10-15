@@ -24,7 +24,7 @@ final class LiveEntryTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 30))
         field.tap()
         field.typeText(text)
-        app.swipeDown()                                   // scrollDismissesKeyboard: the keyboard must not cover the button
+        if app.buttons["live.keyboardDone"].waitForExistence(timeout: 5) { app.buttons["live.keyboardDone"].tap() }   // the keyboard must not cover the button
         let review = app.buttons["live.review"]
         let hittable = NSPredicate(format: "isHittable == true")
         expectation(for: hittable, evaluatedWith: review)
