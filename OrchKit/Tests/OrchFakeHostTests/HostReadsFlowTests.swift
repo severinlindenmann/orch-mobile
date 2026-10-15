@@ -103,6 +103,84 @@ import OrchProtocol
     }
 }
 
+/// Identity-derived caches belong to one verified epoch and die with any failed read; the attestation (`rd`) fails closed.
+@Suite struct HostReadsFailClosedTests {
+    @Test func aNewEpochDropsEveryIdentityCache() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone()
+        let api = BridgeWorkspaceAPI(session: p.session)
+        _ = try await w.serve(p) { try await api.snapshot() }
+        let before = await p.session.identityCacheState()
+        #expect(before.epoch == 1 && before.labels > 0 && before.indexed == 3 && before.tickets == 1)
+        // a rotation (a removal or revocation publishes a new epoch): the phone takes it only through the signed list and grants
+        try await w.host.rotate(remaining: await w.host.rosterEntries(), relay: w.relay, session: w.hostSession)
+        _ = try await w.serve(p) { try await p.session.refreshGrants(forceList: true) }
+        let probe = Seen()
+        await w.host.setHandler { req in _ = await probe.bump(); return .refuse(.malformed) }
+        _ = try? await w.serve(p) { try await api.snapshot() }          // fails: the first read is refused
+        let after = await p.session.identityCacheState()
+        #expect(after.epoch == 2 && after.labels == 0 && after.indexed == 0 && after.tickets == 0 && after.cursor == nil)
+    }
+
+    @Test func aFailedReadKeepsNothingAndWhoamiNeverGrantsScopes() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone()
+        let api = BridgeWorkspaceAPI(session: p.session)
+        _ = try await w.serve(p) { try await api.snapshot() }
+        #expect(await p.session.identityCacheState().indexed == 3)
+        await w.host.setHandler { _ in .refuse(.host(code: "internal", retryable: false, seqs: nil, nextKey: nil)) }
+        await #expect(throws: (any Error).self) { _ = try await w.serve(p) { try await api.snapshot() } }
+        let s = await p.session.identityCacheState()
+        #expect(s.labels == 0 && s.indexed == 0 && s.tickets == 0 && s.cursor == nil)
+        await #expect(throws: (any Error).self) { _ = try await w.serve(p) { try await p.session.whoami() } }
+        // scopes are the certificate's and the verified list's (the pairing), never a host view: the session has no scope derived from `whoami`,
+        // `member.list` or `workspace.show`, and `next_key` is only advice
+        #expect(!Mirror(reflecting: await p.session.configuration).children.contains { $0.label == "scopes" })
+    }
+
+    private func reader(_ w: World, level: Int? = nil) -> ReaderRuntime { .production }
+
+    @Test func noDeclarationMeansNoRdAndAHostReaderRefusalIsSurfacedNotRetried() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone(reader: ReaderRuntime(capability: nil, build: "t"), sendsReaderDigest: true)
+        let seen = Seen()
+        await w.host.setHandler { req in
+            await seen.set(req.meta.object?["rd"]?.string)
+            _ = await seen.bump()
+            return .refuse(.host(code: "sign.convenience_readers", retryable: false, seqs: nil, nextKey: nil))
+        }
+        await #expect(throws: ClientError.host(.host(code: "sign.convenience_readers", retryable: false, seqs: nil, nextKey: nil))) {
+            _ = try await w.serve(p) { try await p.session.workspaceShow() }
+        }
+        let rdSeen = await seen.value, calls = await seen.count
+        #expect(rdSeen == nil && calls == 1)          // no `rd` invented, and the refusal was not sent again
+    }
+
+    @Test func aCorruptOrForeignDeclarationFailsClosed() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone(sendsReaderDigest: true)
+        try w.vault.scoped(to: .demo).put(Data("garbage".utf8), ws: w.ws.hex, purpose: "reader.state")
+        await #expect(throws: SessionError.readerStateUnreadable) { _ = try await w.serve(p) { try await p.session.workspaceShow() } }
+        // a declaration made by ANOTHER device key for this workspace claims a level this device never proved
+        let other = SoftwareSigner(), kx = SoftwareKeyAgreer()
+        guard let cap = ReaderKAT.current else { return }                   // a build whose KAT cannot run declares nothing
+        let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: other.publicKey, dkKx: kx.publicKey, who: .person(w.primary.personID), level: cap.level,
+                                              kat: cap.kat, bind: .declare, createdMs: w.clock.nowMs, signer: other)
+        try ReaderStore.save(w.vault.scoped(to: .demo), ws: w.ws, ReaderStateRecord(decl: decl, highest: decl.level, build: BuildIdentity.current, acked: true))
+        let q = try await w.makePhone(install: false, sendsReaderDigest: true)
+        await #expect(throws: SessionError.readerStateUnreadable) { _ = try await w.serve(q) { try await q.session.workspaceShow() } }
+    }
+
+    @Test func theDowngradeMarkerIsCheckedBeforeEveryRequest() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone(reader: ReaderRuntime(capability: nil, build: "t"), sendsReaderDigest: true)
+        // the marker rises after the session was built (a newer build declared level 1): this build, at level 0, sends nothing
+        try ReaderStore.save(w.vault.scoped(to: .demo), ws: w.ws, ReaderStateRecord(decl: nil, highest: 1, build: "newer", acked: true))
+        await #expect(throws: SessionError.readerDowngrade) { _ = try await w.serve(p) { try await p.session.workspaceShow() } }
+        #expect(await w.host.coreState().rids.isEmpty)
+    }
+}
+
 private actor Seen {
     private(set) var value: String?
     private(set) var count = 0

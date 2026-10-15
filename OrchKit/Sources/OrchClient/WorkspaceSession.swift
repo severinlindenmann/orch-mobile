@@ -141,6 +141,8 @@ public actor WorkspaceSession: RealmParticipant {
     private var ticketCache: [String: (headSeq: Int64, get: TicketGet)] = [:]
     private var deviceLabels: [String: String] = [:]
     private var personNames: [String: String] = [:]
+    /// The epoch the identity-derived caches (labels, question index, ticket reads) were filled under.
+    private var cacheEpoch: UInt32?
     private var connectionState: ConnectionState = .offline
     private var hintIdentity: UUID?
     private var recovery: Task<Void, Never>?
@@ -567,7 +569,7 @@ public actor WorkspaceSession: RealmParticipant {
         try await ensureCurrent()
         // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it once R2 switches it on
         let exempt = (try? Bridge.unframe(plaintext).meta.object?["op"]?.string) == "reader.declare"
-        let rd = exempt ? nil : try readerDigestForRequest()
+        let rd = exempt ? nil : try readerDigestForRequest()      // also the per-request marker check
         // a NEW rid replacing a refused attempt carries the current declaration's `rd`; a same-rid re-seal keeps the first
         let freshRD = old != nil && !reuseRid
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
@@ -1076,7 +1078,27 @@ extension WorkspaceSession {
         return out
     }
 
+    /// Everything derived from host views about who is who (labels, the question index, ticket reads that carry `members_v`) belongs to one
+    /// verified member-list epoch: a new epoch (a rotation, a revocation, a re-pair) drops it, and so does any failed read.
+    private func dropIdentityCaches() {
+        deviceLabels = [:]; personNames = [:]; questionIndex = [:]; ticketCache = [:]; lastCursor = nil
+    }
+    private func checkCacheEpoch() async throws {
+        let e = try await currentEpoch()
+        if cacheEpoch != e { dropIdentityCaches(); cacheEpoch = e }
+    }
+    /// Fail closed: after a failed read nothing identity-derived survives, and a host reader refusal also ends the cached view (it must not
+    /// keep being served as current).
+    private func noteReadFailure(_ error: Error) {
+        dropIdentityCaches()
+        if case ClientError.host(let r) = error, r.code.hasPrefix("sign.convenience_readers") || r.code.hasPrefix("reader.") { cachedSnapshot = nil }
+    }
+    package func identityCacheState() -> (epoch: UInt32?, labels: Int, indexed: Int, tickets: Int, cursor: String?) {
+        (cacheEpoch, deviceLabels.count + personNames.count, questionIndex.count, ticketCache.count, lastCursor)
+    }
+
     private func assembleSnapshot() async throws -> WorkspaceSnapshot {
+        try await checkCacheEpoch()
         // The activity feed first: its cursor is what the poller compares, and an answer seen here is fetched below.
         let answered = try await activityList(limit: 50, types: ["question.answered"])
         let show = try await workspaceShow()
@@ -1137,7 +1159,8 @@ extension WorkspaceSession {
         if let snapshotTask { return try await snapshotTask.value }
         let task = Task { () throws -> WorkspaceSnapshot in
             guard try await self.readBudgetAvailable() else { throw ViewError.readDeferred }
-            let snapshot = try await self.assembleSnapshot()
+            let snapshot: WorkspaceSnapshot
+            do { snapshot = try await self.assembleSnapshot() } catch { self.noteReadFailure(error); throw error }
             try await self.ensureCurrent()
             self.verifiedReceiptMs = self.cfg.wall.nowMs
             self.cachedSnapshot = snapshot
@@ -1152,6 +1175,7 @@ extension WorkspaceSession {
     /// One question read afresh from its ticket (`ticket.get`), the F1 gate included: an OPEN question comes back with `reviewed`, the
     /// recomputed `qid` and `hash` bound to the `doc.head` and `members_v` of the same read (what a person event will sign, C2b).
     private func readQuestion(_ id: ID16, hint: QuestionLocator? = nil) async throws -> (question: Question, reviewed: F1Question.Reviewed?) {
+        try await checkCacheEpoch()
         var locator = hint ?? questionIndex[id]
         if locator == nil {
             _ = try await snapshotView()                     // a fresh process knows no question yet: one snapshot fills the index
@@ -1574,10 +1598,19 @@ extension WorkspaceSession {
     /// `rd` for the next column-R request: the digest of this device's current declaration. nil while R2 has not switched
     /// `sendsReaderDigest` on, or before any declaration. With the switch on, a new build must have declared first (O5).
     package func readerDigestForRequest() throws -> String? {
+        // The downgrade marker (the level never falls) and the stored record are checked before EVERY request, `rd` or not.
+        let state: ReaderStateRecord?
+        do { state = try ReaderStore.load(cfg.vault, ws: cfg.workspace) } catch ReaderStoreError.corrupt { throw SessionError.readerStateUnreadable }
+        guard ReaderGate.opens(state, runningLevel: cfg.reader.level) else { throw SessionError.readerDowngrade }
         guard cfg.sendsReaderDigest else { return nil }
-        let state = try ReaderStore.load(cfg.vault, ws: cfg.workspace)
         if cfg.blocksUntilDeclared, ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
-        return ReaderGate.rd(state)
+        // No declaration: no `rd` at all (never an empty or invented one). A host that requires readers refuses, and that is surfaced.
+        guard let decl = state?.decl else { return nil }
+        // A declaration claims a level: it must be this device's, for this workspace, and not above what this build proved (KAT).
+        guard let o = decl.json.object?["o"]?.object, o["workspace_id"]?.string == cfg.workspace.hex,
+              o["device_id"]?.string == cfg.deviceID.hex else { throw SessionError.readerStateUnreadable }
+        guard decl.level <= cfg.reader.level else { throw SessionError.readerDowngrade }
+        return decl.digest
     }
 
     /// Tests: the session's configuration.
