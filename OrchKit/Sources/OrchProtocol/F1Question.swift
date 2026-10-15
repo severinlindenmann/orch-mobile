@@ -89,9 +89,10 @@ public struct F1Answer: Equatable, Sendable {
 /// A question of `ticket.get` under the F1 values (host section 11A.14 14.5, F1 section 5.6). Not the v0 `Question` of the
 /// host-api: the ticket is a uid, options are `{key, label, cost?}`, the hash is `sha256:` + hex.
 ///
-/// The parser is exact: keys outside the closed set of the contract are refused (an unknown view field would otherwise be a
-/// field the phone never rendered), required keys must be present, every string follows the text rules of section 11.3, and an
-/// unknown `auth` value is refused.
+/// Strictness has two levels. Question, answer and signer objects IGNORE unknown keys (host section 0.4: clients ignore unknown keys the
+/// host sends), while every key the phone knows is validated strictly (required keys present, types, section 11.3 text, unknown `auth`
+/// values refused). Option entries are CLOSED (`key`, `label`, `cost?` only): they are hashed into the question hash, so a key the
+/// phone does not know would be bound content it never rendered, and the hash would not match what it shows.
 public struct F1Question: Equatable, Sendable {
     public enum State: Sendable, Equatable { case open, answered, stale }
 
@@ -166,10 +167,11 @@ public struct F1Question: Equatable, Sendable {
 
     // MARK: parsing helpers
 
-    private static func keysOK(_ m: [String: JSONValue], required: Set<String>, optional: Set<String>) -> Bool {
+    /// `closed: false` ignores unknown keys (known keys are still checked by the callers); `closed: true` refuses them.
+    private static func keysOK(_ m: [String: JSONValue], required: Set<String>, optional: Set<String>, closed: Bool = false) -> Bool {
         guard m.keys.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { $0 < 0x80 } }) else { return false }
         let k = Set(m.keys)
-        return required.isSubset(of: k) && k.isSubset(of: required.union(optional))
+        return required.isSubset(of: k) && (!closed || k.isSubset(of: required.union(optional)))
     }
 
     private static func nullable<T>(_ v: JSONValue?, _ f: (JSONValue) -> T?) throws -> T? {
@@ -186,7 +188,7 @@ public struct F1Question: Equatable, Sendable {
     }
 
     private static func parseOption(_ v: JSONValue) throws -> F1QuestionOption {
-        guard let o = v.object, keysOK(o, required: ["key", "label"], optional: ["cost"]),
+        guard let o = v.object, keysOK(o, required: ["key", "label"], optional: ["cost"], closed: true),
               let key = o["key"]?.string, !key.isEmpty, (try? F1Text.check(key, oneLine: true)) != nil,
               let label = o["label"]?.string, !label.isEmpty, (try? F1Text.check(label, oneLine: true)) != nil else { throw Refusal.malformed }
         var cost: String?
@@ -250,13 +252,21 @@ public struct F1Question: Equatable, Sendable {
         public let qid: String
         public let hash: String
         public let text: String
+        /// `ticket.get` -> `doc.head.head` (`based_on`) and `members_v` (`roster_v`), from the same snapshot as the question.
+        public let basedOn: String
+        public let rosterV: Int64
+        fileprivate init(question: F1Question, ticketUID: String, qid: String, hash: String, text: String, basedOn: String, rosterV: Int64) {
+            self.question = question; self.ticketUID = ticketUID; self.qid = qid; self.hash = hash; self.text = text
+            self.basedOn = basedOn; self.rosterV = rosterV
+        }
     }
 
-    public func reviewed(ticketUID: String, workspace: ID16) throws -> Reviewed {
+    public func reviewed(ticketUID: String, workspace: ID16, basedOn: String, rosterV: Int64) throws -> Reviewed {
+        guard F1ASCII.isHash(basedOn), rosterV >= 0, rosterV <= maxSafeInt else { throw Refusal.malformed }
         guard state == .open, let text, let hostQid = qid, let hostHash = hash else { throw Refusal.malformed }
         let myQid = try F1Question.questionID(question: id, ticketUID: ticketUID, workspace: workspace)
         let myHash = try F1Question.questionHash(qid: myQid, ticketUID: ticketUID, text: text, options: options)
         guard myQid.bytesEqual(hostQid), myHash.bytesEqual(hostHash) else { throw Refusal.malformed }
-        return Reviewed(question: self, ticketUID: ticketUID, qid: myQid, hash: myHash, text: text)
+        return Reviewed(question: self, ticketUID: ticketUID, qid: myQid, hash: myHash, text: text, basedOn: basedOn, rosterV: rosterV)
     }
 }

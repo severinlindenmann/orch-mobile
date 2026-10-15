@@ -9,11 +9,15 @@ import Foundation
 /// is implemented here (UAX 15), a port of orch-core `canon/text.py`. The host refuses a violating string with `validation.text`
 /// and never normalises a signed string, so the phone normalises phone-authored text BEFORE the sign sheet (`normalize`) and
 /// signs only text that `check` accepts.
+///
+/// NEVER use Foundation's `precomposedStringWithCanonicalMapping` (or `String` equality as a normalisation test) on a path that is signed
+/// or hashed: it follows the OS's Unicode version and is wrong for some sequences (an audit found 164 mismatches against the 16.0
+/// tables in 300 000 random strings, among them Tibetan). `FieldRules` in the tests fails if the symbol appears in OrchProtocol.
 public enum F1Text {
     public static let unicodeVersion = Unicode16Data.version
 
     public struct Violation: Error, Equatable, Sendable {
-        public enum Kind: Equatable, Sendable { case control, bidiControl, unassigned, notNFC, lineFeedInOneLine, tooLong, empty }
+        public enum Kind: Equatable, Sendable { case control, bidiControl, unassigned, notNFC, lineFeedInOneLine }
         public let kind: Kind
         /// Index in Unicode scalars (not bytes) of the first offending scalar.
         public let index: Int
@@ -178,7 +182,4 @@ public enum F1Text {
         try check(n, oneLine: oneLine)
         return n
     }
-
-    /// Byte length of the UTF-8 encoding (the answer text cap is 4 096 bytes).
-    public static func utf8Length(_ s: String) -> Int { s.utf8.count }
 }

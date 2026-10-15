@@ -737,29 +737,6 @@ E0100 E01EF
 F0000 FFFFD
 100000 10FFFD
 """
-    static let format = """
-AD AD
-600 605
-61C 61C
-6DD 6DD
-70F 70F
-890 891
-8E2 8E2
-180E 180E
-200B 200F
-202A 202E
-2060 2064
-2066 206F
-FEFF FEFF
-FFF9 FFFB
-110BD 110BD
-110CD 110CD
-13430 1343F
-1BCA0 1BCA3
-1D173 1D17A
-E0001 E0001
-E0020 E007F
-"""
     static let ccc = """
 300 314 230
 315 315 232
@@ -4201,4 +4178,6 @@ DDE
 16D69
 16D6A
 """
+    /// SHA-256 over `name + "\n" + block + "\n"` for each block in this order: assigned, ccc, decomp, composable.
+    static let digest = "03866a987ad6a88d4256968bdaa3ca6eb13907d67296287d5e7d925e48d7b050"
 }

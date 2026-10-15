@@ -24,7 +24,7 @@ import Testing
         for (cls, codes) in table { for code in codes { #expect(PhoneRetryTable.classify(code, ctx()) == cls, "\(code)") } }
     }
 
-    @Test func everyListedCodeIsKnownAndEachHasOneClass() {
+    @Test func classSetsAreDisjointAndKnownCodesCoverThem() {
         let sets = [PhoneRetryTable.classA, PhoneRetryTable.classB, PhoneRetryTable.classCAuto, PhoneRetryTable.classCReview, PhoneRetryTable.classD]
         let total = sets.reduce(0) { $0 + $1.count }
         #expect(Set(sets.flatMap { $0 }).count == total)
@@ -58,7 +58,8 @@ import Testing
         #expect(PhoneRetryTable.classify("outcome.unknown_idem", ctx(at: bound, absent: true)) == .cReview)
         #expect(PhoneRetryTable.classify("outcome.unknown_idem", ctx(at: bound, absent: false)) == .d)
         #expect(PhoneRetryTable.classify("outcome.unknown_idem", ctx(at: bound + 5, absent: nil)) == .b)
-        #expect(PhoneRetryTable.classify("outcome.unknown_idem", PhoneRefusalContext(eventID: "bad", hostNowMs: bound)) == .b)
+        // an unparseable event id has no bound to wait for: D, never an unbounded retry
+        #expect(PhoneRetryTable.classify("outcome.unknown_idem", PhoneRefusalContext(eventID: "bad", hostNowMs: bound)) == .d)
         #expect(PhoneRetryTable.unknownIdemBoundMs == 900_000 + 300_000)
     }
 }

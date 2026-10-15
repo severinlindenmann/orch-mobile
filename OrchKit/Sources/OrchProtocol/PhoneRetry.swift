@@ -65,7 +65,9 @@ public enum PhoneRetryTable {
     public static func classify(_ code: String, _ ctx: PhoneRefusalContext) -> PhoneRetryClass {
         func has(_ set: Set<String>) -> Bool { set.contains { $0.bytesEqual(code) } }
         if code.bytesEqual("outcome.unknown_idem") {
-            guard let t = ULID.timeMs(of: ctx.eventID), ctx.hostNowMs >= saturatingAdd(t, unknownIdemBoundMs) else { return .b }
+            // an event id the phone cannot parse has no bound to wait for: D, never an unbounded retry
+            guard let t = ULID.timeMs(of: ctx.eventID) else { return .d }
+            guard ctx.hostNowMs >= saturatingAdd(t, unknownIdemBoundMs) else { return .b }
             switch ctx.logShowsEventAbsent {
             case .some(true): return .cReview
             case .some(false): return .d   // the event is in the log: landed
@@ -83,26 +85,45 @@ public enum PhoneRetryTable {
 }
 
 /// What the sign sheet displayed for an answer: the recomputed `qid` and `hash`, the option or text, and the unbound context
-/// (`to`, `why`, `recommended`, `blocking`) which the auto re-sign compares too, stricter than the hash (14.4 item 2).
+/// (`to`, `why`, `recommended`, `blocking`) which the auto re-sign compares too, stricter than the hash (14.4 item 2). Public code can
+/// only build one from an `F1Question.Reviewed` (a snapshot whose hash the phone reproduced). Strings compare byte-exactly.
 public struct AnswerDisplay: Equatable, Sendable {
     public let qid: String, hash: String
     public let option: String?, text: String?
     public let to: [String]
     public let why: String?, recommended: String?
     public let blocking: Bool
-    public init(qid: String, hash: String, option: String?, text: String?, to: [String], why: String?, recommended: String?, blocking: Bool) {
+    init(qid: String, hash: String, option: String?, text: String?, to: [String], why: String?, recommended: String?, blocking: Bool) {
         self.qid = qid; self.hash = hash; self.option = option; self.text = text; self.to = to
         self.why = why; self.recommended = recommended; self.blocking = blocking
     }
-    public init(_ r: F1Question.Reviewed, option: String?, text: String?) {
-        self.init(qid: r.qid, hash: r.hash, option: option, text: text, to: r.question.to, why: r.question.why,
+    public init(_ r: F1Question.Reviewed, option: String?, text: PhoneEvents.PreparedText?) {
+        self.init(qid: r.qid, hash: r.hash, option: option, text: text?.value, to: r.question.to, why: r.question.why,
                   recommended: r.question.recommended, blocking: r.question.blocking)
+    }
+    public static func == (a: AnswerDisplay, b: AnswerDisplay) -> Bool {
+        a.qid.bytesEqual(b.qid) && a.hash.bytesEqual(b.hash) && bytesEqual(a.option, b.option) && bytesEqual(a.text, b.text)
+            && a.to.count == b.to.count && zip(a.to, b.to).allSatisfy { $0.bytesEqual($1) }
+            && bytesEqual(a.why, b.why) && bytesEqual(a.recommended, b.recommended) && a.blocking == b.blocking
+    }
+}
+
+func bytesEqual(_ a: String?, _ b: String?) -> Bool {
+    switch (a, b) {
+    case (nil, nil): return true
+    case (let x?, let y?): return x.bytesEqual(y)
+    default: return false
     }
 }
 
 public struct CreationDisplay: Equatable, Sendable {
     public let ticketType: String, title: String, owner: String
-    public init(ticketType: String, title: String, owner: String) { self.ticketType = ticketType; self.title = title; self.owner = owner }
+    /// From the fresh `workspace.show` and the phone's own certificate; the title is the prepared text that was reviewed.
+    package init(ticketType: String, title: PhoneEvents.PreparedText, owner: String) { self.ticketType = ticketType; self.title = title.value; self.owner = owner }
+    init(ticketType: String, title: String, owner: String) { self.ticketType = ticketType; self.title = title; self.owner = owner }
+    public static func == (a: CreationDisplay, b: CreationDisplay) -> Bool {
+        a.ticketType.bytesEqual(b.ticketType) && a.title.bytesEqual(b.title) && a.owner.bytesEqual(b.owner)
+    }
 }
 
 public enum ReviewDisplay: Equatable, Sendable {

@@ -13,7 +13,9 @@ import OrchProtocol
     @Test func timeIsWallPlusAdoptedOffsetAndRandomIsEntropy() throws {
         let ids = PhoneEventIDs(wall: Wall(nowMs: 1_790_000_000_000), entropy: Fill(byte: 0xFF))
         let a = try ids.next()
-        #expect(ULID.timeMs(of: a) == 1_790_000_000_000)
+        // typed constants: comparing an Int64? against an untyped arithmetic literal mis-compared once under #expect
+        let nowMs: Int64 = 1_790_000_000_000
+        #expect(ULID.timeMs(of: a) == nowMs)
         #expect(a.hasSuffix("ZZZZZZZZZZZZZZZZ"))
         let b = try ids.next(offsetMs: -12_345)
         let expected: Int64 = 1_789_999_987_655

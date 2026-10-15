@@ -4,20 +4,22 @@ import Foundation
 /// ULID (Crockford base32, 26 characters): 48-bit big-endian millisecond time, then 80 random bits. The first character is 0...7.
 /// Host section 11A.14 14.1: `^[0-7][0-9A-HJKMNP-TV-Z]{25}$`. The phone makes the event id (and the creation's ticket uid) itself.
 public enum ULID {
+    public enum Failure: Error, Equatable, Sendable { case timeOutOfRange, badRandomLength }
+
     static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ".utf8)
     public static let randomLength = 10
 
     /// `timeMs` must fit 48 bits; `random` is exactly 10 bytes from the OS CSPRNG (the caller owns the entropy source).
     public static func make(timeMs: Int64, random: Data) throws -> String {
-        guard timeMs >= 0, timeMs < (1 << 48), random.count == randomLength else { throw CryptoFailure.invalidLength }
+        guard timeMs >= 0, timeMs < (1 << 48) else { throw Failure.timeOutOfRange }
+        guard random.count == randomLength else { throw Failure.badRandomLength }
         var bytes = [UInt8](repeating: 0, count: 16)
         for i in 0..<6 { bytes[i] = UInt8((timeMs >> Int64(8 * (5 - i))) & 0xFF) }
         for (i, b) in random.enumerated() { bytes[6 + i] = b }
         // 128 bits as 26 groups of 5 bits, the first group carrying only the top 3 bits
         var out = [UInt8]()
-        var acc: UInt32 = 0, bits = 0
         // left-pad with two zero bits so that the 128 bits become 130
-        acc = 0; bits = 2
+        var acc: UInt32 = 0, bits = 2
         for b in bytes {
             acc = (acc << 8) | UInt32(b); bits += 8
             while bits >= 5 {
@@ -47,7 +49,7 @@ public enum ULID {
 
     public static func isInsideHostWindow(_ id: String, hostNowMs: Int64) -> Bool {
         guard let t = timeMs(of: id) else { return false }
-        return t >= hostNowMs - windowPastMs && t <= hostNowMs + windowFutureMs
+        return t >= saturatingAdd(hostNowMs, -windowPastMs) && t <= saturatingAdd(hostNowMs, windowFutureMs)
     }
 }
 
@@ -87,29 +89,35 @@ public enum PhoneEvents {
     public static let maxTitleScalars = 200
     public static let ticketTypes = ["feature", "bug", "chore", "spike", "epic"]
 
+    /// Phone-authored text that went through `prepareText`: the only way to build the `text` of an answer or the `title` of a creation.
+    /// Normalised (LF, NFC under Unicode 16.0) and checked against section 11.3 already, so the sign sheet shows exactly what is signed.
+    public struct PreparedText: Equatable, Sendable {
+        public let value: String
+        public let oneLine: Bool
+        fileprivate init(value: String, oneLine: Bool) { self.value = value; self.oneLine = oneLine }
+    }
+
     public enum Failure: Error, Equatable, Sendable {
-        case badID, badTicketUID, badRoster, badBase, badQuestion, notOpen, unknownOption, noAnswer
+        case badID, badTicketUID, badRoster, badBase, notOpen, unknownOption, noAnswer
         case text(F1Text.Violation), textTooLong, emptyText, titleLength
         case badKey, badType
     }
 
     /// Phone-authored text (title, free-text answer) to be shown on the sign sheet and signed: CRLF/CR to LF, NFC (Unicode 16.0), checks.
-    public static func prepareText(_ s: String, oneLine: Bool) throws -> String {
-        do { return try F1Text.normalize(s, oneLine: oneLine) } catch let v as F1Text.Violation { throw Failure.text(v) }
+    public static func prepareText(_ s: String, oneLine: Bool) throws -> PreparedText {
+        do { return PreparedText(value: try F1Text.normalize(s, oneLine: oneLine), oneLine: oneLine) } catch let v as F1Text.Violation { throw Failure.text(v) }
     }
 
     // MARK: question.answered
 
     /// `question.answered` (F1 section 5.4.1): exact fields `question`, `hash`, then `option?` and/or `text?`. `basedOn` is
     /// `ticket.get` -> `doc.head.head`, `rosterV` is `members_v`. `reviewed` must come from `F1Question.reviewed` (recomputed hash).
-    package static func answer(_ r: F1Question.Reviewed, option: String?, text: String?, id: String, basedOn: String, rosterV: Int64,
+    package static func answer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
                                actor: PhoneActor, workspace: ID16, signer: some Signer) throws -> SignedPhoneEvent {
         guard ULID.isValid(id) else { throw Failure.badID }
-        guard F1ASCII.isHash(basedOn) else { throw Failure.badBase }
-        guard rosterV >= 0, rosterV <= maxSafeInt else { throw Failure.badRoster }
         guard r.question.state == .open else { throw Failure.notOpen }
         guard option != nil || text != nil else { throw Failure.noAnswer }
-        var e: [String: JSONValue] = envelope(actor: actor, id: id, rosterV: rosterV, type: "question.answered", basedOn: .string(basedOn))
+        var e: [String: JSONValue] = envelope(actor: actor, id: id, rosterV: r.rosterV, type: "question.answered", basedOn: .string(r.basedOn))
         e["question"] = .string(r.question.id)
         e["hash"] = .string(r.hash)
         if let option {
@@ -117,10 +125,9 @@ public enum PhoneEvents {
             e["option"] = .string(match.key)
         }
         if let text {
-            guard !text.isEmpty else { throw Failure.emptyText }
-            do { try F1Text.check(text) } catch let v as F1Text.Violation { throw Failure.text(v) }
-            guard text.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
-            e["text"] = .string(text)
+            guard !text.value.isEmpty else { throw Failure.emptyText }
+            guard text.value.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
+            e["text"] = .string(text.value)
         }
         return try sign(e, kind: .questionAnswered, log: r.ticketUID, workspace: workspace, signer: signer)
     }
@@ -129,20 +136,20 @@ public enum PhoneEvents {
 
     /// `ticket.created` (title-only, R2): exact fields `key`, `ticket_type`, `title`, `owner`; `based_on` null; log = the new ticket's
     /// `uid`, made once per review. `key` is `workspace.show` -> `next_key`.
-    package static func create(ticketUID: String, key: String, ticketType: String, title: String, id: String, rosterV: Int64,
+    package static func create(ticketUID: String, key: String, ticketType: String, title: PreparedText, id: String, rosterV: Int64,
                                actor: PhoneActor, workspace: ID16, signer: some Signer) throws -> SignedPhoneEvent {
         guard ULID.isValid(id) else { throw Failure.badID }
         guard ULID.isValid(ticketUID) else { throw Failure.badTicketUID }
         guard rosterV >= 0, rosterV <= maxSafeInt else { throw Failure.badRoster }
         guard F1ASCII.isTicketKey(key) else { throw Failure.badKey }
         guard let type = F1ASCII.oneOf(ticketType, ticketTypes) else { throw Failure.badType }
-        do { try F1Text.check(title, oneLine: true) } catch let v as F1Text.Violation { throw Failure.text(v) }
-        let n = title.unicodeScalars.count
+        guard title.oneLine else { throw Failure.titleLength }
+        let n = title.value.unicodeScalars.count
         guard n >= 1, n <= maxTitleScalars else { throw Failure.titleLength }
         var e: [String: JSONValue] = envelope(actor: actor, id: id, rosterV: rosterV, type: "ticket.created", basedOn: .null)
         e["key"] = .string(key)
         e["ticket_type"] = .string(type)
-        e["title"] = .string(title)
+        e["title"] = .string(title.value)
         e["owner"] = .string(actor.personID)
         return try sign(e, kind: .ticketCreated, log: ticketUID, workspace: workspace, signer: signer)
     }
