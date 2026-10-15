@@ -34,8 +34,13 @@ package final class LifecycleFence: Sendable {
     }
 
     private let state = Mutex(State())
+    /// The realm generation the session belongs to: a reset invalidates it synchronously (its own lock), and every ticket check reads
+    /// it, so a generation change is seen at the moment of the effect even before the session hears of it.
+    private let generation: RealmGeneration?
 
-    package init() {}
+    package init(generation: RealmGeneration? = nil) { self.generation = generation }
+
+    private func usable(_ s: State) -> Bool { s.usable && (generation?.isCurrent ?? true) }
 
     /// Ends every ticket issued so far (and every eligibility token).
     package func invalidate(_ why: Invalidation) {
@@ -58,12 +63,12 @@ package final class LifecycleFence: Sendable {
     package func reviewedAgain() { state.withLock { if $0.foreground && $0.protectedData { $0.unlocked = true } } }
 
     /// A plain ticket (no review token), only while the lifecycle is usable.
-    package func ticket() -> Ticket? { state.withLock { $0.usable ? Ticket(epoch: $0.epoch, review: nil, token: nil) : nil } }
+    package func ticket() -> Ticket? { state.withLock { usable($0) ? Ticket(epoch: $0.epoch, review: nil, token: nil) : nil } }
 
     /// Issues the review's eligibility token (the Sign tap) and a ticket bound to it.
     package func issue(review: String) -> Ticket? {
         state.withLock { s in
-            guard s.usable else { return nil }
+            guard usable(s) else { return nil }
             let t = UUID()
             s.eligibility[review] = t
             return Ticket(epoch: s.epoch, review: review, token: t)
@@ -73,7 +78,7 @@ package final class LifecycleFence: Sendable {
     /// A ticket bound to the review's CURRENT eligibility token; nil without one.
     package func ticket(review: String) -> Ticket? {
         state.withLock { s in
-            guard s.usable, let t = s.eligibility[review] else { return nil }
+            guard usable(s), let t = s.eligibility[review] else { return nil }
             return Ticket(epoch: s.epoch, review: review, token: t)
         }
     }
@@ -81,7 +86,7 @@ package final class LifecycleFence: Sendable {
     /// The synchronous last-moment check: the same epoch, still usable, and the review's token unchanged.
     package func valid(_ t: Ticket) -> Bool {
         state.withLock { s in
-            guard s.usable, s.epoch == t.epoch else { return false }
+            guard usable(s), s.epoch == t.epoch else { return false }
             if let review = t.review { return s.eligibility[review] == t.token }
             return true
         }

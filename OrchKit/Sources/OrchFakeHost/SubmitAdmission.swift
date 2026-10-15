@@ -171,8 +171,9 @@ extension FakeHost {
         guard history.contains(base) else { return "event.bad_base" }
         guard roster == s.membersV else { return "members.stale" }
         guard let q = s.questions.first(where: { $0.ticketUID == ticket.uid && $0.number == qn }) else { return "question.unknown" }
-        guard q.answer == nil else { return "question.answered" }
+        // spec L6 order: base, roster, hash, open, option
         guard self.hash(q) == hash else { return "question.stale" }
+        guard q.answer == nil else { return "question.answered" }
         if let option { guard q.options.contains(where: { Data($0.key.utf8) == Data(option.utf8) }) else { return "answer.bad_option" } }
         return nil
     }

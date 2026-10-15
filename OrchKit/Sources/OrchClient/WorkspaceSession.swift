@@ -141,7 +141,7 @@ public actor WorkspaceSession: RealmParticipant {
     var reviewDrivers: [String: Task<WriteOutcome, Error>] = [:]
     /// The C2b lifecycle invariant's one enforcement point (see `LifecycleFence`): its epoch, its flags and the per-review eligibility
     /// tokens. Invalidations reach it synchronously, also from outside the actor.
-    nonisolated let lifecycleFence = LifecycleFence()
+    nonisolated let lifecycleFence: LifecycleFence
     /// Monotonic age of attempts signed by this process (the window's third term); absent after a relaunch (counts 0).
     var attemptMonotonic: [String: () -> Duration] = [:]
     /// Pending settlement retries (10 s, 60 s, 300 s), per review.
@@ -240,6 +240,7 @@ public actor WorkspaceSession: RealmParticipant {
         if let g = c.processLocalWriteGrant, !g.admits(context: c.context, transport: c.transport) { throw RealmViolation.wrongTransport }
         policy = PersonEventPolicy.derive(identity: c.identity, context: c.context, grant: c.processLocalWriteGrant, transport: c.transport)
         cfg = c
+        lifecycleFence = LifecycleFence(generation: fence)
         sessionAge = Self.marker(c.clock)
         guard fence.register(self) else { throw RealmViolation.staleGeneration }
     }

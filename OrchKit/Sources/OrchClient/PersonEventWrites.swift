@@ -16,14 +16,15 @@ public struct ReviewedSnapshot: Sendable, Equatable {
     public let realm: Realm
     public let workspaceID: ID16
     public let generation: Int64
-    /// `cj` of the reviewed content: what equality compares.
-    package let contentBytes: Data
+    /// `cj` of the reviewed content: what equality compares. Nil when it cannot be encoded: such a snapshot equals nothing, itself
+    /// included (fail closed: it can never pass the session's `held == s` check, so it is never signed).
+    package let contentBytes: Data?
 
     package init(reviewed: F1Question.Reviewed, token: UUID, question: Question, realm: Realm, workspaceID: ID16, generation: Int64) {
         self.reviewed = reviewed; self.token = token; self.question = question; self.realm = realm; self.workspaceID = workspaceID
         self.generation = generation
-        contentBytes = (try? canonicalJSON(["q": reviewed.question.openWire, "uid": .string(reviewed.ticketUID), "base": .string(reviewed.basedOn),
-                                            "roster": .int(reviewed.rosterV), "qid": .string(reviewed.qid), "hash": .string(reviewed.hash)])) ?? Data()
+        contentBytes = try? canonicalJSON(["q": reviewed.question.openWire, "uid": .string(reviewed.ticketUID), "base": .string(reviewed.basedOn),
+                                           "roster": .int(reviewed.rosterV), "qid": .string(reviewed.qid), "hash": .string(reviewed.hash)])
     }
 
     /// EVERY option, in the order the hash binds them: key, label and cost exactly as reviewed.
@@ -42,9 +43,12 @@ public struct ReviewedSnapshot: Sendable, Equatable {
     /// A question without options is answered on the Mac (free text stays out of C2b).
     public var answerable: Bool { !reviewed.question.options.isEmpty }
 
-    public static func == (a: ReviewedSnapshot, b: ReviewedSnapshot) -> Bool { a.token == b.token && a.contentBytes == b.contentBytes }
-    /// Same reviewed content, whatever review issued it.
-    public func sameContent(_ o: ReviewedSnapshot) -> Bool { contentBytes == o.contentBytes }
+    public static func == (a: ReviewedSnapshot, b: ReviewedSnapshot) -> Bool { a.token == b.token && a.sameContent(b) }
+    /// Same reviewed content, whatever review issued it (never true for content that could not be encoded).
+    public func sameContent(_ o: ReviewedSnapshot) -> Bool {
+        guard let mine = contentBytes, let theirs = o.contentBytes else { return false }
+        return mine == theirs
+    }
 }
 
 extension QuestionReview {
@@ -457,6 +461,7 @@ extension WorkspaceSession {
     func reviewDriver(_ id: String) async throws -> WriteOutcome {
         if let t = reviewDrivers[id] { return try await t.value }
         guard !closed else { throw SessionError.staleGeneration }
+        try crashHook?("pe.driver")              // tests count driver starts here
         let t = Task { try await self.runReview(id) }
         reviewDrivers[id] = t
         defer { reviewDrivers[id] = nil }
@@ -477,7 +482,9 @@ extension WorkspaceSession {
 
     private func activeReviews() async throws -> [String] {
         try await ensureCurrent()
-        return try await cfg.container.database().query("SELECT review FROM pe_reviews WHERE state='active' ORDER BY created_ms").compactMap { $0.text("review") }
+        // active reviews, and landings whose confirming read has not succeeded yet
+        return try await cfg.container.database().query("SELECT review FROM pe_reviews WHERE state='active' OR (state='landed' AND outcome IS NULL) ORDER BY created_ms")
+            .compactMap { $0.text("review") }
     }
 
     /// Unresolved past the send window (or reads failing): try again after 10 s, 60 s, then every 300 s, while in the foreground.
@@ -510,8 +517,30 @@ extension WorkspaceSession {
 
     // MARK: the review loop (plan 4)
 
+    /// Earlier attempts of the review that may still land: possibly sent (dispatched) and not settled as landed or definitely refused
+    /// for themselves (`sent`; `c_auto` and `superseded` included: a host that misreported a refusal may still commit it, plan 4).
+    static func mayStillLand(_ a: AttemptRec, current: String) -> Bool {
+        a.idem != current && a.dispatched && (a.state == "sent" || a.state == "c_auto" || a.state == "superseded")
+    }
+
+    /// Reads every earlier attempt that may still land (oldest first, each against its OWN event): a landing is recorded and wins
+    /// (true). A definite refusal of a `sent` one is recorded as its own evidence. `skip` holds the attempts already read in this pass.
+    private func settleEarlier(_ rv: ReviewRec, _ attempts: [AttemptRec], skip: inout Set<String>) async throws -> Bool {
+        for e in attempts where Self.mayStillLand(e, current: rv.currentIdem) && !skip.contains(e.idem) {
+            skip.insert(e.idem)
+            let ev = try await settleByReading(e, rv)
+            switch ev {
+            case .landed: try await apply(ev, rv, e); return true
+            case .definite where e.state == "sent": try await apply(ev, rv, e)
+            default: break
+            }
+        }
+        return false
+    }
+
     func runReview(_ id: String) async throws -> WriteOutcome {
         var reseals = 0, sends = 0
+        var readEarlier: Set<String> = []
         for _ in 0..<12 {
             try Task.checkCancellation()
             try await ensureCurrent()
@@ -525,11 +554,7 @@ extension WorkspaceSession {
             }
             let attempts = try await loadAttempts(id)
             // An earlier possibly sent attempt is settled first, against its OWN event: a late landing of any attempt wins.
-            if let earlier = attempts.first(where: { $0.idem != rv.currentIdem && $0.dispatched && $0.state == "sent" }) {
-                let ev = try await settleByReading(earlier, rv)
-                if case .landed = ev { try await apply(ev, rv, earlier); continue }
-                if case .definite = ev { try await apply(ev, rv, earlier); continue }
-            }
+            if try await settleEarlier(rv, attempts, skip: &readEarlier) { continue }
             guard let a = attempts.first(where: { $0.idem == rv.currentIdem }) else { throw SessionError.unknownRequest }
             let ev: Evidence
             var retryRead = false
@@ -547,6 +572,9 @@ extension WorkspaceSession {
                 } else { ev = read }
             case "c_auto":
                 if try await tryAutoResign(rv, a) { continue }
+                // final: every earlier attempt that may still land is read once more first (a late landing wins)
+                var fresh: Set<String> = []
+                if try await settleEarlier(rv, attempts, skip: &fresh) { continue }
                 try await finishReview(rv, state: "needs_review", outcome: .needsReview(.workspaceChanged))
                 continue
             default:
@@ -555,7 +583,14 @@ extension WorkspaceSession {
                 continue
             }
             switch ev {
-            case .landed, .definite: try await apply(ev, rv, a)
+            case .landed: try await apply(ev, rv, a)
+            case .definite(_, let cls, _):
+                // before a final refusal settles the review, every earlier attempt that may still land is read once more
+                if cls != .cAuto {
+                    var fresh: Set<String> = []
+                    if try await settleEarlier(rv, attempts, skip: &fresh) { continue }
+                }
+                try await apply(ev, rv, a)
             case .notSent:
                 try await discardUnsent(rv, a)
             case .windowPassed:
@@ -760,21 +795,32 @@ extension WorkspaceSession {
         emit(.invalidated)
     }
 
-    /// Step 2 of plan 4: a fresh read confirms the landing, or the review is `landed_unconfirmed` (never downgraded).
+    /// Step 2 of plan 4: a fresh log read confirms the landing (its seq is the log's, never made up), or a SUCCESSFUL read showing
+    /// something else makes the review `landed_unconfirmed` (never downgraded). A failed read leaves the review `landed` with no outcome
+    /// yet: the confirmation is tried again later.
     private func confirmLanding(_ rv: ReviewRec) async throws -> WriteOutcome {
         guard let idem = rv.landedIdem, let a = try await loadAttempts(rv.review).first(where: { $0.idem == idem }) else { throw SessionError.unknownRequest }
         let snap = try StoredSnapshot(bytes: rv.snapshot)
         let seq = a.landedSeq
         let outcome: WriteOutcome
         do {
-            guard let qid = ID16(hex: snap.qid) else { throw ViewError.malformed }
-            let q = try await readQuestion(qid, hint: snap.locator).question
-            if let r = q.resolution, r.decisionID.bytesEqual(idem) {
-                let s = seq ?? 0
+            let get = try await ticketGet(snap.ticketUID)
+            let q = get.uid.bytesEqual(snap.ticketUID) ? get.questions.first(where: { $0.question?.id.bytesEqual(snap.question.id) == true })?.question : nil
+            if let q, let ans = q.answer, ans.id.bytesEqual(idem) {
+                let s = seq ?? ans.seq
                 outcome = a.origin == "auto" ? .landedAfterResign(seq: s, key: snap.ticketKey) : .landed(seq: s, key: snap.ticketKey)
-            } else { outcome = .landedUnconfirmed(seq: seq, reason: .changed) }
+            } else {
+                outcome = .landedUnconfirmed(seq: seq, reason: q == nil ? .unavailable : .changed)
+            }
         } catch is CancellationError { throw CancellationError() }
-        catch { outcome = .landedUnconfirmed(seq: seq, reason: .unavailable) }
+        catch ClientError.host(.host(let code, _, _, _)) where code.bytesEqual("not_found") {
+            // a successful answer from the host: the ticket can't be shown any more
+            outcome = .landedUnconfirmed(seq: seq, reason: .unavailable)
+        } catch {
+            // transient: stays `landed` with outcome NULL, confirmed on a later pass
+            scheduleSettle(rv.review)
+            return .landedUnconfirmed(seq: seq, reason: .unavailable)
+        }
         let state: String
         if case .landedUnconfirmed = outcome { state = "landed_unconfirmed" } else { state = "landed" }
         let encoded = String(decoding: try canonicalJSON(Self.encodeOutcome(outcome)), as: UTF8.self)

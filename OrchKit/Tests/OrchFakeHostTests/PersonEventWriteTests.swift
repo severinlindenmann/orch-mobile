@@ -138,6 +138,26 @@ extension FakeHost {
         catch SQLiteError.constraint(_, let m) { #expect(m == "pe_reviews: a landing is final") }
     }
 
+    /// The confirming read fails once after a landing: the review stays `landed` with no outcome (not `landed_unconfirmed`), and a later
+    /// pass confirms it with the log's seq.
+    @Test func aTransientConfirmFailureIsRetriedNotUnconfirmed() async throws {
+        let landed = Done(), failed = Done()
+        let r = try await rig { req, host in
+            let op = req.meta.object?["op"]?.string
+            if op == "answer" { landed.set(); return nil }
+            if op == "ticket.get", landed.value, !failed.value { failed.set(); return .refuse(.malformed) }
+            return nil
+        }
+        let out = try await answer(r)
+        #expect(out == .landedUnconfirmed(seq: try await rows(r.p, "SELECT evidence FROM pe_attempts").first.flatMap { AttemptSeq.of($0) }, reason: .unavailable))
+        let review = try #require(try await rows(r.p, "SELECT review, state, outcome FROM pe_reviews").first)
+        #expect(review.text("state") == "landed" && review.text("outcome") == nil)
+        let again = try await r.w.serve(r.p) { try await r.p.session.settle(reviewID: review.text("review")!) }
+        guard case .landed(let seq, _) = again else { Issue.record("\(again)"); return }
+        #expect(seq >= 1)
+        #expect(try await reviewState(r.p) == ["landed"])
+    }
+
     @Test func freeTextIsAnsweredOnTheMac() async throws {
         let w = try await World.make()
         let p = try await w.makePhone()
@@ -169,6 +189,42 @@ extension FakeHost {
         #expect(try await rows(r.p, "SELECT * FROM pe_reviews").isEmpty)
         #expect(try await rows(r.p, "SELECT * FROM bridge_requests WHERE attempt IS NOT NULL").isEmpty)
         #expect(r.ops.value("answer") == 0)
+    }
+
+    /// COMMIT itself fails (the body ran to its end; a deferred foreign key only checked at COMMIT refuses it): as distinct from a
+    /// rollback inside the body, and with the same result: nothing durable, nothing sent.
+    @Test func aCommitFailureLeavesNothing() async throws {
+        let r = try await rig()
+        let db = try await r.p.container.database()
+        try await db.execute("CREATE TABLE commit_bomb (x TEXT REFERENCES pe_reviews(review) DEFERRABLE INITIALLY DEFERRED)")
+        try await db.execute("CREATE TRIGGER commit_bomb_arm AFTER INSERT ON pe_attempts BEGIN INSERT INTO commit_bomb VALUES ('no such review'); END")
+        do { _ = try await answer(r); Issue.record("committed") }
+        catch SQLiteError.constraint(_, let m) { #expect(m.contains("FOREIGN KEY")) }
+        #expect(r.hooks.count("pe.inserted") == 1)              // the body completed: it is the COMMIT that failed
+        #expect(r.hooks.count("pe.sign") == 1)
+        #expect(try await rows(r.p, "SELECT * FROM pe_attempts").isEmpty)
+        #expect(try await rows(r.p, "SELECT * FROM pe_reviews").isEmpty)
+        #expect(try await rows(r.p, "SELECT * FROM bridge_requests WHERE attempt IS NOT NULL").isEmpty)
+        #expect(r.ops.value("answer") == 0)
+    }
+
+    /// Cancelled after the commit: of the caller (the review's driver goes on), or of the driver itself after the charge. Either way the
+    /// committed attempt is settled, never lost or re-signed.
+    @Test(arguments: ["pe.driver", "post.charged"])
+    func aCancellationAfterCommitIsSettled(_ point: String) async throws {
+        let r = try await rig()
+        let hooks = r.hooks
+        await r.p.session.setCrashHook { name in
+            try hooks.hit(name)
+            if name == point, hooks.count(name) == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        _ = try? await answer(r)
+        let out = try await settleAll(r, r.p)
+        let state = try await reviewState(r.p)
+        #expect(state == ["landed"])
+        if !out.isEmpty { guard case .landed = out.first else { Issue.record("\(out)"); return } }
+        #expect(r.hooks.count("pe.sign") == 1 && r.ops.value("answer") == 1)
+        #expect(try await rows(r.p, "SELECT * FROM pe_attempts").count == 1)
     }
 
     @Test func aCrashRightAfterCommitSendsTheSameBytesOnTheFirstPost() async throws {
@@ -225,6 +281,10 @@ extension FakeHost {
         #expect(!holds(wall: signedAt + 900_000))
         #expect(holds(wall: signedAt, ulid: signedAt + 300_000))
         #expect(!holds(wall: signedAt, ulid: signedAt + 300_001))
+        // the monotonic term alone: wall and host ages are well inside (100 s), only the monotonic age is past 840 s
+        #expect(holds(wall: signedAt + 100_000, mono: 840_000))
+        #expect(!holds(wall: signedAt + 100_000, mono: 840_001))
+        #expect(!holds(wall: signedAt + 100_000, mono: 841_000))
         // a backward wall jump cannot extend it: the monotonic age still counts
         #expect(!holds(wall: signedAt - 3_600_000, mono: 841_000))
         // nor can an offset adopted later that shrinks the host age: the wall age since signing counts
@@ -297,6 +357,23 @@ extension FakeHost {
             _ = try await r.p.session.prepare(logical: stored.logical, plaintext: stored.plaintext, replacing: row, reconciled: true)
         }
         await #expect(throws: WriteGateError.notCurrent) { _ = try await r.w.serve(r.p) { try await r.p.session.resend(rid: row) } }
+        #expect(r.ops.value("answer") == 0)
+    }
+
+    /// Each re-seal path on its own (same rid: WS stale-epoch re-seal; new rid: replace, reconcile) refuses a non-current attempt.
+    @Test(arguments: [(false, false), (false, true), (true, false), (true, true)])
+    func everyReSealPathRefusesANonCurrentAttempt(_ reconciled: Bool, _ reuseRid: Bool) async throws {
+        let r = try await rig()
+        r.hooks.fail("post.precharge")
+        #expect(try await answer(r) == .checking)
+        let row = try #require(try await rows(r.p, "SELECT rid FROM bridge_requests WHERE attempt IS NOT NULL").first?.text("rid").flatMap(ID16.init(hex:)))
+        let stored = try #require(try await r.p.session.loadRow(row))
+        // superseded by a (hand-made) newer attempt: the review's current_idem moved on
+        try await r.p.container.database().execute("UPDATE pe_reviews SET current_idem='01ARZ3NDEKTSV4RRFFQ69G5FAV'")
+        await #expect(throws: WriteGateError.notCurrent) {
+            _ = try await r.p.session.prepare(logical: stored.logical, plaintext: stored.plaintext, replacing: row, reconciled: reconciled, reuseRid: reuseRid)
+        }
+        #expect(try await rows(r.p, "SELECT rid FROM bridge_requests WHERE attempt IS NOT NULL").count == 1)
         #expect(r.ops.value("answer") == 0)
     }
 
@@ -432,6 +509,41 @@ extension FakeHost {
         #expect(r.hooks.count("pe.sign") == 1)
     }
 
+    /// A realm reset (generation invalidated) while the tap is answered C-auto: no automatic re-sign.
+    @Test func aRealmResetEndsTheEligibility() async throws {
+        let env = SessionBox()
+        let r = try await rig { req, host in
+            if req.meta.object?["op"] == "answer" { await host.demoBumpMembersV(); env.invalidate?() }
+            return nil
+        }
+        let generation = r.w.env.generation
+        env.invalidate = { generation.invalidate() }
+        _ = try? await answer(r)
+        #expect(r.hooks.count("pe.sign") == 1 && r.ops.value("answer") == 1)
+        #expect(r.p.session.lifecycleFence.ticket() == nil)
+    }
+
+    /// C-auto while an earlier attempt of the review is still unresolved (its outcome cannot be read): no further re-sign.
+    @Test func noAutoReSignWhileAnEarlierAttemptIsUnresolved() async throws {
+        let box = SessionBox()
+        let first = RequestBox()
+        let r = try await rig { req, host in
+            let op = req.meta.object?["op"]?.string
+            if op == "outcome.get" { return .refuse(.malformed) }
+            guard op == "answer" else { return nil }
+            if first.request == nil { first.request = req }
+            else if let p = box.container, let k1 = first.request?.meta.object?["idem"]?.string {
+                // K1 is possibly sent and unsettled while K2 is refused C-auto again
+                try? await p.database().execute("UPDATE pe_attempts SET state='sent' WHERE idem=?", [.text(k1)])
+            }
+            await host.demoBumpMembersV()
+            return nil
+        }
+        box.container = r.p.container
+        #expect(try await answer(r) == .needsReview(.workspaceChanged))
+        #expect(r.hooks.count("pe.sign") == 2 && r.ops.value("answer") == 2)
+    }
+
     @Test func aRelaunchEndsTheEligibility() async throws {
         let r = try await rig()
         await r.w.host.demoBumpMembersV()
@@ -462,7 +574,7 @@ extension FakeHost {
         let r = try await rig()
         await r.w.host.demoHoldNextWrite()
         #expect(try await answer(r) == .checking)
-        let posted = r.ops.value("answer")
+        let posted = r.ops.value("answer"), drivers = r.hooks.count("pe.driver")
         let id = try #require(try await r.api.pendingWrites().first?.reviewID)
         let session = r.p.session
         let both = try await r.w.serve(r.p, steps: 400) { () -> [WriteOutcome] in
@@ -471,7 +583,8 @@ extension FakeHost {
             return [try await a, try await b]
         }
         #expect(both[0] == both[1])
-        #expect(r.ops.value("answer") - posted <= 2)       // one driver's re-seals, not two
+        #expect(r.hooks.count("pe.driver") - drivers == 1)   // one driver started; the second settle joined it
+        #expect(r.ops.value("answer") - posted == 2)          // exactly that driver's two re-seals, not four
     }
 
     /// K1 is refused C-auto (the host misreports it), the review re-signs K2, and then K1 is delivered late and lands. `delayK2`: K2 is
@@ -493,12 +606,14 @@ extension FakeHost {
         let k1 = try #require(stash.request?.meta.object?["idem"]?.string)
         if delayK2 {
             #expect(out == .checking)
-            // K1 is an earlier attempt still unresolved on this phone (as a creation's key race leaves it)
-            try await r.p.container.database().execute("UPDATE pe_attempts SET state='sent' WHERE idem=?", [.text(k1)])
+            // K1 is superseded (refused C-auto, re-signed as K2) but was dispatched: settlement reads it again and finds it landed
+            #expect(try await rows(r.p, "SELECT state, dispatched FROM pe_attempts WHERE idem=?", [.text(k1)]).first?.text("state") == "superseded")
             let settled = try await settleAll(r, r.p)
             guard case .landed = settled.first else { Issue.record("\(settled)"); return }
         } else {
-            guard case .landed = out else { Issue.record("\(out)"); return }
+            // landed by the log read of `question.answered`: its seq is the log's, never a made-up 0
+            guard case .landed(let seq, _) = out else { Issue.record("\(out)"); return }
+            #expect(seq >= 1)
         }
         #expect(try await rows(r.p, "SELECT landed_idem FROM pe_reviews").first?.text("landed_idem") == k1)
         #expect(try await rows(r.p, "SELECT state FROM pe_attempts WHERE idem=?", [.text(k1)]).first?.text("state") == "landed")
@@ -678,9 +793,27 @@ extension FakeHost {
 final class SessionBox: @unchecked Sendable {
     private let lock = NSLock()
     private var s: WorkspaceSession?
+    private var c: WorkspaceContainer?
+    private var i: (@Sendable () -> Void)?
     var session: WorkspaceSession? {
         get { lock.withLock { s } }
         set { lock.withLock { s = newValue } }
+    }
+    var container: WorkspaceContainer? {
+        get { lock.withLock { c } }
+        set { lock.withLock { c = newValue } }
+    }
+    var invalidate: (@Sendable () -> Void)? {
+        get { lock.withLock { i } }
+        set { lock.withLock { i = newValue } }
+    }
+}
+
+enum AttemptSeq {
+    /// The landed seq an attempt's evidence names (nil without one).
+    static func of(_ row: SQLRow) -> Int64? {
+        guard let e = row.text("evidence"), let a = (try? StrictJSON.parse(Data(e.utf8)))?.array else { return nil }
+        return a.reversed().compactMap { $0.object?["seqs"]?.array?.first?.int }.first
     }
 }
 
