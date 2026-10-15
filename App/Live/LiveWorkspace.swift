@@ -130,6 +130,10 @@ final class LiveWorkspace: WorkspaceModel {
 
     /// The draft lives in the workspace's own directory, so the local wipe removes it with everything else (U9).
     @ObservationIgnored var draftURL: URL?
+    /// The realm's write fence: the draft is written inside `performFenced`, so a finished realm cannot write into its successor (L6).
+    /// A Live workspace without one cannot save a draft at all.
+    @ObservationIgnored var draftFence: (any WriteFence)?
+    @ObservationIgnored var requiresDraftFence = false
 
     private func loadDraft() -> Draft? {
         guard let url = draftURL, let data = try? Data(contentsOf: url) else { return nil }
@@ -138,7 +142,10 @@ final class LiveWorkspace: WorkspaceModel {
     private func saveDraft(_ d: Draft) throws {
         guard canCreateTickets, let url = draftURL,
               FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) else { throw ViewError.invalidDraft }
-        try JSONEncoder().encode(d).write(to: url, options: [.atomic, .completeFileProtection])
+        let data = try JSONEncoder().encode(d)
+        if let fence = draftFence { try fence.performFenced { try data.write(to: url, options: [.atomic, .completeFileProtection]) } }
+        else if requiresDraftFence { throw ViewError.invalidDraft }
+        else { try data.write(to: url, options: [.atomic, .completeFileProtection]) }
     }
 
     var canCreateTickets: Bool { usable && info.scopes.contains(.operate) }

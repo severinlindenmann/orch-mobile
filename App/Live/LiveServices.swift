@@ -13,12 +13,25 @@ import UserNotifications
 /// or signing.
 @MainActor @Observable
 final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, ShareWorld {
-    private enum Keys { static let demo = "orch.demo.entered"; static let resetPending = "orch.demo.resetPending" }
+    private enum Keys {
+        static let demo = "orch.demo.entered"
+        static let resetPending = "orch.demo.resetPending"
+        /// The Live realm's own gate: set at the start of a Live Leave/Reset, cleared only after the realm-wide wipe succeeded. A launch that
+        /// finds it set completes the wipe BEFORE any realm starts, so no Live successor ever runs next to unwiped Live data.
+        static let liveResetPending = "orch.live.resetPending"
+    }
 
     let options: LaunchOptions
     private(set) var ready = false
     /// Derived from the attached runtime's realm, never from "a runtime exists".
     var isDemo: Bool { runtime?.realm == .demo }
+    var isLive: Bool { runtime?.realm == .live }
+    /// The persisted Live install record (origin and pinned owner). Present from the first Live invitation until a Leave/Reset wiped Live.
+    var installStore: LiveInstallStore { LiveInstallStore(defaults: resetFlags) }
+    var hasLiveInstall: Bool { installStore.exists }
+    /// Why the Live runtime did not start (nil when it did, or when Live is not in use). The runtime stays attached and Live data stays
+    /// untouched; foregrounding retries.
+    private(set) var liveBootError: String?
     private(set) var live: [LiveWorkspace] = []
     private(set) var pendingDecisions: [DecisionStatus] = []
     private(set) var lastChecked = Date()
@@ -38,6 +51,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var realm: Realm? { runtime?.realm }
     /// nil without an attached realm: such a graph has no share bridge.
     var shareRealm: String? { realm?.rawValue }
+    var shareFence: (any WriteFence)? { runtime?.writeFence }
+    var requiresShareFence: Bool { runtime?.realm == .live }
     /// Invalidated when the realm is left or retired: late completions check it before they write, sign or register anything.
     @ObservationIgnored private(set) var lifetime = RealmLifetime()
     /// Set by `RealmController`: realm transitions go through it. Without one (unit tests) leaving only tears this graph down.
@@ -77,6 +92,18 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     @ObservationIgnored var resetRuntime: (any RealmRuntime) async throws -> Void = { try await $0.shutdown() }
 
     @ObservationIgnored var finishInterruptedReset: () async throws -> Void = { try await DemoRuntime.finishInterruptedReset() }
+    /// Everything Live stands on (layout, keychain, clocks, transport). Production fails closed without a keychain configuration.
+    @ObservationIgnored var liveStorage: () throws -> LiveStorage = { try LiveStorage.production() }
+    /// Completes an interrupted Live wipe from storage alone (no runtime).
+    @ObservationIgnored var finishInterruptedLiveReset: (LiveStorage) async throws -> Void = { try await LiveRuntime.finishInterruptedReset(storage: $0) }
+    #if DEBUG
+    /// Tests: installed on the Live runtime at creation so a teardown can be raced against a boot in progress.
+    @ObservationIgnored var liveBootGate: (@Sendable (String) async -> Void)?
+    #endif
+    private func finishLiveReset() async throws { try await finishInterruptedLiveReset(try liveStorage()) }
+    /// Cleanups and gates of the reset in progress, kept across retries and cleared only after the wipe succeeded (L4).
+    @ObservationIgnored private var cleanupToClear: [ServerCleanupStore] = []
+    @ObservationIgnored private var resetFlagKeys: Set<String> = []
 
     func state(for id: String) -> WorkspaceLifecycle { lifecycle[id] ?? .removed }
     func isLive(_ id: String) -> Bool { state(for: id) == .live }
@@ -127,12 +154,23 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let defaults = UserDefaults.standard
         // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("orch.ticket.draft.") { defaults.removeObject(forKey: key) }
+        // An interrupted wipe of ANY realm is finished first, before any realm starts (even a requested Demo).
+        if resetFlags.bool(forKey: Keys.liveResetPending) {
+            do {
+                try await finishLiveReset()
+                clearLiveRealmRecords()
+                resetFlags.set(false, forKey: Keys.liveResetPending)
+            } catch {
+                resetIncomplete = true
+                PresentationGate.requireRebuild()
+            }
+        }
         if !options.uiTesting, resetFlags.bool(forKey: Keys.resetPending) {
             // A Demo reset was interrupted: finish it first, whether or not Demo was entered.
             do {
                 try await finishInterruptedReset()
+                ServerCleanupStore(defaults: resetFlags, realm: .demo).clear()
                 resetFlags.set(false, forKey: Keys.resetPending)
-                resetIncomplete = false
             } catch {
                 resetIncomplete = true
                 PresentationGate.requireRebuild()
@@ -145,14 +183,69 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             ready = true
             return
         }
-        let persisted = launch && !options.uiTesting && defaults.bool(forKey: Keys.demo)
-        wantsDemo = (launch && options.demo) || persisted || enterDemo
+        // A persisted Live install restores on every launch; it wins over a persisted Demo entry (one active realm). A realm entered
+        // by a later transition (`launch == false`) starts exactly as asked.
+        var liveWanted = false
+        if launch, installStore.exists, !enterDemo {
+            liveWanted = true
+            await startLive()
+        }
+        let persisted = launch && !liveWanted && !options.uiTesting && defaults.bool(forKey: Keys.demo)
+        wantsDemo = !liveWanted && ((launch && options.demo) || persisted || enterDemo)
         if wantsDemo { _ = await startDemo() }
         if launch, options.demoSeed, isDemo { await seedDemoWorkspaces() }
-        await ensurePresentationGate(intendedDemo: wantsDemo)
+        await ensurePresentationGate(intendedDemo: wantsDemo || liveWanted)
         // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
         if !isDemo { Task.detached { await SystemDemoNotifications().retryOwedPurges() } }
         ready = true
+    }
+
+    /// What a successful Live wipe also removes: the install record and the realm's pending server cleanups.
+    private func clearLiveRealmRecords() {
+        installStore.clear()
+        ServerCleanupStore(defaults: resetFlags, realm: .live).clear()
+    }
+
+    /// Starts the Live runtime from the persisted install. The runtime (and with it the realm context) is created and attached
+    /// synchronously, BEFORE the boot task starts, so `teardown` can invalidate a boot in progress (M3). A start that fails keeps the
+    /// runtime attached and Live data untouched; the failure is visible as `liveBootError` and foregrounding retries.
+    private func startLive() async {
+        guard runtime == nil else { return }
+        guard let install = installStore.load() else { liveBootError = "The Live record on this iPhone is unreadable."; PresentationGate.requireRebuild(); return }
+        let runtime: LiveRuntime
+        do { runtime = try LiveRuntime(install: install, storage: try liveStorage()) }
+        catch {
+            // Nothing is attached: the graph has no realm. Live data and its share destinations stay as they are.
+            liveBootError = "Live could not start (\(error))."
+            PresentationGate.requireRebuild()
+            return
+        }
+        attach(runtime)
+        runtime.deviceLabel = deviceLabel
+        #if DEBUG
+        runtime.bootGate = liveBootGate
+        #endif
+        await bootLive(runtime)
+    }
+
+    private func bootLive(_ runtime: LiveRuntime) async {
+        if let bootTask { _ = await bootTask.value; return }
+        let revision = resetRevision
+        let task = Task { () -> (any RealmRuntime)? in
+            do { try await runtime.boot(); return runtime } catch { return nil }
+        }
+        bootTask = task
+        let result = await task.value
+        guard revision == resetRevision, self.runtime === runtime else { return }     // a teardown replaced this boot
+        bootTask = nil
+        guard result != nil else {
+            liveBootError = "Live could not start. It will try again when you return to orch."
+            PresentationGate.requireRebuild()
+            return
+        }
+        liveBootError = nil
+        await runtime.rebuildPresentationGate()
+        for handle in (try? await runtime.restoreWorkspaces()) ?? [] { workspaceJoined(handle, lifetime: lifetime) }
     }
 
     /// Opens the foreground-presentation gate once the workspace index has been read. The app has one index, the runtime's
@@ -288,6 +381,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         ws.services = self
         ws.downloadContainer = j.downloadContainer
         ws.draftURL = runtime.draftURL(workspace: j.workspace)
+        ws.draftFence = runtime.writeFence
+        ws.requiresDraftFence = runtime.realm == .live
         // No Drop capability, no Drop: the service is never constructed, not merely hidden.
         if capabilities.drop, let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
@@ -342,7 +437,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
-        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: wantsDemo) } }
+        if active, ready, liveBootError != nil {
+            if let live = runtime as? LiveRuntime { if !live.booted { Task { await bootLive(live) } } }
+            else if runtime == nil, hasLiveInstall { Task { await startLive() } }      // the runtime could not even be built: try again
+        }
+        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: wantsDemo || hasLiveInstall) } }
         if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
         refreshTasks = [:]
@@ -755,7 +854,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         live.removeAll { $0.info.id == workspaceID }
         heldDropItems.removeAll { $0.workspaceID == workspaceID }
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
-        let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
+        // Only Demo can acknowledge a server-side removal; Live has no implemented, acknowledged operation yet, so it never claims one.
+        let server: LeaveServerStatus = (!canDeregister || runtime.realm == .live) ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
         if server == .pendingOffline { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
         return LeaveReport(workspaceName: name, server: server)
     }
@@ -777,14 +877,34 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Ends this realm's lifetime without wiping anything: every late completion that still holds this instance becomes inert.
     /// Used when a transition replaces the whole service graph.
+    ///
+    /// L1: a retired graph leaves nothing running. The realm is invalidated (synchronously: no send, signature or commit from now on),
+    /// and its sessions, pairing coordinators and workspace consumers are then cancelled and awaited (bounded) in `retireDrain`. A
+    /// retire does not wipe: use `teardown` for that.
     func retire() {
         retired = true
+        let runtime = self.runtime
         runtime?.invalidate()          // idempotent: a retired graph's realm is over
         lifetime.invalidate()
         reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
         demoLockRelease?.cancel()
+        let workspaces = live
+        let pendingBoot = bootTask
+        bootTask = nil
+        guard runtime != nil || !workspaces.isEmpty else { return }
+        let previous = retireDrain
+        retireDrain = Task {
+            await previous?.value
+            _ = await pendingBoot?.value
+            await runtime?.drain()
+            for ws in workspaces { await ws.drop?.service.invalidate(); await ws.stop(); await ws.downloadContainer?.close() }
+        }
     }
+
+    /// Completes when a retired graph's sessions and consumers have stopped (tests, and nothing else, wait on it).
+    func waitForRetire() async { await retireDrain?.value }
+    @ObservationIgnored private var retireDrain: Task<Void, Never>?
 
     /// The in-place realm exit (also what `RealmController` drives). The lifetime is invalidated first, before any await.
     func teardown() {
@@ -796,6 +916,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         bootTask = nil
         let old = runtime
         if let old { failedReset = old }
+        // The realm being wiped: the attached one, or the one whose earlier wipe failed. A graph with no realm (Welcome, a boot that never
+        // produced a runtime) resets Demo as before, and Live too when a Live install is on record.
+        let target = old ?? failedReset
+        if let target {
+            resetFlagKeys.insert(target.realm == .live ? Keys.liveResetPending : Keys.resetPending)
+        } else {
+            resetFlagKeys.insert(Keys.resetPending)
+            if installStore.exists { resetFlagKeys.insert(Keys.liveResetPending) }
+        }
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
         PresentationGate.blockAll(workspaces.map { $0.workspaceID.hex })
@@ -804,10 +933,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
         demoLockRelease?.cancel()
-        resetFlags.set(true, forKey: Keys.resetPending)
-        pendingServerCleanups = cleanupStore?.clear() ?? []   // the device identity goes with it; nothing is left to clean up from here
+        for key in resetFlagKeys { resetFlags.set(true, forKey: key) }
+        // L4: pending server cleanups are NOT cleared here. They are cleared only after the wipe succeeded: a failed wipe keeps them
+        // (and the realm's data) for the retry, and a relaunch completes the wipe and then clears them.
+        if let cleanupStore { cleanupToClear.append(cleanupStore) }
         cleanupStore = nil
         deviceLabel = "iPhone"
+        liveBootError = nil
         if !options.uiTesting { UserDefaults.standard.set(false, forKey: Keys.demo) }
         let previous = resetTask
         resetTask = Task { [weak self] in
@@ -818,10 +950,19 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             for ws in workspaces { await ws.drop?.service.invalidate(); await ws.stop() }
             do {
                 if let pending = self.failedReset { try await self.resetRuntime(pending) }
-                else if !self.options.uiTesting { try await self.finishInterruptedReset() }
+                else {
+                    if self.resetFlagKeys.contains(Keys.resetPending), !self.options.uiTesting { try await self.finishInterruptedReset() }
+                    if self.resetFlagKeys.contains(Keys.liveResetPending) { try await self.finishLiveReset() }
+                }
                 self.failedReset = nil
                 for id in self.lifecycle.keys { self.transition(id, to: .removed) }
-                self.resetFlags.set(false, forKey: Keys.resetPending)
+                // The wipe succeeded: only now do the realm's records and cleanups go.
+                if self.resetFlagKeys.contains(Keys.liveResetPending) { self.clearLiveRealmRecords() }
+                for store in self.cleanupToClear { store.clear() }
+                self.cleanupToClear = []
+                self.pendingServerCleanups = []
+                for key in self.resetFlagKeys { self.resetFlags.set(false, forKey: key) }
+                self.resetFlagKeys = []
                 self.resetIncomplete = false
             } catch {
                 self.resetIncomplete = true

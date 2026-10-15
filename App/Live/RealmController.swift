@@ -1,14 +1,15 @@
 import Foundation
 import Observation
 import OrchCoordination
+import OrchCustody
 import OrchShareStaging
 
 /// Owns the active realm and replaces its entire service graph on every transition (decision: one active realm, explicit destructive
 /// switch). The view layer keys on `epoch`, so navigation stacks, sheets and pairing presentations of the outgoing realm are dropped
 /// with it; the outgoing services are retired first, which ends their lifetime and makes every late completion inert.
 ///
-/// Only Demo is constructible today. `.live` exists as a state so the rest of the app is written against the final shape, but nothing
-/// here can enter it yet (PR B adds the Live runtime together with pairing, restoration and a complete Live wipe).
+/// Demo is entered from Welcome. `.live` is entered at launch only: a persisted Live install (written by the Live invitation flow, B2b)
+/// restores on every relaunch. There is no Welcome entry or link intake for Live yet.
 @MainActor @Observable
 final class RealmController: RealmTransitions {
     enum State: Equatable {
@@ -36,6 +37,8 @@ final class RealmController: RealmTransitions {
         .containerURL(forSecurityApplicationGroupIdentifier: ShareBridge.groupIdentifier).map { ShareArea(shareGroupRoot: $0) }
     @ObservationIgnored private let defaults: UserDefaults?
     @ObservationIgnored private var transitionTask: Task<Void, Never>?
+    /// Where the leave in progress (or the failed one awaiting Retry) is going; cleared when a leave completes.
+    @ObservationIgnored private var retryThenDemo: Bool?
     /// Builds the next realm's services (a test seam).
     @ObservationIgnored var makeServices: (LaunchOptions, UserDefaults?) -> LiveServices = { options, defaults in
         LiveServices(options: options, resetFlags: defaults)
@@ -61,6 +64,10 @@ final class RealmController: RealmTransitions {
 
     private func publish() {
         if services.resetIncomplete { state = .recoveryRequired }
+        else if services.isLive || (services.hasLiveInstall && services.liveBootError != nil) {
+            state = .live
+            if let error = services.liveBootError { notice = error }
+        }
         else { state = services.isDemo ? .demo : .welcome }
     }
 
@@ -79,6 +86,8 @@ final class RealmController: RealmTransitions {
     func realmEnterDemo() {
         // Already in Demo (e.g. a forced Welcome route over a Demo launch): nothing to replace.
         guard state == .welcome, transitionTask == nil else { return }
+        // One active realm: a Live install on record (even one that failed to start) is left explicitly, never replaced silently.
+        guard !services.hasLiveInstall else { notice = "Leave Live first to try Demo."; return }
         notice = nil
         let label = services.deviceLabel
         let next = makeServices(options, defaults)
@@ -102,12 +111,16 @@ final class RealmController: RealmTransitions {
     /// Ordering: everything that can still reach the outgoing realm is cut off synchronously, before any await: the share destinations
     /// are retired, the outgoing view graph is dropped (`epoch`), and its lifetime is invalidated. Then the wipe runs. A failed wipe
     /// parks the controller in `recoveryRequired` with the outgoing realm still in place; the destination is never activated meanwhile.
-    func realmLeave(thenDemo: Bool) {
+    func realmLeave(thenDemo requested: Bool) {
         guard state != .leaving, state != .starting else { return }
+        // N1: a retry after a failed wipe goes where the failed one was going (Welcome, or Demo for "Reset Demo data").
+        let thenDemo = state == .recoveryRequired ? (retryThenDemo ?? requested) : requested
+        retryThenDemo = thenDemo
         let outgoing = services
         let label = outgoing.deviceLabel
         notice = nil
         if let realm = outgoing.shareRealm { retireShareTargets(realms: [realm]) }
+        else if outgoing.hasLiveInstall { retireShareTargets(realms: [Realm.live.rawValue]) }     // a Live that never started
         state = .leaving
         epoch += 1
         outgoing.teardown()
@@ -121,6 +134,7 @@ final class RealmController: RealmTransitions {
                 self.epoch += 1
                 return
             }
+            self.retryThenDemo = nil
             let next = self.makeServices(self.options, self.defaults)
             next.deviceLabel = thenDemo ? label : "iPhone"
             self.replaceServices(with: next)
@@ -161,11 +175,13 @@ final class RealmController: RealmTransitions {
     /// The journal write (a test seam for a failing journal).
     @ObservationIgnored var journalRemoval: (ShareInbox, TombstoneRecord) throws -> Void = { try $0.recordRemoval($1) }
 
-    /// Launch: finishes what an earlier leave left behind. A boot into Welcome has no realm, so every persisted destination is stale;
-    /// in any realm the pending journal is replayed and tombstoned plaintext purged.
+    /// Launch: finishes what an earlier leave left behind. A boot with no realm retires only the destinations of realms whose storage is
+    /// wiped at boot (Demo): they are stale. Live destinations are never retired here, because a failed or absent Live runtime (a boot
+    /// error, an unfinished wipe, a restore that failed before first unlock) would burn their generation for good; only an explicit
+    /// Leave Live or Reset retires them. In any realm the pending journal is replayed and tombstoned plaintext purged.
     private func completeShareRemovals() {
         guard let area = shareArea else { return }
-        if services.realm == nil { retireShareTargets(realms: nil) }
+        if services.realm == nil { retireShareTargets(realms: [Realm.demo.rawValue]) }
         let inbox = ShareInbox(area: area)
         try? inbox.replayRemovals()
         inbox.purgeTombstoned()

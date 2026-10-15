@@ -139,6 +139,10 @@ final class DemoRuntime: DemoControls {
 
     func invalidate() { env.context.invalidate() }
 
+    func drain() async { await env.context.shutdownParticipants() }
+
+    var writeFence: (any WriteFence)? { env.context.writeFence }
+
     func reset() async throws {
         ticker?.cancel(); ticker = nil
         invalidate()                                          // idempotent: teardown already did it before its first await
@@ -219,10 +223,10 @@ final class DemoRuntime: DemoControls {
     private func enrollExistingCertificate() async throws {
         let id = try env.context.deviceIdentity(custody: custody, createIfMissing: true)
         let cert = try await primary.certify(DemoKeys(id.publicKeys), label: deviceLabel, scopesMax: ["look", "decide", "operate", "type"])
-        try await makeCoordinator().adoptCertificate(cert, owner: primary.publicKey)
+        try await (try makeCoordinator()).adoptCertificate(cert, owner: primary.publicKey)
     }
 
-    func makeCoordinator() -> PairingCoordinator {
+    func makeCoordinator() throws -> PairingCoordinator {
         PairingCoordinator(PairingConfig(context: env.context, transport: env.transport, index: env.index, vault: keysVault, custody: custody,
                                          clock: clock, wall: clock, entropy: SystemEntropy(), deviceLabel: deviceLabel))
     }

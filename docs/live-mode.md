@@ -1,6 +1,6 @@
 # Live mode
 
-Status: adopted design, 14 Oct 2026. PR A (realm boundary and capabilities) is implemented; PR B and PR C are planned below.
+Status: adopted design, 14 Oct 2026. PR A (realm boundary and capabilities), PR B1 (realm generation fence) and PR B2a (`LiveRuntime`, restore, realm-wide wipe; no user-facing Live entry) are implemented; B2b (Live entry and pairing UI) and PR C are planned below.
 Origin: a Codex design proposal, edited to the owner's decisions.
 
 ## Decisions
@@ -28,7 +28,7 @@ design, so no stale handle is reachable from a view. After a successful wipe the
 cannot start shows a notice over Welcome. An unfinished wipe at launch blocks every realm, even with `--demo`; recovery comes first.
 
 * `RealmRuntime`: what the app needs from a realm's runtime: coordinator construction, workspace restoration, wipe and shutdown
-  (plus clock, presentation gate and draft location). `DemoRuntime` conforms; `LiveRuntime` will.
+  (plus clock, presentation gate and draft location). `DemoRuntime` and `LiveRuntime` conform.
 * `DemoControls`: everything Demo-only (scenario, fake host and primary, faults and lock simulation, notification simulation, Drop
   fixture seeding). Only `DemoRuntime` conforms; non-Demo code reaches it through `LiveServices.demo`.
 * Realm and capabilities are tied to the attached runtime: a graph with no runtime (Welcome, recovery) has no realm and no
@@ -72,9 +72,37 @@ preserving uncertain decisions and ticket submission identities.
 Scene and protected-data lifecycle ownership moves to `AppRoot`: both workspace and pairing polling suspend in background, reviews
 are invalidated and comparison codes hidden; resume verifies and keeps the original deadlines.
 
+## PR B2a: `LiveRuntime` (no Live entry yet)
+
+Implemented, reachable only through a persisted Live install record (`LiveInstall`: the one origin and, after the first pairing, the pinned
+owner key, in `UserDefaults` key `orch.live.install`). Nothing writes that record yet (B2b), so no user can enter Live; tests write it.
+
+* **One context, created synchronously.** `LiveRuntime.init` builds the single `RealmContext.live(origin:pinnedOwner:)`, the transport
+  (`LiveTransport.make(context:)`, public in OrchClient: `NWRequestSender` behind `RoutedRelayTransport`; `testingTransport(context:sender:)` is
+  public but `#if DEBUG` only and `scripts/check-no-test-hooks.sh` fails a shipped target that names it), the vaults and custody. `LiveServices.startLive`
+  attaches the runtime BEFORE its boot task starts, so `teardown` can invalidate a boot in progress (M3).
+* **Boot does not wipe.** `boot()`: open the Live `WorkspaceIndex` bound to the context's fence at construction, resume interrupted
+  per-workspace wipes, run pairing recovery, then `WorkspaceRestoration.restore` (OrchClient): for each committed workspace it re-verifies the
+  stored card against the pinned owner key, checks the profile origin equals the install's origin, opens the workspace's own container (so
+  uncertain decisions and ticket-submission identities, which live in that store, are preserved) and builds a `WorkspaceSession` with its original
+  generation and `WSK` pin on the runtime's single context and transport. A workspace whose record fails verification is skipped (kept, not
+  erased); a locked or missing device identity fails the boot (retried when the app is foregrounded), nothing is created. Missing keychain
+  configuration: no runtime, `liveBootError`, Live data untouched (no in-memory fallback).
+* **Leave Live / Reset.** `teardown` invalidates the context (synchronous), sets the persisted `orch.live.resetPending` gate, awaits any boot,
+  then `LiveRuntime.shutdown()`: `shutdownParticipants`, then `RealmWipe` (OrchClient) over UNFENCED vaults: every indexed workspace through
+  `LocalWipe`, device keys, `wipe(realm: .live)` on both vault groups (so staged items of an invalidated join, which no index row names, go), the
+  index is closed and the realm directory removed, and the Live subdirectories of both App Groups (push state, share staging, quarantine) are
+  deleted. Only after success are the gate, the install record and the realm's pending server cleanups cleared. A launch that finds the
+  gate completes the wipe before any realm starts. Tombstone coordination files are kept; `WorkspaceIndex.nextGeneration` now also looks at them
+  so a rejoin after Leave starts above a burnt generation.
+* **Capabilities** (`RealmCapabilities.live`): drop, share, push and demoControls all off until owner-approved relay routes exist.
+* Live `leave(workspaceID:)` never reports server success (`finishOnMac`): no acknowledged server operation exists yet.
+* Custody: Secure Enclave on device, software on Simulator. Passphrase custody (orch-core #465) is a later item.
+* Known limit: restored sessions use the same poll cadence as a fresh join (no long poll yet); real-relay tuning belongs with PR C.
+
 ## Before Live (PR B) can ship
 
-PR A is a boundary for Demo; the following are blockers for making Live reachable (Opus review).
+PR A is a boundary for Demo; the following are blockers for making Live reachable (Opus review). Status after B2a is marked per item.
 
 1. **Done (PR B1): realm generation fence inside OrchClient (H1).** Every `RealmContext`, Demo and Live, owns a `RealmGeneration`
    (`DemoGeneration` is an alias). Its `perform {}` is a recursive lock held only across synchronous check-and-act bodies; `invalidate()`
@@ -97,17 +125,17 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
    do the same in `shutdown`. Rule: a runtime owns exactly one `RealmContext`; `WorkspaceSession.init` requires its transport and context
    to share one generation, and a `WorkspaceIndex` or container accepts one fence only. Known limit: a signature or SQLite transaction in
    flight holds the gate, so `invalidate()` can wait that long (a Touch ID prompt must not run inside `perform`; phase 3).
-   - **B2 note:** `LiveRuntime` must close its index (and containers) the way `DemoSetup.reset` does, and bind the index to the
+   - **Done (B2a): the B2 note.** `LiveRuntime` must close its index (and containers) the way `DemoSetup.reset` does, and bind the index to the
      context's generation at construction. The Live reset must call `wipe(realm: .live)` on unfenced vaults, not only the per-workspace
      wipes driven by the index, because an invalidated join's staged items are not in the index. It must also use the same
      `resetPending` boot gating, so a Live successor never starts before that wipe succeeds. `SecretID`s are not generation-tagged.
-   - **M3 (open, B2):** a boot in progress must be invalidated at teardown. Create the realm context synchronously and make it reachable
+   - **Done (B2a): M3.** A boot in progress must be invalidated at teardown. Create the realm context synchronously and make it reachable
      (for example on the controller) before the boot task starts, so `teardown` can invalidate it before the runtime exists.
-   - **L6 (open, B2):** Live writes outside OrchClient (push material `VaultPushSink`, share staging, the draft file) must go through
+   - **Done (B2a): L6.** Push material has a fenced path: `VaultPushSink(vault:)` wraps a fenced `RealmVault` and `LiveRuntime.makePushSink()` exists (nothing calls it while push is off; the unfenced backend initializer is DEBUG-only), the ticket draft is written inside `RealmRuntime.writeFence` (a Live workspace without a fence cannot save one), and a Live `ShareBridge` exists only with the share capability and a fence (it runs its App Group writes inside it). Original text: Live writes outside OrchClient (push material `VaultPushSink`, share staging, the draft file) must go through
      the runtime's fence. Consider making the fence a required init parameter for Live-layout stores.
-3. **`retire()` (L1)** must not be used on a realm with live sessions, or must be completed to stop and drain them.
-4. **Pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
-5. **Failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.
+3. **Done (B2a): `retire()` (L1).** It now drains: the realm is invalidated, then `RealmRuntime.drain()` and the workspace consumers are awaited in `retireDrain` (`waitForRetire`). Original text: **`retire()`** must not be used on a realm with live sessions, or must be completed to stop and drain them.
+4. **Done (B2a): pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
+5. **Done (B2a): failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.
 6. Done in PR A, listed for completeness: the outgoing realm's share destinations are retired by tombstoning at leave (the share fence).
 7. **Runtime-less share realm (L-a).** A graph with no runtime has no share realm: `shareRealm` is nil and no `ShareBridge` is created for it. Keep it that way when Live is added.
    Done in PR A as well: `ShareBridge` captures its realm once and `publishTargets`, `refresh` and the claim are no-ops when
@@ -115,7 +143,26 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
 8. The share fence is fail-safe: if the journal write or replay fails, the index keeps its entries and is marked stale, and the next
    boot completes the removal.
 
-9. **A no-realm boot must not retire Live destinations.** Today `completeShareRemovals()` retires every persisted entry when the boot ends with no realm. That is safe while only Demo exists, because Demo is wiped at every boot anyway. Once Live exists, a failed or absent runtime (a boot error, `resetIncomplete`, a Live restore that fails offline or before first unlock) must not tombstone `"live"` destinations, because that burns their generation for good. A no-realm boot retires only realms whose storage is wiped at boot (Demo). Live destinations are retired only by an explicit Leave Live or Reset.
+9. **Done (B2a): a no-realm boot does not retire Live destinations** (`completeShareRemovals` retires only Demo's). Original text: **A no-realm boot must not retire Live destinations.** Today `completeShareRemovals()` retires every persisted entry when the boot ends with no realm. That is safe while only Demo exists, because Demo is wiped at every boot anyway. Once Live exists, a failed or absent runtime (a boot error, `resetIncomplete`, a Live restore that fails offline or before first unlock) must not tombstone `"live"` destinations, because that burns their generation for good. A no-realm boot retires only realms whose storage is wiped at boot (Demo). Live destinations are retired only by an explicit Leave Live or Reset.
+
+## Before Live entry (B2b) can ship
+
+Findings of the B2a review that belong to the entry flow (nothing writes a `LiveInstall` before B2b, so none is reachable yet):
+
+1. **Owner pin (Opus M1).** Write the owner pin before, or atomically with, `commitJoin`; or derive it at boot from the committed profiles and refuse
+   a boot where they disagree. Restore already skips a workspace whose owner differs from the pinned one (tested); the pin itself must be written
+   reliably.
+2. **Install before secrets (Opus M2).** Persist `LiveInstall` BEFORE any Live keychain item or index row exists. Before writing a fresh install
+   record, run `wipe(realm: .live)` on both vault groups plus `custody.delete(realm: .live)`: keychain items survive an uninstall, and orphaned device
+   keys would otherwise be reused.
+3. **`LiveInstallStore.save` must throw** and fail the join (Sonnet LOW 7). No silent `try?`.
+4. **Skipped workspaces (Opus L2)** (`LiveRuntime.skipped`) must be surfaced in the UI.
+5. **Install record location (Opus L3).** Consider moving `LiveInstall` into the `.keys` keychain group (ThisDeviceOnly, no backups), and bind the
+   epoch so an old card cannot be rolled back.
+6. **Stuck-wipe escape (Opus L4).** A force reset for when the index cannot open or the keychain is unavailable.
+7. **Fence by construction (Opus L6).** Make a Live `RealmVault` carry a non-optional fence.
+8. **Known limit (Sonnet LOW 10).** A Live install whose keychain is unavailable cannot be left (the wipe fails closed); it shows as a failed start
+   until the keychain is back.
 
 ## Priorities and risks
 
@@ -131,7 +178,10 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
 
 * **PR A, realm boundary and capabilities (this PR).** `RealmController`, `RealmRuntime`, `DemoControls`, capabilities, realm lifetime
   fence, realm-scoped cleanup, tests. Demo unchanged; Live is not reachable (no Live entry on Welcome, no Live networking).
-* **PR B, Live vertical slice.** OrchClient public transport factory, `LiveRuntime`, HTTPS pairing and the invitation screens,
-  restoration, complete Live wipe and "Leave Live", scene lifecycle in `AppRoot`, `PairingModel` without the Demo-only coordinator.
-  Live becomes reachable only together with restoration and a complete wipe.
+* **PR B1 (done), PR B2a (done):** fence inside OrchClient; transport factory, `LiveRuntime`, restoration, complete Live wipe and its gate,
+  the Before-Live blockers above.
+* **PR B2b, Live entry (open).** Welcome entry; `orch://` URL scheme and `onOpenURL` into the review screen; paste; in-app scanner; Live pairing UI
+  (`LivePairingModel` without the Demo-only coordinator, writing the `LiveInstall` record on Connect); `reader_decl` pair meta v2; passphrase
+  custody for the Simulator (orch-core #465); scene and protected-data lifecycle ownership in `AppRoot`; "Leave Live" in Settings. Live becomes
+  reachable only together with these, restoration and the complete wipe (done).
 * **PR C, hardening.** Diagnostics screen, real device round trip, restart and lost-response tests, link-opening decision, documentation updates.

@@ -7,6 +7,7 @@ import XCTest
 
 /// Hosted tests against the real keychain and App Group of the simulator host app (ad-hoc signed with the app's
 /// entitlements, like CustodyKeychainTests).
+#if DEBUG // VaultPushSink(backend:realm:) is DEBUG-only; the Release flag check compiles all tests
 final class PushAppTests: XCTestCase {
     var backend: KeychainBackend!
     let a = PushFixtures.workspaceA
@@ -24,7 +25,7 @@ final class PushAppTests: XCTestCase {
 
     private func publish(realm: String = "live", ws: ID16? = nil, generation: Int64 = 1) throws {
         let material = try PushMaterial.decode(PushFixtures.materialJSON(a, generation: generation))
-        try PushMaterialPublisher(sink: VaultPushSink(backend: backend), realm: realm).publish(workspace: ws ?? a.id, material: material)
+        try PushMaterialPublisher(sink: VaultPushSink(backend: backend, realm: Realm(rawValue: realm)!), realm: realm).publish(workspace: ws ?? a.id, material: material)
     }
 
     /// The tag format custody writes and the extension's reader parses must stay identical.
@@ -84,6 +85,8 @@ final class PushAppTests: XCTestCase {
         XCTAssertTrue(dir.path.contains("Shared/AppGroup") || dir.path.contains("AppGroup"))
     }
 }
+
+#endif
 
 final class APNsTokenStoreTests: XCTestCase {
     func testTokenStoredPerInstallationAndChangeDetected() {

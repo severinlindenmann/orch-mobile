@@ -318,6 +318,9 @@ extension WorkspaceIndex {
     public func nextGeneration(ws: String) async throws -> Int64 {
         let t = try await db.query("SELECT MAX(generation) AS g FROM tombstones WHERE ws=?", [.text(ws)]).first?.int("g") ?? 0
         let w = try await db.query("SELECT generation FROM workspaces WHERE ws=?", [.text(ws)]).first?.int("generation") ?? 0
-        return max(t, w) + 1
+        // The coordination files outlive a realm wipe (a burnt generation stays burnt): a rejoin after "Leave" must start above them,
+        // or the extensions would still treat the new membership as removed.
+        let c = try layout.tombstones.records().filter { $0.realm == layout.realm && $0.ws == ws }.map(\.generation).max() ?? 0
+        return max(t, w, c) + 1
     }
 }
