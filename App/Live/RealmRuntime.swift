@@ -45,9 +45,14 @@ protocol RealmRuntime: AnyObject, Sendable {
     func restoreWorkspaces() async throws -> [JoinedHandle]
     /// The local, resumable wipe of one workspace.
     func wipe(workspace: ID16, generation: Int64) async throws
-    /// Wipes the whole realm (workspaces, directory, device keys). The app-level lifetime fence (`RealmLifetime`) is invalidated by the
-    /// services before this runs; a runtime-level synchronous invalidation and draining of pairing and sessions is a PR B requirement
-    /// (docs/live-mode.md, "Before Live (PR B) can ship").
+    /// Synchronously ends the realm's generation (`RealmContext.invalidate`): from this call on, nothing built on the realm's context can
+    /// sign, seal, send or commit durable state (custody leases, transport, workspace store, vault writes, pairing commit), and no
+    /// operation that already passed its check is still running when it returns. Idempotent. `LiveServices.teardown` calls it as its
+    /// first statement, before any await.
+    func invalidate()
+    /// Wipes the whole realm (workspaces, directory, device keys). Order: the realm generation is invalidated (`invalidate`), every
+    /// pairing coordinator and `WorkspaceSession` built on the realm is cancelled and awaited (bounded), then the wipe runs. The
+    /// app-level lifetime fence (`RealmLifetime`) is invalidated by the services before this runs.
     func shutdown() async throws
     @discardableResult func rebuildPresentationGate() async -> Bool
     /// Where a workspace keeps its unsent new-ticket draft (inside its own directory, which the wipe deletes).

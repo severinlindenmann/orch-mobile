@@ -1,5 +1,6 @@
 import Foundation
 import OrchCoordination
+import OrchProtocol
 
 /// Opens and closes one workspace's `ws.sqlite`. On protected-data loss the app calls `suspend()`
 /// (handles closed, operations throw `.suspended`) and `resume()` when data is available again.
@@ -12,6 +13,10 @@ public actor WorkspaceContainer {
     private var suspended = true
     private var lifecycle = 0
     private var opening: Task<Void, Error>?
+    /// The realm fence every write of this container's database runs inside (see `WriteFence`). The database shares this box and reads it
+    /// at each write, so a bind during an open, or after it, applies to every later write. Bound once; never re-bound to another fence.
+    nonisolated let fenceBox: FenceBox
+    public nonisolated var fence: (any WriteFence)? { fenceBox.current }
 
     static let migrations = [
         Migration(version: 1, statements: [
@@ -89,12 +94,15 @@ public actor WorkspaceContainer {
         ]),
     ]
 
-    public init(index: WorkspaceIndex, ws: String, generation: Int64) async throws {
+    public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {
         try StoreLayout.validate(ws: ws)
-        self.index = index; self.ws = ws; self.generation = generation
+        self.index = index; self.ws = ws; self.generation = generation; self.fenceBox = FenceBox(fence)
         index.containers.register(self)
         try await resume()
     }
+
+    /// Binds the realm fence to this container and its open database: from now on every write is check-and-act under it.
+    public nonisolated func bind(fence f: any WriteFence) throws { try fenceBox.bind(f) }
 
     public var layout: StoreLayout { index.layout }
     public var isSuspended: Bool { suspended }
@@ -102,8 +110,11 @@ public actor WorkspaceContainer {
     private func performOpen(_ start: Int) async throws {
         try await index.requireNotRemoved(ws: ws, generation: generation)
         let layout = index.layout
-        try layout.prepareWorkspace(ws)
-        let d = try SQLiteDatabase(url: layout.wsDatabaseURL(ws))
+        // A stale realm creates no workspace directory or database: the check and the creation are one step against invalidation.
+        let d = try fenceBox.perform {
+            try layout.prepareWorkspace(ws)
+            return try SQLiteDatabase(url: layout.wsDatabaseURL(ws), fence: fenceBox)
+        }
         do { try await d.migrate(Self.migrations) } catch { await d.close(); throw error }
         // A wipe may have recorded its tombstone after the first check and before our files were created:
         // re-check now that they exist and clean up ourselves (the wipe's purge may already have run).

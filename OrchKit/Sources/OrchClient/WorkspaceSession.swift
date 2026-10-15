@@ -98,11 +98,13 @@ public struct WorkspaceSessionConfig: Sendable {
 /// One workspace's bridge client (host-api section 1). It owns seq allocation, pending rid records with their exact
 /// envelopes, epochs, clock offset and polling. Screens never see it: sending and signing are `package`, and the request
 /// is durable before it is sent (a single synchronous transaction allocates the seq and stores the sealed envelope).
-public actor WorkspaceSession {
+public actor WorkspaceSession: RealmParticipant {
     private var reviews: [UUID: QuestionReview] = [:]
     private var reviewLifecycle: UInt64 = 0
     private var preparingDecisions: Set<ID16> = []
     private var viewsStarted = false
+    /// Set by realm shutdown: nothing is restarted afterwards (no poller, no recovery).
+    private var closed = false
     private var decisionDrivers: [ID16: Task<DecisionOutcome, Error>] = [:]
     private var snapshotTask: Task<WorkspaceSnapshot, Error>?
     private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
@@ -150,14 +152,44 @@ public actor WorkspaceSession {
     static let maxResponseBytes = 8 << 20
 
     public init(_ config: WorkspaceSessionConfig) async throws {
-        let c = config
+        var c = config
         let storeRealm = await c.container.index.layout.realm
         guard c.vault.realm == c.context.realm, storeRealm == c.context.realm.rawValue else {
             throw RealmViolation.wrongStore
         }
         try c.context.admit(identity: c.identity)
+        // A runtime owns exactly one RealmContext: the transport the session sends on must belong to the session's realm generation,
+        // or invalidating the context would not stop it.
+        guard c.transport.context.generation === c.context.generation else { throw RealmViolation.wrongTransport }
+        // The session's resources are fenced here, once, whoever built the config: the identity signs only while the realm is current,
+        // the vault writes and the container's database writes (and their COMMIT) run inside the realm's check-and-act gate.
+        let fence = c.context.generation
+        c.identity = c.context.leased(c.identity)
+        c.vault = try c.vault.fenced(by: fence)
+        try c.container.bind(fence: fence)
         cfg = c
         sessionAge = Self.marker(c.clock)
+        guard fence.register(self) else { throw RealmViolation.staleGeneration }
+    }
+
+    /// Realm shutdown: ends every in-flight driver, the poller and the subscribers, and returns once they have finished.
+    public nonisolated func realmShutdown() async { await closeForShutdown() }
+
+    private func closeForShutdown() async {
+        closed = true
+        reviewLifecycle &+= 1; reviews.removeAll()
+        let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
+        poller?.cancel(); poller = nil; hintRefresh?.cancel(); hintRefresh = nil; recovery?.cancel(); recovery = nil
+        snapshotTask?.cancel()
+        let drivers = Array(inflight.values), decisions = Array(decisionDrivers.values)
+        cancelAll()
+        for t in decisions { t.cancel() }
+        for c in subscribers.values { c.yield(.removed); c.finish() }
+        subscribers.removeAll()
+        for t in tasks { await t.value }
+        for t in drivers { _ = try? await t.value }
+        for t in decisions { _ = try? await t.value }
+        _ = try? await snapshotTask?.value
     }
 
     public nonisolated var workspace: ID16 { cfg.workspace }
@@ -167,7 +199,7 @@ public actor WorkspaceSession {
 
     func ensureCurrent() async throws {
         do {
-            try cfg.context.generation?.check()          // a Demo reset ends every session built from the old capability
+            try cfg.context.generation.check()          // a Demo reset ends every session built from the old capability
             try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
             _ = try await cfg.container.database()
         } catch {
@@ -661,6 +693,7 @@ public actor WorkspaceSession {
     private func runDriver(_ row: Row, isResend: Bool) async throws -> BridgeResponse {
         let logical = row.logical
         if let t = inflight[logical] { return try await t.value }
+        guard !closed else { throw SessionError.staleGeneration }          // closed by realm shutdown: no new drivers
         let t = Task { () -> BridgeResponse in
             let result: Result<BridgeResponse, Error>
             do { result = .success(try await self.drive(row, isResend: isResend)) } catch { result = .failure(error) }
@@ -993,7 +1026,7 @@ extension WorkspaceSession {
         return review
     }
     package func startViews() {
-        guard !viewsStarted else { return }
+        guard !viewsStarted, !closed else { return }
         viewsStarted = true
         recoverDecisions()
         startPoller()
@@ -1077,7 +1110,7 @@ extension WorkspaceSession {
         return try await driveDecision(id, explicit: true)
     }
     private func recoverDecisions() {
-        guard foreground, recovery == nil else { return }
+        guard foreground, !closed, recovery == nil else { return }
         let identity = UUID(); recoveryIdentity = identity
         recovery = Task {
             defer { if self.recoveryIdentity == identity { self.recovery = nil; self.recoveryIdentity = nil } }
@@ -1092,6 +1125,7 @@ extension WorkspaceSession {
 
     private func driveDecision(_ id: ID16, first: Row? = nil, explicit: Bool = false) async throws -> DecisionOutcome {
         if let t = decisionDrivers[id] { return try await t.value }
+        guard !closed else { throw SessionError.staleGeneration }
         let t = Task { try await self.performDecision(id, first: first, explicit: explicit) }
         decisionDrivers[id] = t
         defer { decisionDrivers[id] = nil }
@@ -1227,7 +1261,7 @@ extension WorkspaceSession {
         if case .connection(let state) = event { connectionState = state }
         if case .snapshot = event, !subscribers.isEmpty { snapshotsEmitted += 1 }
         for c in subscribers.values { c.yield(event) }
-        if case .invalidated = event, foreground, !subscribers.isEmpty, hintRefresh == nil {
+        if case .invalidated = event, foreground, !closed, !subscribers.isEmpty, hintRefresh == nil {
             let identity = UUID(); hintIdentity = identity
             hintRefresh = Task {
                 await self.refreshViews()
@@ -1238,6 +1272,7 @@ extension WorkspaceSession {
     package func eventStream() -> AsyncStream<WorkspaceEvent> {
         let id = UUID()
         let (stream, continuation) = AsyncStream<WorkspaceEvent>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        if closed { continuation.finish(); return stream }               // after realm shutdown the stream ends at once
         subscribers[id] = continuation
         if let cachedSnapshot { snapshotsEmitted += 1; continuation.yield(.snapshot(cachedSnapshot)) }
         continuation.yield(.connection(connectionState))
@@ -1251,7 +1286,7 @@ extension WorkspaceSession {
         if subscribers.isEmpty { poller?.cancel(); poller = nil }
     }
     private func startPoller() {
-        guard foreground, !subscribers.isEmpty, poller == nil else { return }
+        guard foreground, !closed, !subscribers.isEmpty, poller == nil else { return }
         poller = Task { await self.pollViews() }
     }
     /// Verified push/reconnect hint. Concurrent reads share snapshotTask.

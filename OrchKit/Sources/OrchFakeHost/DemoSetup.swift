@@ -80,7 +80,7 @@ public enum DemoSetup {
         let capability = DemoCapability(id: entropy.id16(), generation: DemoGeneration())
         let context = RealmContext.demo(capability)
         let device = try context.deviceIdentity(custody: custody, createIfMissing: true)
-        let index = try await WorkspaceIndex(layout: layout)
+        let index = try await WorkspaceIndex(layout: layout, fence: context.generation)   // commit-type index writes are fenced from construction
         let relay = try FakeRelay(capability: capability, context: context, clock: clock, wall: wall, entropy: entropy, faults: faults, limits: limits)
         let transport = try InProcessRelayTransport(context: context, relay: relay)
         return DemoEnvironment(context: context, capability: capability, layout: layout, index: index, relay: relay, transport: transport,

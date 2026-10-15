@@ -103,8 +103,10 @@ final class RealmBoundaryTests: XCTestCase {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)
         let services = LiveServices(options: options, runtime: runtime)
         // The pairing starts in this realm; the realm is retired while it is still running, then the Demo humans finish it.
+        // Retiring ends the realm's generation, so OrchClient itself refuses the join (it never completes); and even a completion
+        // that did slip through is dropped by the app-level lifetime. Either way no workspace appears.
         let model = await pair(services) { services.retire() }
-        guard case .ready = model.state else { return XCTFail("pairing did not finish: \(model.state)") }
+        if case .ready = model.state { XCTFail("a join completed after the realm was retired") }
         XCTAssertTrue(services.live.isEmpty)
         XCTAssertTrue(services.workspaces.isEmpty)
         model.cancel()

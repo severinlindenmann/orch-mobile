@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import OrchProtocol
 
 public struct VaultAddress: Hashable, Sendable {
     public let group: KeychainGroup
@@ -78,24 +79,49 @@ public struct SecretVault: Sendable {
     }
 
     /// A view that can only address one realm: what Demo code receives, so it cannot name a live item.
-    public func scoped(to realm: Realm) -> RealmVault { RealmVault(realm: realm, vault: self) }
+    public func scoped(to realm: Realm) -> RealmVault { RealmVault(realm: realm, vault: self, fence: nil) }
+    /// A realm view whose `put` runs inside `fence` from the start.
+    public func scoped(to realm: Realm, fence: any WriteFence) -> RealmVault { RealmVault(realm: realm, vault: self, fence: fence) }
 }
 
 public struct RealmVault: Sendable {
     public let realm: Realm
     let vault: SecretVault
+    let fence: (any WriteFence)?
+
+    /// The same view with every `put` running inside the realm fence (check and keychain write are one step against invalidation).
+    
+    /// A view already bound to another fence is refused (`VaultError.fenceMismatch`).
+    public func fenced(by f: any WriteFence) throws -> RealmVault {
+        if let fence, fence !== f { throw VaultError.fenceMismatch }
+        return RealmVault(realm: realm, vault: vault, fence: f)
+    }
 
     public func put(_ data: Data, ws: String? = nil, purpose: String) throws {
-        try vault.put(data, for: SecretID(realm: realm, ws: ws, purpose: purpose))
+        let id = try SecretID(realm: realm, ws: ws, purpose: purpose)
+        try fenced { try vault.put(data, for: id) }
     }
     public func get(ws: String? = nil, purpose: String) throws -> Data {
         try vault.get(SecretID(realm: realm, ws: ws, purpose: purpose))
     }
+    /// Deletes and wipes are fenced like puts: a participant (session, coordinator) that outlives its realm, for example past the shutdown
+    /// deadline, must not remove a successor realm's items, whose ids (the device certificate, a re-paired workspace) are the same.
+    /// Only the reset/teardown path, which holds an unfenced view (`SecretVault.scoped(to:)`), removes after invalidation.
     public func delete(ws: String? = nil, purpose: String) throws {
-        try vault.delete(SecretID(realm: realm, ws: ws, purpose: purpose))
+        let id = try SecretID(realm: realm, ws: ws, purpose: purpose)
+        try fenced { try vault.delete(id) }
     }
-    public func wipe(ws: String) throws { try vault.wipe(realm: realm, ws: ws) }
-    public func wipe() throws { try vault.wipe(realm: realm) }
+    /// Deletes one listed item (it must belong to this realm).
+    public func delete(item: SecretID) throws {
+        guard item.realm == realm else { throw VaultError.badName }
+        try fenced { try vault.delete(item) }
+    }
+    public func wipe(ws: String) throws { try fenced { try vault.wipe(realm: realm, ws: ws) } }
+    public func wipe() throws { try fenced { try vault.wipe(realm: realm) } }
+    private func fenced<T>(_ body: () throws -> T) throws -> T {
+        guard let fence else { return try body() }
+        return try fence.performFenced(body)
+    }
 }
 
 // MARK: in-memory

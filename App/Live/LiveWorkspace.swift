@@ -53,7 +53,8 @@ final class LiveWorkspace: WorkspaceModel {
         }
     }
 
-    /// Ends this generation's consumers; the models of a removed workspace are discarded by the caller.
+    /// Ends this generation's consumers; the models of a removed workspace are discarded by the caller. Non-throwing and write-free, so it
+    /// is unaffected by a realm fence that already refuses the container's writes (as is `DropService.invalidate`).
     func stop() async {
         eventRevision += 1
         eventTask?.cancel(); eventTask = nil

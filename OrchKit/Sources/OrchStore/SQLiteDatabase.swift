@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import OrchProtocol
 
 /// A3/A7 safety contract: tiny wrapper over the sqlite3 C API.
 /// - one serialized connection per database (this actor owns the only handle),
@@ -87,8 +88,30 @@ final class SQLiteHandle: @unchecked Sendable {
     }
 
     @discardableResult
-    func run(_ sql: String, _ params: [SQLValue] = []) throws -> (rows: [SQLRow], changes: Int) {
+    func run(_ sql: String, _ params: [SQLValue] = [], readOnly: Bool = false) throws -> (rows: [SQLRow], changes: Int) {
         guard let db else { throw SQLiteError.closed }
+        if readOnly {
+            // `query` reads only: a leading SELECT/WITH, no transaction control or ATTACH/DETACH (the authorizer runs at prepare; a PRAGMA statement fails the leading-keyword check, while the
+            // read-only table-valued `pragma_*` functions inside a SELECT are fine),
+            // and finally the statement must report itself read-only.
+            let head = sql.drop(while: \.isWhitespace).prefix(6).uppercased()
+            guard head.hasPrefix("SELECT") || head.hasPrefix("WITH") else { throw SQLiteError.misuse("query is not read-only") }
+            sqlite3_set_authorizer(db, { _, action, a1, _, _, _ in
+                switch action {
+                case SQLITE_TRANSACTION, SQLITE_SAVEPOINT, SQLITE_ATTACH, SQLITE_DETACH, SQLITE_ANALYZE: return SQLITE_DENY
+                case SQLITE_PRAGMA:
+                    // arg1 is the pragma name: only read-only ones (pragma_optimize(0x10002) would ANALYZE and write)
+                    let allowed: Set<String> = ["table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "journal_mode", "page_count",
+                                                "page_size", "user_version", "schema_version", "foreign_key_list", "foreign_key_check",
+                                                "integrity_check", "quick_check", "freelist_count"]
+                    guard let name = a1.map({ String(cString: $0).lowercased() }), allowed.contains(name) else { return SQLITE_DENY }
+                    // an assignment form carries a value (arg2); the table-valued function form of a read-only pragma may carry an argument
+                    return SQLITE_OK
+                default: return SQLITE_OK
+                }
+            }, nil)
+        }
+        defer { if readOnly { sqlite3_set_authorizer(db, nil, nil) } }
         var stmt: OpaquePointer?
         var rest = ""
         let rc: Int32 = sql.withCString { c in
@@ -104,6 +127,7 @@ final class SQLiteHandle: @unchecked Sendable {
         }
         guard let stmt else { throw SQLiteError.misuse("empty statement") }
         defer { sqlite3_finalize(stmt) }
+        if readOnly, sqlite3_stmt_readonly(stmt) == 0 { throw SQLiteError.misuse("query is not read-only") }
         // sqlite prepares only the first statement; silently dropping the rest would hide bugs
         // (e.g. a multi-statement migration recorded as applied with half its effect).
         if !rest.allSatisfy({ $0.isWhitespace || $0 == ";" }) {
@@ -197,9 +221,17 @@ public struct SQLiteTransaction {
 public actor SQLiteDatabase {
     public let url: URL
     private var handle: SQLiteHandle?
+    /// Every write (`execute`, `transaction`) runs inside the box's fence when one is bound: the check and the whole statement or
+    /// transaction, COMMIT included, are one step against the realm's invalidation. Read at each write, so a later bind applies at once.
+    /// Reads are not fenced.
+    let fenceBox: FenceBox
+
+    /// Binds the realm fence (a different fence than the one bound is refused).
+    public func bind(fence f: any WriteFence) throws { try fenceBox.bind(f) }
 
     /// - Parameter fileProtection: request `SQLITE_OPEN_FILEPROTECTION_COMPLETE` (honoured on iOS only).
-    public init(url: URL, fileProtection: Bool = true) throws {
+    public init(url: URL, fileProtection: Bool = true, fence: FenceBox = FenceBox()) throws {
+        self.fenceBox = fence
         // SECURITY: realpath resolves symlinks in the PARENT path and NOFOLLOW guards only the last
         // component, so this must be used for app-private container paths only, never under an App Group
         // root another process can write (StoreLayout enforces disjoint roots).
@@ -261,17 +293,22 @@ public actor SQLiteDatabase {
     }
 
     @discardableResult
-    public func execute(_ sql: String, _ params: [SQLValue] = []) throws -> Int {
-        try h().run(sql, params).changes
+    public func execute(_ sql: String, _ params: [SQLValue] = [], fence extra: FenceBox? = nil) throws -> Int {
+        let handle = try h()
+        // `extra` ADDS a fence for this one write (the index's commit-type writes); it never replaces the database's own.
+        return try (extra ?? FenceBox()).perform { try fenceBox.perform { try handle.run(sql, params).changes } }
     }
 
+    /// Read-only statements only: anything that would write is refused (writes go through the fenced `execute`/`transaction`).
     public func query(_ sql: String, _ params: [SQLValue] = []) throws -> [SQLRow] {
-        try h().run(sql, params).rows
+        try h().run(sql, params, readOnly: true).rows
     }
 
-    /// The body is synchronous: no suspension point can occur while the transaction is open.
-    public func transaction<T: Sendable>(_ body: @Sendable (SQLiteTransaction) throws -> T) throws -> T {
-        try h().transaction(body)
+    /// The body is synchronous: no suspension point can occur while the transaction is open. With a bound fence, BEGIN, the body and
+    /// COMMIT all run inside it, so nothing the body signed or wrote can commit after the realm was invalidated.
+    public func transaction<T: Sendable>(fence extra: FenceBox? = nil, _ body: @Sendable (SQLiteTransaction) throws -> T) throws -> T {
+        let handle = try h()
+        return try (extra ?? FenceBox()).perform { try fenceBox.perform { try handle.transaction(body) } }
     }
 
     public func userVersion() throws -> Int {

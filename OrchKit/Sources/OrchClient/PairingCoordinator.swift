@@ -16,7 +16,7 @@ package struct PairingCrash: Error, Equatable { package init() {} }
 /// finish, alarm) and checked after every await, `installing` marks the one installer that may touch the container and the vault, and
 /// `commitJoin` is the single linearization point of a join (conditional on the pairing row still being owned). Persistence and erasure
 /// are serialized by `gate`, so an erase never interleaves with a save.
-public actor PairingCoordinator {
+public actor PairingCoordinator: RealmParticipant {
     let cfg: PairingConfig
     private var record: PairingRecord?
     private var identity: DeviceIdentity?
@@ -33,6 +33,8 @@ public actor PairingCoordinator {
     private var lifecycleBusy = false
     /// Simulated process death (tests): the instance does nothing more.
     private var dead = false
+    /// False when the index was already bound to another realm's fence: every start is then refused (`wrongStore`).
+    private let indexFenceOK: Bool
     private var gateHeld = false
     private var gateWaiters: [CheckedContinuation<Void, Never>] = []
     /// False after a restart until a fresh verified answer arrives: a comparison is never shown from stored state alone.
@@ -105,7 +107,17 @@ public actor PairingCoordinator {
         cfg = config
         wallAnchorMs = config.wall.nowMs
         elapsedMs = Self.elapsed(config.clock)
+        // The pairing's index writes (commit-type) run inside the realm fence from construction; a realm that is already over, or an
+        // index bound to another realm's fence (a runtime owns exactly one RealmContext), leaves a coordinator that starts nothing.
+        var bound = true
+        do { try config.index.bind(fence: config.context.generation) } catch { bound = false }
+        indexFenceOK = bound
+        config.context.generation.register(self)       // refused once the realm is over; then every start fails its generation check
     }
+
+    /// Realm shutdown: cancels the pairing and returns when its installer has finished (a late join commit is already refused by the
+    /// realm fence; this additionally makes sure nothing of it is still running when the wipe starts).
+    public nonisolated func realmShutdown() async { await cancel() }
 
     // Monotonic elapsed time bounds every active deadline, even if wall time moves backwards.
     // Persisted absolute deadlines retain their original bounds on resume; monotonic instants cannot cross a reboot.
@@ -126,13 +138,12 @@ public actor PairingCoordinator {
             throw RealmViolation.wrongTransport
         }
         guard cfg.vault.group == .keys, cfg.index.layout.realm == cfg.context.realm.rawValue else { throw RealmViolation.wrongStore }
-        try cfg.context.generation?.check()
+        try cfg.context.generation.check()
+        guard indexFenceOK else { throw RealmViolation.wrongStore }
     }
 
-    /// Custody and vault access of a Demo context are one step against `DemoGeneration.invalidate`.
-    private func perform<T>(_ body: () throws -> T) throws -> T {
-        try cfg.context.generation.map { try $0.perform(body) } ?? body()
-    }
+    /// Custody and vault access of a context are one step against `RealmGeneration.invalidate`.
+    private func perform<T>(_ body: () throws -> T) throws -> T { try cfg.context.generation.perform(body) }
 
     private func violation(_ error: Error) -> PairingFailure {
         if let v = error as? RealmViolation { return .realm(v) }
@@ -866,6 +877,8 @@ public actor PairingCoordinator {
             // the alarm row persists (no secret in it) and is written first, so a crash leaves the alarm and recovery finishes the erasure
             await lockGate()
             do {
+                // a stale realm writes no alarm row: its wipe supersedes it (the index fence refuses it as well)
+                guard cfg.context.generation.isCurrent, indexFenceOK else { throw RealmViolation.staleGeneration }
                 try await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin, phase: "alarm",
                                                            terminal: "alarm:" + kind.rawValue, detail: alarm.primaryLabel, startedMs: r.startedMs,
                                                            updatedMs: nowMs, createdKeys: r.createdKeys))
@@ -885,7 +898,7 @@ public actor PairingCoordinator {
 
     // MARK: persistence and erasure
 
-    private func vault() -> RealmVault { cfg.vault.scoped(to: cfg.context.realm) }
+    private func vault() -> RealmVault { cfg.vault.scoped(to: cfg.context.realm, fence: cfg.context.generation) }
 
     private enum SaveResult { case saved, superseded, failed }
 
@@ -934,7 +947,7 @@ public actor PairingCoordinator {
         if ok {
             do { try await cfg.index.deletePairing(ws: ws.hex) } catch { ok = false }
         }
-        if !ok, let row = try? await cfg.index.pairing(ws: ws.hex) {
+        if !ok, cfg.context.generation.isCurrent, let row = try? await cfg.index.pairing(ws: ws.hex) {
             var r = row; r.terminal = row.terminal?.hasPrefix("alarm:") == true ? row.terminal : "cleanup"; r.detail = row.detail
             try? await cfg.index.savePairing(r)
         }
@@ -949,7 +962,7 @@ public actor PairingCoordinator {
         defer { unlockGate() }
         // make sure a failed erasure is remembered even when the row was never written (a crash during `start`)
         let ok = await purgeResidue(ws: r.ws, createdKeys: r.createdKeys, keepRow: false, gate: false)
-        if !ok, (try? await cfg.index.pairing(ws: r.ws.hex)) == nil {
+        if !ok, cfg.context.generation.isCurrent, (try? await cfg.index.pairing(ws: r.ws.hex)) == nil {
             try? await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin, phase: "cleanup",
                                                         terminal: "cleanup", startedMs: r.startedMs, updatedMs: nowMs, createdKeys: r.createdKeys))
         }
@@ -1284,7 +1297,7 @@ extension PairingCoordinator {
             for c in w { c.resume() }
         }
         let wsHex = r.ws.hex
-        let vault = cfg.vault.scoped(to: cfg.context.realm)
+        let vault = self.vault()
         let priorCert: Data? = try? vault.get(purpose: "device.cert")
         var wroteCert = false
         var container: WorkspaceContainer?
@@ -1297,7 +1310,7 @@ extension PairingCoordinator {
             restoreCert()
             // Keep the approval for a retryable timeout. Terminal/cancel cleanup owns the pairing record.
             for item in (try? cfg.vault.ids()) ?? [] where item.realm == cfg.context.realm && item.ws == wsHex && item.purpose != "pairing" {
-                try? cfg.vault.delete(item)
+                try? vault.delete(item: item)
             }
             await cfg.index.containers.suspendAll(ws: wsHex)
             if let dir = try? cfg.index.layout.wsDir(wsHex) { try? FileManager.default.removeItem(at: dir) }
@@ -1308,7 +1321,7 @@ extension PairingCoordinator {
             guard mine == token else { return }
             try storeCertificate(approved.cert, owner: pk)
             wroteCert = true
-            let c = try await WorkspaceContainer(index: cfg.index, ws: wsHex, generation: r.generation)
+            let c = try await WorkspaceContainer(index: cfg.index, ws: wsHex, generation: r.generation, fence: cfg.context.generation)
             container = c
             try await crashPoint("install.container")
             guard mine == token else { await rollback(); return }

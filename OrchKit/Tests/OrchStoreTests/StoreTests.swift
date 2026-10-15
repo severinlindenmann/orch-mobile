@@ -88,7 +88,7 @@ struct SQLiteTests {
     @Test func diskFullMapsAndRollsBack() async throws {
         let db = try SQLiteDatabase(url: tempDir().appendingPathComponent("d.sqlite"))
         try await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, b BLOB)")
-        let pages = try await db.query("PRAGMA page_count")[0][0]
+        let pages = try await db.query("SELECT * FROM pragma_page_count")[0][0]
         guard case .int(let n) = pages else { Issue.record("page_count"); return }
         try await db.execute("PRAGMA max_page_count=\(n + 4)")
         do {
@@ -108,7 +108,7 @@ struct SQLiteTests {
 
     @Test func walModeOn() async throws {
         let db = try SQLiteDatabase(url: tempDir().appendingPathComponent("w.sqlite"))
-        #expect(try await db.query("PRAGMA journal_mode")[0][0] == .text("wal"))
+        #expect(try await db.query("SELECT * FROM pragma_journal_mode")[0][0] == .text("wal"))
     }
 }
 

@@ -76,12 +76,35 @@ are invalidated and comparison codes hidden; resume verifies and keeps the origi
 
 PR A is a boundary for Demo; the following are blockers for making Live reachable (Opus review).
 
-1. **Realm generation fence inside OrchClient (H1).** The app-level `RealmLifetime` only guards app code. The Live `RealmContext`,
-   custody and transport must check a realm-level generation themselves with `perform()` semantics, as `DemoGeneration` does, so a
-   stale handle cannot sign or write after Leave.
-2. **Synchronous `RealmRuntime.invalidate()`** is the first statement of teardown. The runtime tracks every pairing coordinator and
-   every `WorkspaceSession`, and `shutdown` cancels and awaits them, so a late pairing commit or decision sign cannot survive
-   Leave Live.
+1. **Done (PR B1): realm generation fence inside OrchClient (H1).** Every `RealmContext`, Demo and Live, owns a `RealmGeneration`
+   (`DemoGeneration` is an alias). Its `perform {}` is a recursive lock held only across synchronous check-and-act bodies; `invalidate()`
+   takes the same lock, so nothing that passed the check is running when it returns and nothing starts later. Enforced once per resource:
+   custody leases (`LeasedSigner`/`LeasedKeyAgreer`, also re-leased by `WorkspaceSession.init`), transport send (check immediately before
+   `sender.send`; an await cannot be held under the lock), the workspace store (`SQLiteDatabase` writes and transactions, BEGIN..COMMIT
+   inside the fence, bound to the container by `WorkspaceSession.init`), the pairing index (the fence is bound to the `WorkspaceIndex`
+   itself: `addWorkspace`, `savePairing`, `commitJoin` apply it, wipe-type writes never do), and the vault views handed to sessions and
+   coordinators (`put`, `delete` and `wipe` are fenced, because a successor realm reuses the same ids). Only the reset/teardown path
+   holds unfenced views, so the wipe still works. `SQLiteDatabase.query` is read-only (SELECT/WITH only; the authorizer denies transaction
+   control, ATTACH/DETACH, ANALYZE, and PRAGMA except a read-only allowlist: table_info, table_xinfo, index_list, index_info,
+   index_xinfo, journal_mode, page_count, page_size, user_version, schema_version, foreign_key_list, foreign_key_check,
+   integrity_check, quick_check, freelist_count).
+   Rule: at most one externally visible effect per fenced body, placed last (a body that signs and then writes is one critical section;
+   a body that wrote and then sent could not be undone).
+2. **Done (PR B1): synchronous `RealmRuntime.invalidate()`** is called by `LiveServices.teardown` (after the `retired` guard, before any
+   await). Sessions and pairing coordinators register with the realm generation (weakly; `DropService` is not a participant), and
+   `RealmContext.shutdownParticipants` cancels them concurrently in unstructured tasks and returns on "all finished" or the deadline
+   (default 5 s), never awaiting one that ignores cancellation; `DemoRuntime.reset` calls it before the wipe. A future `LiveRuntime` must
+   do the same in `shutdown`. Rule: a runtime owns exactly one `RealmContext`; `WorkspaceSession.init` requires its transport and context
+   to share one generation, and a `WorkspaceIndex` or container accepts one fence only. Known limit: a signature or SQLite transaction in
+   flight holds the gate, so `invalidate()` can wait that long (a Touch ID prompt must not run inside `perform`; phase 3).
+   - **B2 note:** `LiveRuntime` must close its index (and containers) the way `DemoSetup.reset` does, and bind the index to the
+     context's generation at construction. The Live reset must call `wipe(realm: .live)` on unfenced vaults, not only the per-workspace
+     wipes driven by the index, because an invalidated join's staged items are not in the index. It must also use the same
+     `resetPending` boot gating, so a Live successor never starts before that wipe succeeds. `SecretID`s are not generation-tagged.
+   - **M3 (open, B2):** a boot in progress must be invalidated at teardown. Create the realm context synchronously and make it reachable
+     (for example on the controller) before the boot task starts, so `teardown` can invalidate it before the runtime exists.
+   - **L6 (open, B2):** Live writes outside OrchClient (push material `VaultPushSink`, share staging, the draft file) must go through
+     the runtime's fence. Consider making the fence a required init parameter for Live-layout stores.
 3. **`retire()` (L1)** must not be used on a realm with live sessions, or must be completed to stop and drain them.
 4. **Pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
 5. **Failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.

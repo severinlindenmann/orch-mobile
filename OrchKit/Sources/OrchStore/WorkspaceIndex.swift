@@ -1,4 +1,5 @@
 import Foundation
+import OrchProtocol
 
 public struct WorkspaceEntry: Sendable, Equatable {
     public let ws: String
@@ -20,6 +21,8 @@ public enum StoreError: Error, Equatable, Sendable {
     case suspended
     /// A join tried to commit but its pairing row is gone (cancelled, erased or recovered away).
     case pairingNotOwned(ws: String, generation: Int64)
+    /// A store already bound to one realm fence was asked to bind another.
+    case fenceMismatch
 }
 
 /// Realm-scoped index: workspace ids, order, tombstones with generation. One file per realm,
@@ -30,6 +33,11 @@ public final class WorkspaceIndex: Sendable {
     /// Open workspace containers, so a wipe can close them before deleting files.
     public let containers = ContainerRegistry()
     let db: SQLiteDatabase
+    /// The realm fence of the commit-type writes (`addWorkspace`, `savePairing`, `commitJoin`): bound at construction or once by the
+    /// realm's pairing, then applied by those methods themselves. Wipe-type writes (tombstones, wipe phases, row removal, `deletePairing`)
+    /// never use it: removal must keep working after the realm was invalidated.
+    nonisolated let fenceBox: FenceBox
+    public nonisolated func bind(fence f: any WriteFence) throws { try fenceBox.bind(f) }
 
     static let migrations = [
         Migration(version: 1, statements: [
@@ -60,9 +68,10 @@ public final class WorkspaceIndex: Sendable {
         ]),
     ]
 
-    public init(layout: StoreLayout) async throws {
+    public init(layout: StoreLayout, fence: (any WriteFence)? = nil) async throws {
         try layout.prepareRealm()
         self.layout = layout
+        self.fenceBox = FenceBox(fence)
         db = try SQLiteDatabase(url: layout.indexURL)
         // Databases made by the first 2b build already have `created_keys` in migration 2 (SQLite cannot ALTER conditionally):
         // migration 3 is then a no-op, so both histories end at the same schema.
@@ -91,7 +100,7 @@ public final class WorkspaceIndex: Sendable {
     public func addWorkspace(ws: String, generation: Int64) async throws {
         try StoreLayout.validate(ws: ws)
         try await requireNotRemoved(ws: ws, generation: generation)
-        try await db.transaction { tx in
+        try await db.transaction(fence: fenceBox) { tx in
             let t = try tx.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(ws), .int(generation)])
             if !t.isEmpty { throw StoreError.workspaceRemoved(ws: ws, generation: generation) }
             let next = try tx.query("SELECT COALESCE(MAX(position)+1, 0) AS n FROM workspaces").first?.int("n") ?? 0
@@ -250,7 +259,7 @@ extension WorkspaceIndex {
               created_keys=excluded.created_keys
             """, [.text(r.ws), .text(r.offer), .int(r.generation), .text(r.origin), .text(r.phase),
                   r.terminal.map { .text($0) } ?? .null, r.detail.map { .text($0) } ?? .null, .int(r.startedMs), .int(r.updatedMs),
-                  .int(r.createdKeys ? 1 : 0)])
+                  .int(r.createdKeys ? 1 : 0)], fence: fenceBox)
     }
 
     private static func pairing(_ x: SQLRow) -> PairingRow? {
@@ -288,7 +297,7 @@ extension WorkspaceIndex {
     public func commitJoin(generation: Int64, profile p: WorkspaceProfile) async throws {
         try StoreLayout.validate(ws: p.ws)
         try await requireNotRemoved(ws: p.ws, generation: generation)
-        try await db.transaction { tx in
+        try await db.transaction(fence: fenceBox) { tx in
             let t = try tx.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(p.ws), .int(generation)])
             if !t.isEmpty { throw StoreError.workspaceRemoved(ws: p.ws, generation: generation) }
             let owned = try tx.query("SELECT 1 FROM pairings WHERE ws=? AND generation=? AND terminal IS NULL", [.text(p.ws), .int(generation)])

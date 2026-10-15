@@ -779,6 +779,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Used when a transition replaces the whole service graph.
     func retire() {
         retired = true
+        runtime?.invalidate()          // idempotent: a retired graph's realm is over
         lifetime.invalidate()
         reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
@@ -788,6 +789,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// The in-place realm exit (also what `RealmController` drives). The lifetime is invalidated first, before any await.
     func teardown() {
         guard !retired else { return }
+        runtime?.invalidate()          // before any await: the realm's generation fences OrchClient itself (signing, send, commits)
         lifetime.invalidate()
         resetRevision += 1
         let pendingBoot = bootTask

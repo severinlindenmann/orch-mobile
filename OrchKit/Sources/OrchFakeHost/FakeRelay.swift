@@ -172,7 +172,7 @@ public actor FakeRelay: RequestSender {
 
     static let expiredChallengeGraceMs: Int64 = 5 * 60_000
 
-    func checkLive() throws { try context.generation?.check() }
+    func checkLive() throws { try context.generation.check() }
 
     // MARK: directory (in-process stand-ins for the section 19.1 routes)
 

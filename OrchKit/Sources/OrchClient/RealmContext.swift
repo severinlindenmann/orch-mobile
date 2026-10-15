@@ -38,24 +38,109 @@ public struct DemoCapability: Sendable {
     package init(id: ID16, generation: DemoGeneration = DemoGeneration()) { self.id = id; self.generation = generation }
 }
 
-/// One Demo lifetime. Everything built from a `DemoCapability` (context, transport, relay, authority actors, the device's
-/// signing handles) checks it and throws `RealmViolation.staleGeneration` once it has been invalidated by a reset.
-public final class DemoGeneration: @unchecked Sendable {
-    private let lock = NSLock()
+/// One realm lifetime (Demo or Live). Everything built from a `RealmContext` (transport, relay, authority actors, the device's signing
+/// handles, the workspace store and the vault writes of sessions and pairings) checks it and throws `RealmViolation.staleGeneration`
+/// once it has been invalidated by a reset or a "Leave".
+///
+/// The gate is a lock held only across SYNCHRONOUS check-and-act bodies (`perform`): `invalidate` takes the same lock, so when it
+/// returns no body that passed the check is still running and none starts later. The lock is recursive, so a transaction that signs
+/// (the signer re-checks) stays one critical section. It is never held across an await.
+public final class RealmGeneration: WriteFence, @unchecked Sendable {
+    private let lock = NSRecursiveLock()
+    /// `valid` has its own tiny lock, never held across a body: `check`/`isCurrent` read it without waiting for a body in flight, and
+    /// `invalidate` clears it BEFORE taking the gate, so it waits only for the one body that already passed its check.
+    private let flagLock = NSLock()
     private var valid = true
+    private var participants: [ObjectIdentifier: WeakParticipant] = [:]
+    private struct WeakParticipant { weak var value: (any RealmParticipant)? }
     package init() {}
-    public var isCurrent: Bool { lock.withLock { valid } }
-    /// Takes the gate, so it waits for every `perform` in flight: when it returns, no lookup that passed the check is still running.
-    package func invalidate() { lock.withLock { valid = false } }
+    public var isCurrent: Bool { flagLock.withLock { valid } }
+    /// Clears the flag, then takes the gate, so when it returns no body that passed the check is still running. Calling it from inside
+    /// a `perform` body on the same thread (the lock is recursive) does not deadlock; the rest of that body then fails its nested checks.
+    package func invalidate() {
+        flagLock.withLock { valid = false }
+        lock.lock(); lock.unlock()
+    }
     package func check() throws { if !isCurrent { throw RealmViolation.staleGeneration } }
     /// Runs `body` with the generation held current: check and body are one step with respect to `invalidate`, so a reset
-    /// cannot complete between them (custody access that creates keys must never outlive the reset that deleted them).
+    /// cannot complete between them (custody access that creates keys must never outlive the reset that deleted them). `body` must not suspend.
+    /// The check is repeated under the gate (an invalidation that cleared the flag meanwhile wins).
     package func perform<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        guard valid else { throw RealmViolation.staleGeneration }
+        guard isCurrent else { throw RealmViolation.staleGeneration }
         return try body()
     }
+    public func performFenced<T>(_ body: () throws -> T) throws -> T { try perform(body) }
+
+    /// Registers a session or pairing coordinator of this realm (weakly) so `shutdownParticipants` can end and await it. Returns false,
+    /// registering nothing, once the realm is invalid: the caller must then start no work.
+    @discardableResult
+    package func register(_ p: any RealmParticipant) -> Bool {
+        lock.withLock {
+            guard isCurrent else { return false }
+            participants = participants.filter { $0.value.value != nil }
+            participants[ObjectIdentifier(p)] = WeakParticipant(value: p)
+            return true
+        }
+    }
+
+    package var participantCount: Int { lock.withLock { participants.values.filter { $0.value != nil }.count } }
+
+    /// Cancels every registered participant and waits for them, but never longer than `timeout`. Each participant's shutdown runs in its
+    /// own unstructured task, all concurrently; the caller resumes exactly once, on "all finished" or on the deadline, and never waits
+    /// for a participant that ignores cancellation (it is abandoned: the realm is already invalidated, so it can no longer act).
+    /// Call after `invalidate`.
+    package func shutdownParticipants(timeout: Duration = .seconds(5)) async {
+        let live = lock.withLock { participants.values.compactMap(\.value) }
+        guard !live.isEmpty else { return }
+        let once = OnceResume()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            once.install(c)
+            let remaining = Countdown(live.count)
+            for p in live {
+                Task { await p.realmShutdown(); if remaining.decrement() { once.fire() } }
+            }
+            let timer = Task { try? await Task.sleep(for: timeout); once.fire() }
+            once.onFire { timer.cancel() }
+        }
+    }
 }
+
+/// Resumes its continuation exactly once, whoever fires first.
+private final class OnceResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<Void, Never>?
+    private var fired = false
+    private var cleanup: (@Sendable () -> Void)?
+    func install(_ c: CheckedContinuation<Void, Never>) { lock.withLock { cont = c } }
+    func onFire(_ f: @escaping @Sendable () -> Void) {
+        let run = lock.withLock { () -> Bool in if fired { return true }; cleanup = f; return false }
+        if run { f() }
+    }
+    func fire() {
+        let (c, f) = lock.withLock { () -> (CheckedContinuation<Void, Never>?, (@Sendable () -> Void)?) in
+            guard !fired else { return (nil, nil) }
+            fired = true; defer { cont = nil; cleanup = nil }
+            return (cont, cleanup)
+        }
+        f?(); c?.resume()
+    }
+}
+
+private final class Countdown: @unchecked Sendable {
+    private let lock = NSLock(); private var n: Int
+    init(_ n: Int) { self.n = n }
+    /// True when this call took the count to zero.
+    func decrement() -> Bool { lock.withLock { n -= 1; return n == 0 } }
+}
+
+/// Something that works inside a realm (a `WorkspaceSession`, a `PairingCoordinator`) and can be cancelled and awaited at shutdown.
+public protocol RealmParticipant: AnyObject, Sendable {
+    /// Stops all in-flight work and returns when it has ended. Idempotent.
+    func realmShutdown() async
+}
+
+public typealias DemoGeneration = RealmGeneration
 
 /// The person ids of every Demo authority created in this process. A live context refuses a certificate or card owned by
 /// one of them even if some other check was skipped (defence in depth for "certificate reuse denied").
@@ -74,10 +159,10 @@ public struct RealmContext: Sendable {
     public let origin: String
     /// The owner key a live realm has pinned (nil before the first pairing).
     public let pinnedOwner: SigningPublicKey?
-    /// Demo only: the lifetime this context belongs to (nil for a live context).
-    package let generation: DemoGeneration?
+    /// The lifetime this context belongs to: every context, Demo or Live, has exactly one.
+    package let generation: RealmGeneration
 
-    private init(realm: Realm, origin: String, pinnedOwner: SigningPublicKey?, generation: DemoGeneration? = nil) {
+    private init(realm: Realm, origin: String, pinnedOwner: SigningPublicKey?, generation: RealmGeneration = RealmGeneration()) {
         self.realm = realm; self.origin = origin; self.pinnedOwner = pinnedOwner; self.generation = generation
     }
 
@@ -87,7 +172,7 @@ public struct RealmContext: Sendable {
     public static func live(origin: String, pinnedOwner: SigningPublicKey? = nil) throws -> RealmContext {
         guard origin.hasPrefix("https://"), RelayURL.isValid(origin) else { throw RealmViolation.invalidOrigin }
         guard !Self.isDemoLooking(origin) else { throw RealmViolation.crossRealmOrigin }
-        return RealmContext(realm: .live, origin: origin, pinnedOwner: pinnedOwner)
+        return RealmContext(realm: .live, origin: origin, pinnedOwner: pinnedOwner, generation: RealmGeneration())
     }
 
     #if DEBUG
@@ -111,6 +196,13 @@ public struct RealmContext: Sendable {
         return false
     }
     #endif
+
+    /// Ends this context's lifetime, synchronously: every signature, send, store write and vault write that has not passed its check
+    /// refuses from now on, and none that passed is still running when this returns. Call it before the first await of a teardown.
+    public func invalidate() { generation.invalidate() }
+    public var isCurrent: Bool { generation.isCurrent }
+    /// Cancels and awaits every session and pairing coordinator built on this context (bounded). Call after `invalidate`.
+    public func shutdownParticipants(timeout: Duration = .seconds(5)) async { await generation.shutdownParticipants(timeout: timeout) }
 
     public static func demo(_ capability: DemoCapability) -> RealmContext {
         RealmContext(realm: .demo, origin: DemoRelay.origin, pinnedOwner: nil, generation: capability.generation)
@@ -163,11 +255,16 @@ public struct RealmContext: Sendable {
             try admit(identity: identity)
             return identity
         }
-        // Check and custody access are one step against `DemoGeneration.invalidate` (see `perform`).
-        let identity = try generation.map { try $0.perform(lookup) } ?? lookup()
-        // Every Demo identity is leased to the context's generation: its handles stop signing when the Demo is reset.
-        guard let g = generation else { return identity }
-        return DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: g), kx: LeasedKeyAgreer(inner: identity.kx, generation: g), realm: identity.realm)
+        // Check and custody access are one step against `RealmGeneration.invalidate` (see `perform`).
+        let identity = try generation.perform(lookup)
+        // Every identity is leased to the context's generation: its handles stop signing when the realm is invalidated.
+        return leased(identity)
+    }
+
+    /// The identity with its signer and key agreer leased to this context's generation. Leasing an already leased handle wraps it again
+    /// (harmless: both leases check the same generation); it is not a no-op.
+    public func leased(_ identity: DeviceIdentity) -> DeviceIdentity {
+        DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: generation), kx: LeasedKeyAgreer(inner: identity.kx, generation: generation), realm: identity.realm)
     }
 
     /// An identity of the other realm never signs, logs in or is bound in this one.
