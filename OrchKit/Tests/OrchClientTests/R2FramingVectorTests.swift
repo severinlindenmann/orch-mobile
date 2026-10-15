@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import Testing
-import OrchProtocol
+@testable import OrchProtocol
 import OrchTestVectors
 @testable import OrchClient
 
@@ -115,6 +115,21 @@ private func phoneChunks(_ c: [String: JSONValue], _ v: R2Vectors) throws -> [R2
             if context[code] != nil { continue }
             #expect(PhoneRetryTable.classify(code, none) == want, "\(code)")
         }
+        // the generated table IS the data: every code of `tables.retry` (but the two contextual ones) lands in exactly its class's set,
+        // and the sets hold nothing else but the documented overlay
+        let sets: [(String, Set<String>)] = [("A", PhoneRetryTable.classA), ("B", PhoneRetryTable.classB), ("C-auto", PhoneRetryTable.classCAuto),
+                                              ("C-review", PhoneRetryTable.classCReview), ("D", PhoneRetryTable.classD)]
+        var fromData: [String: Set<String>] = [:]
+        for (code, cls) in table where context[code] == nil { fromData[cls.string!, default: []].insert(code) }
+        for (name, set) in sets {
+            #expect(set.subtracting(PhoneRetryTableGenerated.overlay) == fromData[name, default: []], "class \(name)")
+        }
+        #expect(Set(context.keys) == PhoneRetryTableGenerated.contextual)
+        #expect(PhoneRetryTableGenerated.overlay == ["no_answer", "silence", "already_done.unknown", "outcome.pending"])
+        // orch-52: a bare `timeout` is not in the data (D); `relay.timeout` is (A)
+        #expect(table["timeout"] == nil && table["relay.timeout"]?.string == "A")
+        #expect(PhoneRetryTable.classify("timeout", none) == .d)
+        #expect(PhoneRetryTable.classify("relay.timeout", none) == .a)
         #expect(PhoneRetryTable.classify("internal", PhoneRefusalContext(eventID: "", hostNowMs: 0, admitted: true)) == .b)
         #expect(PhoneRetryTable.classify("internal", none) == .d)
         #expect(PhoneRetryTable.classify("no.such_code", none) == .d)

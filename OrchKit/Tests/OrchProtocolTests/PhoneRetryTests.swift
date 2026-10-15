@@ -11,12 +11,12 @@ import Testing
 
     @Test func classTable() {
         let table: [(PhoneRetryClass, [String])] = [
-            (.a, ["stale_epoch", "stale_timestamp", "stale_sequence", "silence", "no_answer", "timeout", "cancelled", "store.busy", "lock.busy",
+            (.a, ["stale_epoch", "stale_timestamp", "stale_sequence", "silence", "no_answer", "relay.timeout", "relay.silence", "relay.stale_epoch_hint", "cancelled", "store.busy", "lock.busy",
                   "busy", "rate.limited", "quota.host", "host.restarting", "conn.overloaded", "outcome.unknown"]),
             (.b, ["already_done.unknown", "rid_conflict", "outcome.pending", "idem.expired"]),
             (.cAuto, ["members.stale", "ticket.key_not_next"]),
             (.cReview, ["event.bad_base", "question.stale", "event.expired", "event.abandoned"]),
-            (.d, ["committed", "failed.landed", "question.answered", "question.unknown", "answer.not_allowed", "answer.bad_option", "role.denied",
+            (.d, ["committed", "failed.landed", "timeout", "question.answered", "question.unknown", "answer.not_allowed", "answer.bad_option", "role.denied",
                   "member.unknown", "device.scope", "device.invalid", "device.unknown", "ticket.frozen", "freeze.active", "ticket.not_visible",
                   "not_found", "ticket.exists", "ticket.bad_reference", "event.duplicate_id", "forbidden_scope", "op.not_allowed", "sig.invalid",
                   "validation.event", "validation.text", "invalid.input", "idem.conflict", "idem.required"]),

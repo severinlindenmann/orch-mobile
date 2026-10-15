@@ -36,6 +36,8 @@ jobs:
           LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
         timeout-minutes: 20
       - run: scripts/check-no-test-hooks.sh
+      - name: Generated retry table is current
+        run: python3 OrchKit/Scripts/gen_retry_table.py --check
       - run: scripts/check-extension-links.sh
       - run: scripts/test-check-extension-links.sh
   app:
