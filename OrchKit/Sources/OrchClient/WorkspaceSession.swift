@@ -103,6 +103,8 @@ public actor WorkspaceSession: RealmParticipant {
     private var reviewLifecycle: UInt64 = 0
     private var preparingDecisions: Set<ID16> = []
     private var viewsStarted = false
+    /// Set by realm shutdown: nothing is restarted afterwards (no poller, no recovery).
+    private var closed = false
     private var decisionDrivers: [ID16: Task<DecisionOutcome, Error>] = [:]
     private var snapshotTask: Task<WorkspaceSnapshot, Error>?
     private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
@@ -156,21 +158,25 @@ public actor WorkspaceSession: RealmParticipant {
             throw RealmViolation.wrongStore
         }
         try c.context.admit(identity: c.identity)
+        // A runtime owns exactly one RealmContext: the transport the session sends on must belong to the session's realm generation,
+        // or invalidating the context would not stop it.
+        guard c.transport.context.generation === c.context.generation else { throw RealmViolation.wrongTransport }
         // The session's resources are fenced here, once, whoever built the config: the identity signs only while the realm is current,
         // the vault writes and the container's database writes (and their COMMIT) run inside the realm's check-and-act gate.
         let fence = c.context.generation
         c.identity = c.context.leased(c.identity)
-        c.vault = c.vault.fenced(by: fence)
-        try await c.container.bind(fence: fence)
+        c.vault = try c.vault.fenced(by: fence)
+        try c.container.bind(fence: fence)
         cfg = c
         sessionAge = Self.marker(c.clock)
-        fence.register(self)
+        guard fence.register(self) else { throw RealmViolation.staleGeneration }
     }
 
     /// Realm shutdown: ends every in-flight driver, the poller and the subscribers, and returns once they have finished.
     public nonisolated func realmShutdown() async { await closeForShutdown() }
 
     private func closeForShutdown() async {
+        closed = true
         reviewLifecycle &+= 1; reviews.removeAll()
         let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
         poller?.cancel(); poller = nil; hintRefresh?.cancel(); hintRefresh = nil; recovery?.cancel(); recovery = nil
@@ -1019,7 +1025,7 @@ extension WorkspaceSession {
         return review
     }
     package func startViews() {
-        guard !viewsStarted else { return }
+        guard !viewsStarted, !closed else { return }
         viewsStarted = true
         recoverDecisions()
         startPoller()
@@ -1103,7 +1109,7 @@ extension WorkspaceSession {
         return try await driveDecision(id, explicit: true)
     }
     private func recoverDecisions() {
-        guard foreground, recovery == nil else { return }
+        guard foreground, !closed, recovery == nil else { return }
         let identity = UUID(); recoveryIdentity = identity
         recovery = Task {
             defer { if self.recoveryIdentity == identity { self.recovery = nil; self.recoveryIdentity = nil } }
@@ -1277,7 +1283,7 @@ extension WorkspaceSession {
         if subscribers.isEmpty { poller?.cancel(); poller = nil }
     }
     private func startPoller() {
-        guard foreground, !subscribers.isEmpty, poller == nil else { return }
+        guard foreground, !closed, !subscribers.isEmpty, poller == nil else { return }
         poller = Task { await self.pollViews() }
     }
     /// Verified push/reconnect hint. Concurrent reads share snapshotTask.

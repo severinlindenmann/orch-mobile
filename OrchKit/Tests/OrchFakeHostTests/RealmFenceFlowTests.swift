@@ -49,6 +49,17 @@ final class TripWall: WallClock, @unchecked Sendable {
         #expect(try await db.query("SELECT rid FROM bridge_requests").isEmpty)
     }
 
+    /// A runtime owns exactly one RealmContext: a session whose transport belongs to another generation is refused.
+    @Test func aSessionOnAnotherRealmsTransportIsRefused() async throws {
+        let w = try await World.make(), other = try await World.make()
+        try await w.env.index.addWorkspace(ws: w.ws.hex, generation: 1)
+        let container = try await WorkspaceContainer(index: w.env.index, ws: w.ws.hex, generation: 1)
+        let clock = TestClock()
+        let cfg = WorkspaceSessionConfig(context: w.env.context, workspace: w.ws, generation: 1, identity: w.env.device, wsk: w.host.wskPublic,
+                                         container: container, vault: w.vault.scoped(to: .demo), transport: other.transport, clock: clock, wall: clock)
+        await #expect(throws: RealmViolation.wrongTransport) { _ = try await WorkspaceSession(cfg) }
+    }
+
     /// (b) A join whose realm ends just before the commit commits nothing: no workspace row, profile, vault item or files.
     @Test func aJoinCompletingAfterInvalidateCommitsNothing() async throws {
         let h = try await PairHarness.make(.firstTime)

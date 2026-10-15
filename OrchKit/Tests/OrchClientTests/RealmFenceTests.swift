@@ -47,23 +47,122 @@ import OrchStore
         let g = RealmGeneration()
         let inside = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
         let wrote = LockedFlag()
-        let t1 = Thread { try? g.perform { inside.signal(); release.wait(); wrote.set() } ; done.signal() }
-        t1.start()
+        Thread { try? g.perform { inside.signal(); release.wait(); wrote.set() }; done.signal() }.start()
         inside.wait()
-        let invalidated = LockedFlag()
-        let doneInv = DispatchSemaphore(value: 0)
-        let t2 = Thread { g.invalidate(); invalidated.set(); doneInv.signal() }
-        t2.start()
-        // invalidate is parked behind the body: the flag stays clear until the body is released (no sleep: ordering is by the lock)
-        #expect(!invalidated.value)
+        let started = DispatchSemaphore(value: 0), doneInv = DispatchSemaphore(value: 0)
+        let finished = LockedFlag()
+        Thread { started.signal(); g.invalidate(); finished.set(); doneInv.signal() }.start()
+        started.wait()
+        // the flag is already clear (check() sees it without waiting) while the body still holds the gate; invalidate() has not returned
+        let deadline = Date().addingTimeInterval(2)
+        while g.isCurrent && Date() < deadline { Thread.sleep(forTimeInterval: 0.001) }
+        #expect(!g.isCurrent)
+        for _ in 0..<50 { Thread.sleep(forTimeInterval: 0.002) }          // bounded observation window: it must stay parked
+        #expect(!finished.value)
+        #expect(!wrote.value)
         release.signal(); done.wait(); doneInv.wait()
-        #expect(wrote.value && invalidated.value)
+        #expect(wrote.value && finished.value)
         #expect(throws: RealmViolation.staleGeneration) { try g.perform { Issue.record("ran after invalidate") } }
+    }
+
+    @Test func registerRefusesOnceInvalid() {
+        let g = RealmGeneration()
+        let p = StuckParticipant()
+        #expect(g.register(p))
+        g.invalidate()
+        #expect(!g.register(StuckParticipant()))
+        #expect(g.participantCount == 1)
+    }
+
+    /// M1: a participant that never finishes does not hold shutdown past the deadline.
+    @Test func shutdownIsBoundedByTheDeadlineWhenAParticipantIsStuck() async {
+        let g = RealmGeneration()
+        let stuck = StuckParticipant(), fine = StuckParticipant(hangs: false)
+        g.register(stuck); g.register(fine)
+        g.invalidate()
+        let t0 = ContinuousClock.now
+        await g.shutdownParticipants(timeout: .milliseconds(300))
+        let took = ContinuousClock.now - t0
+        #expect(took >= .milliseconds(250) && took < .seconds(3))
+        #expect(fine.didShutDown.value)
+        stuck.free()
+    }
+
+    @Test func shutdownReturnsEarlyWhenEveryoneFinishes() async {
+        let g = RealmGeneration()
+        let a = StuckParticipant(hangs: false), b = StuckParticipant(hangs: false)
+        g.register(a); g.register(b)
+        g.invalidate()
+        let t0 = ContinuousClock.now
+        await g.shutdownParticipants(timeout: .seconds(30))
+        #expect(ContinuousClock.now - t0 < .seconds(5))
+        #expect(a.didShutDown.value && b.didShutDown.value)
+    }
+
+    /// M2: a session whose transport belongs to another context's generation is refused.
+    @Test func aStoreBoundToAnotherFenceIsRefused() async throws {
+        let c = try RealmContext.live(origin: "https://relay.example.org"), other = try RealmContext.live(origin: "https://relay.example.org")
+        let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend()).scoped(to: .live, fence: c.generation)
+        #expect(throws: VaultError.fenceMismatch) { _ = try vault.fenced(by: other.generation) }
+        let (t, _) = try routed(other)
+        #expect(t.context.generation !== c.generation)
+    }
+
+    /// M4: a bind that happens while the database is being (re)opened applies to the database that open produces.
+    @Test func aBindDuringAnOpenAppliesToTheOpenedDatabase() async throws {
+        let c = try RealmContext.live(origin: "https://relay.example.org")
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-fence-" + UUID().uuidString)
+        let layout = try StoreLayout(appRoot: base.appendingPathComponent("app"), pushGroupRoot: base.appendingPathComponent("push"),
+                                     shareGroupRoot: base.appendingPathComponent("share"), realm: "live")
+        let index = try await WorkspaceIndex(layout: layout)
+        try await index.addWorkspace(ws: ws.hex, generation: 1)
+        let container = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1)
+        let early = try await container.database()                 // handle taken before any bind
+        await container.suspend()
+        async let reopened: Void = container.resume()
+        try container.bind(fence: c.generation)                   // races the open: either order must end fenced
+        try await reopened
+        let late = try await container.database()
+        c.invalidate()
+        await #expect(throws: RealmViolation.staleGeneration) { try await late.execute("INSERT INTO meta(key,value) VALUES('x',1)") }
+        _ = early
+        // a handle taken before the bind is fenced too (the box is read at each write)
+        let again = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1)
+        let pre = try await again.database()
+        try again.bind(fence: c.generation)
+        await #expect(throws: RealmViolation.staleGeneration) { try await pre.execute("INSERT INTO meta(key,value) VALUES('y',1)") }
+    }
+
+    @Test func aStaleRealmCreatesNoWorkspaceFiles() async throws {
+        let c = try RealmContext.live(origin: "https://relay.example.org")
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-fence-" + UUID().uuidString)
+        let layout = try StoreLayout(appRoot: base.appendingPathComponent("app"), pushGroupRoot: base.appendingPathComponent("push"),
+                                     shareGroupRoot: base.appendingPathComponent("share"), realm: "live")
+        let index = try await WorkspaceIndex(layout: layout, fence: c.generation)
+        c.invalidate()
+        await #expect(throws: RealmViolation.staleGeneration) { try await index.addWorkspace(ws: ws.hex, generation: 1) }
+        await #expect(throws: RealmViolation.staleGeneration) {
+            _ = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1, fence: c.generation)
+        }
+        let wsDirURL = try layout.wsDir(ws.hex)
+        #expect(!FileManager.default.fileExists(atPath: wsDirURL.path))
+        #expect(try await index.workspaces().isEmpty)
+        // wipe-type writes still work on a stale realm
+        _ = try await index.recordTombstone(ws: ws.hex, generation: 1)
+    }
+
+    @Test func queryRefusesWrites() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-fence-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let db = try SQLiteDatabase(url: base.appendingPathComponent("q.sqlite"), fileProtection: false)
+        try await db.execute("CREATE TABLE t(a INTEGER)")
+        await #expect(throws: (any Error).self) { _ = try await db.query("INSERT INTO t(a) VALUES(1)") }
+        #expect(try await db.query("SELECT a FROM t").isEmpty)
     }
 
     @Test func vaultPutsAndStoreWritesAreFenced() async throws {
         let c = try RealmContext.live(origin: "https://relay.example.org")
-        let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend()).scoped(to: .live).fenced(by: c.generation)
+        let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend()).scoped(to: .live, fence: c.generation)
         try vault.put(Data([1]), purpose: "a")
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-fence-" + UUID().uuidString)
         let layout = try StoreLayout(appRoot: base.appendingPathComponent("app"), pushGroupRoot: base.appendingPathComponent("push"),
@@ -71,7 +170,7 @@ import OrchStore
         let index = try await WorkspaceIndex(layout: layout)
         try await index.addWorkspace(ws: ws.hex, generation: 1)
         let container = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1)
-        try await container.bind(fence: c.generation)
+        try container.bind(fence: c.generation)
         let db = try await container.database()
         try await db.execute("INSERT INTO meta(key,value) VALUES('k',1)")
         c.invalidate()
@@ -82,7 +181,7 @@ import OrchStore
         let keys = try await db.query("SELECT key FROM meta WHERE key IN ('k','k2','k3')").compactMap { $0.text("key") }
         #expect(keys == ["k"])
         try vault.delete(purpose: "a")                          // removal is never refused
-        await #expect(throws: StoreError.fenceMismatch) { try await container.bind(fence: RealmGeneration()) }
+        #expect(throws: StoreError.fenceMismatch) { try container.bind(fence: RealmGeneration()) }
     }
 }
 
@@ -90,4 +189,24 @@ final class LockedFlag: @unchecked Sendable {
     private let l = NSLock(); private var v = false
     func set() { l.withLock { v = true } }
     var value: Bool { l.withLock { v } }
+}
+
+/// A participant whose shutdown never returns (until `free`) or returns at once.
+final class StuckParticipant: RealmParticipant, @unchecked Sendable {
+    let didShutDown = LockedFlag()
+    private let hangs: Bool
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<Void, Never>?
+    private var freed = false
+    init(hangs: Bool = true) { self.hangs = hangs }
+    func realmShutdown() async {
+        if hangs {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                let go = lock.withLock { () -> Bool in if freed { return true }; cont = c; return false }
+                if go { c.resume() }
+            }
+        }
+        didShutDown.set()
+    }
+    func free() { let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in freed = true; defer { cont = nil }; return cont }; c?.resume() }
 }

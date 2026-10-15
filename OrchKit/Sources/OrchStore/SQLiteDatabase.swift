@@ -88,7 +88,7 @@ final class SQLiteHandle: @unchecked Sendable {
     }
 
     @discardableResult
-    func run(_ sql: String, _ params: [SQLValue] = []) throws -> (rows: [SQLRow], changes: Int) {
+    func run(_ sql: String, _ params: [SQLValue] = [], readOnly: Bool = false) throws -> (rows: [SQLRow], changes: Int) {
         guard let db else { throw SQLiteError.closed }
         var stmt: OpaquePointer?
         var rest = ""
@@ -105,6 +105,7 @@ final class SQLiteHandle: @unchecked Sendable {
         }
         guard let stmt else { throw SQLiteError.misuse("empty statement") }
         defer { sqlite3_finalize(stmt) }
+        if readOnly, sqlite3_stmt_readonly(stmt) == 0, !sql.drop(while: \.isWhitespace).uppercased().hasPrefix("PRAGMA") { throw SQLiteError.misuse("query is not read-only") }
         // sqlite prepares only the first statement; silently dropping the rest would hide bugs
         // (e.g. a multi-statement migration recorded as applied with half its effect).
         if !rest.allSatisfy({ $0.isWhitespace || $0 == ";" }) {
@@ -198,19 +199,17 @@ public struct SQLiteTransaction {
 public actor SQLiteDatabase {
     public let url: URL
     private var handle: SQLiteHandle?
-    /// When set, every write (`execute`, `transaction`) runs inside the fence: the check and the whole statement or transaction,
-    /// COMMIT included, are one step against the realm's invalidation. Reads are not fenced.
-    private var fence: (any WriteFence)?
+    /// Every write (`execute`, `transaction`) runs inside the box's fence when one is bound: the check and the whole statement or
+    /// transaction, COMMIT included, are one step against the realm's invalidation. Read at each write, so a later bind applies at once.
+    /// Reads are not fenced.
+    let fenceBox: FenceBox
 
-    /// Binds the realm fence (once; a different fence than the one bound is refused).
-    public func bind(fence f: any WriteFence) throws {
-        if let fence, fence !== f { throw StoreError.fenceMismatch }
-        fence = f
-    }
+    /// Binds the realm fence (a different fence than the one bound is refused).
+    public func bind(fence f: any WriteFence) throws { try fenceBox.bind(f) }
 
     /// - Parameter fileProtection: request `SQLITE_OPEN_FILEPROTECTION_COMPLETE` (honoured on iOS only).
-    public init(url: URL, fileProtection: Bool = true, fence: (any WriteFence)? = nil) throws {
-        self.fence = fence
+    public init(url: URL, fileProtection: Bool = true, fence: FenceBox = FenceBox()) throws {
+        self.fenceBox = fence
         // SECURITY: realpath resolves symlinks in the PARENT path and NOFOLLOW guards only the last
         // component, so this must be used for app-private container paths only, never under an App Group
         // root another process can write (StoreLayout enforces disjoint roots).
@@ -272,21 +271,22 @@ public actor SQLiteDatabase {
     }
 
     @discardableResult
-    public func execute(_ sql: String, _ params: [SQLValue] = [], fence override: (any WriteFence)? = nil) throws -> Int {
+    public func execute(_ sql: String, _ params: [SQLValue] = [], fence extra: FenceBox? = nil) throws -> Int {
         let handle = try h()
-        return try (override ?? fence).map { try $0.performFenced { try handle.run(sql, params).changes } } ?? handle.run(sql, params).changes
+        // `extra` ADDS a fence for this one write (the index's commit-type writes); it never replaces the database's own.
+        return try (extra ?? FenceBox()).perform { try fenceBox.perform { try handle.run(sql, params).changes } }
     }
 
+    /// Read-only statements only: anything that would write is refused (writes go through the fenced `execute`/`transaction`).
     public func query(_ sql: String, _ params: [SQLValue] = []) throws -> [SQLRow] {
-        try h().run(sql, params).rows
+        try h().run(sql, params, readOnly: true).rows
     }
 
-    /// The body is synchronous: no suspension point can occur while the transaction is open. With a fence, BEGIN, the body and COMMIT
-    /// all run inside it, so nothing the body signed or wrote can commit after the realm was invalidated.
-    public func transaction<T: Sendable>(fence override: (any WriteFence)? = nil, _ body: @Sendable (SQLiteTransaction) throws -> T) throws -> T {
+    /// The body is synchronous: no suspension point can occur while the transaction is open. With a bound fence, BEGIN, the body and
+    /// COMMIT all run inside it, so nothing the body signed or wrote can commit after the realm was invalidated.
+    public func transaction<T: Sendable>(fence extra: FenceBox? = nil, _ body: @Sendable (SQLiteTransaction) throws -> T) throws -> T {
         let handle = try h()
-        guard let f = override ?? fence else { return try handle.transaction(body) }
-        return try f.performFenced { try handle.transaction(body) }
+        return try (extra ?? FenceBox()).perform { try fenceBox.perform { try handle.transaction(body) } }
     }
 
     public func userVersion() throws -> Int {

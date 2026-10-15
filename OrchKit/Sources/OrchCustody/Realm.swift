@@ -85,5 +85,7 @@ public enum VaultError: Error, Equatable, Sendable {
     /// An add-only write found the item already there.
     case duplicate
     case badName
+    /// A fenced view was asked to take another fence.
+    case fenceMismatch
     case unexpected(Int32)
 }

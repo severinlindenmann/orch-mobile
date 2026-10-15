@@ -47,44 +47,91 @@ public struct DemoCapability: Sendable {
 /// (the signer re-checks) stays one critical section. It is never held across an await.
 public final class RealmGeneration: WriteFence, @unchecked Sendable {
     private let lock = NSRecursiveLock()
+    /// `valid` has its own tiny lock, never held across a body: `check`/`isCurrent` read it without waiting for a body in flight, and
+    /// `invalidate` clears it BEFORE taking the gate, so it waits only for the one body that already passed its check.
+    private let flagLock = NSLock()
     private var valid = true
     private var participants: [ObjectIdentifier: WeakParticipant] = [:]
     private struct WeakParticipant { weak var value: (any RealmParticipant)? }
     package init() {}
-    public var isCurrent: Bool { lock.withLock { valid } }
-    /// Takes the gate, so it waits for every `perform` in flight: when it returns, no body that passed the check is still running.
-    package func invalidate() { lock.withLock { valid = false } }
+    public var isCurrent: Bool { flagLock.withLock { valid } }
+    /// Clears the flag, then takes the gate, so when it returns no body that passed the check is still running. Calling it from inside
+    /// a `perform` body on the same thread (the lock is recursive) does not deadlock; the rest of that body then fails its nested checks.
+    package func invalidate() {
+        flagLock.withLock { valid = false }
+        lock.lock(); lock.unlock()
+    }
     package func check() throws { if !isCurrent { throw RealmViolation.staleGeneration } }
     /// Runs `body` with the generation held current: check and body are one step with respect to `invalidate`, so a reset
     /// cannot complete between them (custody access that creates keys must never outlive the reset that deleted them). `body` must not suspend.
+    /// The check is repeated under the gate (an invalidation that cleared the flag meanwhile wins).
     package func perform<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        guard valid else { throw RealmViolation.staleGeneration }
+        guard isCurrent else { throw RealmViolation.staleGeneration }
         return try body()
     }
     public func performFenced<T>(_ body: () throws -> T) throws -> T { try perform(body) }
 
-    /// Registers a session or pairing coordinator of this realm (weakly) so `shutdownParticipants` can end and await it.
-    package func register(_ p: any RealmParticipant) {
+    /// Registers a session or pairing coordinator of this realm (weakly) so `shutdownParticipants` can end and await it. Returns false,
+    /// registering nothing, once the realm is invalid: the caller must then start no work.
+    @discardableResult
+    package func register(_ p: any RealmParticipant) -> Bool {
         lock.withLock {
+            guard isCurrent else { return false }
             participants = participants.filter { $0.value.value != nil }
             participants[ObjectIdentifier(p)] = WeakParticipant(value: p)
+            return true
         }
     }
 
     package var participantCount: Int { lock.withLock { participants.values.filter { $0.value != nil }.count } }
 
-    /// Cancels every registered participant and waits for each to finish, for at most `timeout`. Call after `invalidate`.
+    /// Cancels every registered participant and waits for them, but never longer than `timeout`. Each participant's shutdown runs in its
+    /// own unstructured task, all concurrently; the caller resumes exactly once, on "all finished" or on the deadline, and never waits
+    /// for a participant that ignores cancellation (it is abandoned: the realm is already invalidated, so it can no longer act).
+    /// Call after `invalidate`.
     package func shutdownParticipants(timeout: Duration = .seconds(5)) async {
         let live = lock.withLock { participants.values.compactMap(\.value) }
         guard !live.isEmpty else { return }
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { for p in live { await p.realmShutdown() }; return true }
-            group.addTask { try? await Task.sleep(for: timeout); return false }
-            _ = await group.next()
-            group.cancelAll()
+        let once = OnceResume()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            once.install(c)
+            let remaining = Countdown(live.count)
+            for p in live {
+                Task { await p.realmShutdown(); if remaining.decrement() { once.fire() } }
+            }
+            let timer = Task { try? await Task.sleep(for: timeout); once.fire() }
+            once.onFire { timer.cancel() }
         }
     }
+}
+
+/// Resumes its continuation exactly once, whoever fires first.
+private final class OnceResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<Void, Never>?
+    private var fired = false
+    private var cleanup: (@Sendable () -> Void)?
+    func install(_ c: CheckedContinuation<Void, Never>) { lock.withLock { cont = c } }
+    func onFire(_ f: @escaping @Sendable () -> Void) {
+        let run = lock.withLock { () -> Bool in if fired { return true }; cleanup = f; return false }
+        if run { f() }
+    }
+    func fire() {
+        let (c, f) = lock.withLock { () -> (CheckedContinuation<Void, Never>?, (@Sendable () -> Void)?) in
+            guard !fired else { return (nil, nil) }
+            fired = true; defer { cont = nil; cleanup = nil }
+            return (cont, cleanup)
+        }
+        f?(); c?.resume()
+    }
+}
+
+private final class Countdown: @unchecked Sendable {
+    private let lock = NSLock(); private var n: Int
+    init(_ n: Int) { self.n = n }
+    /// True when this call took the count to zero.
+    func decrement() -> Bool { lock.withLock { n -= 1; return n == 0 } }
 }
 
 /// Something that works inside a realm (a `WorkspaceSession`, a `PairingCoordinator`) and can be cancelled and awaited at shutdown.
@@ -214,7 +261,8 @@ public struct RealmContext: Sendable {
         return leased(identity)
     }
 
-    /// The identity with its signer and key agreer leased to this context's generation (idempotent for an already leased handle).
+    /// The identity with its signer and key agreer leased to this context's generation. Leasing an already leased handle wraps it again
+    /// (harmless: both leases check the same generation); it is not a no-op.
     public func leased(_ identity: DeviceIdentity) -> DeviceIdentity {
         DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: generation), kx: LeasedKeyAgreer(inner: identity.kx, generation: generation), realm: identity.realm)
     }

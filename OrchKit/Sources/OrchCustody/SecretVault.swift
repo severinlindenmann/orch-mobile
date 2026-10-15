@@ -80,6 +80,8 @@ public struct SecretVault: Sendable {
 
     /// A view that can only address one realm: what Demo code receives, so it cannot name a live item.
     public func scoped(to realm: Realm) -> RealmVault { RealmVault(realm: realm, vault: self, fence: nil) }
+    /// A realm view whose `put` runs inside `fence` from the start.
+    public func scoped(to realm: Realm, fence: any WriteFence) -> RealmVault { RealmVault(realm: realm, vault: self, fence: fence) }
 }
 
 public struct RealmVault: Sendable {
@@ -89,7 +91,11 @@ public struct RealmVault: Sendable {
 
     /// The same view with every `put` running inside the realm fence (check and keychain write are one step against invalidation).
     /// Reads, deletes and wipes stay open: removing secrets is never refused.
-    public func fenced(by fence: any WriteFence) -> RealmVault { RealmVault(realm: realm, vault: vault, fence: fence) }
+    /// A view already bound to another fence is refused (`VaultError.fenceMismatch`).
+    public func fenced(by f: any WriteFence) throws -> RealmVault {
+        if let fence, fence !== f { throw VaultError.fenceMismatch }
+        return RealmVault(realm: realm, vault: vault, fence: f)
+    }
 
     public func put(_ data: Data, ws: String? = nil, purpose: String) throws {
         let id = try SecretID(realm: realm, ws: ws, purpose: purpose)
