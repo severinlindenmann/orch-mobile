@@ -54,6 +54,7 @@ final class RealmController: RealmTransitions {
     func boot() async {
         guard !booted else { return }
         await services.boot()
+        completeShareRemovals()
         publish()
         booted = true
     }
@@ -106,7 +107,7 @@ final class RealmController: RealmTransitions {
         let outgoing = services
         let label = outgoing.deviceLabel
         notice = nil
-        retireShareTargets(realm: outgoing.shareRealm)
+        if let realm = outgoing.shareRealm { retireShareTargets(realms: [realm]) }
         state = .leaving
         epoch += 1
         outgoing.teardown()
@@ -138,15 +139,35 @@ final class RealmController: RealmTransitions {
     /// quarantined plaintext purged), then republishes what remains (other realms' entries, in practice none). Synchronous and
     /// independent of any view. A share sheet already open can no longer finish staging (`destinationRemoved`), and the next graph
     /// replays the same journal, so nothing of the outgoing realm survives the leave.
-    private func retireShareTargets(realm: String?) {
-        guard let area = shareArea, let realm else { return }
+    ///
+    /// If any step before the publish fails, the filtered list is NOT published: the entries stay and the index is marked stale
+    /// (the extension then offers nothing), so a destination is never in neither the journal nor the index. `realms == nil` means
+    /// every realm (a boot into Welcome has no live destination at all).
+    private func retireShareTargets(realms: Set<String>?) {
+        guard let area = shareArea else { return }
         let inbox = ShareInbox(area: area)
-        let persisted = (try? ShareTargetIndex.persisted(from: area)) ?? []
-        for t in persisted where t.realm == realm {
-            try? inbox.recordRemoval(TombstoneRecord(realm: t.realm, ws: t.ws, generation: t.generation))
+        do {
+            let persisted = try ShareTargetIndex.persisted(from: area)
+            let gone = persisted.filter { realms?.contains($0.realm) ?? true }
+            for t in gone { try journalRemoval(inbox, TombstoneRecord(realm: t.realm, ws: t.ws, generation: t.generation)) }
+            try inbox.replayRemovals()
+            try ShareTargetIndex.publish(persisted.filter { t in !gone.contains(t) }, to: area)
+            inbox.purgeTombstoned()
+        } catch {
+            ShareTargetIndex.recordPublishSkipped("fence: " + ShareTargetIndex.PublishStatus.code(error), in: area)
         }
+    }
+
+    /// The journal write (a test seam for a failing journal).
+    @ObservationIgnored var journalRemoval: (ShareInbox, TombstoneRecord) throws -> Void = { try $0.recordRemoval($1) }
+
+    /// Launch: finishes what an earlier leave left behind. A boot into Welcome has no realm, so every persisted destination is stale;
+    /// in any realm the pending journal is replayed and tombstoned plaintext purged.
+    private func completeShareRemovals() {
+        guard let area = shareArea else { return }
+        if services.realm == nil { retireShareTargets(realms: nil) }
+        let inbox = ShareInbox(area: area)
         try? inbox.replayRemovals()
-        try? ShareTargetIndex.publish(persisted.filter { $0.realm != realm }, to: area)
         inbox.purgeTombstoned()
     }
 

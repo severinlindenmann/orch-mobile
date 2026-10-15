@@ -243,6 +243,35 @@ final class RealmBoundaryTests: XCTestCase {
         XCTAssertTrue(ShareInbox(area: area).quarantined().isEmpty)
     }
 
+    func testFailedShareFenceKeepsEntriesStaleAndALaterBootCompletesIt() async throws {
+        struct JournalDown: Error {}
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("realm-fence-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let area = ShareArea(shareGroupRoot: root)
+        let controller = RealmController(options: options)
+        controller.shareArea = area
+        controller.journalRemoval = { _, _ in throw JournalDown() }
+        await controller.boot()
+        controller.realmEnterDemo()
+        await controller.waitForTransition()
+        let target = ShareTarget(realm: "demo", ws: String(repeating: "b", count: 32), name: "Laptop", hue: 0, generation: 1)
+        try ShareTargetIndex.publish([target], to: area)
+        let staged = try StagingSession(area: area, target: target)
+        try staged.add(.text("secret")); try staged.commit(note: nil)
+        controller.realmLeave(thenDemo: false)
+        // The fence failed: the entry is kept (in the index) and the index is stale, so the extension offers nothing.
+        XCTAssertEqual(try ShareTargetIndex.persisted(from: area), [target])
+        XCTAssertThrowsError(try ShareTargetIndex.load(from: area))
+        await controller.waitForTransition()
+        // A later boot (journal healthy again) completes the removal.
+        let next = RealmController(options: options)
+        next.shareArea = area
+        await next.boot()
+        XCTAssertTrue(try ShareTargetIndex.persisted(from: area).isEmpty)
+        XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
+        XCTAssertThrowsError(try StagingSession(area: area, target: target).add(.text("late")))
+    }
+
     func testStrayLeaveIntoARetiredGraphDoesNothing() async throws {
         let suite = "orch.retired.\(UUID().uuidString)"
         let flags = UserDefaults(suiteName: suite)!

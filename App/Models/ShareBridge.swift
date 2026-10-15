@@ -53,6 +53,7 @@ final class ShareBridge {
         inbox = ShareInbox(area: area)
         self.world = world
         self.publishDemo = publishDemo
+        realm = world.shareRealm ?? "live"
         world.onRetryShared = { [weak self] in self?.retryFailed() }
         world.onStopShared = { [weak self] in self?.stopFailed() }
         world.beforeWorkspaceRemoval = { [weak self] id in self?.prepareRemoval(id) ?? false }
@@ -65,7 +66,9 @@ final class ShareBridge {
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }
 
-    var realm: String { world.shareRealm ?? "live" }
+    /// Captured once: a bridge that outlives its realm (a stale refresh during teardown) is inert, never "live" by default.
+    let realm: String
+    private var inRealm: Bool { world.shareRealm == realm }
 
     /// Removals whose tombstone is not yet durable (retried on every publish).
     var unfinishedRemovals: Int { (try? inbox.pendingRemovals().count) ?? 0 }
@@ -99,6 +102,7 @@ final class ShareBridge {
 
     /// Replay the durable journal before offering destinations or claiming plaintext.
     func publishTargets() {
+        guard inRealm else { return }
         let area = inbox.area
         let coordination = area.coordination
         do { try inbox.replayRemovals() } catch { ShareTargetIndex.recordPublishSkipped("removal replay: \(ShareTargetIndex.PublishStatus.code(error))", in: area); return }
@@ -148,6 +152,7 @@ final class ShareBridge {
 
     /// Activation and foreground: publish, janitor, claim, import.
     func refresh() {
+        guard inRealm else { return }
         guard !refreshing else { return }
         refreshing = true
         task = Task {
@@ -158,6 +163,7 @@ final class ShareBridge {
     }
 
     private func performRefresh() async {
+        guard inRealm else { return }
         publishTargets()
         guard let pending = try? inbox.pendingRemovals(), pending.isEmpty,
               (try? inbox.area.coordination.records()) != nil else { return }

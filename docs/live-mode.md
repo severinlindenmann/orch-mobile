@@ -87,6 +87,10 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
 5. **Failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.
 6. Done in PR A, listed for completeness: the outgoing realm's share destinations are retired by tombstoning at leave (the share fence).
 7. **Runtime-less share realm (L-a).** A graph with no runtime has no share realm: `shareRealm` is nil and no `ShareBridge` is created for it. Keep it that way when Live is added.
+   Done in PR A as well: `ShareBridge` captures its realm once and `publishTargets`, `refresh` and the claim are no-ops when
+   `world.shareRealm` differs, so a stale refresh during teardown cannot act as "live".
+8. The share fence is fail-safe: if the journal write or replay fails, the index keeps its entries and is marked stale, and the next
+   boot completes the removal.
 
 ## Priorities and risks
 
