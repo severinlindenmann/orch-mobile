@@ -913,6 +913,52 @@ extension LiveRuntimeTests {
         services.resetThisiPhone(); await services.waitForReset()
     }
 
+    func testAnUnbootedLiveInstallLeavesWithTheMacStep() async throws {
+        let first = try await demoJoin(), second = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(first, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var profile = second.profile
+        profile.origin = origin
+        try await index.savePairing(PairingRow(ws: profile.ws, offer: String(repeating: "1", count: 32), generation: 1, origin: origin,
+                                               phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: profile)
+        await index.close()
+        let controller = makeController(rig)
+        await controller.boot()
+        XCTAssertNotNil(controller.services.liveBootError)               // ownerDisagreement: no runtime booted, nothing in memory
+        XCTAssertTrue(controller.services.liveHadJoin)                   // unknown counts as "a join may exist"
+        controller.realmLeave(thenDemo: false); await controller.waitForTransition()
+        XCTAssertEqual(controller.notice, "Removed from this iPhone; finish removing it on your Mac.")
+    }
+
+    func testAPairingThatReachedTheHostIsRememberedEvenWithoutACommit() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let services = makeServices(rig)
+        await services.boot()
+        _ = try await services.liveRuntimeForPairing(origin: origin)
+        XCTAssertFalse(services.liveHadJoin)
+        services.notePairingProgress()
+        XCTAssertTrue(services.liveHadJoin)
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertFalse(services.liveHadJoin)                            // the flag goes with the install
+    }
+
+    func testAPinnedBootSkipsAnUndecodableRowInsteadOfRefusingTheBoot() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var p = joined.profile
+        p.pkPub = "not-a-key"
+        p.ws = ID16.random().hex
+        try await index.savePairing(PairingRow(ws: p.ws, offer: String(repeating: "2", count: 32), generation: 1, origin: origin, phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: p)
+        let owner = try await LiveRuntime.agreedOwner(index: index, pinned: joined.profile.pkPub)   // pinned: no throw, nothing recorded
+        XCTAssertNil(owner)
+        await index.close()
+    }
+
     func testASecondInvitationNeverSwapsTheOneUnderReviewAndInputIsIgnoredWhileLeavingDemo() async throws {
         let rig = try makeRig(installed: false); defer { rig.cleanup() }
         let controller = makeController(rig)

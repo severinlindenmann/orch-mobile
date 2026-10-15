@@ -245,6 +245,12 @@ final class LivePairingModel: PairingFlowModel {
     // MARK: State mapping
 
     private func apply(_ s: OrchClient.PairingState, runtime: any RealmRuntime) {
+        if liveLink != nil {
+            switch s {
+            case .comparingHost, .waitingPrimary, .comparingPrimary, .joining, .ready: services.notePairingProgress()
+            default: break
+            }
+        }
         switch s {
         case .idle, .parsing: break
         case .connecting: state = .connecting

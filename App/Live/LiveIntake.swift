@@ -157,7 +157,7 @@ final class LiveIntake {
         screen = .pairing
     }
 
-    /// "Leave Demo and pair your Mac", after the destructive confirmation: wipes Demo, then returns to the review of the held link (or to
+    /// "Leave Demo and pair a Mac", after the destructive confirmation: wipes Demo, then returns to the review of the held link (or to
     /// the entry when none was held).
     func leaveDemoAndPair() {
         guard realm.state == .demo, !leavingDemo else { return }

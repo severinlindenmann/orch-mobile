@@ -19,6 +19,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         /// The Live realm's own gate: set at the start of a Live Leave/Reset, cleared only after the realm-wide wipe succeeded. A launch that
         /// finds it set completes the wipe BEFORE any realm starts, so no Live successor ever runs next to unwiped Live data.
         static let liveResetPending = "orch.live.resetPending"
+        /// A Live pairing got as far as the host's comparison or beyond (the Mac may hold a device entry). Cleared with the install.
+        static let pairingProgressed = "orch.live.pairingProgressed"
     }
 
     let options: LaunchOptions
@@ -39,8 +41,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     @ObservationIgnored private var lastLiveBootError: (any Error)?
     /// True once this Live install ever had a join: a workspace on screen or kept, or a recorded owner. Decides whether a Leave says
     /// "finish removing it on your Mac" (there may be a device entry there) or only "Removed from this iPhone."
+    /// UNKNOWN counts as yes: an install whose runtime did not boot (owner disagreement, bad record, no runtime) cannot say what the Mac
+    /// saw, and a pairing that reached the host's approval is remembered in a flag even if nothing committed.
     var liveHadJoin: Bool {
-        guard let rt = runtime as? LiveRuntime else { return installStore.load()?.owner != nil }
+        guard hasLiveInstall else { return false }
+        if resetFlags.bool(forKey: Keys.pairingProgressed) { return true }
+        guard let rt = runtime as? LiveRuntime, rt.booted else { return true }
         return rt.recordedOwner != nil || rt.install.owner != nil || !live.isEmpty || !rt.skipped.isEmpty || rt.derivedOwner != nil
     }
     /// Observed by the views: the install record lives in `UserDefaults`, which SwiftUI cannot track, so every change of it bumps this.
@@ -232,6 +238,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// What a successful Live wipe also removes: the install record and the realm's pending server cleanups.
     private func clearLiveRealmRecords() {
         installStore.clear()
+        resetFlags.removeObject(forKey: Keys.pairingProgressed)
         installRevision += 1
         ServerCleanupStore(defaults: resetFlags, realm: .live).clear()
     }
@@ -285,6 +292,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         await runtime.rebuildPresentationGate()
         for handle in (try? await runtime.restoreWorkspaces()) ?? [] { workspaceJoined(handle, lifetime: lifetime) }
     }
+
+    func notePairingProgress() { if hasLiveInstall { resetFlags.set(true, forKey: Keys.pairingProgressed) } }
 
     private func save(_ install: LiveInstall) throws {
         if let persistInstall { try persistInstall(install) } else { try installStore.save(install) }

@@ -72,10 +72,10 @@ struct SettingsScreen: View {
             if services.home.liveInstalled { liveSection }
             if services.home.isDemo, intake != nil {
                 Section {
-                    Button("Leave Demo and pair your Mac", role: .destructive) { confirmDemoToLive = true }
+                    Button("Leave Demo and pair a Mac", role: .destructive) { confirmDemoToLive = true }
                         .accessibilityIdentifier("settings.demoToLive")
                 } footer: {
-                    Text("Deletes the Demo workspaces from this iPhone, then helps you pair your Mac. Demo and Live never run together.")
+                    Text("Deletes the Demo workspaces from this iPhone, then helps you pair a Mac. Demo and Live never run together.")
                 }
             }
             Section {
@@ -106,12 +106,12 @@ struct SettingsScreen: View {
         } message: {
             Text("This deletes the Live data from this iPhone, then starts the Demo. Finish removing this iPhone on your Mac.")
         }
-        .alert("Leave Demo and pair your Mac?", isPresented: $confirmDemoToLive) {
+        .alert("Leave Demo and pair a Mac?", isPresented: $confirmDemoToLive) {
             Button("Leave Demo", role: .destructive) { intake?.leaveDemoAndPair(); path = [] }
                 .accessibilityIdentifier("settings.demoToLive.confirm")
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes the Demo workspaces from this iPhone. Then you can pair your Mac.")
+            Text("This deletes the Demo workspaces from this iPhone. Then you can pair a Mac.")
         }
         .alert("Reset this iPhone?", isPresented: $confirmReset) {
             Button("Reset this iPhone", role: .destructive) { model.resetThisiPhone(); path = [] }

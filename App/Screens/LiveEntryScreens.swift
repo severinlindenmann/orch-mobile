@@ -72,7 +72,8 @@ struct LiveEntryScreen: View {
     let intake: LiveIntake
     @State private var link = ""
     @State private var showScanner = false
-    @State private var viaPasteButton = false
+    /// The pasteboard's change count right after the paste button delivered the link (nil when the link was typed).
+    @State private var pastedAtChange: Int?
     @FocusState private var fieldFocused: Bool
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.scenePhase) private var scenePhase
@@ -99,7 +100,8 @@ struct LiveEntryScreen: View {
                             Button("Done") { fieldFocused = false }.accessibilityIdentifier("live.keyboardDone")
                         }
                     }
-                    // The link carries the pairing secret: kept out of the app-switcher snapshot and screenshots' accessibility text.
+                    // The link carries the pairing secret. The opacity change when the scene leaves the foreground is what hides it in the app-switcher
+                    // snapshot; `privacySensitive` only marks it for system redaction (widgets, some screen recordings).
                     .privacySensitive()
                     .opacity(scenePhase == .active ? 1 : 0)
                 if let error = intake.entryError {
@@ -107,7 +109,7 @@ struct LiveEntryScreen: View {
                 }
                 (typeSize >= .xxxLarge ? AnyLayout(VStackLayout(alignment: .leading, spacing: OS.s2)) : AnyLayout(HStackLayout())) {
                     // PasteButton reads the clipboard only when the user taps it.
-                    PasteButton(payloadType: String.self) { strings in if let s = strings.first { link = s; viaPasteButton = true } }
+                    PasteButton(payloadType: String.self) { strings in if let s = strings.first { link = s; pastedAtChange = UIPasteboard.general.changeCount } }
                     Button("Review invitation") { submit() }
                         .buttonStyle(.bordered)
                         .fixedSize(horizontal: true, vertical: false)
@@ -125,16 +127,16 @@ struct LiveEntryScreen: View {
         }
     }
 
-    /// A failed parse empties the field (it may hold a secret); a good one empties it too and, when the text came from the clipboard
-    /// through the paste button and the clipboard still holds exactly that, clears the clipboard.
+    /// A failed parse empties the field (it may hold a secret); a good one empties it too and, when the link came through the paste button
+    /// and nothing has written to the pasteboard since (same change count), clears the pasteboard. The pasteboard is never READ here
+    /// (that raises the iOS "Allow Paste" alert).
     private func submit() {
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
         intake.handle(text: text, source: .pasted)
-        if viaPasteButton, UIPasteboard.general.hasStrings, UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) == text,
-           intake.entryError == nil {
-            UIPasteboard.general.string = ""
+        if let at = pastedAtChange, intake.entryError == nil, UIPasteboard.general.changeCount == at {
+            UIPasteboard.general.items = []
         }
-        viaPasteButton = false
+        pastedAtChange = nil
         link = ""
     }
 }
@@ -164,7 +166,7 @@ struct ReviewInvitationScreen: View {
             .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
             Text("Only continue if you just started pairing on your Mac and this relay is yours.")
                 .font(OF.section).foregroundStyle(OC.warn).accessibilityIdentifier("review.warning")
-            Text("The workspace name is shown only after your Mac proves it.").font(OF.meta).foregroundStyle(OC.textMuted)
+            Text("The workspace name is shown only after the host proves it.").font(OF.meta).foregroundStyle(OC.textMuted)
             Button { intake.connect(link) } label: { Text("Connect") }
                 .buttonStyle(.orchProminent).accessibilityIdentifier("review.connect")
             Button { intake.dismiss() } label: { Text("Cancel") }
@@ -188,12 +190,12 @@ struct SwitchOfferScreen: View {
                 .font(OF.body).foregroundStyle(OC.textMuted)
             Text(verbatim: link.reviewedOrigin).font(OF.machine.weight(.semibold)).accessibilityIdentifier("switch.origin")
                 .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
-            Button(role: .destructive) { confirm = true } label: { Text("Leave Demo and pair your Mac") }
+            Button(role: .destructive) { confirm = true } label: { Text("Leave Demo and pair a Mac") }
                 .buttonStyle(.orchSoftDanger).accessibilityIdentifier("switch.leave")
             Button { intake.dismiss() } label: { Text("Keep Demo") }
                 .buttonStyle(.orchSoft).accessibilityIdentifier("switch.keep")
         }
-        .alert("Leave Demo and pair your Mac?", isPresented: $confirm) {
+        .alert("Leave Demo and pair a Mac?", isPresented: $confirm) {
             Button("Leave Demo", role: .destructive) { intake.leaveDemoAndPair() }
                 .accessibilityIdentifier("switch.leave.confirm")
             Button("Cancel", role: .cancel) {}

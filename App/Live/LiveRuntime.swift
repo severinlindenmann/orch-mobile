@@ -257,8 +257,11 @@ final class LiveRuntime: RealmRuntime {
         var owners = Set<String>()
         for row in try await index.workspaces() {
             guard let profile = try await index.profile(ws: row.ws) else { continue }
-            // A pin must be a real key: undecodable material is never recorded.
-            guard let bytes = B64U.decode(profile.pkPub), (try? SigningPublicKey(x963: bytes)) != nil else { throw LiveError.invalidInstall }
+            // With a pin nothing is recorded: an undecodable row is left to the restore, which skips it ("pins") and Live Home flags it.
+            // Without one, the value that WOULD be recorded must be a real key.
+            if pinned == nil {
+                guard let bytes = B64U.decode(profile.pkPub), (try? SigningPublicKey(x963: bytes)) != nil else { throw LiveError.invalidInstall }
+            }
             owners.insert(profile.pkPub)
         }
         if pinned != nil { return nil }
