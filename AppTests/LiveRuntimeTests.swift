@@ -593,6 +593,7 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire(); services2.retire()
     }
 
+    #if DEBUG
     func testBeginLeaveCancelsReconcileTasks() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, ws, _) = try pushServices(rig)
@@ -607,7 +608,9 @@ final class LiveRuntimeTests: XCTestCase {
         await services.drainPushRegistrations()
         services.retire()
     }
+    #endif
 
+    #if DEBUG
     func testTheDrainHasOneBoundIncludingTheSessionStops() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, _, push) = try pushServices(rig)
@@ -621,6 +624,7 @@ final class LiveRuntimeTests: XCTestCase {
         _ = push
         services.retire()
     }
+    #endif
 
     func testOwedCleanupsDoNotDelayRegistrationBeyondTheirBound() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }

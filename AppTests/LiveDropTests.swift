@@ -136,6 +136,7 @@ final class LiveDropTests: XCTestCase {
         services.resetThisiPhone(); await services.waitForReset()
     }
 
+    #if DEBUG
     func testIncompleteWalkPurgesNothingButCachedCopiesAreNotCurrentAndCannotBeOpened() async throws {
         let (services, drop) = try await fixture()
         let first = try await drop.service.send(Data("one".utf8), name: "one")
@@ -163,6 +164,7 @@ final class LiveDropTests: XCTestCase {
         XCTAssertNotNil(drop.downloads[other])
         services.resetThisiPhone(); await services.waitForReset()
     }
+    #endif
 
     func testBusyAndUnknownRemovalPreserveRowsAndAlarmBlocksContent() async throws {
         let (services, drop) = try await fixture()
