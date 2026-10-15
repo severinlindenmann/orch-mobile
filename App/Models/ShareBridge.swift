@@ -1,5 +1,7 @@
 import Foundation
 import OrchCoordination
+import OrchCustody
+import OrchProtocol
 import OrchShareStaging
 
 /// What the share bridge needs from the workspace world: the preview fake and the live Demo services both conform.
@@ -9,6 +11,10 @@ protocol ShareWorld: AnyObject {
     var capabilities: RealmCapabilities { get }
     /// The realm of this graph ("demo" or "live"), taken from its attached runtime, not from `isDemo`.
     var shareRealm: String? { get }
+    /// The realm's write fence. A Live bridge runs its App Group writes inside it; a Live graph without one gets no bridge.
+    var shareFence: (any WriteFence)? { get }
+    /// True for a real Live realm: its share work must run inside `shareFence` or not exist.
+    var requiresShareFence: Bool { get }
     var workspaces: [WorkspaceInfo] { get }
     var beforeWorkspaceRemoval: ((String) -> Bool)? { get set }
     var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)? { get set }
@@ -62,6 +68,9 @@ final class ShareBridge {
 
     /// nil when the App Group container is unavailable (unit tests, unsigned builds): sharing is simply off.
     static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = true) -> ShareBridge? {
+        // L6: Live share staging is written under the realm's fence, or not at all. With the share capability off (Live today) no bridge
+        // exists, so nothing of the Live realm is written to the App Group from outside the runtime.
+        if world.requiresShareFence, !world.capabilities.share || world.shareFence == nil { return nil }
         guard world.shareRealm != nil, let root = root ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return nil }
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }
@@ -103,6 +112,11 @@ final class ShareBridge {
     /// Replay the durable journal before offering destinations or claiming plaintext.
     func publishTargets() {
         guard inRealm else { return }
+        // A fenced (Live) bridge writes inside the realm's gate: a realm that ended publishes nothing.
+        if let fence = world.shareFence { _ = try? fence.performFenced { publishTargetsBody() } } else { publishTargetsBody() }
+    }
+
+    private func publishTargetsBody() {
         let area = inbox.area
         let coordination = area.coordination
         do { try inbox.replayRemovals() } catch { ShareTargetIndex.recordPublishSkipped("removal replay: \(ShareTargetIndex.PublishStatus.code(error))", in: area); return }
@@ -167,14 +181,17 @@ final class ShareBridge {
         publishTargets()
         guard let pending = try? inbox.pendingRemovals(), pending.isEmpty,
               (try? inbox.area.coordination.records()) != nil else { return }
-        inbox.sweep()
+        let fence = world.shareFence
         let live = Set(published.filter { listed.contains($0.key) }.values.map { LiveDestination(realm: $0.realm, ws: $0.ws, generation: $0.generation) })
         // Each job is admitted once per bridge lifetime. Deferred destinations retain startup recovery.
         let deferred = Set(world.workspaces.filter { !world.eligibleShareDestination($0.id) }.map { ws in
             let identity = world.shareIdentity(of: ws.id)
             return LiveDestination(realm: realm, ws: identity?.ws ?? Self.wsHex(ws.id), generation: identity?.generation ?? 1)
         })
-        let result = inbox.claim(live: live, realm: realm, includeClaimed: true, deferred: deferred)
+        let (inbox, realm) = (self.inbox, self.realm)
+        let claim = { () -> ClaimResult in inbox.sweep(); return inbox.claim(live: live, realm: realm, includeClaimed: true, deferred: deferred) }
+        let result: ClaimResult
+        if let fence { guard let r = try? fence.performFenced(claim) else { return }; result = r } else { result = claim() }
         for job in result.claimed where !attempted.contains(key(job)) {
             attempted.insert(key(job))
             await importJob(job)
@@ -267,6 +284,8 @@ extension ShareBridge {
 
 @MainActor
 extension ShareWorld {
+    var shareFence: (any WriteFence)? { nil }
+    var requiresShareFence: Bool { false }
     func waitForShareActivation() async {}
     func eligibleShareDestination(_ id: String) -> Bool {
         workspaces.contains { $0.id == id && $0.lifecycle == .live && $0.scopes.contains(.operate) }

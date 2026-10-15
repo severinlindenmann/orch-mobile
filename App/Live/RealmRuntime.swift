@@ -40,7 +40,8 @@ protocol RealmRuntime: AnyObject, Sendable {
     var nowMs: Int64 { get }
     var deviceLabel: String { get set }
     func date(forMs ms: Int64) -> Date
-    func makeCoordinator() -> PairingCoordinator
+    /// A pairing coordinator on the realm's one context. Throws while the runtime is not booted (Live: no index yet).
+    func makeCoordinator() throws -> PairingCoordinator
     /// Workspaces committed in an earlier launch, rebuilt as joined handles. Demo has none: its boot wipes the previous realm.
     func restoreWorkspaces() async throws -> [JoinedHandle]
     /// The local, resumable wipe of one workspace.
@@ -50,6 +51,12 @@ protocol RealmRuntime: AnyObject, Sendable {
     /// operation that already passed its check is still running when it returns. Idempotent. `LiveServices.teardown` calls it as its
     /// first statement, before any await.
     func invalidate()
+    /// Cancels and awaits (bounded) every session and pairing coordinator built on the realm. Call after `invalidate`. `LiveServices.retire`
+    /// uses it so a retired graph never leaves a running session behind (L1).
+    func drain() async
+    /// The realm's write fence, for the few writes that happen outside OrchClient (the ticket draft file, push material): they run inside
+    /// `performFenced`, so a finished realm cannot write into its successor.
+    var writeFence: (any WriteFence)? { get }
     /// Wipes the whole realm (workspaces, directory, device keys). Order: the realm generation is invalidated (`invalidate`), every
     /// pairing coordinator and `WorkspaceSession` built on the realm is cancelled and awaited (bounded), then the wipe runs. The
     /// app-level lifetime fence (`RealmLifetime`) is invalidated by the services before this runs.

@@ -201,6 +201,10 @@ public struct RealmContext: Sendable {
     /// refuses from now on, and none that passed is still running when this returns. Call it before the first await of a teardown.
     public func invalidate() { generation.invalidate() }
     public var isCurrent: Bool { generation.isCurrent }
+    /// The realm's gate as a `WriteFence`, for the few writes that happen outside OrchClient (they run inside `performFenced`).
+    public var writeFence: any WriteFence { generation }
+    /// Whether both contexts are the same lifetime (a transport built for another context would not stop when this one is invalidated).
+    public func sharesLifetime(with other: RealmContext) -> Bool { generation === other.generation }
     /// Cancels and awaits every session and pairing coordinator built on this context (bounded). Call after `invalidate`.
     public func shutdownParticipants(timeout: Duration = .seconds(5)) async { await generation.shutdownParticipants(timeout: timeout) }
 

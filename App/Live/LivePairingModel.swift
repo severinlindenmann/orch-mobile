@@ -100,7 +100,7 @@ final class LivePairingModel: PairingFlowModel {
         beginTask = Task {
             guard let runtime = await services.demoRuntime(), mine == generation else { return }
             entry = runtime.entry(for: link.workspace)
-            let coordinator = runtime.makeCoordinator()
+            guard let coordinator = try? runtime.makeCoordinator() else { if mine == generation { state = .refused(.keysUnavailable) }; return }
             self.coordinator = coordinator
             startPanelRefresh()
             let stream = await coordinator.states()
@@ -190,7 +190,8 @@ final class LivePairingModel: PairingFlowModel {
             switch f {
             case .linkUsed: state = .refused(.linkUsed)
             case .otherPerson: state = .refused(.otherPerson)
-            case .realm: state = .refused(.invalidLink)
+            // The realm ended under this pairing (Leave/Reset): it was cancelled, not a bad link.
+            case .realm(let violation): state = Self.state(forRealm: violation)
             case .hostRefused: state = .refused(.rejectedOnHost)
             case .clockWrong: state = .refused(.clockWrong)
             case .verification(let reason) where reason == "fresh_keys_unavailable": state = .refused(.keysInUse)
@@ -201,6 +202,11 @@ final class LivePairingModel: PairingFlowModel {
             }
         case .cancelled: state = .entry
         }
+    }
+
+    /// A pairing that ended because its realm ended (`staleGeneration`: Leave/Reset/teardown) is a cancellation, not a bad link.
+    static func state(forRealm violation: RealmViolation) -> PairingState {
+        violation == .staleGeneration ? .entry : .refused(.invalidLink)
     }
 
     // MARK: Demo host panel
