@@ -262,3 +262,48 @@ Drop stays capability-off in Live until the relay serves the routes. When it is 
 * **Purge granularity (open).** `LiveDrop` calls `purgeExpiredDownloads(nowMs: .max)` (all local downloads) when ANY list entry is blocked
   (`LiveDrop.swift` around the blocked handling and `purge()` with `alarm`). That should become per entry (the blocked object's own file
   only); it needs a per-object purge in `WorkspaceContainer` and is left for the wiring change.
+
+## Relay push wiring notes (P3-D40, protocol-v2 section 19.10)
+
+The phone side is built and stays **capability-off in Live** until `relay.dev.severin.io` serves the push routes. Demo is unchanged: its
+push is the local simulation, and Demo never registers.
+
+**The one switch.** `RealmCapabilities.live` in `App/Live/LiveRuntime.swift`: set `push: true`. Nothing else changes. Checked on 15 Oct 2026:
+`relay.dev.severin.io` answers `{"detail":"Not Found"}` (FastAPI routing 404, the body of a route that does not exist) for
+`POST /v2/push/register`, `/v2/push/unregister` and for an unrelated `/v2/push/...` path alike, and for `/v2/drop/list`. A relay that has D40 but
+no push configured answers `404 {"error":"not_found"}`; a relay with push answers 401 `unauthenticated` to the same request without a bearer.
+Flip the switch only after the unauthenticated probe says 401, and re-run it first. The phone treats a 404 from a configured route as "push
+is off on this relay" (below), so a premature flip degrades to a visible diagnostics line, not an error.
+
+**Registration** (`OrchClient/PushService`, `RelayClient.registerPush/unregisterPush`, device session, `POST /v2/push/register`):
+body `{workspace_id, registration_id, env, topic: "io.severin.orch", token}`, `token` b64u of 32..100 bytes. The registration id is 16 random
+bytes (hex), kept per (workspace, env) in the workspace store (`push_registrations`, migration 14) and saved BEFORE the request, so a lost
+reply retries the same body (200, free). A changed token mints a new id (a new id retires the old one at the relay; the same id with another
+body is 409). 409 `registration_conflict`: mint a new id and register once more, a second 409 is reported. 404: `relayPushOff`, nothing is
+asked again until the next launch. 403 `not_eligible` / `revoked`: shown, not retried. 429: no retries for `Retry-After` (300 s without one).
+
+**When it runs** (`App/Push/PushRegistrationCoordinator`, owned by `LiveServices`, only when the realm has `capabilities.push`):
+* A workspace is ready (joined, or restored at launch): publish the notification extension's material, follow the epoch, read the OS
+  permission (never prompts), and register if the permission is allowed and a token is stored.
+* iOS hands over the token at every launch that registers (`OrchAppDelegate.onTokenReceived`, every time, changed or not): every Live
+  workspace registers again. Same token, same body, no cost at the relay; a new token gets a new registration id.
+* **Epoch.** `WorkspaceSession.setEpochObserver` fires when the confirmed epoch rises (a key was installed); the coordinator republishes
+  `K_push` (one keychain item per workspace, `PushMaterial`, never `WK`) in the same step. Right after a rotation, before that step,
+  pushes show generic text (acceptable, A12).
+* **Leave workspace.** After the session stops and before the wipe, `registration_id: null` (all of this device's registrations in the
+  workspace; allowed without membership) with a 3 s bound. If the relay cannot be reached the cleanup is recorded in `ServerCleanupStore`
+  (workspace and generation only), shown under "Finish on your Mac", and retried by `serverCleanup` (a device session from the realm's device
+  key, `LiveRuntime.unregisterPush`) at the next Live start and on "Retry now". The wipe itself never waits on it beyond the bound.
+* **Leave Live / Reset.** Every workspace is unregistered at once before the realm is invalidated, 3 s bound. The device key goes with the
+  wipe, so nothing can be owed afterwards: if the relay was unreachable the registration ends by the host's removal of the device from the
+  member list, an APNs 410 / `BadDeviceToken`, the device's revocation, or 60 days without a refresh (protocol-v2 section 19.10 lifecycle).
+
+**APNs environment** comes from how the build is signed (`PushEnvironment.resolve`), not from the build configuration: the
+`aps-environment` of `embedded.mobileprovision` (`development` is `sandbox`, `production` is `production`); no profile on a device (TestFlight,
+App Store) is `production`; the Simulator and a profile without the entitlement have none and never register or call the relay.
+
+**Notification extension.** It reads `userInfo["o"]` as a JSON string only (`RelayPushBody.outer`), then the section 9 sealed outer with its
+3 072-byte cap; the relay's alert text (`orch` / `New activity in orch`, at most 3 175 bytes in all) is the extension's own generic text and is
+never read. There is no collapse id: a `question.closed` push replaces the delivered question through the entity key (`orch_key`), exactly as
+before, and the app's reconciler does the same when it opens. Open for the first device test: the extension adds the sound, the relay sends
+none (inferred, not verified).

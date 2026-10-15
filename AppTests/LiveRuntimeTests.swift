@@ -451,10 +451,91 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire()
     }
 
+    // MARK: relay push (P3-D40): Live lifecycle with the capability on
+
+    private func pushServices(_ rig: Rig, push: FakePush? = nil) throws -> (LiveServices, LiveRuntime, LiveWorkspace, FakePush) {
+        let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
+        runtime.capabilities = RealmCapabilities(drop: false, share: false, push: true, demoControls: false)
+        let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
+        services.pushEnvironment = { .sandbox }
+        services.pushToken = { B64U.encode(Data(repeating: 5, count: 32)) }
+        services.wipeWorkspace = { _, _ in }
+        services.resetRuntime = { _ in }
+        let id = SystemEntropy().id16()
+        let info = WorkspaceInfo(id: id.hex, name: "Test", host: "Mac", hue: 0, hostedBy: nil, clientHosted: false,
+                                 scopes: [.look, .operate, .decide], connection: .online, primaryLabel: "Mac", notificationsOn: false)
+        let ws = LiveWorkspace(workspaceID: id, generation: 1, api: DraftStub(), info: info)
+        services.register(ws)
+        let fake = push ?? FakePush(id)
+        ws.push = fake
+        _ = services.pushCoordinatorForLive()
+        return (services, runtime, ws, fake)
+    }
+
+    func testLiveLeaveRemovesTheRelayRegistrationBeforeTheWipeAndOwesNothingWhenItWorked() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, push) = try pushServices(rig)
+        let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertEqual(push.unregisterCalls, 1)
+        XCTAssertEqual(report.server, .finishOnMac)
+        XCTAssertTrue(services.pendingServerCleanups.isEmpty)
+        services.retire()
+    }
+
+    func testOfflineLiveLeaveRecordsTheOwedPushCleanupAndRetryClearsIt() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, _) = try pushServices(rig, push: nil)
+        let offline = FakePush(ws.workspaceID, unregister: [.failed("offline")])
+        ws.push = offline
+        let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertFalse(report.incomplete)                                      // the local wipe is not affected
+        XCTAssertEqual(services.pendingServerCleanups.map(\.ws), [ws.workspaceID.hex])
+        var cleaned: [String] = []
+        services.serverCleanup = { cleaned.append($0.ws) }
+        await services.retryServerCleanup()
+        XCTAssertEqual(cleaned, [ws.workspaceID.hex]); XCTAssertTrue(services.pendingServerCleanups.isEmpty)
+        services.retire()
+    }
+
+    func testLeaveLiveUnregistersEveryWorkspaceBeforeTheRealmIsInvalidated() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, push) = try pushServices(rig)
+        push.unregisterDelay = 0.3
+        services.leaveLive(thenDemo: false)
+        XCTAssertTrue(services.lifetime.isActive, "the realm is still alive while the registration is removed")
+        for _ in 0..<200 where services.runtime != nil { try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertNil(services.runtime)
+        XCTAssertEqual(push.unregisterCalls, 1)
+        XCTAssertFalse(services.lifetime.isActive)
+        _ = ws
+        await services.waitForReset()
+    }
+
+    func testLeaveLiveIsNotHeldByAWedgedRelay() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, _, push) = try pushServices(rig)
+        push.unregisterDelay = 60
+        let started = Date()
+        services.leaveLive(thenDemo: false)
+        for _ in 0..<400 where services.runtime != nil { try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertNil(services.runtime)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8, "bounded: a few seconds, then the wipe proceeds")
+        await services.waitForReset()
+    }
+
+    func testPushStaysOffInLiveByDefaultAndTheCoordinatorDoesNotExist() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
+        XCTAssertFalse(runtime.capabilities.push)
+        let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
+        XCTAssertNil(services.pushCoordinatorForLive())
+        services.retire()
+    }
+
     func testPushMaterialAndTheDraftFileGoThroughTheRealmFence() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
-        let sink = runtime.makePushSink()
+        let sink = try XCTUnwrap(runtime.makePushSink())
         try sink.put(Data("m".utf8), realm: "live", ws: String(repeating: "c", count: 32), purpose: "push-material")
         XCTAssertThrowsError(try sink.put(Data("m".utf8), realm: "demo", ws: String(repeating: "c", count: 32), purpose: "push-material"))
         // The draft: written inside the fence, never without one in Live.

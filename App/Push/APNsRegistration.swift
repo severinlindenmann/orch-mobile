@@ -1,18 +1,24 @@
 import Foundation
+import OrchClient
 import OrchProtocol
 import UIKit
 import UserNotifications
 
-/// `sandbox` for Xcode installs, `production` for TestFlight and App Store builds (even against the dev relay, D48).
-/// The relay needs it per registration (host-api v0 section 3, gap 15).
-enum APNsEnvironment: String, Sendable {
-    case sandbox, production
-    static var current: APNsEnvironment {
-        #if DEBUG
-        .sandbox
+/// The relay needs the APNs environment per registration (protocol-v2 19.10). It comes from how THIS build is signed (the
+/// `aps-environment` of its provisioning profile), never from the build configuration: a Release build installed from Xcode carries a
+/// development profile and gets sandbox tokens, a TestFlight or App Store build has no profile and gets production tokens (even against the
+/// dev relay, D48). The Simulator has no usable environment (nil): it never registers.
+typealias APNsEnvironment = PushEnvironment
+
+extension PushEnvironment {
+    static var current: PushEnvironment? {
+        #if targetEnvironment(simulator)
+        let simulator = true
         #else
-        .production
+        let simulator = false
         #endif
+        let profile = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision").flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+        return resolve(provisioningProfile: profile, isSimulator: simulator)
     }
 }
 
@@ -35,7 +41,7 @@ struct APNsTokenStore {
 
     /// Returns true when the token changed (callers re-register every workspace then).
     @discardableResult
-    func save(deviceToken: Data, environment: APNsEnvironment = .current) -> Bool {
+    func save(deviceToken: Data, environment: APNsEnvironment) -> Bool {
         let next = Stored(token: B64U.encode(deviceToken), environment: environment)
         guard next != stored else { return false }
         defaults.set(next.token, forKey: Self.tokenKey); defaults.set(environment.rawValue, forKey: Self.envKey)
@@ -93,6 +99,8 @@ enum PushPermission {
     /// Real APNs registration: only for a real (non-Demo) installation that was granted permission. The outcome (token or
     /// failure) lands in `PushDiagnostics`, never silently.
     static func registerForAPNs(application: UIApplication = .shared) {
+        // The Simulator (or a build without a push entitlement) has no APNs environment: nothing to register, nothing to send the relay.
+        guard APNsEnvironment.current != nil else { OrchAppDelegate.lastRegistrationError = "No APNs environment in this build (Simulator)"; return }
         OrchAppDelegate.registrationAttempted = true
         application.registerForRemoteNotifications()
     }
@@ -106,14 +114,15 @@ enum PushPermission {
 /// Plain-text state for the Settings diagnostics row: nothing secret (no token value).
 @MainActor
 enum PushDiagnostics {
-    static func summary(isDemo: Bool, permission: String) -> String {
+    static func summary(isDemo: Bool, permission: String, relay: String? = nil) -> String {
         let store = APNsTokenStore()
-        var parts = ["permission: \(permission)", "APNs environment: \(APNsEnvironment.current.rawValue)"]
+        var parts = ["permission: \(permission)", "APNs environment: \(APNsEnvironment.current?.rawValue ?? "none")"]
         if isDemo { parts.append("APNs: not used in Demo (local simulation only)") }
         else if let error = OrchAppDelegate.lastRegistrationError { parts.append("APNs registration failed: \(error)") }
         else if store.stored != nil { parts.append("APNs token registered") }
         else if OrchAppDelegate.registrationAttempted { parts.append("APNs registration pending") }
         else { parts.append("APNs registration not attempted") }
+        if let relay, !isDemo { parts.append(relay) }
         return parts.joined(separator: " · ")
     }
 }
@@ -138,13 +147,16 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         return [.banner, .list, .sound]
     }
 
-    /// Set by the session layer later: called with the token when it changed (re-register every workspace).
-    nonisolated(unsafe) static var onTokenChanged: (@Sendable (APNsTokenStore.Stored) -> Void)?
+    /// Set by the session layer: called with the stored token EVERY time iOS hands one over (each launch that registers), changed or not,
+    /// so the relay registration is refreshed at every launch and moves with a new token (the relay call is idempotent for the same token).
+    nonisolated(unsafe) static var onTokenReceived: (@Sendable (APNsTokenStore.Stored) -> Void)?
     nonisolated(unsafe) static var lastRegistrationError: String?
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let store = APNsTokenStore()
-        if store.save(deviceToken: deviceToken), let s = store.stored { Self.onTokenChanged?(s) }
+        guard let environment = APNsEnvironment.current else { return }
+        store.save(deviceToken: deviceToken, environment: environment)
+        if let s = store.stored { Self.onTokenReceived?(s) }
         Self.lastRegistrationError = nil
     }
 

@@ -102,12 +102,10 @@ final class APNsTokenStoreTests: XCTestCase {
         XCTAssertNil(s.stored)
     }
 
-    func testEnvironmentFollowsBuildConfiguration() {
-        #if DEBUG
-        XCTAssertEqual(APNsEnvironment.current, .sandbox)
-        #else
-        XCTAssertEqual(APNsEnvironment.current, .production)
-        #endif
+    func testEnvironmentFollowsTheSigningNotTheBuildConfiguration() {
+        // The test host runs on the Simulator: no APNs environment, whatever the configuration says.
+        XCTAssertNil(APNsEnvironment.current)
+        XCTAssertEqual(APNsEnvironment.resolve(provisioningProfile: nil, isSimulator: false), .production)
     }
 
     func testReleaseIgnoresPushHarnessFlags() {

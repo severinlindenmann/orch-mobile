@@ -175,6 +175,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let store = ServerCleanupStore(defaults: resetFlags, realm: r.realm)
         cleanupStore = store
         pendingServerCleanups = store.load()
+        // Live's owed cleanup is the push unsubscribe (the Mac-side removal is finished on the Mac). Demo simulates it.
+        if r.realm == .live {
+            serverCleanup = { [weak r] item in
+                guard let r, let id = ID16(hex: item.ws) else { return }
+                try await r.unregisterPush(workspace: id)
+            }
+        }
     }
 
     // MARK: Boot
@@ -525,6 +532,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         // No Drop capability, no Drop: the service is never constructed, not merely hidden.
         if capabilities.drop, let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
+        if isLive, capabilities.push { startPush(for: ws, joined: j) }
         Task {
             if let drop = ws.drop { await demo?.seedDropFixture(into: drop, workspace: j.workspace) }
             await ws.drop?.refresh()
@@ -894,8 +902,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         guard capabilities.push else { notificationStatus = .notAsked; pushDiagnostics = ""; return }
         let state = await currentPermission()
         notificationStatus = map(state)
-        if !isDemo, notificationStatus == .allowed { registerForAPNs() }
-        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
+        if !isDemo, notificationStatus == .allowed { registerForAPNs(); Task { await registerPushAll() } }
+        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue, relay: pushCoordinator?.summary)
     }
 
     /// Asks the system once (never at launch) and waits for the answer.
@@ -905,8 +913,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let notificationPermissionOverride { return await notificationPermissionOverride() }
         let state = await PushPermission.requestIfNeeded()
         notificationStatus = map(state)
-        if !isDemo, notificationStatus == .allowed { registerForAPNs() }
-        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
+        if !isDemo, notificationStatus == .allowed { registerForAPNs(); Task { await registerPushAll() } }
+        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue, relay: pushCoordinator?.summary)
         return notificationStatus
     }
 
@@ -964,6 +972,62 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
     }
 
+    // MARK: Relay push (P3-D40)
+
+    /// The Live realm's push coordinator; nil in Demo (which only simulates push) and while the realm offers no push capability.
+    @ObservationIgnored private(set) var pushCoordinator: PushRegistrationCoordinator?
+    /// The APNs environment and token as this build has them. Seams for tests; production reads the provisioning profile and the token store.
+    @ObservationIgnored var pushEnvironment: () -> PushEnvironment? = { APNsEnvironment.current }
+    @ObservationIgnored var pushToken: () -> String? = { APNsTokenStore().stored?.token }
+    @ObservationIgnored private var pushCleanupRetried = false
+    @ObservationIgnored private var leavingRealm = false
+
+    func pushCoordinatorForLive() -> PushRegistrationCoordinator? {
+        guard isLive, capabilities.push, let runtime else { return nil }
+        if let pushCoordinator { return pushCoordinator }
+        let c = PushRegistrationCoordinator(.init(
+            realm: runtime.realm.rawValue,
+            enabled: { [weak self] in guard let self else { return false }; return self.capabilities.push && self.lifetime.isActive && !self.retired },
+            environment: { [weak self] in self?.pushEnvironment() },
+            token: { [weak self] in self?.pushToken() },
+            permissionAllowed: { [weak self] in self?.notificationStatus == .allowed },
+            sink: { [weak self] in self?.runtime?.makePushSink() }))
+        pushCoordinator = c
+        // iOS hands the token over at every launch that registers: refresh the relay registrations then (a changed token gets a new id).
+        OrchAppDelegate.onTokenReceived = { [weak self] _ in Task { @MainActor in await self?.registerPushAll() } }
+        return c
+    }
+
+    /// A Live workspace is ready (joined now or restored at launch): keep the notification extension's material current, follow the epoch,
+    /// and register with the relay if the permission and token allow. Nothing here runs without the push capability.
+    private func startPush(for ws: LiveWorkspace, joined j: JoinedWorkspace) {
+        guard let c = pushCoordinatorForLive() else { return }
+        let service: any PushRegistering = makePushService(j)
+        ws.push = service
+        let observer: @Sendable (UInt32) -> Void = { [weak self, weak ws] _ in
+            Task { @MainActor in
+                guard let self, let ws, let c = self.pushCoordinator, let s = ws.push, self.canUse(ws.info.id) else { return }
+                await c.publishMaterial(s, name: ws.info.name, generation: ws.generation)
+            }
+        }
+        Task { [weak self, weak ws] in
+            await j.session.setEpochObserver(observer)
+            guard let self, let ws else { return }
+            await c.publishMaterial(service, name: ws.info.name, generation: ws.generation)
+            await self.refreshNotificationStatus()         // reads the permission; allowed -> asks iOS for the token (never prompts)
+            await c.register(service)
+            if !self.pushCleanupRetried { self.pushCleanupRetried = true; await self.retryServerCleanup() }
+        }
+    }
+
+    @ObservationIgnored var makePushService: (JoinedWorkspace) -> any PushRegistering = { $0.makePushService() }
+
+    /// Every Live workspace, in turn: at launch with a token, and when iOS hands over a new one.
+    func registerPushAll() async {
+        guard let c = pushCoordinator, isLive else { return }
+        await c.registerAll(live.filter { isLive($0.info.id) }.compactMap(\.push))
+    }
+
     // MARK: Pending server cleanup (U9)
 
     private func enqueueServerCleanup(ws: String, generation: Int64) {
@@ -999,6 +1063,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let canDeregister = ws.info.scopes.contains(.operate)
         await waitForLifecycle()
         await ws.stop()
+        // Relay push, best effort and bounded: the registration is removed while the session and the device key still exist. If the relay
+        // cannot be reached the cleanup is recorded as owed (below); it never blocks or changes the local wipe.
+        var pushOwed = false
+        if let c = pushCoordinator, let push = ws.push { pushOwed = await c.unregister(push) == .owed }
         let prefix = ws.workspaceID.hex + "/"
         for (key, task) in reconcileTasks where key.hasPrefix(prefix) { task.cancel(); reconcileTasks[key] = nil; reconcileSerials[key] = nil }
         do { try await wipeWorkspace(runtime, ws) }
@@ -1018,7 +1086,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         pendingDecisions.removeAll { $0.workspaceID == workspaceID }
         // Only Demo can acknowledge a server-side removal; Live has no implemented, acknowledged operation yet, so it never claims one.
         let server: LeaveServerStatus = (!canDeregister || runtime.realm == .live) ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
-        if server == .pendingOffline { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
+        if server == .pendingOffline || pushOwed { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
         return LeaveReport(workspaceName: name, server: server)
     }
 
@@ -1029,6 +1097,29 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func resetDemoData() { leaveRealm(thenDemo: true) }
 
     private func leaveRealm(thenDemo: Bool) {
+        guard !retired, !leavingRealm else { return }
+        // Leave Live / Reset destroys the device key, and the realm's invalidation ends every request, so the relay push registrations go
+        // first: best effort, all workspaces at once, bounded (a few seconds). If the relay cannot be reached nothing can be owed afterwards
+        // (no key to sign a later attempt with); the relay drops the registration with the device's removal from the member list, a
+        // 410 from APNs, or after 60 days without a refresh.
+        if let c = pushCoordinator, isLive, capabilities.push, lifetime.isActive {
+            let targets = live.compactMap(\.push)
+            if !targets.isEmpty {
+                leavingRealm = true
+                Task { [weak self] in
+                    let running = targets.map { t in Task { @MainActor in _ = await c.unregister(t) } }
+                    for r in running { await r.value }
+                    guard let self else { return }
+                    self.leavingRealm = false
+                    self.proceedLeavingRealm(thenDemo: thenDemo)
+                }
+                return
+            }
+        }
+        proceedLeavingRealm(thenDemo: thenDemo)
+    }
+
+    private func proceedLeavingRealm(thenDemo: Bool) {
         guard !retired else { return }
         if let transitions { transitions.realmLeave(thenDemo: thenDemo) }
         else if !thenDemo { teardown() }

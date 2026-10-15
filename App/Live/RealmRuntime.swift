@@ -62,8 +62,19 @@ protocol RealmRuntime: AnyObject, Sendable {
     /// app-level lifetime fence (`RealmLifetime`) is invalidated by the services before this runs.
     func shutdown() async throws
     @discardableResult func rebuildPresentationGate() async -> Bool
+    /// Push material (the notification extension's keys) for this realm, written through the realm's fence. nil where there is none (Demo
+    /// simulates push locally and never registers).
+    func makePushSink() -> VaultPushSink?
+    /// Unregisters this device's push registrations in `workspace` with a device session of its own, after the workspace session is gone
+    /// (the owed half of a Leave). Throws when the relay could not be reached; completes when it answered or push is off. Demo: no-op.
+    func unregisterPush(workspace: ID16) async throws
     /// Where a workspace keeps its unsent new-ticket draft (inside its own directory, which the wipe deletes).
     func draftURL(workspace: ID16) -> URL?
+}
+
+extension RealmRuntime {
+    func makePushSink() -> VaultPushSink? { nil }
+    func unregisterPush(workspace: ID16) async throws {}
 }
 
 /// Demo-only controls: scenarios, the fake host and primary, fault and lock simulation, notification simulation and Drop seeding.
