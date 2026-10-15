@@ -50,6 +50,8 @@ public enum Label {
     public static let sigPublish = "orch/v2/publish|"
     /// F1 person events over `relay.submit` (host section 11A.14 14.2); core `sig_ticket_event` in `DEVICE_KEY_LABELS`.
     public static let sigTicketEvent = "orch/v2/sig/ticket-event|"
+    /// H12d (host 9.3): the reader-version declaration, signed by `dk_sig`.
+    public static let sigReaderDecl = "orch/v2/sig/reader-decl|"
     // hash labels
     public static let hDeviceID = "orch/v2/id/device|"
     public static let hPersonID = "orch/v2/id/person|"

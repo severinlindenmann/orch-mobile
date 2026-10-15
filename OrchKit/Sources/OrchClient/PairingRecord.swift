@@ -40,6 +40,11 @@ struct PairingRecord: Equatable {
     /// This attempt's nonce and `dk_hash` (G3b, P3-D28), persisted before the first pair request is sent.
     var attempt: String
     var dkHash: Data
+    /// H12d: the signed `reader_decl` of this attempt, built once before the first send and persisted with it, so every resend and every
+    /// re-framed pair request carries the same bytes (the first stored declaration wins). nil: this build declares nothing.
+    var readerDecl: ReaderDeclaration?
+    /// The build that made `readerDecl` (the marker records it; an update between the scan and the join must not relabel it).
+    var readerBuild: String?
     var createdKeys: Bool
     var existingCert: JSONValue?
     var phase: Phase = .connecting
@@ -81,6 +86,8 @@ struct PairingRecord: Equatable {
         func put(_ k: String, _ v: JSONValue?) { if let v { o[k] = v } }
         put("secret", secret.map { .string(B64U.encode($0)) })
         put("existing_cert", existingCert)
+        put("reader_decl", readerDecl?.json)
+        put("reader_build", readerBuild.map { .string($0) })
         put("wsk_pub", wskPub.map { .string(B64U.encode($0)) })
         put("sas_nonce", sasNonce.map { .string(B64U.encode($0)) })
         put("pk_pub", pkPub.map { .string(B64U.encode($0)) })
@@ -118,6 +125,11 @@ struct PairingRecord: Equatable {
         var r = PairingRecord(generation: generation, origin: origin, ws: ws, offer: offer, secret: secret, wskPin: wskPin, pkPin: pkPin,
                               deviceID: device, label: label, attempt: attempt, dkHash: dkHash, createdKeys: created, existingCert: o["existing_cert"], phase: phase,
                               startedMs: started, lastProgressMs: progress)
+        if let d = o["reader_decl"] {
+            guard let parsed = try? ReaderDeclaration(signed: d) else { return nil }
+            r.readerDecl = parsed
+            r.readerBuild = o["reader_build"]?.string
+        }
         r.challengeDeadlineMs = o["challenge_deadline_ms"]?.int
         r.joinDeadlineMs = o["join_deadline_ms"]?.int
         r.offsetMs = offset; r.seq = UInt64(seq); r.lastPostMs = lastPost

@@ -32,3 +32,13 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
   `src/orch/canon/_unicode16.py` at `b9d87df4ee88a43b14c74199668e443bafe817a4`.
 - Regenerate with `python3 OrchKit/Scripts/gen_unicode16_swift.py <core _unicode16.py> <core sha>`; `--check` fails if the file drifted (run it in CI
   against the pinned core checkout whenever the tables or the pinned commit change). `Unicode16Data.digest` is also checked by a unit test.
+
+## reader_decl_vectors.json and f1/reader_kat_1.json (H12d, reader-version handshake)
+
+- `reader_decl_vectors.json` is a TRIMMED derived extract (the whole relay vectors file and fixtures were not re-vendored: the relay's newer
+  fixtures need new coverage/skip-list work that is not part of H12d). Source: orch-relay `tests/vectors_v2.json` (sha256
+  `b5d08fb5636c601571006b6d5cb752e9a83f34a0df987bf4ed52403c20a9e2d5`) at origin/develop `ca51f53` (last commit touching it: `438b7193068d24f68035ddab733e04781801c5d1`, P3-D38):
+  `suites["2"].reader_decl` (decls, digest, later_declaration, kat_core, and pair_meta names + meta only; no envelopes) plus the `phone.*` and
+  `person_alice.sig` seeds and the two ids it uses. Extracted 2026-10-15 by script, no value edited. Re-extract (or re-vendor the whole file) together with the next relay re-vendor.
+- `f1/reader_kat_1.json`: orch-core `plugins/orch-core/tests/vectors/f1/reader_kat_1.json` at origin/develop `c0fdb989` (last commit touching the f1 directory: `33e7206ece74bcc78cf7b113a46f08d844756b98`), copied unmodified.
+  `f1/labels.json` already carries `sig_reader_decl`.
