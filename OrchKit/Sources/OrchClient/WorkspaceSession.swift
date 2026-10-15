@@ -1413,7 +1413,7 @@ extension WorkspaceSession {
     private struct DecisionRefused: Error {}
     /// Maps a class-D refusal of the DECISION exchange (not of the confirming reads) to `DecisionRefused`; the v0 refusals that have their own
     /// outcome (already answered, question changed, not visible) pass through.
-    private func definite<T>(_ body: () async throws -> T) async throws -> T {
+    private func definite(_ body: () async throws -> BridgeResponse) async throws -> BridgeResponse {
         do { return try await body() } catch ClientError.host(let r) where R2.retryClass(of: r) == .d {
             switch r { case .alreadyAnswered, .questionChanged, .notVisible: throw ClientError.host(r)
             default: throw DecisionRefused() }
