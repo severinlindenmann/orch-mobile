@@ -229,9 +229,9 @@ import OrchStore
         let profile = try #require(try await h.env.index.profile(ws: h.host.workspace.hex))
         #expect(profile.name == "Laptop" && profile.cardSeq == 1 && profile.epoch == 1 && profile.origin == DemoRelay.origin)
         #expect(profile.wskPub == B64U.encode(h.host.wskPublic.x963) && profile.pkPub == B64U.encode(h.primary.publicKey.x963))
-        // the pending record is gone; WK_1 and the (kept) certificate are in the vault; the pairing secret is not
+        // the pending record is gone; WK_1, the reader state (H12d) and the (kept) certificate are in the vault; the pairing secret is not
         let purposes = Set(h.vaultItems.map(\.purpose))
-        #expect(purposes == ["wk.1"])
+        #expect(purposes == ["wk.1", "reader.state"])
         #expect(try h.vault.scoped(to: .demo).get(purpose: "device.cert").isEmpty == false)
         #expect(try await h.env.index.pairings().isEmpty)
         // the session works: epoch 1 key installed, same workspace

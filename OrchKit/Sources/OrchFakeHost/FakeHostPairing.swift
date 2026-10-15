@@ -56,6 +56,11 @@ extension FakeHost {
         core.pendingPairs[device]?.rejection = rejection
         transition(device, to: "rejected")
     }
+    /// Tests (H12d): the `reader_decl` the pair meta carried and the gate's verdict on it.
+    package func pairingReaderDecl(of device: ID16) -> (decl: JSONValue, verdict: Result<Int, ReaderDecl.Reason>)? {
+        guard let p = core.pendingPairs[device], let d = p.readerDecl, let v = p.readerVerdict else { return nil }
+        return (d, v)
+    }
     package func pairingRequestID(of device: ID16) -> ID16? { core.pendingPairs[device]?.requestID }
     /// Tests: the attempt binding of a device's pairing (offer, attempt nonce, dk_hash of its keys).
     package func pairingBinding(of device: ID16) -> (offer: ID16, attempt: String, dkHash: Data)? {
