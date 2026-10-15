@@ -416,9 +416,9 @@ extension FakeHost {
         let r = try await rig { req, host in
             if req.meta.object?["op"] == "answer", let s = box.session {
                 switch event {
-                case "inactive": await s.noteInactive()
-                case "protectedData": await s.noteProtectedDataUnavailable()
-                case "locked": await s.noteCustodyLocked()
+                case "inactive": s.noteInactive()
+                case "protectedData": s.noteProtectedDataUnavailable()
+                case "locked": s.noteCustodyLocked()
                 default: await s.invalidateReviews()
                 }
                 await host.demoBumpMembersV()
@@ -513,6 +513,99 @@ extension FakeHost {
         #expect(r.hooks.count("pe.sign") == 0)
         #expect(try await rows(r.p, "SELECT * FROM pe_attempts").isEmpty)
         #expect(r.ops.value("answer") == 0)
+    }
+
+    // MARK: the lifecycle invariant (LifecycleFence): an invalidation in any await window stops the signature or the first dispatch
+
+    /// Runs `act` synchronously from inside the session's hook point `point`, on its `nth` hit (the invalidation lands exactly in the
+    /// window that point sits in).
+    func trip(_ r: Rig, at point: String, nth: Int = 1, _ act: @escaping @Sendable (WorkspaceSession) -> Void) async {
+        let hooks = r.hooks, session = r.p.session
+        await session.setCrashHook { name in
+            try hooks.hit(name)
+            if name == point, hooks.count(name) == nth { act(session) }
+        }
+    }
+
+    static let invalidations: [String] = ["inactive", "protectedData", "locked"]
+    static func invalidate(_ s: WorkspaceSession, _ how: String) {
+        switch how {
+        case "inactive": s.noteInactive()
+        case "protectedData": s.noteProtectedDataUnavailable()
+        default: s.noteCustodyLocked()
+        }
+    }
+
+    /// The database hop of the signing transaction (the body runs off the session actor, after `prepare`'s suspensions): a tap signs nothing.
+    @Test(arguments: invalidations)
+    func aTapInvalidatedBeforeTheSignatureSignsNothing(_ how: String) async throws {
+        let r = try await rig()
+        await trip(r, at: "pe.presign") { Self.invalidate($0, how) }
+        await #expect(throws: ViewError.invalidReview) { _ = try await answer(r) }
+        #expect(r.hooks.count("pe.sign") == 0)
+        #expect(try await rows(r.p, "SELECT * FROM pe_attempts").isEmpty)
+        #expect(r.ops.value("answer") == 0)
+    }
+
+    /// The charge transaction and the `ensureCurrent` after it: a tap's first dispatch is stopped right before `bridgePost`; the attempt
+    /// stays dispatched (conservative) and is settled later.
+    @Test(arguments: ["post.charging", "post.charged"])
+    func aTapInvalidatedBeforeItsFirstDispatchIsNotSentAndSettledLater(_ point: String) async throws {
+        let r = try await rig()
+        await trip(r, at: point) { $0.noteInactive() }
+        await #expect(throws: WriteGateError.lifecycleEnded) { _ = try await answer(r) }
+        #expect(r.ops.value("answer") == 0)
+        let a = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts").first)
+        #expect(a.int("dispatched") == 1 && a.text("state") == "sent")
+        let out = try await settleAll(r, r.p)
+        guard case .landed = out.first else { Issue.record("\(out)"); return }
+        #expect(r.hooks.count("pe.sign") == 1 && r.ops.value("answer") == 1)
+    }
+
+    /// The automatic re-sign: an invalidation on the database hop before its signature means no second signature.
+    @Test(arguments: invalidations)
+    func anAutoReSignInvalidatedBeforeTheSignatureSignsNothing(_ how: String) async throws {
+        let r = try await rig()
+        await r.w.host.demoBumpMembersV()
+        await trip(r, at: "pe.presign", nth: 2) { Self.invalidate($0, how) }
+        #expect(try await answer(r) == .needsReview(.workspaceChanged))
+        #expect(r.hooks.count("pe.sign") == 1)
+        #expect(try await attemptStates(r.p) == ["c_auto"])
+        #expect(r.ops.value("answer") == 1)
+    }
+
+    /// The automatic attempt's first dispatch: an invalidation in the charge transaction or `ensureCurrent` stops it before `bridgePost`.
+    @Test(arguments: ["post.charging", "post.charged"])
+    func anAutoAttemptInvalidatedBeforeItsFirstDispatchIsNotSent(_ point: String) async throws {
+        let r = try await rig()
+        await r.w.host.demoBumpMembersV()
+        await trip(r, at: point, nth: 2) { $0.noteInactive() }
+        await #expect(throws: WriteGateError.lifecycleEnded) { _ = try await answer(r) }
+        #expect(r.hooks.count("pe.sign") == 2)
+        #expect(r.ops.value("answer") == 1)                     // the tap's only
+        let auto = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts WHERE origin='auto'").first)
+        #expect(auto.int("dispatched") == 1 && auto.text("state") == "sent")
+    }
+
+    /// SH1: a lock inside the automatic re-sign (the signer refuses) ends the eligibility in the session itself; a later foreground
+    /// never re-signs.
+    @Test func aLockInsideTheAutoReSignEndsTheEligibility() async throws {
+        let r = try await rig()
+        await r.w.host.demoBumpMembersV()
+        let hooks = r.hooks
+        await r.p.session.setCrashHook { name in
+            try hooks.hit(name)
+            if name == "pe.sign", hooks.count(name) == 2 { throw CustodyError.locked }
+        }
+        #expect(try await answer(r) == .needsReview(.workspaceChanged))
+        let review = try #require(try await rows(r.p, "SELECT review FROM pe_reviews").first?.text("review"))
+        #expect(!r.p.session.lifecycleFence.hasEligibility(review: review))
+        #expect(r.p.session.lifecycleFence.ticket() == nil)       // locked until the foreground (or a new review) returns
+        await r.p.session.setForeground(false)
+        await r.p.session.setForeground(true)
+        _ = try await r.w.serve(r.p) { try await r.p.session.settle(reviewID: review) }
+        #expect(try await rows(r.p, "SELECT * FROM pe_attempts").count == 1)
+        #expect(hooks.count("pe.signed") == 1)
     }
 
     @Test func aLaterRefusalNeverOverwritesALanding() async throws {

@@ -139,9 +139,9 @@ public actor WorkspaceSession: RealmParticipant {
     let policy: PersonEventPolicy?
     /// One driver per review (answer, settle, recovery all join it).
     var reviewDrivers: [String: Task<WriteOutcome, Error>] = [:]
-    /// The per-review ResignEligibility token: issued at the Sign tap, in memory only, cleared by every event that ends "foreground and
-    /// unlocked since the tap" (codex 11). An auto re-sign and the first dispatch of an auto attempt need it.
-    var resignEligibility: [String: UUID] = [:]
+    /// The C2b lifecycle invariant's one enforcement point (see `LifecycleFence`): its epoch, its flags and the per-review eligibility
+    /// tokens. Invalidations reach it synchronously, also from outside the actor.
+    nonisolated let lifecycleFence = LifecycleFence()
     /// Monotonic age of attempts signed by this process (the window's third term); absent after a relaunch (counts 0).
     var attemptMonotonic: [String: () -> Duration] = [:]
     /// Pending settlement retries (10 s, 60 s, 300 s), per review.
@@ -248,6 +248,7 @@ public actor WorkspaceSession: RealmParticipant {
     public nonisolated func realmShutdown() async { await closeForShutdown() }
 
     private func closeForShutdown() async {
+        lifecycleFence.invalidate(.realmClosed)
         closed = true
         reviewLifecycle &+= 1; reviews.removeAll()
         let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
@@ -256,7 +257,6 @@ public actor WorkspaceSession: RealmParticipant {
         let drivers = Array(inflight.values), decisions = Array(reviewDrivers.values)
         cancelAll()
         for t in decisions { t.cancel() }
-        resignEligibility.removeAll()
         for t in settleRetries.values { t.cancel() }
         settleRetries.removeAll()
         writeRecovery?.cancel(); writeRecovery = nil
@@ -279,6 +279,8 @@ public actor WorkspaceSession: RealmParticipant {
             try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
             _ = try await cfg.container.database()
         } catch {
+            // Any failure ends the lifecycle's tickets: nothing is signed or first sent on a generation that could not be confirmed.
+            lifecycleFence.invalidate(.generationEnded)
             // Availability failures are not authoritative evidence of removal.
             switch error {
             case StoreError.workspaceRemoved, RealmViolation.staleGeneration: break
@@ -286,7 +288,6 @@ public actor WorkspaceSession: RealmParticipant {
             }
             cancelAll()
             invalidateReviews()
-            resignEligibility.removeAll()
             poller?.cancel(); poller = nil
             for c in subscribers.values { c.yield(.removed); c.finish() }
             subscribers.removeAll()
@@ -614,8 +615,7 @@ public actor WorkspaceSession: RealmParticipant {
     /// active, the framed meta minus `rd` byte-equal to `cj(R2.writeMeta(stored event))`, and the window holding. Any other write meta is
     /// `writesUnavailable`, in Live and Demo alike.
     func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
-                 clearExhausted: Bool = false, reuseRid: Bool = false, write: WriteBuild? = nil,
-                 lastMoment: (() throws -> Void)? = nil) async throws -> Row {
+                 clearExhausted: Bool = false, reuseRid: Bool = false, write: WriteBuild? = nil) async throws -> Row {
         try Task.checkCancellation()
         try await ensureCurrent()
         // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it while `sendsReaderDigest` is on
@@ -651,8 +651,6 @@ public actor WorkspaceSession: RealmParticipant {
         #if DEBUG
         if write != nil, let h = beforeWriteTransaction { await h() }
         #endif
-        // a write: the caller's last-moment check, after every suspension above and with none before the transaction
-        if write != nil { try lastMoment?() }
         let row = try await db.transaction { tx in
             var plaintext = plaintext
             var attempt: String?
@@ -986,15 +984,22 @@ public actor WorkspaceSession: RealmParticipant {
             // MUST 1 (Opus, increment 1): the permit follows the row's kind. A write row (it names its attempt) passes the write gate and
             // gets a permit; a row without an attempt must not carry a write meta at all. No write reaches `bridgePost` with a nil permit.
             let permit: WritePermit?
-            if let attempt = row.attempt { permit = try await writeGate(row, attempt: attempt) }
+            // the lifecycle ticket of a FIRST dispatch (nil for a resend of a dispatched attempt and for reads)
+            var ticket: LifecycleFence.Ticket?
+            if let attempt = row.attempt {
+                do { (permit, ticket) = try await writeGate(row, attempt: attempt) }
+                catch { noteIfLocked(error); throw error }
+            }
             else { try refuseUnattachedWrite(row.plaintext); permit = nil }
             let attempt = row.attempt
             if attempt != nil { try crashHook?("post.precharge") }
             // Charge resends too. Mark the dispatch boundary durably before handing bytes to transport. A write's `dispatched` is set
             // in the same transaction and never falls again (trigger): a crash or cancellation after it is settled, never discarded.
+            let hook = crashHook
             try await db.transaction { tx in
                 try tx.execute("INSERT INTO bridge_charges(rid,created_ms) VALUES(?,?)", [.text(UUID().uuidString), .int(cfg.wall.nowMs)])
                 if let attempt {
+                    try hook?("post.charging")
                     let n = try tx.execute("UPDATE pe_attempts SET dispatched=1, state=CASE state WHEN 'signed' THEN 'sent' ELSE state END WHERE idem=? AND state IN ('signed','sent')",
                                            [.text(attempt)])
                     guard n == 1 else { throw WriteGateError.notCurrent }
@@ -1003,6 +1008,9 @@ public actor WorkspaceSession: RealmParticipant {
             if attempt != nil { try crashHook?("post.charged") }
             try await ensureCurrent()
             if Task.isCancelled { throw CancellationError() }
+            // the invariant's second check, after the last suspension: a first dispatch only while the lifecycle is still the one the gate
+            // saw. Failing here leaves the attempt dispatched=1 (charged above): conservative, settled later, never discarded.
+            if let ticket, !lifecycleFence.valid(ticket) { throw WriteGateError.lifecycleEnded }
             return try await cfg.transport.bridgePost(row.envelope, route: route, session: s, permit: permit)
         }
         if reply.status == 202 { _ = try HostAPI.expect(reply, status: 202); return .accepted }
@@ -1320,6 +1328,7 @@ extension WorkspaceSession {
         let (q, reviewed) = try await readQuestion(id)
         try await ensureCurrent()
         guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+        lifecycleFence.reviewedAgain()
         reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
         if reviews.count >= 128 { reviews.removeAll() }
         let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
@@ -1335,12 +1344,12 @@ extension WorkspaceSession {
 
     /// Call on lock/background, even if there are no stream subscribers.
     public func setForeground(_ value: Bool) {
+        if value { lifecycleFence.foregrounded() } else { lifecycleFence.invalidate(.background) }
         foreground = value
         if value {
             startPoller()
             recoverWrites()
         } else {
-            resignEligibility.removeAll()
             for t in settleRetries.values { t.cancel() }
             settleRetries.removeAll()
             writeRecovery?.cancel(); writeRecovery = nil
@@ -1354,7 +1363,7 @@ extension WorkspaceSession {
             for t in reviewDrivers.values { t.cancel() }
         }
     }
-    public func invalidateReviews() { reviewLifecycle &+= 1; reviews.removeAll(); resignEligibility.removeAll(); emit(.invalidated) }
+    public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); reviewLifecycle &+= 1; reviews.removeAll(); emit(.invalidated) }
 
     package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
         guard !cfg.enforcesOpTable else { throw ViewError.writesUnavailable }       // Live: no write path until C2b

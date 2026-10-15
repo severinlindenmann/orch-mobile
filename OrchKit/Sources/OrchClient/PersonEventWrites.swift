@@ -117,6 +117,9 @@ enum WriteGateError: Error, Equatable {
     case eligibilityLost
     /// No policy, or the host does not take this write (increment 4 signal): nothing is signed or sent.
     case unavailable
+    /// The lifecycle was invalidated between the caller's checks and the effect (`LifecycleFence`): nothing was signed, or a first
+    /// dispatch was stopped (a charged attempt stays dispatched and is settled).
+    case lifecycleEnded
     /// The stored event no longer re-binds to its reviewed snapshot, or the framed bytes are not the event's meta.
     case bytesChanged
 }
@@ -233,12 +236,23 @@ extension WorkspaceSession {
 
     // MARK: eligibility (codex 11)
 
-    /// scenePhase `.inactive`: no automatic re-sign for any review signed before it.
-    public func noteInactive() { resignEligibility.removeAll() }
+    // Synchronous and nonisolated: they reach the fence at once, also while the actor is busy or suspended inside a write.
+
+    /// scenePhase `.inactive`: no signature and no first dispatch for anything checked before it, no automatic re-sign for any review.
+    public nonisolated func noteInactive() { lifecycleFence.invalidate(.inactive) }
     /// `protectedDataWillBecomeUnavailable`.
-    public func noteProtectedDataUnavailable() { resignEligibility.removeAll() }
+    public nonisolated func noteProtectedDataUnavailable() { lifecycleFence.invalidate(.protectedDataLost) }
     /// The custody reported `.locked`.
-    public func noteCustodyLocked() { resignEligibility.removeAll() }
+    public nonisolated func noteCustodyLocked() { lifecycleFence.invalidate(.custodyLocked) }
+
+    /// SH1: the session itself reacts to a lock anywhere in its write path (signing, the device key behind the bridge seal, the vault),
+    /// whatever the App does with the error.
+    nonisolated func noteIfLocked(_ error: Error) {
+        switch error {
+        case CustodyError.locked, VaultError.locked: noteCustodyLocked()
+        default: break
+        }
+    }
 
     func monotonicMs(_ idem: String) -> Int64 {
         guard let m = attemptMonotonic[idem] else { return 0 }
@@ -279,7 +293,9 @@ extension WorkspaceSession {
 
     /// Every POST of a write row passes here (`post`), whoever started it: the first send, `resend`, a re-seal of any kind. Returns the
     /// permit `bridgePost` carries.
-    func writeGate(_ row: Row, attempt: String) async throws -> WritePermit {
+    /// For an attempt not yet dispatched it also returns the lifecycle ticket captured here, which `post` re-validates right before
+    /// `bridgePost` (the invariant's second check).
+    func writeGate(_ row: Row, attempt: String) async throws -> (WritePermit, LifecycleFence.Ticket?) {
         guard let policy else { throw WriteGateError.unavailable }
         try await ensureCurrent()
         guard foreground else { throw ViewError.offline }
@@ -291,9 +307,17 @@ extension WorkspaceSession {
         guard a.state == "signed" || a.state == "sent", r.text("current_idem") == attempt, r.text("rstate") == "active" else { throw WriteGateError.notCurrent }
         let clock = WriteClock(wallMs: cfg.wall.nowMs, offsetMs: try await clockOffsetMs(), monoMs: monotonicMs(attempt))
         guard clock.holds(ulidMs: a.ulidMs, signedWallMs: a.signedWallMs) else { throw WriteGateError.windowPassed }
+        var ticket: LifecycleFence.Ticket?
         if !a.dispatched {
             guard hostWritesAllowed(kind) else { throw WriteGateError.unavailable }
-            if a.origin == "auto", resignEligibility[a.review] == nil { throw WriteGateError.eligibilityLost }
+            // the first dispatch of an automatic attempt needs its review's eligibility token; a tap's needs a usable lifecycle
+            if a.origin == "auto" {
+                guard let t = lifecycleFence.ticket(review: a.review) else { throw WriteGateError.eligibilityLost }
+                ticket = t
+            } else {
+                guard let t = lifecycleFence.ticket() else { throw WriteGateError.lifecycleEnded }
+                ticket = t
+            }
         }
         // MUST 4 (Opus, increment 1): the stored event re-binds to its reviewed snapshot byte for byte (only `id`, and for an automatic
         // re-sign `roster_v`, differ from the review), then validates in full, then the framed bytes are exactly its meta.
@@ -309,14 +333,15 @@ extension WorkspaceSession {
         }
         try PhoneEvents.validateSigned(e, kind: .questionAnswered, actor: actor, workspace: workspace, pub: cfg.identity.publicKeys.sig)
         try Self.checkFramed(row.plaintext, event: e)
-        return policy.permit()
+        return (policy.permit(), ticket)
     }
 
     // MARK: beginning an attempt (plan 3.2)
 
     /// The transaction body of a new attempt: CAS, sign (`pe.sign`, counted), validate, frame, window, insert. Nothing here suspends.
     static func attemptBuild(_ kind: AttemptKind, unsigned: PhoneEvents.UnsignedPhoneEvent, origin: String, signer: any Signer, actor: PhoneActor,
-                             pub: SigningPublicKey, workspace: ID16, clock: WriteClock, hook: (@Sendable (String) throws -> Void)?) -> WriteBuild {
+                             pub: SigningPublicKey, workspace: ID16, clock: WriteClock, fence: LifecycleFence, ticket: LifecycleFence.Ticket,
+                             hook: (@Sendable (String) throws -> Void)?) -> WriteBuild {
         WriteBuild { tx in
             let review: String
             switch kind {
@@ -339,6 +364,9 @@ extension WorkspaceSession {
                 review = rv
             }
             let n = (try tx.query("SELECT COALESCE(MAX(n), 0) AS m FROM pe_attempts WHERE review=?", [.text(review)]).first?.int("m") ?? 0) + 1
+            try hook?("pe.presign")
+            // the invariant's first check, synchronous and immediately before the signature: the lifecycle the caller checked still holds
+            guard fence.valid(ticket) else { throw WriteGateError.lifecycleEnded }
             try hook?("pe.sign")
             let e = try PhoneEvents.sign(unsigned, signer: signer)
             try hook?("pe.signed")
@@ -366,28 +394,38 @@ extension WorkspaceSession {
         guard s.workspaceID == workspace, s.generation == generation, s.realm == cfg.context.realm, foreground,
               let held = reviews[s.token]?.snapshot, held == s else { throw ViewError.invalidReview }
         reviews[s.token] = nil
-        let lifecycle = reviewLifecycle
         let reviewID = cfg.entropy.id16().hex
+        // the tap's checks end here: its ticket (with the review's eligibility token) is what the signing transaction re-validates
+        guard let ticket = lifecycleFence.issue(review: reviewID) else { throw ViewError.invalidReview }
+        do { try await beginAnswer(s, chosen: chosen.key, reviewID: reviewID, policy: policy, ticket: ticket) }
+        catch {
+            // nothing durable: no attempt was committed
+            lifecycleFence.revoke(review: reviewID)
+            noteIfLocked(error)
+            switch error {
+            case WriteGateError.notCurrent, WriteGateError.lifecycleEnded: throw ViewError.invalidReview
+            default: throw error
+            }
+        }
+        // committed: from here on the review is settled, whatever happens (an error here leaves it to settlement)
+        do { return try await reviewDriver(reviewID) }
+        catch { noteIfLocked(error); throw error }
+    }
+
+    /// The tap's attempt, signed and committed (or nothing at all).
+    private func beginAnswer(_ s: ReviewedSnapshot, chosen: String, reviewID: String, policy: PersonEventPolicy, ticket: LifecycleFence.Ticket) async throws {
         let actor = try policy.actor(person: try storedPerson(), device: cfg.deviceID)
         let offset = try await clockOffsetMs()
-        guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+        guard lifecycleFence.valid(ticket) else { throw WriteGateError.lifecycleEnded }
         let now = cfg.wall.nowMs
         let id = try ULID.make(timeMs: saturatingAddMs(now, offset), random: cfg.entropy.bytes(ULID.randomLength))
-        let unsigned = try PhoneEvents.unsignedAnswer(s.reviewed, option: chosen.key, text: nil, id: id, actor: actor, workspace: workspace)
-        let snapshot = try StoredSnapshot(s, option: chosen.key).bytes()
+        let unsigned = try PhoneEvents.unsignedAnswer(s.reviewed, option: chosen, text: nil, id: id, actor: actor, workspace: workspace)
+        let snapshot = try StoredSnapshot(s, option: chosen).bytes()
         let build = Self.attemptBuild(.insert(review: reviewID, log: s.reviewed.ticketUID, question: s.reviewed.qid, snapshot: snapshot, nowMs: now),
                                       unsigned: unsigned, origin: "tap", signer: cfg.identity.sig, actor: actor, pub: cfg.identity.publicKeys.sig,
-                                      workspace: workspace, clock: WriteClock(wallMs: now, offsetMs: offset, monoMs: 0), hook: crashHook)
-        resignEligibility[reviewID] = UUID()
-        // re-checked right before the signing transaction, after every suspension of `prepare`: still foreground, the same review
-        // lifecycle, and nothing (lock, inactive, protected data) ended the tap's eligibility
-        let lastMoment: () throws -> Void = { [unowned self] in
-            guard self.foreground, lifecycle == self.reviewLifecycle, self.resignEligibility[reviewID] != nil else { throw ViewError.invalidReview }
-        }
-        do { _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build, lastMoment: lastMoment) }
-        catch WriteGateError.notCurrent { resignEligibility[reviewID] = nil; throw ViewError.invalidReview }
-        catch { resignEligibility[reviewID] = nil; throw error }
-        return try await reviewDriver(reviewID)
+                                      workspace: workspace, clock: WriteClock(wallMs: now, offsetMs: offset, monoMs: 0), fence: lifecycleFence,
+                                      ticket: ticket, hook: crashHook)
+        _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build)
     }
 
     /// Settles one review (the UI's "check", recovery): joins its driver.
@@ -572,6 +610,8 @@ extension WorkspaceSession {
         case is CancellationError: throw error
         case ViewError.offline: throw error
         case WriteGateError.windowPassed: return .windowPassed
+        // the lifecycle ended at the gate or right before `bridgePost`: the driver stops; a charged attempt is settled later
+        case WriteGateError.lifecycleEnded: throw error
         case WriteGateError.eligibilityLost, WriteGateError.unavailable, WriteGateError.bytesChanged: return a.dispatched ? .unresolved : .notSent
         case ClientError.host(let refusal):
             if case .host(_, _, let seqs?, _) = refusal { return seqs.count == 1 ? .landed(seq: seqs[0], src: "write") : .unresolved }
@@ -747,8 +787,23 @@ extension WorkspaceSession {
     // MARK: automatic re-sign (plan 3.4)
 
     func tryAutoResign(_ rv: ReviewRec, _ a: AttemptRec) async throws -> Bool {
-        guard let policy, let token = resignEligibility[rv.review], foreground, rv.resigns < Int64(AutoResign.maxPerReview), hostWritesAllowed(rv.kind)
-        else { return false }
+        // the review's ticket, bound to its eligibility token: re-validated after the fresh read and inside the signing transaction
+        guard let policy, foreground, let ticket = lifecycleFence.ticket(review: rv.review), rv.resigns < Int64(AutoResign.maxPerReview),
+              hostWritesAllowed(rv.kind) else { return false }
+        do { return try await autoResign(rv, a, policy: policy, ticket: ticket) }
+        catch {
+            // SH1: a lock (or any lifecycle end) inside the re-sign ends the eligibility here, whatever the App does: no later re-sign
+            noteIfLocked(error)
+            switch error {
+            case WriteGateError.notCurrent, WriteGateError.eligibilityLost, WriteGateError.lifecycleEnded, CustodyError.locked, VaultError.locked:
+                lifecycleFence.revoke(review: rv.review)
+                return false
+            default: throw error
+            }
+        }
+    }
+
+    private func autoResign(_ rv: ReviewRec, _ a: AttemptRec, policy: PersonEventPolicy, ticket: LifecycleFence.Ticket) async throws -> Bool {
         let snap = try StoredSnapshot(bytes: rv.snapshot)
         let attempts = try await loadAttempts(rv.review)
         let earlierUnresolved = attempts.contains { $0.idem != a.idem && $0.dispatched && ($0.state == "signed" || $0.state == "sent") }
@@ -759,7 +814,7 @@ extension WorkspaceSession {
             guard let f = try await readQuestion(qid, hint: snap.locator).reviewed else { return false }
             fresh = f
         } catch is CancellationError { throw CancellationError() } catch { return false }
-        guard resignEligibility[rv.review] == token, foreground else { return false }
+        guard lifecycleFence.valid(ticket) else { return false }
         let actor = try policy.actor(person: try storedPerson(), device: cfg.deviceID)
         let offset = try await clockOffsetMs()
         let now = cfg.wall.nowMs
@@ -772,18 +827,13 @@ extension WorkspaceSession {
                                     reviewed: .answer(try AnswerDisplay(stored, option: snap.option, text: nil)),
                                     fresh: .answer(try AnswerDisplay(fresh, option: snap.option, text: nil)),
                                     previous: previous, proposed: proposed.event, previousLog: previousEvent.log, proposedLog: proposed.log,
-                                    keyAssignedDisclosed: false, foregroundAndUnlockedSinceTap: true, autoResignsSoFar: Int(rv.resigns))
+                                    keyAssignedDisclosed: false, foregroundAndUnlockedSinceTap: lifecycleFence.valid(ticket), autoResignsSoFar: Int(rv.resigns))
         guard AutoResign.decide(input) == .allow else { return false }
-        guard resignEligibility[rv.review] == token, foreground else { return false }
         let build = Self.attemptBuild(.resign(review: rv.review, expectIdem: a.idem, expectVer: rv.ver), unsigned: proposed, origin: "auto",
                                       signer: cfg.identity.sig, actor: actor, pub: cfg.identity.publicKeys.sig, workspace: workspace,
-                                      clock: WriteClock(wallMs: now, offsetMs: offset, monoMs: 0), hook: crashHook)
-        let lastMoment: () throws -> Void = { [unowned self] in
-            guard self.foreground, self.resignEligibility[rv.review] == token else { throw WriteGateError.eligibilityLost }
-        }
-        do { _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build, lastMoment: lastMoment) }
-        catch WriteGateError.notCurrent { return false }
-        catch WriteGateError.eligibilityLost { return false }
+                                      clock: WriteClock(wallMs: now, offsetMs: offset, monoMs: 0), fence: lifecycleFence, ticket: ticket,
+                                      hook: crashHook)
+        _ = try await prepare(logical: cfg.entropy.id16(), plaintext: Data(), write: build)
         return true
     }
 
