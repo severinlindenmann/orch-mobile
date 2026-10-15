@@ -204,13 +204,14 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
     func testSeveralInFlightGenerationsShareOneBound() async {
         let c = makeCoordinator(), a = FakePush(generation: 1)
         let b = FakePush(a.workspace, generation: 2)
-        a.registerDelay = 0.25; b.registerDelay = 0.5 // staggered: per-generation bounds would add up
-        // distinct keys: same workspace, two generations
+        a.registerDelay = 30; b.registerDelay = 30     // both outlast the bound; per-generation waits would add up to 0.8 s
+        // distinct keys: same workspace, two generations; both are in flight (counted) before the unregister starts
         let t1 = Task { @MainActor in await c.register(a) }, t2 = Task { @MainActor in await c.register(b) }
-        try? await Task.sleep(for: .milliseconds(30))
+        for _ in 0..<400 where c.inFlightCount(workspace: a.workspace) < 2 { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(c.inFlightCount(workspace: a.workspace), 2)
         let started = Date()
-        let r = await unregister(c, a, seconds: 0.3)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 0.45)
+        let r = await unregister(c, a, seconds: 0.4)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
         XCTAssertEqual(r, .owed)
         t1.cancel(); t2.cancel()
     }

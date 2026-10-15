@@ -353,10 +353,20 @@ final class LiveRuntime: RealmRuntime {
     /// The owed half of a Leave: the workspace's session is gone, the realm's device key is not (it goes with Leave Live or Reset, which
     /// unregister before they wipe). `registration_id: null` needs no membership, so it works after the host removed this device.
     func unregisterPush(workspace: ID16) async throws {
-        switch await unregisterPushOutcome(workspace: workspace) {
-        case .failed(let why): throw LiveError.pushCleanupFailed(why)
-        case .rateLimited: throw LiveError.pushCleanupFailed("rate_limited")
-        case .removed, .pushOff, .refused, .registered: return
+        // The same classifier as Leave (`PushRegistrationCoordinator.removal(for:)`): only a definite answer is done, everything else stays owed.
+        try Self.requireDone(await unregisterPushOutcome(workspace: workspace))
+    }
+
+    static func requireDone(_ outcome: PushRegistrationOutcome) throws {
+        if PushRegistrationCoordinator.removal(for: outcome) == .owed { throw LiveError.pushCleanupFailed(describe(outcome)) }
+    }
+
+    private static func describe(_ outcome: PushRegistrationOutcome) -> String {
+        switch outcome {
+        case .failed(let why), .refused(let why): why
+        case .rateLimited: "rate_limited"
+        case .registered: "unexpected_registered"
+        case .removed, .pushOff: "none"
         }
     }
 

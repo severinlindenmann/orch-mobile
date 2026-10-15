@@ -579,6 +579,7 @@ final class LiveRuntimeTests: XCTestCase {
         services.pushUnregister = { _ in
             inWindow = services.cleanupStore?.load().map(\.ws) ?? []
             await services.retryServerCleanup()               // a retry mid-window neither sends nor drops the Leave's own item
+            XCTAssertEqual(services.cleanupStore?.load().map(\.ws), [ws.workspaceID.hex], "still owed after the retry")
             return .removed
         }
         _ = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
@@ -629,7 +630,9 @@ final class LiveRuntimeTests: XCTestCase {
     func testOwedCleanupsDoNotDelayRegistrationBeyondTheirBound() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, ws, _) = try pushServices(rig)
-        services.serverCleanup = { _ in try? await Task.sleep(for: .seconds(30)); throw ViewError.offline }
+        let sleeper = Task { try? await Task.sleep(for: .seconds(30)) }
+        defer { sleeper.cancel() }
+        services.serverCleanup = { _ in await sleeper.value; throw ViewError.offline }
         services.cleanupStore?.add(PendingServerCleanup(ws: SystemEntropy().id16().hex, generation: 1, since: Date()))
         let started = Date()
         await services.retryServerCleanup(within: 0.2)
@@ -637,6 +640,31 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertEqual(services.cleanupStore?.load().count, 1)
         _ = ws
         services.retire()
+    }
+
+    func testAFailedWipeKeepsTheOwedCleanupAndARetryNeitherSendsNorDropsIt() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, _) = try pushServices(rig)
+        services.pushUnregister = { _ in .failed("offline") }
+        services.wipeWorkspace = { _, _ in throw ViewError.offline }
+        let report = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertTrue(report.incomplete)
+        XCTAssertEqual(services.state(for: ws.info.id), .removalIncomplete)
+        var cleaned: [String] = []
+        services.serverCleanup = { cleaned.append($0.ws) }
+        await services.retryServerCleanup()
+        XCTAssertTrue(cleaned.isEmpty)
+        XCTAssertEqual(services.cleanupStore?.load().map(\.ws), [ws.workspaceID.hex])
+        services.retire()
+    }
+
+    func testTheRetryPathUsesTheLeaveClassifier() async throws {
+        for (outcome, owed) in [(PushRegistrationOutcome.refused("malformed"), true), (.refused("bad_reply"), true), (.refused("revoked"), false),
+                                (.refused("not_eligible"), false), (.removed, false), (.pushOff, false), (.rateLimited(retryAfter: nil), true),
+                                (.failed("x"), true), (.registered(SystemEntropy().id16()), true)] {
+            XCTAssertEqual(PushRegistrationCoordinator.removal(for: outcome) == .owed, owed, "\(outcome)")
+            if owed { XCTAssertThrowsError(try LiveRuntime.requireDone(outcome), "\(outcome)") } else { XCTAssertNoThrow(try LiveRuntime.requireDone(outcome)) }
+        }
     }
 
     func testAnOwedCleanupNeverReachesAReJoinedWorkspaceAndOldOnesAreDropped() async throws {

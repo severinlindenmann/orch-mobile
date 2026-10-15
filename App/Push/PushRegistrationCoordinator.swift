@@ -78,6 +78,9 @@ final class PushRegistrationCoordinator {
     /// Workspaces the relay refused permanently (403, 400, an unusable reply): not asked again in this process.
     private var suppressed: Set<String> = []
 
+    #if DEBUG
+    func inFlightCount(workspace: ID16) -> Int { inFlight.keys.filter { $0.hasPrefix(workspace.hex + "/") }.count }
+    #endif
     func beginClosing() { closing = true }
     private func key(_ t: any PushRegistering) -> String { "\(t.workspace.hex)/\(t.generation)" }
 

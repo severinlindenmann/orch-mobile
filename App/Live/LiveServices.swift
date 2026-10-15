@@ -1074,8 +1074,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let run = Task { @MainActor [self] in
             defer { cleanupRun = nil }
             for item in cleanupStore.load() {
-                // A Leave in progress owns its item (it removes it on a definite done): neither dropped nor sent from here meanwhile.
-                if state(for: item.ws) == .removing { continue }
+                // The workspace still listed with the item's own generation is a Leave in progress or one whose wipe failed
+                // (`.removing`, `.removalIncomplete`): it owns the item (removed on a definite done), so it is neither sent nor dropped here.
+                // Listed with ANOTHER generation it is a re-pair, a new membership: the old item is dropped unsent.
+                if live.contains(where: { $0.workspaceID.hex == item.ws && $0.generation == item.generation }) { continue }
                 if live.contains(where: { $0.workspaceID.hex == item.ws }) || Date().timeIntervalSince(item.since) > Self.owedCleanupLifetime {
                     _ = cleanupStore.remove(ws: item.ws, generation: item.generation); continue
                 }

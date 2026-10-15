@@ -25,6 +25,8 @@ final class LiveDrop {
     var canOperate: Bool { usable && workspace?.info.scopes.contains(.operate) == true }
     #if DEBUG
     /// Runs before each list walk; a throw stands for an incomplete walk (offline, a page error).
+    /// Runs inside `open` right after the download returned (a walk finishing or failing at that point).
+    @ObservationIgnored var afterDownload: (() async -> Void)?
     @ObservationIgnored var listHook: (() async throws -> Void)?
     #endif
     @ObservationIgnored var beforePublication: (() async -> Void)?
@@ -95,6 +97,7 @@ extension LiveDrop {
             await beforePublication?()
             guard usable, mine == revision, !Task.isCancelled else { return }
             confirmed = confirmations
+            outdated = false                       // before the rows are built: they must not carry a stale flag or hide a transcript
             var next: [String: DropObject] = [:]
             var display: [DropItem] = []
             for (direction, values) in [(DropDirection.received, received), (.sending, sending)] {
@@ -115,12 +118,14 @@ extension LiveDrop {
             objects = next; rows = display; failures = failed
             listRevision += 1
             downloads = downloads.filter { next[$0.key] != nil }
-            outdated = false
             if !received.blocked.isEmpty || !sending.blocked.isEmpty { warning = true }
             // A complete verified walk is the authority on what may stay cached: the cache of every object it did not show live (blocked,
             // tombstoned expired/retired, or absent) goes, per object; the cache of every live object is untouched.
-            try await purgeLocal(except: Set(next.keys))
-            status = warning ? "Verification warning: blocked items" : (notSent ? "Not sent" : nil)
+            // A failed purge after a complete walk is a cleanup problem, not an incomplete walk: the list is current, so nothing is marked
+            // outdated. Every refresh runs this purge again, which is the retry; until then the status says so.
+            var cleanupFailed = false
+            do { try await purgeLocal(except: Set(next.keys)) } catch { cleanupFailed = true }
+            status = cleanupFailed ? "Local cleanup needs retry" : warning ? "Verification warning: blocked items" : (notSent ? "Not sent" : nil)
         } catch {
             if mine == revision && workspace?.usable == true { markOutdated(error); report(error) }
         }
@@ -164,7 +169,7 @@ extension LiveDrop {
                     rows[index].blocked = true; rows[index].verified = false; rows[index].name = "Blocked item"
                     rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil
                 }
-                do { try await purgeLocal([id]) }
+                do { try await purgeLocal(objects: [id]) }
                 catch { status = "Verification warning: local cleanup needs retry" }
             default: report(error)
             }
@@ -177,7 +182,7 @@ extension LiveDrop {
         let isText = metadata?.name == "note.txt" || (metadata?.mime == "text/plain" && aliases[d.object.hex]?.hasPrefix("share-") == true)
         let kind: DropKind = metadata?.mime == "text/uri-list" ? .url : (isText ? .note : .file)
         let content = (kind == .note || kind == .url) ? download.flatMap { try? String(contentsOf: $0.url, encoding: .utf8) } : nil
-        let text = content.map { body in metadata?.transcript.map { body + "\n\n" + $0 } ?? body } ?? metadata?.transcript
+        let text = outdated ? nil : content.map { body in metadata?.transcript.map { body + "\n\n" + $0 } ?? body } ?? metadata?.transcript
         let fixtureAlias = d.authorKind == "workspace" ? ["readme.txt": "d-readme", "empty.txt": "d-empty", "note.txt": "d-note",
             "link.txt": "d-url", "deployment.txt": "d-deploy", "Runbook": "d-runbook"][metadata?.name ?? ""] : nil
         return DropItem(id: d.object.hex, workspaceID: workspace?.info.id ?? "",
@@ -200,7 +205,7 @@ extension LiveDrop {
         try await service.downloadContainer.purgeDownloads(keeping: keep)
     }
 
-    func purgeLocal(_ ids: Set<String>) async throws {
+    func purgeLocal(objects ids: Set<String>) async throws {
         guard !ids.isEmpty else { return }
         if let preview = previewURL, ids.contains(where: { downloads[$0]?.url == preview }) { previewURL = nil }
         for id in ids { downloads[id] = nil; metadata[id] = nil }
@@ -239,14 +244,27 @@ extension LiveDrop {
         if let failure, usable, mine == revision { report(failure) }
     }
     func open(_ id: String) async {
-        guard usable, !outdated else { return }
+        guard usable else { return }
+        guard !outdated else { status = "List may be outdated: refresh first"; return }
         let mine = revision
         do {
             try await purge()
             guard usable, mine == revision else { return }
             guard let object = objects[id] else { return }
+            let version = object.descriptor.version
             let file = try await service.downloadVerified(object)
+            #if DEBUG
+            await afterDownload?()
+            #endif
             guard usable, mine == revision, file.deadlineMs > nowMs else { return }
+            // A walk may have finished (or failed) while the download was in flight: the file is kept and shown only if the list still
+            // shows this object live at the version opened and is not outdated. Otherwise the file just written goes too (this object only).
+            guard !outdated, objects[id]?.descriptor.version == version else {
+                downloads[id] = nil; metadata[id] = nil; previewURL = nil
+                status = outdated ? "List may be outdated: refresh first" : "No longer available"
+                do { try await purgeLocal(objects: [id]) } catch { status = "Local cleanup needs retry" }
+                return
+            }
             downloads[id] = file; metadata[id] = file.metadata
             if let index = rows.firstIndex(where: { $0.id == id }) { rows[index] = row(object, direction: rows[index].direction) }
             let kind = rows.first(where: { $0.id == id })?.kind
