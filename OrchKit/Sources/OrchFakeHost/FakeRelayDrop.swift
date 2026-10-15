@@ -123,9 +123,9 @@ extension FakeRelay {
               Set(o.keys).isSubset(of: ["workspace_id", "direction", "after", "limit"]), Set(["workspace_id", "direction"]).isSubset(of: Set(o.keys)),
               let ws = o["workspace_id"]?.string.flatMap(ID16.init(hex:)),
               let direction = o["direction"]?.string, ["received", "sending"].contains(direction) else { return refuse(400, .malformed) }
-        var after: UInt64 = 0, limit = 64
+        var after: UInt64 = 0, limit = min(64, limits.dropListPageSize)
         if let a = o["after"] { guard let n = a.int, n >= 0 else { return refuse(400, .malformed) }; after = UInt64(n) }
-        if let l = o["limit"] { guard let n = l.int, (1...64).contains(n) else { return refuse(400, .malformed) }; limit = Int(n) }
+        if let l = o["limit"] { guard let n = l.int, (1...64).contains(n) else { return refuse(400, .malformed) }; limit = min(Int(n), limit) }
         guard dropAllowed(session, workspace: ws, write: false) else { return refuse(403, .notEligible) }
         let rows = drops.keys.compactMap { id -> (n: UInt64, id: ID16)? in
             guard let head = drops[id]?.last, dropWorkspace(id) == ws, dropVisible(id, session), let n = dropN[id], n > after,

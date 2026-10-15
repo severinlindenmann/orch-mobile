@@ -47,7 +47,8 @@ public struct DropObject: Sendable, Equatable {
     public let descriptor: DropDescriptor
     public let signed: JSONValue
     public let wraps: [DropWrapRecord]
-    /// The list entry's `claimed_by` (an inbox object's claiming workspace); nil when unclaimed or not from a list.
+    /// The list entry's `claimed_by`: an unauthenticated HINT from the relay, never a decision input (a download re-reads the wraps and
+    /// only a wrap that opens to the committed DEK counts). nil when unclaimed or not from a list.
     public let claimedBy: ID16?
     package init(descriptor: DropDescriptor, signed: JSONValue, wraps: [DropWrapRecord], claimedBy: ID16? = nil) {
         self.descriptor = descriptor; self.signed = signed; self.wraps = wraps; self.claimedBy = claimedBy
@@ -733,7 +734,9 @@ public actor DropService {
         catch {
             if let e = error as? DropError {
                 recordBackoff("upload:\(object.hex):\(version)", e)
-                if e.terminalUpload {
+                // A relay status is a hint: `expired` ends a pending upload for good only when the SIGNED expiry has passed here too.
+                let terminal = e == .expired ? (head.parts.descriptor.object?["o"]?.object?["expires_ms"]?.int).map { $0 <= session.cfg.wall.nowMs } ?? false : e.terminalUpload
+                if terminal {
                     try await check()
                     try await db.execute("UPDATE drop_uploads SET done=2,failure=? WHERE object=? AND version=? AND revision=? AND done=0", [.text(String(describing: e)), .text(object.hex), .int(Int64(version)), .int(head.revision)])
                 }
@@ -961,7 +964,8 @@ public actor DropService {
                     case .relay(let r) where r.code == .rotationRequired || r.code == .wrapConflict: throw Self.mapped(.relay(r))
                     default: break         // anything else: reconcile by reading the descriptor back
                     }
-                case 410, 429: _ = try expect(reply, status: 201)
+                case 410: break        // unauthenticated: reconcile by the descriptor read-back below; it decides, not the status
+                case 429: _ = try expect(reply, status: 201)
                 case 400..<500: throw DropError.uploadRejected(status: reply.status)
                 default: _ = try expect(reply, status: 201)
                 }
@@ -1025,7 +1029,7 @@ public actor DropService {
         try await purgeExpiredDownloads()
         let (d, dek) = try await verifiedMetadataKey(object)
         let blob = try await get(d.object, d.version, .blob)
-        _ = try HostAPI.expect(blob)
+        _ = try expect(blob)
         guard blob.body.count <= 26 << 20, d.contentLen == Int64(blob.body.count), d.matches(blob: blob.body) else { throw DropError.integrity }
         let metadata = try DropMetadata.open(sealed: d.meta, dek: dek, object: d.object, version: d.version)
         let plaintext = try DropBlob.decrypt(dek: dek, object: d.object, version: d.version, blob: blob.body, maxBytes: 26 << 20)

@@ -23,7 +23,7 @@ extension World {
     }
     func dropService(_ phone: Phone) async throws -> DropService {
         let raw = try await RelayClient(transport: transport).card(workspace: ws, session: phoneSession)
-        return try DropService(session: phone.session, card: Card.verify(raw, ownerKey: primary.publicKey))
+        return try DropService(session: phone.session, card: Card.verify(raw, ownerKey: primary.publicKey), ownerKey: primary.publicKey)
     }
     func dropBody(id: ID16, parent: DropDescriptor? = nil, kind: String = "file") async throws -> Data {
         let card = try Card.verify(await RelayClient(transport: transport).card(workspace: ws, session: phoneSession), ownerKey: primary.publicKey)

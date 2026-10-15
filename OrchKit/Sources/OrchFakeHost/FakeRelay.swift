@@ -40,6 +40,8 @@ public struct RelayLimits: Sendable {
     public var dropDeviceHeadBytes = 8 << 20
     /// 429 `rate_limited` after this many Drop uploads per device per minute (0: off; the real relay's bucket is 32 per minute).
     public var dropUploadsPerMinute = 0
+    /// The most list entries one page carries (the real relay: 64); tests lower it to walk several pages.
+    public var dropListPageSize = 64
     /// Open owner question 6 of the relay design: refuse a device's `wk` wraps with 409 `rotation_required` while a rotation is due.
     public var dropRefusesWKWhileRotationDue = false
     /// Global queued bridge bodies (live request copies and response chunks): a post past it is 503 `overloaded` (P3-D17, 256 MiB).
