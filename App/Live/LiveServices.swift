@@ -682,8 +682,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// The review id of this question's answer still being sent or settled, if any.
     func storedWrite(workspace: LiveWorkspace, questionID: String) async -> String? {
-        guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return nil }
-        return (try? await workspace.api.pendingWrites())?.first { $0.questionID == qid }?.reviewID
+        if case .found(let id) = await storedWriteLookup(workspace: workspace, questionID: questionID) { return id }
+        return nil
+    }
+
+    /// Whether this question has an answer still being sent or settled: `unknown` when the store could not be read (never "none").
+    func storedWriteLookup(workspace: LiveWorkspace, questionID: String) async -> StoredWriteLookup {
+        guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return .unknown }
+        guard let all = try? await workspace.api.pendingWrites() else { return .unknown }
+        return all.first { $0.questionID == qid }.map { .found($0.reviewID) } ?? .none
     }
 
     func refreshPending(reconcile: Bool = false) async {
@@ -694,12 +701,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             guard let statuses = try? await ws.api.pendingWrites(), canUse(ws.info.id), !Task.isCancelled else { return }
             for d in statuses {
                 guard let qid = d.questionID?.hex, let option = d.option else { continue }
-                let q = ws.question(id: qid)
-                let review = submitted[qid + "/" + option] ?? ReviewValue(
-                    workspaceID: ws.info.id, workspaceName: ws.info.name, hue: ws.info.hue, clientHosted: ws.info.clientHosted,
-                    hostedBy: ws.info.hostedBy, questionID: qid, ticket: q?.ticket ?? "", text: q?.text ?? "",
-                    optionID: option, optionLabel: q?.options.first { $0.id == option }?.label ?? option,
-                    options: q?.options ?? [], contentHash: q?.contentHash ?? "", revision: 0, isDemo: isDemo)
+                // SH5: what was signed, from the stored snapshot (never the current cached question); this run's own review if the
+                // stored one no longer checks
+                guard let review = d.review.map({ Mapping.reviewValue($0, questionID: qid, info: ws.info, isDemo: isDemo) })
+                        ?? submitted[qid + "/" + option] else { continue }
                 out.append(PendingWrite(reviewID: d.reviewID, questionID: qid, workspaceID: ws.info.id, optionID: option,
                                         optionLabel: review.optionLabel, review: review, state: d.state == .sending ? .sending : .checking))
                 if reconcile { startReconcile(workspace: ws, reviewID: d.reviewID) }
@@ -747,7 +752,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// scenePhase `.inactive` and protected-data loss end every review's eligibility for an automatic re-sign (C2b codex 11).
     func noteInactive() {
-        for ws in live where canUse(ws.info.id) { let api = ws.api; Task { await api.noteInactive() } }
+        for ws in live { let api = ws.api; Task { await api.noteInactive() } }
     }
 
     func noteProtectedDataUnavailable() {
@@ -1364,7 +1369,6 @@ final class UnavailableReviewModel: QuestionReviewModel {
     func sign() async {}
     func reread() async {}
     func checkWhetherReceived() async {}
-    func sendAgain() async {}
     func invalidate() {}
     func retryAfterUnlock() {}
 }

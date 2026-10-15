@@ -261,7 +261,8 @@ extension FakeHost {
     @Test func aCrashWhileTerminalEvidenceIsPersistedLosesNothing() async throws {
         let r = try await rig()
         r.hooks.fail("pe.evidence")
-        await #expect(throws: Hooks.Crash.self) { _ = try await answer(r) }
+        do { _ = try await answer(r); Issue.record("no failure") }
+        catch let e as AnswerCommitted { #expect(e.underlying is Hooks.Crash) }     // after the commit: never "nothing signed"
         #expect(try await attemptStates(r.p) == ["sent"])        // rolled back with its evidence
         let out = try await settleAll(r, r.p)
         guard case .landed = out.first else { Issue.record("\(out)"); return }
@@ -291,6 +292,24 @@ extension FakeHost {
         #expect(!holds(wall: signedAt + 841_000, offset: -600_000))
         // a forward wall jump ends it at once
         #expect(!holds(wall: signedAt + 7_200_000, mono: 1_000))
+    }
+
+    /// SH5: a write still being settled exposes what was signed, from `pe_reviews.snapshot`, after a relaunch and after the question
+    /// changed at the host.
+    @Test func aPendingWriteShowsTheStoredReviewNotTheCurrentQuestion() async throws {
+        let r = try await rig()
+        r.hooks.fail("post.precharge")
+        #expect(try await answer(r) == .checking)
+        await r.w.host.changeCost(question: r.snapshot.reviewed.question.id, key: "reject", cost: "$999")
+        let p2 = try await relaunch(r)
+        _ = try await r.w.serve(p2) { try await BridgeWorkspaceAPI(session: p2.session).snapshot() }
+        let status = try #require(try await p2.session.pendingWrites().first)
+        let stored = try #require(status.review)
+        #expect(stored.text.utf8.elementsEqual(r.snapshot.text.utf8))
+        #expect(stored.option == "approve" && stored.qid == r.snapshot.qid && stored.hash == r.snapshot.hash)
+        #expect(stored.options.map(\.id) == r.snapshot.reviewed.question.options.map(\.key))
+        #expect(stored.options.map(\.cost) == r.snapshot.reviewed.question.options.map(\.cost))
+        #expect(!stored.options.contains { $0.cost == "$999" })
     }
 
     @Test func aJobDelayedPastTheWindowIsNeverSentAndAsksForANewReview() async throws {
@@ -670,7 +689,8 @@ extension FakeHost {
     func aTapInvalidatedBeforeItsFirstDispatchIsNotSentAndSettledLater(_ point: String) async throws {
         let r = try await rig()
         await trip(r, at: point) { $0.noteInactive() }
-        await #expect(throws: WriteGateError.lifecycleEnded) { _ = try await answer(r) }
+        do { _ = try await answer(r); Issue.record("sent") }
+        catch let e as AnswerCommitted { #expect(e.underlying as? WriteGateError == .lifecycleEnded) }
         #expect(r.ops.value("answer") == 0)
         let a = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts").first)
         #expect(a.int("dispatched") == 1 && a.text("state") == "sent")
@@ -697,7 +717,8 @@ extension FakeHost {
         let r = try await rig()
         await r.w.host.demoBumpMembersV()
         await trip(r, at: point, nth: 2) { $0.noteInactive() }
-        await #expect(throws: WriteGateError.lifecycleEnded) { _ = try await answer(r) }
+        do { _ = try await answer(r); Issue.record("sent") }
+        catch let e as AnswerCommitted { #expect(e.underlying as? WriteGateError == .lifecycleEnded) }
         #expect(r.hooks.count("pe.sign") == 2)
         #expect(r.ops.value("answer") == 1)                     // the tap's only
         let auto = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts WHERE origin='auto'").first)

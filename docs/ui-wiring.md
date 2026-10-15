@@ -58,7 +58,7 @@ removing the prior attempt. Returned fields must match the saved UTF-8 bytes.
 ## Status in the app (feat/ui-wiring)
 
 Live in Demo: pairing (PairingCoordinator), Home/Workspace/Questions/Tickets (BridgeWorkspaceAPI snapshots and events), signing
-(QuestionReview + decide), pending/uncertain decisions and reconcile, new tickets (one persisted creationID per exact draft),
+(C2b: `ReviewedSnapshot` + `answer`), answers still being settled (`pendingWrites`, `settle`), new tickets (one persisted creationID per exact draft),
 Leave (LocalWipe), Reset/Leave Demo (DemoSetup.reset), Demo push (PushSimulator), share destinations/import (ShareBridge via ShareWorld).
 Live Drop uses encrypted service transfers and awaited share import (details below). Simulated: terminal and two Demo sign controls: "Review fails to load" fails the
 next review read in the app (nothing is signed or stored), and (Simulator only) "Locked" locks the simulated device key for one attempt and releases it

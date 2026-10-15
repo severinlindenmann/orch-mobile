@@ -27,6 +27,8 @@ public struct ReviewedSnapshot: Sendable, Equatable {
                                            "roster": .int(reviewed.rosterV), "qid": .string(reviewed.qid), "hash": .string(reviewed.hash)])
     }
 
+    /// The hashed options themselves, exactly as reviewed (what the sign sheet's rows are checked against, byte for byte).
+    public var reviewedOptions: [F1QuestionOption] { reviewed.question.options }
     /// EVERY option, in the order the hash binds them: key, label and cost exactly as reviewed.
     public var options: [QuestionOption] { reviewed.question.options.map { QuestionOption(id: $0.key, label: $0.label, cost: $0.cost) } }
     public var text: String { reviewed.text }
@@ -103,6 +105,29 @@ public struct WriteStatus: Equatable, Sendable {
     public let questionID: ID16?
     public let option: String?
     public let state: WriteState
+    /// What was reviewed and signed, read back from `pe_reviews.snapshot` (qid and hash recomputed): a sheet reopened after a relaunch
+    /// shows exactly this, never the current cached question. Nil if the stored snapshot no longer checks.
+    public let review: StoredReview?
+}
+
+/// The reviewed content of a stored answer (SH5): exactly the strings that were signed.
+public struct StoredReview: Equatable, Sendable {
+    public let ticketKey: String, ticketUID: String, qid: String, hash: String, text: String
+    /// Every option, in hash order.
+    public let options: [QuestionOption]
+    public let option: String
+    public let why: String?, recommended: String?
+    public let to: [String]
+    public let blocking: Bool
+    /// The hash's hex digits (the `sha256:` prefix removed).
+    public var contentHashHex: String { hash.hasPrefix("sha256:") ? String(hash.dropFirst(7)) : hash }
+}
+
+/// `answer` failed AFTER its attempt was committed: an answer exists and is being settled (`writeOutcome`, `settle`). It is never
+/// "nothing was signed". Any other error from `answer` means nothing durable exists.
+public struct AnswerCommitted: Error {
+    public let reviewID: String
+    public let underlying: any Error
 }
 
 // MARK: internals
@@ -413,7 +438,7 @@ extension WorkspaceSession {
         }
         // committed: from here on the review is settled, whatever happens (an error here leaves it to settlement)
         do { return try await reviewDriver(reviewID) }
-        catch { noteIfLocked(error); throw error }
+        catch { noteIfLocked(error); throw AnswerCommitted(reviewID: reviewID, underlying: error) }
     }
 
     /// The tap's attempt, signed and committed (or nothing at all).
@@ -445,11 +470,24 @@ extension WorkspaceSession {
             "SELECT r.review, r.question, r.snapshot, a.dispatched FROM pe_reviews r JOIN pe_attempts a ON a.idem = r.current_idem WHERE r.state='active' ORDER BY r.created_ms, r.review"
         ).compactMap { r in
             guard let id = r.text("review") else { return nil }
-            let option = r.blob("snapshot").flatMap { try? StoredSnapshot(bytes: $0).option }
-            return WriteStatus(reviewID: id, questionID: r.text("question").flatMap(ID16.init(hex:)), option: option,
-                               state: r.int("dispatched") == 1 ? .checking : .sending)
+            let snap = r.blob("snapshot").flatMap { try? StoredSnapshot(bytes: $0) }
+            return WriteStatus(reviewID: id, questionID: r.text("question").flatMap(ID16.init(hex:)), option: snap?.option,
+                               state: r.int("dispatched") == 1 ? .checking : .sending, review: snap.flatMap { storedReview($0) })
         }
     }
+
+    private func storedReview(_ snap: StoredSnapshot) -> StoredReview? {
+        guard let r = try? snap.reviewed(workspace: workspace) else { return nil }
+        return StoredReview(ticketKey: snap.ticketKey, ticketUID: r.ticketUID, qid: r.qid, hash: r.hash, text: r.text,
+                            options: r.question.options.map { QuestionOption(id: $0.key, label: $0.label, cost: $0.cost) }, option: snap.option,
+                            why: r.question.why, recommended: r.question.recommended, to: r.question.to, blocking: r.question.blocking)
+    }
+
+    #if DEBUG
+    func debugAttemptCount() async throws -> Int {
+        try await cfg.container.database().query("SELECT COUNT(*) AS n FROM pe_attempts").first?.int("n").map(Int.init) ?? 0
+    }
+    #endif
 
     /// The stored final outcome of a review, if it has one.
     package func writeOutcome(reviewID: String) async throws -> WriteOutcome? {

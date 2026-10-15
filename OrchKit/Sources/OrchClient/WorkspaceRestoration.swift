@@ -37,7 +37,8 @@ public struct RestoreOutcome: Sendable {
 
 /// Rebuilds the `WorkspaceSession`s of workspaces a verified join committed in an earlier launch: from the index row (workspace and
 /// generation), the committed `WorkspaceProfile` (pins: `WSK`, owner key, the last accepted card) and the workspace's own durable store, so
-/// decisions of unknown outcome and ticket-submission identities are preserved, because they live in that store, not in the session.
+/// answers still being settled (`pe_reviews` / `pe_attempts`, C2b) and ticket-submission identities are preserved, because they live in
+/// that store, not in the session. A rebuilt session settles them (reads first); it never re-signs one (no eligibility survives a relaunch).
 ///
 /// Every session is built on `config.context` and `config.transport` (a runtime owns exactly one realm context; `WorkspaceSession.init`
 /// enforces the shared generation). Restoring is read-only with respect to the network: it contacts the relay only when a session later

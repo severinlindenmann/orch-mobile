@@ -107,6 +107,14 @@ extension FakeHost {
         viewState = state
     }
 
+    /// One option's cost changes at the host (the question hash changes with it). `key` may name an option that was not selected.
+    public func demoChangeCost(_ id: ID16, key: String, cost: String?) throws {
+        seedViews()
+        guard var state = viewState, let i = questionIndex(id) else { throw ViewError.malformed }
+        state.questions[i].options = state.questions[i].options.map { $0.key == key ? F1QuestionOption(key: $0.key, label: $0.label, cost: cost) : $0 }
+        viewState = state
+    }
+
     /// The text of an open question changes at the host (its content hash changes with it, so a signed answer to the old text is refused).
     public func demoEditQuestion(_ id: ID16, text: String) throws { try replaceQuestionText(id, text: text) }
 

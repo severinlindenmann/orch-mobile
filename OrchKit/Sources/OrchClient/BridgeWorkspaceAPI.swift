@@ -23,6 +23,7 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     public func pendingWrites() async throws -> [WriteStatus] { try await session.pendingWrites() }
+    public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { try await session.writeOutcome(reviewID: reviewID) }
     public func writesAvailable() async -> Bool { await session.writesAvailable() }
     public func noteInactive() async { session.noteInactive() }
     public func noteProtectedDataUnavailable() async { session.noteProtectedDataUnavailable() }
@@ -32,4 +33,9 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket { try await session.createTicket(draft) }
     public func events() async -> AsyncStream<WorkspaceEvent> { await session.eventStream() }
     public func keyAlarm() async -> WorkspaceKeyAlarm? { await session.keyAlarm() }
+    #if DEBUG
+    /// Tests only (App tests): counts the session's hook points (`pe.sign` is the person-event signature) and its stored attempts.
+    public func debugSetHook(_ h: (@Sendable (String) throws -> Void)?) async { await session.setCrashHook(h) }
+    public func debugAttemptCount() async throws -> Int { try await session.debugAttemptCount() }
+    #endif
 }

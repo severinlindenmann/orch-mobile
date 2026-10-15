@@ -248,6 +248,13 @@ enum ReviewLoad: Hashable, Sendable {
     case failed(String)
 }
 
+/// Whether a question has a stored answer: `unknown` when the store could not be read (SH3: never taken as "none").
+enum StoredWriteLookup: Hashable, Sendable {
+    case none
+    case found(String)
+    case unknown
+}
+
 /// A signed answer this iPhone is still sending or settling (C2b `pendingWrites`).
 enum PendingWriteState: String, Hashable, Sendable { case sending, checking }
 
@@ -277,13 +284,16 @@ enum SignPhase: Hashable, Sendable {
     case alreadyAnswered(by: String, at: Date)
     case questionChanged
     case checking
-    /// Not sent (the window passed, or the workspace changed so it could not be re-signed safely): review again.
+    /// Not sent (the window passed before the first send, or the eligibility ended first): review again.
     case needsReview
+    /// Sent and refused because the workspace changed, and not re-signed automatically (a displayed field changed, the lifecycle ended,
+    /// the limit was reached): review again. Never "not sent".
+    case workspaceChanged
     /// The host refused it for good: nothing was applied and nothing is sent again.
     case refused
     case unlockToContinue
     case custodyUnavailable
-    /// The send failed before anything was signed or stored.
+    /// The send failed before anything was stored (the session confirmed no attempt exists).
     case notSent
 }
 

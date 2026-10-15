@@ -92,21 +92,34 @@ final class LiveReviewModel: QuestionReviewModel {
             case .locked: phase = .unlockToContinue; await workspace.api.noteCustodyLocked()
             default: phase = .custodyUnavailable
             }
+        } catch let committed as AnswerCommitted {
+            // SH3: the answer was committed, so it exists: its stored outcome if it has one, else it is being checked. Never "not sent".
+            guard lifetime.isActive else { phase = .invalidated; return }
+            workspace.noteKeyAlarm(committed.underlying)
+            reviewID = committed.reviewID
+            if let outcome = try? await workspace.api.writeOutcome(reviewID: committed.reviewID) {
+                await apply(outcome)
+            } else {
+                phase = .checking
+                services.startReconcile(workspace: workspace, reviewID: committed.reviewID)
+            }
         } catch ViewError.invalidReview {
             phase = .invalidated
         } catch {
             guard lifetime.isActive else { phase = .invalidated; return }
             workspace.noteKeyAlarm(error)
-            // Post-persist failures leave a stored answer that is settled; pre-persist ones signed nothing.
-            if let id = await services.storedWrite(workspace: workspace, questionID: questionID) {
+            // The session failed before committing anything. "Nothing was stored" is claimed only once the store CONFIRMS that no
+            // answer to this question exists; if it can't be read, the state is unknown: "Checking…".
+            switch await services.storedWriteLookup(workspace: workspace, questionID: questionID) {
+            case .found(let id):
                 reviewID = id
                 phase = .checking
                 services.startReconcile(workspace: workspace, reviewID: id)
-            } else if services.deviceLocked {
+            case .unknown:
+                phase = .checking
+            case .none:
                 // Signing needs the device key: a locked iPhone refuses before anything is signed or stored.
-                phase = .unlockToContinue
-            } else {
-                phase = .notSent
+                phase = services.deviceLocked ? .unlockToContinue : .notSent
             }
         }
         // While the answer is only being checked the question stays as it was; the settled outcome refreshes it.
@@ -120,7 +133,8 @@ final class LiveReviewModel: QuestionReviewModel {
         case .landedUnconfirmed: phase = .landedUnconfirmed
         case .alreadyAnswered(let label, let at): phase = .alreadyAnswered(by: label, at: Mapping.date(at))
         case .needsReview(.changed): phase = .questionChanged
-        case .needsReview: phase = .needsReview
+        case .needsReview(.workspaceChanged): phase = .workspaceChanged
+        case .needsReview(.notSent): phase = .needsReview
         case .refused, .ticketExists: phase = .refused
         case .checking:
             phase = .checking
@@ -130,7 +144,7 @@ final class LiveReviewModel: QuestionReviewModel {
     }
 
     func reread() async {
-        guard phase == .questionChanged || phase == .needsReview else { return }
+        guard phase == .questionChanged || phase == .needsReview || phase == .workspaceChanged else { return }
         token += 1
         let mine = token
         phase = .rereading
@@ -155,7 +169,7 @@ final class LiveReviewModel: QuestionReviewModel {
     /// Lock/background/content change. Only unsent or unconfirmed-by-user states are dropped; sending and checking keep going (U8).
     func invalidate() {
         switch phase {
-        case .ready, .rereading, .questionChanged, .needsReview, .unlockToContinue, .invalidated, .notSent:
+        case .ready, .rereading, .questionChanged, .needsReview, .workspaceChanged, .unlockToContinue, .invalidated, .notSent:
             token += 1
             issued = nil
             phase = .invalidated

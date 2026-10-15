@@ -181,7 +181,8 @@ handler still runs gets no interim answer. The phone (`WorkspaceSession`):
 - after 409 `retry_exhausted` keeps polling while the relay retains a copy, then marks the attempt `uncertain`
   together with an `exhausted` marker (one transaction) and throws `SessionError.retryExhausted`; nothing
   is re-sent automatically. Such a decision is `needsRetry` (`DecisionOutcome`/`DecisionState`): automatic
-  reconciliation only reads the question; `retry(decisionID:)` ("Send again") is the explicit retry;
+  reconciliation only reads the question; `retry(decisionID:)` ("Send again") was the explicit retry (v0 only:
+  removed with the decision path in C2b, where an answer's `retry_exhausted` is settled by `outcome.get`);
 - on 409 `stale_epoch` never raises the epoch from the hint: it refetches the SIGNED grants and member
   list (only hints count: at most 3 starts per sliding 60 s, then 20/40/60 s, reset after 120 s without a
   hint or on a newer signed epoch; `EpochRefetchLimiter`, `SessionError.epochRefetchDeferred`). If the

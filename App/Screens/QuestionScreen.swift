@@ -129,9 +129,11 @@ struct QuestionScreen: View {
     }
 
     /// C2b: answering needs the realm's `writes` capability AND a workspace whose session may sign and whose host takes answers.
-    private func writeBlock(_ info: WorkspaceInfo) -> String? {
-        guard services.capabilities.writes else { return "Answering from this iPhone is not available yet. Answer on your Mac." }
-        guard info.writeSupport else { return "Your Mac's orch doesn't accept answers from iPhone yet. Answer on your Mac." }
+    private func writeBlock(_ info: WorkspaceInfo) -> String? { Self.writeBlock(writes: services.capabilities.writes, writeSupport: info.writeSupport) }
+
+    static func writeBlock(writes: Bool, writeSupport: Bool) -> String? {
+        guard writes else { return "Answering from this iPhone is not available yet. Answer on your Mac." }
+        guard writeSupport else { return "Your Mac's orch doesn't accept answers from iPhone yet. Answer on your Mac." }
         return nil
     }
 
@@ -302,7 +304,10 @@ struct SignSheet: View {
     private func optionRow(_ row: SignRow) -> some View {
         VStack(alignment: .leading, spacing: OS.s1) {
             HStack(alignment: .firstTextBaseline, spacing: OS.s2) {
-                Text(verbatim: SafeText.inline(row.key, limit: 40)).font(OF.machine).foregroundStyle(OC.textMuted)
+                // the FULL key, as signed (markers for anything unsafe, never truncated)
+                Text(SafeText.attributed(row.key, style: .exact, strictLabel: true)).font(OF.machine).foregroundStyle(OC.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("sign.key.\(row.key)")
                 if row.selected {
                     Text("Selected").font(.footnote.weight(.bold)).foregroundStyle(OC.brand)
                         .padding(.horizontal, OS.s2).padding(.vertical, 2)
@@ -462,6 +467,13 @@ struct SignSheet: View {
                 stateView("checkmark.circle", OC.ok, "Sent and recorded",
                           "Your answer was recorded. The question has since changed or can't be shown here.", id: "sign.landedUnconfirmed")
                 doneButton
+            case .workspaceChanged:
+                stateView("person.2.badge.gearshape", OC.warn, "Not applied; review again",
+                          "Your answer was sent, but the workspace changed and it could not be signed again safely. Read the question again before you answer.",
+                          id: "sign.workspaceChanged")
+                Button { Task { await model.reread() } } label: { Text("Read it again") }
+                    .buttonStyle(.orchProminent).accessibilityIdentifier("sign.reread")
+                Button("Cancel", role: .cancel, action: onClose)
             case .needsReview:
                 stateView("arrow.triangle.2.circlepath", OC.warn, "Not sent; review again",
                           "Your answer could not be sent as it was signed. Read the question again before you answer.", id: "sign.needsReview")

@@ -67,7 +67,7 @@ configuration fails closed, no in-memory fallback); `RealmContext.live(origin:pi
 `RoutedRelayTransport` behind an OrchClient public factory (fixed HTTPS origin, redirect refusal, bounded responses, ephemeral
 session); `PairingConfig` with real clocks and `SystemEntropy`. Restoration is required: boot resumes interrupted wipes, runs pairing
 recovery, loads committed `WorkspaceProfile`s and rebuilds sessions with their generations, pinned keys and durable stores,
-preserving uncertain decisions and ticket submission identities.
+preserving answers still being settled (`pe_reviews` / `pe_attempts`) and ticket submission identities.
 
 Scene and protected-data lifecycle ownership moves to `AppRoot`: both workspace and pairing polling suspend in background, reviews
 are invalidated and comparison codes hidden; resume verifies and keeps the original deadlines.
@@ -84,7 +84,7 @@ owner key, in `UserDefaults` key `orch.live.install`). Nothing writes that recor
 * **Boot does not wipe.** `boot()`: open the Live `WorkspaceIndex` bound to the context's fence at construction, resume interrupted
   per-workspace wipes, run pairing recovery, then `WorkspaceRestoration.restore` (OrchClient): for each committed workspace it re-verifies the
   stored card against the pinned owner key, checks the profile origin equals the install's origin, opens the workspace's own container (so
-  uncertain decisions and ticket-submission identities, which live in that store, are preserved) and builds a `WorkspaceSession` with its original
+  answers still being settled (`pe_reviews` / `pe_attempts`, C2b) and ticket-submission identities, which live in that store, are preserved) and builds a `WorkspaceSession` with its original
   generation and `WSK` pin on the runtime's single context and transport. A workspace whose record fails verification is skipped (kept, not
   erased); a locked or missing device identity fails the boot (retried when the app is foregrounded), nothing is created. Missing keychain
   configuration: no runtime, `liveBootError`, Live data untouched (no in-memory fallback).

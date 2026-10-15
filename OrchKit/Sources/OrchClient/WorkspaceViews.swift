@@ -22,6 +22,8 @@ public protocol WorkspaceAPI: Sendable {
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     func pendingWrites() async throws -> [WriteStatus]
+    /// The stored final outcome of one review (nil while it is still being settled).
+    func writeOutcome(reviewID: String) async throws -> WriteOutcome?
     /// Whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them).
     func writesAvailable() async -> Bool
     /// Lifecycle signals that end the eligibility for an automatic re-sign (scenePhase inactive, protected data going away, custody lock).
@@ -39,6 +41,7 @@ public protocol WorkspaceAPI: Sendable {
 extension WorkspaceAPI {
     public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
     public func writesAvailable() async -> Bool { false }
+    public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { nil }
     public func noteInactive() async {}
     public func noteProtectedDataUnavailable() async {}
     public func noteCustodyLocked() async {}

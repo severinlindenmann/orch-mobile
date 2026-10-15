@@ -78,6 +78,17 @@ enum Mapping {
             why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
     }
 
+    /// SH5: a stored answer's review, exactly as signed (from `pe_reviews.snapshot`).
+    static func reviewValue(_ s: StoredReview, questionID: String, info: WorkspaceInfo, isDemo: Bool) -> ReviewValue {
+        let options = s.options.map { QuestionOption(id: $0.id, label: $0.label, cost: $0.cost) }
+        return ReviewValue(
+            workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
+            questionID: questionID, ticket: s.ticketKey, text: s.text, optionID: s.option,
+            optionLabel: options.first { $0.id == s.option }?.label ?? s.option, options: options,
+            contentHash: s.contentHashHex, revision: 0, isDemo: isDemo,
+            why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
+    }
+
     static func reviewValue(_ q: Question, info: WorkspaceInfo, optionID: String, revision: Int, isDemo: Bool) -> ReviewValue {
         ReviewValue(
             workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
