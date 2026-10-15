@@ -23,6 +23,7 @@ private actor Calls {
     private func liveStyle(_ p: Phone) async throws -> WorkspaceSession {
         var cfg = p.session.configuration
         cfg.enforcesOpTable = true
+        cfg.processLocalWriteGrant = nil
         return try await WorkspaceSession(cfg)
     }
 
@@ -35,7 +36,8 @@ private actor Calls {
         let s = try await w.serve(p) { try await BridgeWorkspaceAPI(session: p.session).snapshot() }
         let review = try await w.serve(p) { try await BridgeWorkspaceAPI(session: p.session).review(questionID: s.questions[0].questionID) }
         let sent = await w.host.coreState().rids.count
-        await #expect(throws: ViewError.writesUnavailable) { _ = try await api.decide(review, optionID: "approve") }
+        let snapshot = try #require(review.snapshot)
+        await #expect(throws: ViewError.writesUnavailable) { _ = try await api.answer(snapshot, option: "approve") }
         await #expect(throws: ViewError.writesUnavailable) {
             _ = try await api.newTicket(NewTicketSubmission(creationID: .fresh(7), title: "t", body: "user text"))
         }
@@ -43,47 +45,48 @@ private actor Calls {
         let v0: JSONValue = ["op": "new_ticket", "host_api": 0, "creation_id": .string(ID16.fresh(8).hex), "title": "x", "body": "user text", "epic_key": .null]
         await #expect(throws: R2.MetaError.reqInvalid) { _ = try await w.serve(p) { try await live.exchange(meta: v0) } }
         await #expect(throws: R2.MetaError.forbiddenScope) { _ = try await w.serve(p) { try await live.exchange(meta: ["op": "decision"]) } }
-        let decisions = try await p.container.database().query("SELECT * FROM decisions")
+        let decisions = try await p.container.database().query("SELECT * FROM pe_attempts")
         let pending = try await live.pendingRequests()
         #expect(decisions.isEmpty && pending.isEmpty)
         #expect(await w.host.coreState().rids.count == sent)    // nothing new reached the host
     }
 
-    @Test func aClassDRefusalOnADecisionIsTerminalNotUncertain() async throws {
+    @Test func aClassDRefusalOnAnAnswerIsTerminalNotUncertain() async throws {
         let (w, p) = try await world()
         let api = BridgeWorkspaceAPI(session: p.session)
         let s = try await w.serve(p) { try await api.snapshot() }
-        let review = try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }
+        let review = try #require(try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }.snapshot)
         await w.host.setHandler { req in
-            if req.meta.object?["op"] == "decision" { return .refuse(.host(code: "op.not_allowed", retryable: false, seqs: nil, nextKey: nil)) }
+            if req.meta.object?["op"] == "answer" { return .refuse(.host(code: "op.not_allowed", retryable: false, seqs: nil, nextKey: nil)) }
             return await w.host.handleView(req)
         }
-        #expect(try await w.serve(p) { try await api.decide(review, optionID: "approve") } == .notApplied)
-        #expect(try await api.pendingDecisions().isEmpty)
+        #expect(try await w.serve(p) { try await api.answer(review, option: "approve") } == .refused(code: "op.not_allowed"))
+        #expect(try await api.pendingWrites().isEmpty)
         await w.host.setHandler { req in
-            if req.meta.object?["op"] == "decision" { return .refuse(.forbiddenScope) }
+            if req.meta.object?["op"] == "answer" { return .refuse(.forbiddenScope) }
             return await w.host.handleView(req)
         }
-        let again = try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }
-        #expect(try await w.serve(p) { try await api.decide(again, optionID: "approve") } == .notApplied)
+        let again = try #require(try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }.snapshot)
+        #expect(try await w.serve(p) { try await api.answer(again, option: "approve") } == .refused(code: "forbidden_scope"))
     }
 
     // MARK: follow-ups
 
-    @Test func aClassDRefusalOfTheConfirmingReadIsNotTheDecisionsOutcome() async throws {
+    @Test func aClassDRefusalOfTheConfirmingReadIsNotTheAnswersOutcome() async throws {
         let (w, p) = try await world()
         let api = BridgeWorkspaceAPI(session: p.session)
         let s = try await w.serve(p) { try await api.snapshot() }
-        let review = try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }
+        let review = try #require(try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }.snapshot)
         let applied = AppliedFlag()
         await w.host.setHandler { req in
             let op = req.meta.object?["op"]?.string
-            if op == "decision" { await applied.set(); return await w.host.handleView(req) }
+            if op == "answer" { await applied.set(); return await w.host.handleView(req) }
             if op == "ticket.get", await applied.value { return .refuse(.host(code: "validation.event", retryable: false, seqs: nil, nextKey: nil)) }
             return await w.host.handleView(req)
         }
-        let outcome = try await w.serve(p) { try await api.decide(review, optionID: "approve") }
-        #expect(outcome == .uncertain)            // the decision itself was not refused; the confirmation could not be read
+        let outcome = try await w.serve(p) { try await api.answer(review, option: "approve") }
+        // the answer landed (the host's Result is the evidence); the confirmation could not be read: landed, unconfirmed, never a refusal
+        guard case .landedUnconfirmed(let seq, .unavailable) = outcome, seq != nil else { Issue.record("\(outcome)"); return }
     }
 
     @Test func aFailedDeclareLeavesNoRows() async throws {

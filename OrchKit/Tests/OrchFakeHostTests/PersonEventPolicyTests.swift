@@ -68,7 +68,7 @@ private let session = RelaySession(token: "tok123")
     func identity(realm: Realm, custody: CustodyKind, signer: (any Signer)? = nil) throws -> DeviceIdentity {
         DeviceIdentity(sig: try signer ?? SoftwareSigner(), kx: try SoftwareKeyAgreer(), realm: realm, custody: custody)
     }
-    func grant(for ctx: RealmContext) -> ProcessLocalWriteGrant { ProcessLocalWriteGrant(generation: ctx.generation) }
+    func grant(for ctx: RealmContext) -> ProcessLocalWriteGrant { ProcessLocalWriteGrant(generation: ctx.generation, sender: Anchor()) }
 
     // MARK: provenance
 
@@ -124,15 +124,21 @@ private let session = RelaySession(token: "tok123")
     @Test func demoNeedsADemoIdentityAndAGrantOfThisLifetime() async throws {
         let w = try await World.make(publish: false)
         let ctx = w.env.context
-        let p = DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant)
+        let p = DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant, w.transport)
         #expect(p?.auth == .passphrase && p?.realm == .demo)
-        #expect(DevicePolicy.derive(w.env.device, ctx, nil) == nil)
+        #expect(DevicePolicy.derive(w.env.device, ctx, nil, w.transport) == nil)
+        // MUST 2: the grant is bound to the transport INSTANCE it was minted with: another in-process transport of the same lifetime
+        // (another FakeRelay object) gets no policy
+        #expect(DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant) == nil)
+        let otherRelay = try FakeRelay(capability: w.env.capability, context: ctx, clock: w.clock, wall: w.clock, entropy: SystemEntropy())
+        let otherTransport = try InProcessRelayTransport(context: ctx, relay: otherRelay)
+        #expect(DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant, otherTransport) == nil)
         // a forged grant of another generation is refused
-        #expect(DevicePolicy.derive(w.env.device, ctx, grant(for: try live())) == nil)
+        #expect(DevicePolicy.derive(w.env.device, ctx, grant(for: try live()), w.transport) == nil)
         let other = try await World.make(publish: false)
-        #expect(DevicePolicy.derive(w.env.device, ctx, other.env.processLocalWriteGrant) == nil)
+        #expect(DevicePolicy.derive(w.env.device, ctx, other.env.processLocalWriteGrant, w.transport) == nil)
         // a Live identity under a Demo context
-        #expect(DevicePolicy.derive(try identity(realm: .live, custody: .secureEnclave), ctx, w.env.processLocalWriteGrant) == nil)
+        #expect(DevicePolicy.derive(try identity(realm: .live, custody: .secureEnclave), ctx, w.env.processLocalWriteGrant, w.transport) == nil)
         // the permit follows the policy
         let permit = p!.permit()
         #expect(permit.auth == .passphrase && permit.realm == .demo && permit.generation === ctx.generation)
@@ -154,19 +160,19 @@ private let session = RelaySession(token: "tok123")
         let t = try RoutedRelayTransport(context: ctx, origin: ctx.origin, sender: sender, clientAddress: "a")
         let route = BridgeRoute(workspaceID: ws, requestID: rid)
         let env = Data(repeating: 1, count: 40)
-        let se = WritePermit(auth: .secureEnclaveUnlocked, realm: .live, generation: ctx.generation)
+        let se = WritePermit.forTesting(auth: .secureEnclaveUnlocked, realm: .live, generation: ctx.generation)
         // reads (nil) and a Live SE permit go out
         #expect(try await t.bridgePost(env, route: route, session: session, permit: nil).status == 202)
         #expect(try await t.bridgePost(env, route: route, session: session, permit: se).status == 202)
         #expect(sender.count == 2)
         // a passphrase permit does not, nor does a Demo one, nor one of another lifetime, nor a non-unlocked SE auth
         let refused: [(WritePermit, TransportError)] = [
-            (WritePermit(auth: .passphrase, realm: .live, generation: ctx.generation), .realm(.wrongTransport)),
-            (WritePermit(auth: .secureEnclave, realm: .live, generation: ctx.generation), .realm(.wrongTransport)),
-            (WritePermit(auth: .convenience, realm: .live, generation: ctx.generation), .realm(.wrongTransport)),
-            (WritePermit(auth: .passphrase, realm: .demo, generation: ctx.generation), .realm(.wrongStore)),
-            (WritePermit(auth: .secureEnclaveUnlocked, realm: .demo, generation: ctx.generation), .realm(.wrongStore)),
-            (WritePermit(auth: .secureEnclaveUnlocked, realm: .live, generation: RealmGeneration()), .realm(.wrongStore)),
+            (WritePermit.forTesting(auth: .passphrase, realm: .live, generation: ctx.generation), .realm(.wrongTransport)),
+            (WritePermit.forTesting(auth: .secureEnclave, realm: .live, generation: ctx.generation), .realm(.wrongTransport)),
+            (WritePermit.forTesting(auth: .convenience, realm: .live, generation: ctx.generation), .realm(.wrongTransport)),
+            (WritePermit.forTesting(auth: .passphrase, realm: .demo, generation: ctx.generation), .realm(.wrongStore)),
+            (WritePermit.forTesting(auth: .secureEnclaveUnlocked, realm: .demo, generation: ctx.generation), .realm(.wrongStore)),
+            (WritePermit.forTesting(auth: .secureEnclaveUnlocked, realm: .live, generation: RealmGeneration()), .realm(.wrongStore)),
         ]
         for (permit, error) in refused {
             await #expect(throws: error) { _ = try await t.bridgePost(env, route: route, session: session, permit: permit) }
@@ -181,7 +187,7 @@ private let session = RelaySession(token: "tok123")
         let route = BridgeRoute(workspaceID: ws, requestID: rid)
         await #expect(throws: TransportError.realm(.wrongTransport)) {
             _ = try await wrapper.bridgePost(Data(repeating: 1, count: 40), route: route, session: session,
-                                             permit: WritePermit(auth: .passphrase, realm: .live, generation: ctx.generation))
+                                             permit: WritePermit.forTesting(auth: .passphrase, realm: .live, generation: ctx.generation))
         }
         // the 3-argument convenience is a read: nil permit
         #expect(try await wrapper.bridgePost(Data(repeating: 1, count: 40), route: route, session: session).status == 202)
@@ -195,13 +201,13 @@ private let session = RelaySession(token: "tok123")
             let r = ID16.fresh(n)
             return try await w.transport.bridgePost(try w.envelope(rid: r), route: BridgeRoute(workspaceID: w.ws, requestID: r), session: w.phoneSession, permit: permit).status
         }
-        let demo = DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant)!.permit()
+        let demo = DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant, w.transport)!.permit()
         #expect(try await post(nil, 0x41) == 202)
         #expect(try await post(demo, 0x42) == 202)
         // a Live Secure Enclave permit or a permit of another lifetime is refused before the relay sees anything
-        await #expect(throws: TransportError.realm(.wrongStore)) { _ = try await post(WritePermit(auth: .secureEnclaveUnlocked, realm: .live, generation: ctx.generation), 0x43) }
-        await #expect(throws: TransportError.realm(.wrongStore)) { _ = try await post(WritePermit(auth: .passphrase, realm: .demo, generation: RealmGeneration()), 0x44) }
-        await #expect(throws: TransportError.realm(.wrongTransport)) { _ = try await post(WritePermit(auth: .secureEnclaveUnlocked, realm: .demo, generation: ctx.generation), 0x45) }
+        await #expect(throws: TransportError.realm(.wrongStore)) { _ = try await post(WritePermit.forTesting(auth: .secureEnclaveUnlocked, realm: .live, generation: ctx.generation), 0x43) }
+        await #expect(throws: TransportError.realm(.wrongStore)) { _ = try await post(WritePermit.forTesting(auth: .passphrase, realm: .demo, generation: RealmGeneration()), 0x44) }
+        await #expect(throws: TransportError.realm(.wrongTransport)) { _ = try await post(WritePermit.forTesting(auth: .secureEnclaveUnlocked, realm: .demo, generation: ctx.generation), 0x45) }
         // after a reset the permit is dead too
         ctx.invalidate()
         await #expect(throws: (any Error).self) { _ = try await post(demo, 0x46) }
@@ -210,7 +216,22 @@ private let session = RelaySession(token: "tok123")
 
 /// `PersonEventPolicy` is package-scoped; this spells the one constructor the tests use.
 private enum DevicePolicy {
-    static func derive(_ identity: DeviceIdentity, _ context: RealmContext, _ grant: ProcessLocalWriteGrant?) -> PersonEventPolicy? {
-        PersonEventPolicy.derive(identity: identity, context: context, grant: grant)
+    static func derive(_ identity: DeviceIdentity, _ context: RealmContext, _ grant: ProcessLocalWriteGrant?,
+                       _ transport: (any RelayTransport)? = nil) -> PersonEventPolicy? {
+        let t: any RelayTransport
+        if let transport { t = transport }
+        else if context.realm == .live { t = try! RoutedRelayTransport(context: context, origin: context.origin, sender: NetworkLikeSender(origin: context.origin), clientAddress: "a") }
+        else { t = try! RoutedRelayTransport(context: context, origin: context.origin, sender: Anchor.Sender(origin: context.origin), clientAddress: "a") }
+        return PersonEventPolicy.derive(identity: identity, context: context, grant: grant, transport: t)
+    }
+}
+
+/// A stand-in object a test grant is bound to (never the environment's own relay).
+private final class Anchor: Sendable {
+    /// An in-process Demo sender that is NOT the environment's FakeRelay.
+    actor Sender: RequestSender, InProcessDemoSender {
+        nonisolated let origin: String
+        init(origin: String) { self.origin = origin }
+        func send(_ request: WireRequest) async throws -> WireReply { try WireReply(status: 202, headers: [:], body: Data()) }
     }
 }

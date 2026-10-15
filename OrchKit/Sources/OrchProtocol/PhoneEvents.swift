@@ -222,6 +222,17 @@ public enum PhoneEvents {
                                 digest: digest(signingBytes: bytes), signature: sig)
     }
 
+    /// A stored signed event (`cj(event)` with `sig`, as persisted before the first send) back as a `SignedPhoneEvent`, every cached field
+    /// recomputed from the bytes. The result still has to pass `validateSigned` before it is framed again.
+    package static func restore(bytes: Data, kind: SignedPhoneEvent.Kind, log: String, workspace: ID16) throws -> SignedPhoneEvent {
+        guard let ev = try StrictJSON.parse(bytes).object, try canonicalJSON(.object(ev)) == bytes,
+              let id = ev["id"]?.string, let sigText = ev["sig"]?.string,
+              let sig = B64U.decode(sigText, length: Suite2.signatureLength) else { throw Failure.schema("stored") }
+        var unsigned = ev; unsigned["sig"] = nil
+        let signing = try signingBytes(event: unsigned, log: log, workspace: workspace)
+        return SignedPhoneEvent(kind: kind, log: log, id: id, event: ev, bytes: bytes, signingBytes: signing, digest: digest(signingBytes: signing), signature: sig)
+    }
+
     // MARK: validation
 
     static let hostFields: Set<String> = ["seq", "at", "prev", "ws_seq", "host_sig"]

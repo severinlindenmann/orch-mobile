@@ -15,6 +15,7 @@ public struct InProcessRelayTransport: RelayTransport {
     }
 
     public var context: RealmContext { inner.context }
+    public var processLocalSender: ObjectIdentifier? { inner.processLocalSender }
 
     public func challenge() async throws -> WireReply { try await inner.challenge() }
     public func login(_ body: Data) async throws -> WireReply { try await inner.login(body) }

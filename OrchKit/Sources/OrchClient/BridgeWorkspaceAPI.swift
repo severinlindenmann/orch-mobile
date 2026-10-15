@@ -9,13 +9,7 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func setForeground(_ value: Bool) async { await session.setForeground(value) }
     public func refreshViews() async { await session.refreshViews() }
     public func invalidateReviews() async { await session.invalidateReviews() }
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    ///   Retry when coordination is available; this error does not confirm removal.
-    public func reconcile(decisionID: ID16) async throws -> DecisionOutcome { try await session.reconcileDecision(decisionID) }
-    /// The user's explicit "send again" for a decision whose delivery the relay ended with `retry_exhausted` (protocol-v2 section
-    /// 19.6). Reads the question first; resends the same signed decision only while it is still open.
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    public func retry(decisionID: ID16) async throws -> DecisionOutcome { try await session.retryDecision(decisionID) }
+    public func settle(reviewID: String) async throws -> WriteOutcome { try await session.settle(reviewID: reviewID) }
     public var verifiedReceiptMs: Int64? { get async { await session.verifiedReceiptMs } }
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
@@ -25,10 +19,13 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func review(questionID: ID16) async throws -> QuestionReview { try await session.reviewQuestion(questionID) }
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
-    public func decide(_ review: QuestionReview, optionID: String) async throws -> DecisionOutcome { try await session.submit(review, optionID: optionID) }
+    public func answer(_ snapshot: ReviewedSnapshot, option: String) async throws -> WriteOutcome { try await session.answer(snapshot, option: option) }
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
-    public func pendingDecisions() async throws -> [DecisionStatus] { try await session.pendingDecisions() }
+    public func pendingWrites() async throws -> [WriteStatus] { try await session.pendingWrites() }
+    public func writesAvailable() async -> Bool { await session.writesAvailable() }
+    public func noteInactive() async { await session.noteInactive() }
+    public func noteProtectedDataUnavailable() async { await session.noteProtectedDataUnavailable() }
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     public func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket { try await session.createTicket(draft) }
