@@ -36,6 +36,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Committed Live workspaces `LiveRuntime` could not rebuild at restore (kept on disk): surfaced in Live Home.
     private(set) var skippedWorkspaceCount = 0
     private(set) var liveNotice: String?
+    @ObservationIgnored private var lastLiveBootError: (any Error)?
+    /// True once this Live install ever had a join: a workspace on screen or kept, or a recorded owner. Decides whether a Leave says
+    /// "finish removing it on your Mac" (there may be a device entry there) or only "Removed from this iPhone."
+    var liveHadJoin: Bool {
+        guard let rt = runtime as? LiveRuntime else { return installStore.load()?.owner != nil }
+        return rt.recordedOwner != nil || rt.install.owner != nil || !live.isEmpty || !rt.skipped.isEmpty || rt.derivedOwner != nil
+    }
     /// Observed by the views: the install record lives in `UserDefaults`, which SwiftUI cannot track, so every change of it bumps this.
     private var installRevision = 0
     var liveInstalled: Bool { _ = installRevision; return hasLiveInstall }
@@ -105,6 +112,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Writes the install record. The default is the throwing `LiveInstallStore.save`; a failure fails the Live entry (a test seam).
     @ObservationIgnored var persistInstall: ((LiveInstall) throws -> Void)?
     /// Removes the Live files without touching the keychain (the stuck-wipe escape). Keychain leftovers go at the next Live entry.
+    /// (DEBUG `--live-test-relay` points it at the test layout.)
     @ObservationIgnored var removeLiveFiles: () throws -> Void = { try LiveStorage.removeLiveFiles(layout: try LiveStorage.liveLayout()) }
     @ObservationIgnored private var enteringLive = false
     /// The Live pairing on screen, if any (scene changes pause and resume it).
@@ -146,7 +154,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
         self.options = options
         #if DEBUG
-        if options.uiTesting, options.liveTestRelay { liveStorage = LiveUITestSupport.makeStorage() }
+        if options.uiTesting, options.liveTestRelay {
+            let storage = LiveUITestSupport.makeStorage()
+            liveStorage = storage
+            removeLiveFiles = { try LiveStorage.removeLiveFiles(layout: try storage().layout) }
+        }
         #endif
         if let runtime { attach(runtime) }
     }
@@ -250,14 +262,18 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let bootTask { _ = await bootTask.value; return }
         let revision = resetRevision
         let task = Task { () -> (any RealmRuntime)? in
-            do { try await runtime.boot(); return runtime } catch { return nil }
+            do { try await runtime.boot(); return runtime } catch { self.lastLiveBootError = error; return nil }
         }
         bootTask = task
         let result = await task.value
         guard revision == resetRevision, self.runtime === runtime else { return }     // a teardown replaced this boot
         bootTask = nil
         guard result != nil else {
+            if let e = lastLiveBootError as? LiveError, e == .ownerDisagreement {
+                liveBootError = "This iPhone holds workspaces from two different owners, which one Live install never allows, so nothing was opened. Leave Live to start over; your Macs are not changed."
+            } else {
             liveBootError = "Live could not start. It will try again when you return to orch."
+            }
             PresentationGate.requireRebuild()
             return
         }
@@ -275,8 +291,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     /// Records the single owner of this Live install (once). A failed write keeps the join and says so; the next boot derives it again.
-    private func recordOwner(_ owner: String?, runtime: LiveRuntime) {
-        guard let owner, runtime.recordedOwner == nil else { return }
+    /// Only for the runtime it was started for, in a graph that is still alive: a Leave that ran meanwhile must not be partly undone by
+    /// re-saving the install record.
+    func recordOwner(_ owner: String?, runtime: LiveRuntime) {
+        guard let owner, runtime.recordedOwner == nil, !retired, lifetime.isActive, (self.runtime as AnyObject?) === runtime else { return }
         do {
             try save(LiveInstall(origin: runtime.install.origin, owner: owner))
             runtime.recordedOwner = owner

@@ -97,6 +97,12 @@ final class RealmController: RealmTransitions {
         transitionTask = Task { [weak self] in await self?.bootDemo(next) }
     }
 
+    /// Truthful: the phone's data is gone; nothing was acknowledged by the Mac or the relay. The Mac step is mentioned only when a join
+    /// could have created a device entry there.
+    static func leftLiveNotice(hadJoin: Bool) -> String {
+        hadJoin ? "Removed from this iPhone; finish removing it on your Mac." : "Removed from this iPhone."
+    }
+
     /// The Live entry attached its runtime to this graph (Welcome -> Live). The graph is not replaced: the pairing on screen keeps its model.
     func realmEnteredLive() {
         guard state == .welcome else { return }
@@ -116,9 +122,14 @@ final class RealmController: RealmTransitions {
             do { try await outgoing.forceEraseLive() } catch { failed = true }
             guard let self, self.services === outgoing else { self?.transitionTask = nil; return }
             if failed {
+                // The outgoing graph is retired and cannot be retried: a fresh graph boots from the persisted state (an unfinished
+                // wipe shows the recovery card again, with a working "Try again" and the escape).
+                let again = self.makeServices(self.options, self.defaults)
+                self.replaceServices(with: again)
+                await again.boot()
                 self.transitionTask = nil
-                self.state = .recoveryRequired
-                self.epoch += 1
+                self.publish()
+                if again.resetIncomplete || again.hasLiveInstall { self.notice = "Erasing Live data did not finish. Try again." }
                 return
             }
             self.retryThenDemo = nil
@@ -153,6 +164,7 @@ final class RealmController: RealmTransitions {
         let outgoing = services
         let label = outgoing.deviceLabel
         let wasLive = outgoing.isLive || outgoing.hasLiveInstall
+        let hadJoin = outgoing.liveHadJoin
         notice = nil
         if let realm = outgoing.shareRealm { retireShareTargets(realms: [realm]) }
         else if outgoing.hasLiveInstall { retireShareTargets(realms: [Realm.live.rawValue]) }     // a Live that never started
@@ -176,13 +188,13 @@ final class RealmController: RealmTransitions {
             if thenDemo {
                 self.state = .starting
                 await self.bootDemo(next)       // the one boot of the target realm; waitForTransition covers it
-                if wasLive, self.notice == nil { self.notice = "Removed from this iPhone; finish removing it on your Mac." }
+                if wasLive, self.notice == nil { self.notice = Self.leftLiveNotice(hadJoin: hadJoin) }
             } else {
                 await next.boot(launch: false)
                 self.transitionTask = nil
                 self.publish()
                 // Truthful: the phone's data is gone; nothing was acknowledged by the Mac or the relay.
-                if wasLive { self.notice = "Removed from this iPhone; finish removing it on your Mac." }
+                if wasLive { self.notice = Self.leftLiveNotice(hadJoin: hadJoin) }
             }
         }
     }

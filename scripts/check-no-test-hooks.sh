@@ -18,8 +18,12 @@ if [ -f "$allowed" ]; then
     echo "error: $allowed must be wrapped entirely in a single '#if DEBUG ... #endif'" >&2; exit 1
   fi
 fi
+# Every file of the shipped targets except the one allowed path (matched by its exact path, not by its basename).
+files=()
+while IFS= read -r f; do files+=("$f"); done < <(find "${dirs[@]}" -type f ! -path "$allowed")
+[ ${#files[@]} -gt 0 ] || { echo "error: no files found" >&2; exit 2; }
 set +e
-hits=$(grep -rnE "liveLoopbackForTesting|loopbackOrigin|isLoopbackHTTP|testingTransport|unreachableForUITests" --exclude=LiveUITestSupport.swift "${dirs[@]}")
+hits=$(grep -nE "liveLoopbackForTesting|loopbackOrigin|isLoopbackHTTP|testingTransport|unreachableForUITests" "${files[@]}")
 rc=$?
 set -e
 # grep: 0 = matches (bad), 1 = no match (clean), anything else = grep itself failed (never treated as clean)

@@ -24,7 +24,12 @@ final class LiveEntryTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 30))
         field.tap()
         field.typeText(text)
-        app.buttons["live.review"].tap()
+        app.swipeDown()                                   // scrollDismissesKeyboard: the keyboard must not cover the button
+        let review = app.buttons["live.review"]
+        let hittable = NSPredicate(format: "isHittable == true")
+        expectation(for: hittable, evaluatedWith: review)
+        waitForExpectations(timeout: 15)
+        review.tap()
     }
 
     @MainActor
@@ -38,6 +43,8 @@ final class LiveEntryTests: XCTestCase {
         let origin = app.el("review.origin")
         XCTAssertTrue(origin.waitForExistence(timeout: 10))
         XCTAssertEqual(origin.label, "https://relay.example.org")
+        XCTAssertTrue(app.el("review.warning").exists)
+        XCTAssertEqual(app.el("review.source").label, "Pasted into orch")
         app.buttons["review.connect"].tap()
         // Live pairing over the real coordinator (the relay never answers): the pairing screen's connecting state.
         XCTAssertTrue(app.el("pair.connecting").waitForExistence(timeout: 30))
@@ -50,12 +57,15 @@ final class LiveEntryTests: XCTestCase {
         XCTAssertEqual(app.el("settings.realm.origin").label.contains("https://relay.example.org"), true)
         let leave = app.buttons["settings.leaveLive"]
         var tries = 0
-        while !leave.exists && tries < 8 { app.swipeUp(); tries += 1 }
-        XCTAssertTrue(leave.exists)
+        while !(leave.exists && leave.isHittable) && tries < 10 { app.swipeUp(); tries += 1 }
+        XCTAssertTrue(leave.exists && leave.isHittable)
         leave.tap()
         app.buttons["settings.leaveLive.confirm"].firstMatch.tap()
         XCTAssertTrue(app.buttons["welcome.demo"].waitForExistence(timeout: 30), "Leave Live returns to Welcome")
-        XCTAssertTrue(app.el("realm.notice").label.contains("finish removing it on your Mac"))
+        // This install never joined a workspace, so there is nothing to finish on the Mac.
+        let notice = app.el("realm.notice")
+        XCTAssertTrue(notice.waitForExistence(timeout: 10))
+        XCTAssertEqual(notice.label, "Removed from this iPhone.")
     }
 
     @MainActor
@@ -72,6 +82,7 @@ final class LiveEntryTests: XCTestCase {
         paste(app, otherLink)
         XCTAssertTrue(app.el("invitation.refused").waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["This iPhone uses a different relay"].exists)
+        XCTAssertTrue(app.buttons["invitation.close"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.el("review.connect").exists)
         app.buttons["invitation.close"].tap()
         XCTAssertTrue(app.el("home.liveEmpty").waitForExistence(timeout: 10))
@@ -84,6 +95,7 @@ final class LiveEntryTests: XCTestCase {
         app.buttons["welcome.pair"].tap()
         paste(app, "https://evil.example/app/pair#x")
         XCTAssertTrue(app.el("live.paste.error").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["live.scan"].exists)
         XCTAssertFalse(app.el("review.connect").exists)
     }
 
@@ -104,6 +116,8 @@ final class LiveEntryTests: XCTestCase {
         let app = launchLive(["--open-url", orchLink])
         XCTAssertTrue(app.el("review.origin").waitForExistence(timeout: 60))
         XCTAssertEqual(app.el("review.origin").label, "https://relay.example.org")
+        XCTAssertEqual(app.el("review.source").label, "Opened from another app")
+        XCTAssertTrue(app.buttons["review.connect"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.el("pair.connecting").exists)
         app.buttons["live.cancel"].tap()
         XCTAssertTrue(app.buttons["welcome.pair"].waitForExistence(timeout: 10), "dismissing the review changes nothing")
@@ -126,6 +140,7 @@ final class LiveEntryTests: XCTestCase {
         app.buttons["switch.leave"].tap()
         app.buttons["switch.leave.confirm"].firstMatch.tap()
         XCTAssertTrue(app.el("review.origin").waitForExistence(timeout: 60), "after the wipe the held link is reviewed, not connected")
+        XCTAssertTrue(app.buttons["review.connect"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.el("pair.connecting").exists)
     }
 }

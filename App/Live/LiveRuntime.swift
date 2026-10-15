@@ -39,7 +39,8 @@ struct LiveInstallStore {
     static let key = "orch.live.install"
     let defaults: UserDefaults
     func load() -> LiveInstall? { defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(LiveInstall.self, from: $0) } }
-    /// Throws when the record cannot be encoded or does not read back: a Live install that is not durably recorded must fail the flow that
+    /// Limits: the read-back goes through the same `UserDefaults` object, so it catches an encoding fault or a store that drops the write,
+    /// not a failed flush to disk after it. Throws when the record cannot be encoded or does not read back: a Live install that is not durably recorded must fail the flow that
     /// needed it (no silent `try?`).
     func save(_ install: LiveInstall) throws {
         let data = try JSONEncoder().encode(install)
@@ -256,6 +257,8 @@ final class LiveRuntime: RealmRuntime {
         var owners = Set<String>()
         for row in try await index.workspaces() {
             guard let profile = try await index.profile(ws: row.ws) else { continue }
+            // A pin must be a real key: undecodable material is never recorded.
+            guard let bytes = B64U.decode(profile.pkPub), (try? SigningPublicKey(x963: bytes)) != nil else { throw LiveError.invalidInstall }
             owners.insert(profile.pkPub)
         }
         if pinned != nil { return nil }

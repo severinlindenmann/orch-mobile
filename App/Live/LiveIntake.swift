@@ -14,6 +14,18 @@ enum InvitationRefusal: Equatable, Sendable {
     case busy
 }
 
+/// Where an invitation came from, shown on the review screen: an `orch://` link can be opened by any app, so it is the weakest source.
+enum InvitationSource: Equatable, Sendable {
+    case otherApp, scanned, pasted
+    var label: String {
+        switch self {
+        case .otherApp: "Opened from another app"
+        case .scanned: "Scanned in orch"
+        case .pasted: "Pasted into orch"
+        }
+    }
+}
+
 /// What the Live entry flow is showing. Presented above the realm's view graph (it survives the Welcome -> Live graph changes).
 enum IntakeScreen: Equatable {
     /// Scan or paste.
@@ -40,13 +52,15 @@ final class LiveIntake {
     private(set) var held: PairingLink?
     private(set) var notice: String?
     private(set) var leavingDemo = false
+    /// Where the invitation under review came from.
+    private(set) var source: InvitationSource = .pasted
     /// The text of the last failed paste (shown under the field).
     private(set) var entryError: String?
 
     @ObservationIgnored private let realm: RealmController
     @ObservationIgnored private var leaveTask: Task<Void, Never>?
     /// A link that arrived before the realm finished booting (a cold launch from `orch://`): classified once the realm is known.
-    @ObservationIgnored private var early: String?
+    @ObservationIgnored private var early: (text: String, source: InvitationSource)?
 
     init(realm: RealmController) { self.realm = realm }
 
@@ -72,22 +86,36 @@ final class LiveIntake {
     /// `onOpenURL` (cold launch included). Only the `orch` scheme is ours; anything else is ignored.
     func handle(url: URL) {
         guard url.scheme?.lowercased() == "orch" else { return }
-        handle(text: url.absoluteString)
+        handle(text: url.absoluteString, source: .otherApp)
     }
 
     func realmBooted() {
-        guard let text = early else { return }
+        guard let e = early else { return }
         early = nil
-        handle(text: text)
+        handle(text: e.text, source: e.source)
     }
 
     /// A scanned or pasted string, or an opened `orch://` URL. Parses locally (no network), then lands on a screen.
-    func handle(text raw: String) {
+    func handle(text raw: String, source newSource: InvitationSource = .pasted) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard realm.booted else { early = text; return }
-        if case .pairing = screen, let model = pairingModel, !Self.isFinished(model.state) {
-            notice = "Finish or cancel this pairing before opening another invitation."
+        guard realm.booted else { early = (text, newSource); return }
+        // While Demo is being wiped for the switch nothing else is accepted.
+        if leavingDemo || screen == .leavingDemo {
+            notice = "orch is leaving the Demo. Open the invitation again when that is done."
             return
+        }
+        if case .pairing = screen, let model = pairingModel, !Self.isFinished(model.state) {
+            notice = "Another invitation was ignored. Finish or cancel this pairing first, then open it again."
+            return
+        }
+        // A reviewed origin is never swapped silently: a different invitation while one is under review is refused with a visible notice.
+        switch screen {
+        case .review(let current)?, .switchOffer(let current)?:
+            if let incoming = try? PairingLink.parse(text), incoming != current {
+                notice = "Another invitation was ignored (relay \(incoming.reviewedOrigin)). Close this one to review it."
+            }
+            return
+        default: break
         }
         notice = nil
         guard let link = try? PairingLink.parse(text) else {
@@ -97,6 +125,7 @@ final class LiveIntake {
             return
         }
         entryError = nil
+        source = newSource
         screen = classify(link)
     }
 
@@ -122,6 +151,7 @@ final class LiveIntake {
     /// "Connect" on the review screen: the first moment anything is written or sent.
     func connect(_ link: PairingLink) {
         guard case .review = screen else { return }
+        pairingModel?.screenClosed()
         let model = realm.services.makeLivePairing(link: link)
         pairingModel = model
         screen = .pairing
@@ -136,7 +166,7 @@ final class LiveIntake {
         realm.realmLeave(thenDemo: false)
         leaveTask = Task { [weak self] in
             await self?.realm.waitForTransition()
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             self.leavingDemo = false
             if self.realm.state == .welcome {
                 if let link = self.held { self.screen = self.classify(link) } else { self.screen = .entry }
@@ -147,6 +177,9 @@ final class LiveIntake {
     }
 
     func dismiss() {
+        leaveTask?.cancel(); leaveTask = nil
+        leavingDemo = false
+        notice = nil
         pairingModel?.screenClosed()
         pairingModel = nil
         held = nil
@@ -154,6 +187,7 @@ final class LiveIntake {
         entryError = nil
     }
 
+    /// The banner's own dismiss.
     func clearNotice() { notice = nil }
 
     private static func isFinished(_ state: PairingState) -> Bool {

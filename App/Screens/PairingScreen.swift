@@ -28,7 +28,7 @@ struct PairingScreen: View {
                 if !typeSize.isAccessibilitySize { demoBar }
             }
             .background(isAlarm ? OC.danger.opacity(0.12) : OC.bg)
-            .navigationTitle("Pair a workspace")
+            .navigationTitle(model.isDemo ? "Pair a workspace" : "Pair your Mac")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

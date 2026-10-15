@@ -5,6 +5,7 @@ import OrchCustody
 import OrchFakeHost
 import OrchProtocol
 import OrchShareStaging
+import AVFoundation
 import OrchStore
 #if DEBUG // uses DEBUG-only seams (LiveTransport.testingTransport, liveBootGate); the Release flag check compiles all tests
 @testable import Orch
@@ -811,6 +812,9 @@ extension LiveRuntimeTests {
         intake.connect(link)
         XCTAssertEqual(intake.screen, .switchOffer(link))
         intake.leaveDemoAndPair()
+        intake.handle(text: invitation(origin: "https://other.example.org"))      // ignored while Demo is being left
+        XCTAssertEqual(intake.screen, .leavingDemo)
+        XCTAssertNotNil(intake.notice)
         await controller.waitForTransition()
         for _ in 0..<400 where intake.screen == .leavingDemo { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(controller.state, .welcome)
@@ -845,7 +849,90 @@ extension LiveRuntimeTests {
         XCTAssertEqual(controller.state, .welcome)
         XCTAssertFalse(rig.install.exists)
         XCTAssertEqual(try liveVaultItems(rig), 0)
-        XCTAssertEqual(controller.notice, "Removed from this iPhone; finish removing it on your Mac.")
+        // No join ever happened: nothing to finish on the Mac.
+        XCTAssertEqual(controller.notice, "Removed from this iPhone.")
+    }
+
+    func testTheLeaveNoticeMentionsTheMacOnlyAfterAJoin() {
+        XCTAssertEqual(RealmController.leftLiveNotice(hadJoin: true), "Removed from this iPhone; finish removing it on your Mac.")
+        XCTAssertEqual(RealmController.leftLiveNotice(hadJoin: false), "Removed from this iPhone.")
+    }
+
+    func testALateOwnerRecordAfterALeaveDoesNotUndoIt() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let services = makeServices(rig)
+        await services.boot()
+        let runtime = try XCTUnwrap(services.runtime as? LiveRuntime)
+        XCTAssertTrue(services.liveHadJoin)
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertFalse(rig.install.exists)
+        runtime.recordedOwner = nil                                           // the post-join task of a pairing that outlived the Leave
+        services.recordOwner(joined.profile.pkPub, runtime: runtime)
+        XCTAssertFalse(rig.install.exists)                                    // the install record is not resurrected
+        // And a runtime other than the attached one is refused too.
+        let live = makeServices(rig)
+        try rig.install.save(LiveInstall(origin: origin, owner: nil))
+        await live.boot()
+        runtime.recordedOwner = nil
+        live.recordOwner(joined.profile.pkPub, runtime: runtime)
+        XCTAssertNil(rig.install.load()?.owner)
+        live.resetThisiPhone(); await live.waitForReset()
+    }
+
+    func testAnUndecodableOwnerKeyIsNeverUsedAsAPin() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var p = joined.profile
+        p.pkPub = "not-a-key"
+        p.ws = ID16.random().hex
+        try await index.savePairing(PairingRow(ws: p.ws, offer: String(repeating: "2", count: 32), generation: 1, origin: origin, phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: p)
+        do { _ = try await LiveRuntime.agreedOwner(index: index, pinned: nil); XCTFail("must refuse") }
+        catch { XCTAssertEqual(error as? LiveError, .invalidInstall) }
+        await index.close()
+    }
+
+    func testTwoOwnersShowTheirOwnCopy() async throws {
+        let first = try await demoJoin(), second = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(first, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var profile = second.profile
+        profile.origin = origin
+        try await index.savePairing(PairingRow(ws: profile.ws, offer: String(repeating: "1", count: 32), generation: 1, origin: origin,
+                                               phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: profile)
+        await index.close()
+        let services = makeServices(rig)
+        await services.boot()
+        XCTAssertTrue(try XCTUnwrap(services.liveBootError).contains("two different owners"))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testASecondInvitationNeverSwapsTheOneUnderReviewAndInputIsIgnoredWhileLeavingDemo() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let controller = makeController(rig)
+        await controller.boot()
+        let intake = LiveIntake(realm: controller)
+        intake.realmBooted()
+        intake.handle(text: invitation(orch: true), source: .otherApp)
+        guard case .review(let first)? = intake.screen else { return XCTFail("review") }
+        XCTAssertEqual(intake.source, .otherApp)
+        // Another invitation (another relay) while one is under review: refused with a visible notice; the reviewed origin is unchanged.
+        intake.handle(text: invitation(origin: "https://other.example.org"), source: .scanned)
+        XCTAssertEqual(intake.screen, .review(first))
+        XCTAssertEqual(intake.source, .otherApp)
+        XCTAssertNotNil(intake.notice)
+        intake.clearNotice()
+        XCTAssertNil(intake.notice)
+        intake.dismiss()
+        XCTAssertNil(intake.notice)
+        intake.handle(text: invitation(), source: .scanned)
+        XCTAssertEqual(intake.source, .scanned)
     }
 
     // MARK: Live pairing model
@@ -877,10 +964,16 @@ extension LiveRuntimeTests {
     // MARK: Scanner
 
     func testTheScannerReportsWhyItCannotRun() {
-        XCTAssertEqual(ScannerAvailability.resolve(isSupported: false, isAvailable: false), .noCamera)
-        XCTAssertEqual(ScannerAvailability.resolve(isSupported: false, isAvailable: true), .noCamera)
-        XCTAssertEqual(ScannerAvailability.resolve(isSupported: true, isAvailable: false), .notAllowed)
-        XCTAssertEqual(ScannerAvailability.resolve(isSupported: true, isAvailable: true), .available)
+        typealias A = ScannerAvailability
+        XCTAssertEqual(A.resolve(isSupported: false, isAvailable: false, authorization: .authorized), .noCamera)
+        XCTAssertEqual(A.resolve(isSupported: false, isAvailable: true, authorization: .notDetermined), .noCamera)
+        // Not asked yet: the permission prompt comes first, "camera off" is never shown for it.
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: false, authorization: .notDetermined), .undetermined)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: true, authorization: .notDetermined), .undetermined)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: false, authorization: .denied), .notAllowed)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: true, authorization: .restricted), .notAllowed)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: false, authorization: .authorized), .notAllowed)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: true, authorization: .authorized), .available)
         XCTAssertFalse(ScannerAvailability.noCamera.explanation.isEmpty)
         XCTAssertTrue(ScannerAvailability.notAllowed.explanation.contains("Paste") || ScannerAvailability.notAllowed.explanation.contains("paste"))
     }
