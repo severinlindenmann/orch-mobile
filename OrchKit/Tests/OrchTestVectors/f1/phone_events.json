@@ -1,0 +1,2455 @@
+{
+ "accepted": [
+  {
+   "desc": "secure-enclave-unlocked; non-ASCII text and labels; an option with cost",
+   "digest": "sha256:718ca34291943a8efc26e1661a5a3e494f13c940c56fb74e665443e6a6f37648",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:01:10Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+    "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+    "hash_v": 1,
+    "host_sig": "4-G4-CNJphDc0Qip9UQ_t9egt2_6BqGgZRBFNXVGD-iVUbwfgcSNIhT-PNCxet3kQ2hhaxo5eDpt5sOojZvbvA",
+    "id": "01M4JM4RKG79RG3QTWCP60NNNG",
+    "option": "csv",
+    "prev": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+    "question": "Q1",
+    "roster_v": 3,
+    "seq": 3,
+    "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:0d214d9e29153a0b4bb1eda3b3a5c47ca33f0d91547ba6234f1a60db792af3a2",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "answer_non_ascii_option_with_cost",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a30633764323638656635663438386461303534363664373461643739316265636166396237613639643262333535623933643239336236306138393030313965222c2268617368223a227368613235363a32393831323865303832373966313139396233393861613766613761613234656162663063663765313166366234613961666539306138323234363431303265222c22686173685f76223a312c226964223a2230314d344a4d34524b473739524733515457435036304e4e4e47222c226f7074696f6e223a22637376222c227175657374696f6e223a225131222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "question": {
+    "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+    "hashed": {
+     "options": [
+      {
+       "cost": "\u00bd Tag, CHF 400",
+       "key": "csv",
+       "label": "Monatliche CSV-Datei (\u00bd Tag)"
+      },
+      {
+       "key": "api",
+       "label": "Tarif-API \u2713"
+      }
+     ],
+     "question_id": "d60478ec5ff8f6ff213cded9c0f8f243",
+     "text": "Welcher Tarif-Export gilt? Gr\u00f6\u00dfe \u2264 5 MB \u2014 Z\u00fcrich \u00e9t\u00e9",
+     "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243"
+   },
+   "scenario": "phone_answers_and_creates",
+   "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+   "step": 6,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+    "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+    "hash_v": 1,
+    "id": "01M4JM4RKG79RG3QTWCP60NNNG",
+    "option": "csv",
+    "question": "Q1",
+    "roster_v": 3,
+    "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+    "type": "question.answered",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e\",\"hash\":\"sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e\",\"hash_v\":1,\"id\":\"01M4JM4RKG79RG3QTWCP60NNNG\",\"option\":\"csv\",\"question\":\"Q1\",\"roster_v\":3,\"sig\":\"zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ\",\"type\":\"question.answered\",\"v\":2}"
+  },
+  {
+   "desc": "a text answer (with a TAB) to a question with options absent",
+   "digest": "sha256:adb0e8b626a857e02b9fc1af5fca649fe21bdcfc9df10304cc303be170852a65",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:01:30Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+    "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+    "hash_v": 1,
+    "host_sig": "Ne9PN7PHTBzZj3H7W2MCZfUq5HyxuZzWfRpTfH1p534gt0OrW9v_izNUNLRIjrC74qMmbKX-lGGLT_voiuYF7A",
+    "id": "01M4JM5C4GESP1D60PNEQA8N0A",
+    "prev": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+    "question": "Q2",
+    "roster_v": 3,
+    "seq": 5,
+    "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+    "text": "Keep\tthe old seeds",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:cd12d33d426c84467b8bb3ef10d1012f7dc6a7984f5168f65cf442a42c2c7073",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "answer_text_to_options_absent_with_tab",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a66353638376164343438366132353138623337643436373637643761666366333735363636323531346639646539623462653135646663316162346435353735222c2268617368223a227368613235363a30653761333362666562633462336430353062393538616635643832613666386531663831373361666633396330616563353633396262383537306233333838222c22686173685f76223a312c226964223a2230314d344a4d3543344745535031443630504e455141384e3041222c227175657374696f6e223a225132222c22726f737465725f76223a332c2274657874223a224b6565705c74746865206f6c64207365656473222c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "question": {
+    "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+    "hashed": {
+     "options": [],
+     "question_id": "72a37c42fc71091868c10ceed59ddd24",
+     "text": "Anything else we should know?",
+     "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    "qid": "72a37c42fc71091868c10ceed59ddd24"
+   },
+   "scenario": "phone_answers_and_creates",
+   "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+   "step": 8,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+    "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+    "hash_v": 1,
+    "id": "01M4JM5C4GESP1D60PNEQA8N0A",
+    "question": "Q2",
+    "roster_v": 3,
+    "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+    "text": "Keep\tthe old seeds",
+    "type": "question.answered",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575\",\"hash\":\"sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388\",\"hash_v\":1,\"id\":\"01M4JM5C4GESP1D60PNEQA8N0A\",\"question\":\"Q2\",\"roster_v\":3,\"sig\":\"Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ\",\"text\":\"Keep\\tthe old seeds\",\"type\":\"question.answered\",\"v\":2}"
+  },
+  {
+   "desc": "auth passphrase from the phone device (Simulator/dev custody, 14.3)",
+   "digest": "sha256:5b6cdee1988abc0f30573f6f564d0c3236220bed35334c63e4f49155ebf9cdf1",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:01:50Z",
+    "auth": "passphrase",
+    "based_on": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+    "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+    "hash_v": 1,
+    "host_sig": "4HQ2VtkbET7D33JkXxBKQFMBqI-FbLmbQt2MoNqgwBVspVwa6FjNb8pqMqKwlx-tvRoD6W-RrE48i13zDaTQMg",
+    "id": "01M4JM5ZNG61PSJPK451QT68KK",
+    "option": "yes",
+    "prev": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+    "question": "Q3",
+    "roster_v": 3,
+    "seq": 7,
+    "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:8184be3149b002489b130d58f0a179eebfde54bab0e262a2b2b2c06955331a03",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "answer_passphrase",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a2270617373706872617365222c2262617365645f6f6e223a227368613235363a64643331656332356333303462326666386565633062343665366334336665353764663265343062653966333064633266666334646538376165663334303161222c2268617368223a227368613235363a38396231623838636532333339356131303535653164613064373635303866383764623334616232323462613761333766316533636437326161616635306537222c22686173685f76223a312c226964223a2230314d344a4d355a4e47363150534a504b343531515436384b4b222c226f7074696f6e223a22796573222c227175657374696f6e223a225133222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "question": {
+    "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+    "hashed": {
+     "options": [
+      {
+       "key": "yes",
+       "label": "Yes"
+      },
+      {
+       "key": "no",
+       "label": "No"
+      }
+     ],
+     "question_id": "61fe62456d362fdf6813f8ce89600141",
+     "text": "Ship it?",
+     "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    "qid": "61fe62456d362fdf6813f8ce89600141"
+   },
+   "scenario": "phone_answers_and_creates",
+   "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+   "step": 10,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "passphrase",
+    "based_on": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+    "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+    "hash_v": 1,
+    "id": "01M4JM5ZNG61PSJPK451QT68KK",
+    "option": "yes",
+    "question": "Q3",
+    "roster_v": 3,
+    "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+    "type": "question.answered",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"passphrase\",\"based_on\":\"sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a\",\"hash\":\"sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7\",\"hash_v\":1,\"id\":\"01M4JM5ZNG61PSJPK451QT68KK\",\"option\":\"yes\",\"question\":\"Q3\",\"roster_v\":3,\"sig\":\"iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw\",\"type\":\"question.answered\",\"v\":2}"
+  },
+  {
+   "desc": "the signature's s is in the upper half; it verifies and is accepted",
+   "digest": "sha256:5fd0e6ac08eb39a682de014e5143bffeb35b8f51e85e0930ccc60c716975e6a2",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:02:10Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "hash_v": 1,
+    "host_sig": "7KFad4xG1XP3uz-xFTA4j48oAFfAVDno0ftp5ht3mnFHMeDWkFr38HSF73VdmholJOebT_aaXUZIPxR3sk0s2g",
+    "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
+    "option": "tue",
+    "prev": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+    "question": "Q4",
+    "roster_v": 3,
+    "seq": 9,
+    "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:3c9010e538df50cfd6e2348d05d30cf6d8c8be8d84eedadeb3f15a24ec5d9909",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "answer_high_s",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a62363666396662383937333139636461306261373730313566336461613436663537656539643739316463633662643066326366393064636332666434623731222c2268617368223a227368613235363a31656639336566336431386139376164323130333265376239636261313262326435396562376430306463373763306131366438383033616539353630363330222c22686173685f76223a312c226964223a2230314d344a4d364b36475a335143314759444751574737524231222c226f7074696f6e223a22747565222c227175657374696f6e223a225134222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "question": {
+    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "hashed": {
+     "options": [
+      {
+       "key": "mon",
+       "label": "Monday"
+      },
+      {
+       "key": "tue",
+       "label": "Tuesday"
+      }
+     ],
+     "question_id": "9f46c887b5eb07cfec03fd4bdc91eaa8",
+     "text": "Which day?",
+     "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    "qid": "9f46c887b5eb07cfec03fd4bdc91eaa8"
+   },
+   "scenario": "phone_answers_and_creates",
+   "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+   "step": 12,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "hash_v": 1,
+    "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
+    "option": "tue",
+    "question": "Q4",
+    "roster_v": 3,
+    "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+    "type": "question.answered",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71\",\"hash\":\"sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630\",\"hash_v\":1,\"id\":\"01M4JM6K6GZ3QC1GYDGQWG7RB1\",\"option\":\"tue\",\"question\":\"Q4\",\"roster_v\":3,\"sig\":\"Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw\",\"type\":\"question.answered\",\"v\":2}"
+  },
+  {
+   "desc": "ticket.created by the phone: title-only, owner the signer, the exact next key, based_on null",
+   "digest": "sha256:0263b4ba6fa3462a6c30990db96a3334c37dd152db599f34a49c9052b27a1def",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:02:20Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": null,
+    "hash_v": 1,
+    "host_sig": "phHfiSdI6fbhIV0Hxh0E-w7paYN9M8AMgkCMlUkw8lsVE6PPv9z6yYQ77PuZopZEb-hDCfaqbKS-LaO0rpj3TA",
+    "id": "01M4JM6WZ0S049ACN5HG00TH9Q",
+    "key": "DEMO-0002",
+    "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+    "prev": null,
+    "roster_v": 3,
+    "seq": 1,
+    "sig": "SJhWegNpnXDnWyC52jR_PLjh6NeU__evd3t_Hocj31HhO4gqKWACJAz_TXj1x0eoBIzH7V-raRjoOI8HokX86g",
+    "ticket_type": "feature",
+    "title": "Check the tariff seeds",
+    "type": "ticket.created",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:ba42daa05b238b50e96876fdb014604587f6425115f0a97304290e9ccb94802a",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9E",
+   "name": "creation",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a6e756c6c2c22686173685f76223a312c226964223a2230314d344a4d36575a305330343941434e354847303054483951222c226b6579223a2244454d4f2d30303032222c226f776e6572223a22705f3735626637356133626235306230633461633032663861373537623930653233222c22726f737465725f76223a332c227469636b65745f74797065223a2266656174757265222c227469746c65223a22436865636b2074686520746172696666207365656473222c2274797065223a227469636b65742e63726561746564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433945222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "scenario": "phone_answers_and_creates",
+   "sig": "SJhWegNpnXDnWyC52jR_PLjh6NeU__evd3t_Hocj31HhO4gqKWACJAz_TXj1x0eoBIzH7V-raRjoOI8HokX86g",
+   "step": 13,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": null,
+    "hash_v": 1,
+    "id": "01M4JM6WZ0S049ACN5HG00TH9Q",
+    "key": "DEMO-0002",
+    "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+    "roster_v": 3,
+    "sig": "SJhWegNpnXDnWyC52jR_PLjh6NeU__evd3t_Hocj31HhO4gqKWACJAz_TXj1x0eoBIzH7V-raRjoOI8HokX86g",
+    "ticket_type": "feature",
+    "title": "Check the tariff seeds",
+    "type": "ticket.created",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":null,\"hash_v\":1,\"id\":\"01M4JM6WZ0S049ACN5HG00TH9Q\",\"key\":\"DEMO-0002\",\"owner\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"roster_v\":3,\"sig\":\"SJhWegNpnXDnWyC52jR_PLjh6NeU__evd3t_Hocj31HhO4gqKWACJAz_TXj1x0eoBIzH7V-raRjoOI8HokX86g\",\"ticket_type\":\"feature\",\"title\":\"Check the tariff seeds\",\"type\":\"ticket.created\",\"v\":2}"
+  },
+  {
+   "desc": "an answer that survives a why-only re-ask",
+   "digest": "sha256:fcb05c794ff0a38cc02628d6c5ad65380f376d2a88549c771b0a068f461e3106",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:01:10Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "hash_v": 1,
+    "host_sig": "qYpVqLXHvGqp69Zb4FuRhhF8NC6lDboGVwAZ3S3ZzaoulW-s1JxD_94VmTPw7jkY3irDwSHxht3s3EMgocrA0g",
+    "id": "01M4JM4RKGVQ4TR3C35B9M93H3",
+    "option": "a",
+    "prev": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+    "question": "Q1",
+    "roster_v": 3,
+    "seq": 3,
+    "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:7f7b6c141b1500a4c63501fcba655887682f83819ada4d9036859b3cd9c269ea",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "answer_before_why_reask",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a61663436366363353062393034383237633463386364333533646663353731626266383463663930326532613362636461333334323032383365323837643935222c2268617368223a227368613235363a33666432613333386461373864343730316535663663303835303539653164323339316435333366623936313732323936353038373364663865366663316334222c22686173685f76223a312c226964223a2230314d344a4d34524b4756513454523343333542394d39334833222c226f7074696f6e223a2261222c227175657374696f6e223a225131222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "question": {
+    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "hashed": {
+     "options": [
+      {
+       "key": "a",
+       "label": "Alpha"
+      },
+      {
+       "key": "b",
+       "label": "Beta"
+      }
+     ],
+     "question_id": "d60478ec5ff8f6ff213cded9c0f8f243",
+     "text": "Pick one",
+     "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243"
+   },
+   "scenario": "phone_answer_semantics",
+   "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+   "step": 6,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "hash_v": 1,
+    "id": "01M4JM4RKGVQ4TR3C35B9M93H3",
+    "option": "a",
+    "question": "Q1",
+    "roster_v": 3,
+    "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+    "type": "question.answered",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95\",\"hash\":\"sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4\",\"hash_v\":1,\"id\":\"01M4JM4RKGVQ4TR3C35B9M93H3\",\"option\":\"a\",\"question\":\"Q1\",\"roster_v\":3,\"sig\":\"n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA\",\"type\":\"question.answered\",\"v\":2}"
+  },
+  {
+   "desc": "A -> B -> A, then the answer to A signed before B: accepted; based_on is an earlier head",
+   "digest": "sha256:fb0276ac8bc94d01786b8a641428ca746c4d879e1d7c30b451e99559d8ec33b3",
+   "event": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:02:00Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
+    "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+    "hash_v": 1,
+    "host_sig": "L6h9PCZ2LVvHx3dTZgf_RUwI5FRWhYuF3fIT9qS5r6quNqTzdLAlC-iBgz8BW7GpgJGG2iAqHeBmYgZtoCdDxg",
+    "id": "01M4JM5NX0RXR8BEMJ102PTS1Y",
+    "option": "go",
+    "prev": "sha256:d6f60931f9addb97ebc5152e500b9ca634dfd1675392c875ec846ae64da1a6b9",
+    "question": "Q2",
+    "roster_v": 3,
+    "seq": 8,
+    "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "head": "sha256:5011219ac18b0f014ceaf1afe1ecd432948e9315eb906432fa9982f268e678ba",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "delayed_answer_after_a_b_a",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a61303330356434613433633162323239326161383134346133353530376231643565616265613136363639333337616135343965346462643930663438613637222c2268617368223a227368613235363a34626335666133636439623965356636636666656330373138656431396339343065363038323962353363313761323634343630613335346335653235393434222c22686173685f76223a312c226964223a2230314d344a4d354e58305258523842454d4a3130325054533159222c226f7074696f6e223a22676f222c227175657374696f6e223a225132222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "question": {
+    "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+    "hashed": {
+     "options": [
+      {
+       "key": "go",
+       "label": "Go"
+      },
+      {
+       "key": "wait",
+       "label": "Wait"
+      }
+     ],
+     "question_id": "72a37c42fc71091868c10ceed59ddd24",
+     "text": "Go or wait?",
+     "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    "qid": "72a37c42fc71091868c10ceed59ddd24"
+   },
+   "scenario": "phone_answer_semantics",
+   "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+   "step": 11,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
+    "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+    "hash_v": 1,
+    "id": "01M4JM5NX0RXR8BEMJ102PTS1Y",
+    "option": "go",
+    "question": "Q2",
+    "roster_v": 3,
+    "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+    "type": "question.answered",
+    "v": 2
+   },
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67\",\"hash\":\"sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944\",\"hash_v\":1,\"id\":\"01M4JM5NX0RXR8BEMJ102PTS1Y\",\"option\":\"go\",\"question\":\"Q2\",\"roster_v\":3,\"sig\":\"qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ\",\"type\":\"question.answered\",\"v\":2}"
+  }
+ ],
+ "digest": "\"sha256:\" + hex(sha256(person_signing_bytes)), where person_signing_bytes = \"orch/v2/sig/ticket-event|\" || cj({\"contract\":1, \"event\":E, \"log\":uid, \"suite\":2, \"workspace_id\":W}) and E is the submitted form without sig (11A.14 14.2, 14.4)",
+ "keys": {
+  "dk_lena1": {
+   "pub_b64u": "BAAqPda-S695x08QBckUQMV2AglUMT8Y5yq57pu8wyCZnyHo1QrmNAzup8JXqewAFFKQ6VnP5Kq8GMNfZeWI0sY",
+   "scalar_hex": "314a13932eb4ab61500632955027d4751f5766050a14015cf5bbad2fc01d895b"
+  },
+  "dk_mara1": {
+   "pub_b64u": "BHdTNrzFC_Z_T_TgrLfcnUV66UtadIC1wF-BvBSaejtOtFzCvjiMp43vyt7x9weta7ZyJcxyT4B5ggKsTfdEie8",
+   "scalar_hex": "087b27dc9f6eb99f5b6bda86b858de1bab13bae986c59f3331af99edb7d855a3"
+  },
+  "dk_sev1": {
+   "pub_b64u": "BEtUkscP1t-MK_B-LkrM8KwbVTJ2kwZBYo-4vnk4QSaltalieRixn4XJf8Z2jR5y10cpdvNZ1i-70-cvOz5Wlwo",
+   "scalar_hex": "48c2500dcbd94eebc748c42ae1d48f875ca0daea39987c75d52fa68d266b55a2"
+  },
+  "dk_sevp1": {
+   "pub_b64u": "BGyfxShXXqBmtt_U7Fg_GayzupXs_ijPuguYSe3XltKI8-NRdaqfkdPxX6o_AZawRyomkqg-ykji9TgYl5TsjbQ",
+   "scalar_hex": "d9f87a8bc18aa90e3c19a8aeaaa25bb59855ba63064068c73402d85f76d377c6"
+  },
+  "id_of": {
+   "d_sev1": "d_c65032f21d43401cc223b05723c1e5b4",
+   "d_sevp1": "d_762df76def3afcc7bfc48dbc595f8add",
+   "p_mara": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+   "p_sev": "p_75bf75a3bb50b0c4ac02f8a757b90e23"
+  },
+  "pk_lena": {
+   "pub_b64u": "BAoPza8kl-gXxaP7-Qc17lCTIw6H7vxUpVcgi6ai9wZ3jDRClQu1bQ9VmPrAqbVtoqkhi3VMVyu7SwpHydtPWGA",
+   "scalar_hex": "cb008c1e47a5919f2cd2d6134240254ba9ae59356b9897f1c9ef21f3ad42204d"
+  },
+  "pk_mara": {
+   "pub_b64u": "BI14lIzDuy3ZvsMm9bkLZdzvYh9pT6NacDmef4dgenr0c78HIZjtcHf2lvbVlmMxv6lX0LXFgD8rCZLcoL_KJig",
+   "scalar_hex": "58172d0144b2b331cba5205954b5e1248f527598fe11a52ad5fd59a0ef17ce55"
+  },
+  "pk_sev": {
+   "pub_b64u": "BE9dWaAeWZ2MzJFlmbGeznA13dLlTv6B-2J8IC9YY9JFKzQFCcDEj0hVZhaSrJCcxP-1v9g2FRp2zo2eTKSQe94",
+   "scalar_hex": "2e053cbecf25bfd42818a9179f199d56260e4e8084af181db24f2b92e8d79449"
+  },
+  "wsk": {
+   "pub_b64u": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro",
+   "scalar_hex": "8fc0795565006462bcf551cf7aad93c45018e458c6fe21817356294dcf3978c8"
+  }
+ },
+ "note": "TEST KEYS ONLY. Every private scalar below is derived from the key name as sha256('orch-f1-test-key|' + name) mod (n-1) + 1 and is published on purpose; the signatures are RFC 6979 (deterministic), so consumers verify the stored signature and never re-sign.",
+ "phone": {
+  "added_by": "device.added signed by dk_sev1",
+  "column_r_auth": [
+   "secure-enclave-unlocked",
+   "passphrase"
+  ],
+  "device": "d_762df76def3afcc7bfc48dbc595f8add",
+  "key": "dk_sevp1",
+  "person": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+  "scopes_max": [
+   "look",
+   "decide"
+  ]
+ },
+ "pins": "phone person events over relay.submit (orch-v2-host 11A.14): question.answered and ticket.created signed by a phone (dk_sevp1, scopes look+decide) under signed-event contract 1; per accepted case the submitted form (no seq, at, prev, ws_seq, host_sig), the signing bytes, the signed-content digest, sig, the appended event and its head; refusals; semantics pins (why-only re-ask, A -> B -> A)",
+ "refused": [
+  {
+   "code": "question.stale",
+   "desc": "the signed hash is not the question's current hash",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "question_stale",
+   "scenario": "phone_answers_and_creates",
+   "step": 15,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+    "hash": "sha256:a337d899f83dd995c52a48824b850dd243a8854444637521e972a5d97cc51e80",
+    "hash_v": 1,
+    "id": "01M4JM7GG0ANKQJJW2S87CB6J0",
+    "option": "ch",
+    "question": "Q5",
+    "roster_v": 3,
+    "sig": "2FF0CkSDyqyiM9g5UtD18Ubc7Bl73gBTyx0Qewc7XTERxgGSaSeZo-FQXxANwEXnySPYVuxEfElwVx21Ha_74Q",
+    "type": "question.answered",
+    "v": 2
+   }
+  },
+  {
+   "code": "members.stale",
+   "desc": "roster_v is not the current member-list version (C-auto: re-sign with members_v)",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "members_stale",
+   "scenario": "phone_answers_and_creates",
+   "step": 16,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+    "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+    "hash_v": 1,
+    "id": "01M4JM7T8GD7HNY9XB0RFQQQHW",
+    "option": "ch",
+    "question": "Q5",
+    "roster_v": 2,
+    "sig": "ytn4Iab7np6apvaEV0czrCXFk7ZCZQ2VrixwImgQr0gkMjQ0Qlcl99k3-KM3PAPtdge6Y1wloDXn64qq5q0Zew",
+    "type": "question.answered",
+    "v": 2
+   }
+  },
+  {
+   "code": "event.bad_base",
+   "desc": "based_on is not the head of an earlier event of the log",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "bad_base",
+   "scenario": "phone_answers_and_creates",
+   "step": 17,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:abababababababababababababababababababababababababababababababab",
+    "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+    "hash_v": 1,
+    "id": "01M4JM8410RKHM15S2RTK81G49",
+    "option": "ch",
+    "question": "Q5",
+    "roster_v": 3,
+    "sig": "qDztjeJrdK5ifqd3VF9yO07jCt1YuEGbQqtiECqYF3SQ_iCgWo9jSYcR5GvadzzpSA1BonPh9pUL6FBV52wSbw",
+    "type": "question.answered",
+    "v": 2
+   }
+  },
+  {
+   "code": "sig.invalid",
+   "desc": "the signature does not verify under the phone's dk_sig_pub",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "sig_invalid",
+   "scenario": "phone_answers_and_creates",
+   "step": 18,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+    "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+    "hash_v": 1,
+    "id": "01M4JM8DSG82HRH9RXRPTBGK9E",
+    "option": "ch",
+    "question": "Q5",
+    "roster_v": 3,
+    "sig": "EMT0BCShPnKQZDsxSYjZrXKaN3vVboD9zNf42oUMSSTGMZ1AuH3idOIyY1nHvwDViqFYXyVI5XA2XMH4EgWT2A",
+    "type": "question.answered",
+    "v": 2
+   }
+  },
+  {
+   "code": "device.scope",
+   "desc": "the phone's certificate (look, decide) lacks operate",
+   "log": "workspace",
+   "name": "device_scope",
+   "scenario": "phone_answers_and_creates",
+   "step": 19,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:afa0a30b9513ec41ed803a0c64f188db3f0c003086605f28a03e31410ffda1fc",
+    "hash_v": 1,
+    "id": "01M4JM8QJ0SDY8Z529366DX51R",
+    "roster_v": 3,
+    "set": {
+     "grant_hours": 4
+    },
+    "sig": "f8sCDOHA5j2QaTbRoZsEd3C41kshd2Grqh65fH5n0cnzEHT2Amijaghz2K5eqg60Hmh-tuZR353fghAFpCMFAQ",
+    "type": "settings.changed",
+    "v": 2
+   }
+  },
+  {
+   "code": "event.duplicate_id",
+   "desc": "the same id twice; the content is identical, only the signature bytes differ (dedup is by content, never by signature)",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "duplicate_id",
+   "scenario": "phone_answers_and_creates",
+   "step": 20,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "hash_v": 1,
+    "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
+    "option": "tue",
+    "question": "Q4",
+    "roster_v": 3,
+    "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3Usd6c_TZSRFBropclgZpnFuVmFQogNfgh6F6E4aF-4gg",
+    "type": "question.answered",
+    "v": 2
+   }
+  },
+  {
+   "code": "ticket.exists",
+   "desc": "the model refuses a taken key with ticket.exists; on relay.submit L5 answers ticket.key_not_next first",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9F",
+   "name": "taken_key",
+   "scenario": "phone_answers_and_creates",
+   "step": 21,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": null,
+    "hash_v": 1,
+    "id": "01M4JM9B30BTVZ8A9MG2N1KD1T",
+    "key": "DEMO-0001",
+    "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+    "roster_v": 3,
+    "sig": "kYLZQVwQ9Uvj049oCWg-q8tlEB7RCWhTJPZIqIOxwtP82jLo2Zv-NlhSV2_84WdmRzzsa_NJ_BcEU8wlcig5BQ",
+    "ticket_type": "bug",
+    "title": "Another",
+    "type": "ticket.created",
+    "v": 2
+   }
+  },
+  {
+   "code": "event.duplicate_id",
+   "desc": "an abandoned phone answer replayed: same id, signature and based_on",
+   "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+   "name": "abandoned_replayed",
+   "scenario": "phone_abandoned_answer_replayed",
+   "see_also": "questions.json:question_replayed_decision_after_restore",
+   "step": 7,
+   "submitted": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "hash_v": 1,
+    "id": "01M4JM4RKGXDCVW0ESMRF6CT8H",
+    "option": "b",
+    "question": "Q1",
+    "roster_v": 3,
+    "sig": "85HHTW48UylAiL-zmnTfv6Lsjz0Y1aL2_8RlBUyEEYDcxMRBuLBOPtjtFobVL6B0AkoWOh8JxfL0sig0jYdH6w",
+    "type": "question.answered",
+    "v": 2
+   }
+  }
+ ],
+ "scenarios": [
+  {
+   "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+   "name": "phone_answers_and_creates",
+   "now": "2026-10-10T10:04:40Z",
+   "pins": "a phone (look, decide) answers questions and creates a ticket; refusals break one rule each",
+   "steps": [
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:10Z",
+      "auth": "passphrase",
+      "based_on": null,
+      "delegation": {
+       "o": {
+        "client_hosted": false,
+        "issued_ms": 1790000000000,
+        "kind": "ws_delegation",
+        "owner_person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "suite": 2,
+        "v": 2,
+        "workspace_id": "0123456789abcdef0123456789abcdef",
+        "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+       },
+       "sig": "NwRve78-SgAnF30XOlRhDEb9KlCWIYBu5xXmOkGOE6vn70YeyeOXOcF6liH50gz6SfJNWTgZ2wi_KZc-DWXxMA"
+      },
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "c65032f21d43401cc223b05723c1e5b4",
+        "dk_kx_pub": "BFeVKX_gphRxHCfh2Uw6UQVtj12_1v9LteaSfrwG6oH3QG8yDkYojB0rOpi7i-NDHC0PY47WHle_uYaQHjI534c",
+        "dk_sig_pub": "BEtUkscP1t-MK_B-LkrM8KwbVTJ2kwZBYo-4vnk4QSaltalieRixn4XJf8Z2jR5y10cpdvNZ1i-70-cvOz5Wlwo",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgc2V2MQ",
+        "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "GMFk6HGDHI919l9dSkUuvlioYdJz-QzNR-qUAQ4kPhZevsgiEZBTlZr2SAIfUiNASTIzsMW_c_8yTbnW8kuMfQ"
+      },
+      "hash_v": 1,
+      "host_id": "h_01J9ZK00000000000000000H01",
+      "host_sig": "gmxYcJawrdR5RQtoujxISFmEW9vXbA_mpXUlFxD1oZi3kdmCMxSGUfLG541ft451incilUCTzJILGo1V056HSA",
+      "id": "01J9ZK00000000000000000001",
+      "owner": {
+       "name": "Sev",
+       "person": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "pk_pub": "BE9dWaAeWZ2MzJFlmbGeznA13dLlTv6B-2J8IC9YY9JFKzQFCcDEj0hVZhaSrJCcxP-1v9g2FRp2zo2eTKSQe94"
+      },
+      "prefix": "DEMO",
+      "prev": null,
+      "roster_v": 0,
+      "seq": 1,
+      "sig": "r5ahD9lncKkFZNVB021B3asYYRDKE8cRMWC2GJofmqLsev3YOf3LT2ZEx4QRhYGGwrcwPRee4pMy8GfA8GctHA",
+      "type": "workspace.created",
+      "v": 2,
+      "workspace_id": "0123456789abcdef0123456789abcdef",
+      "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:20Z",
+      "auth": "passphrase",
+      "based_on": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "7efc1ba896b95f9151978a1dad982e3a",
+        "dk_kx_pub": "BN7s8d4XzDSnOKNlCU8mCWaY3E3S7C3L9iZYzKbWeF222lVSoJyTrFmDFYC_Rk6rKWHos9s8Cf_UE2usnfHJS58",
+        "dk_sig_pub": "BHdTNrzFC_Z_T_TgrLfcnUV66UtadIC1wF-BvBSaejtOtFzCvjiMp43vyt7x9weta7ZyJcxyT4B5ggKsTfdEie8",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgbWFyYTE",
+        "person_id": "6aae5cce832160e6f8cd9dadfbb4c5cd",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "Ic4FvQ_KyDG9vUYVTp0f2zaZwBZ6HQk304uS9gtGVifSivw9sm187vDcmH5z9ZLnZojl6xeS6jAqBc6iwEF-8g"
+      },
+      "hash_v": 1,
+      "host_sig": "ORQ1vySOd6Anc5kH-dFm6hbdY7fOHLN-Z_Pj3gvy72Zk5SV2vHj2B-77tRXUfkbhSD2gFVRUAsal68yxy6Go1A",
+      "id": "01J9ZK00000000000000000002",
+      "name": "Mara",
+      "person": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "pk_pub": "BI14lIzDuy3ZvsMm9bkLZdzvYh9pT6NacDmef4dgenr0c78HIZjtcHf2lvbVlmMxv6lX0LXFgD8rCZLcoL_KJig",
+      "prev": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+      "role": "maintainer",
+      "roster_v": 1,
+      "seq": 2,
+      "sig": "IZhtFLpjND8rsczvMJrLcn6BZ00jO52rdr4y4Czl0_zyf8KMIzHNswq4qcHwl5bchyiui63b_zu-BZQYBXvPMg",
+      "type": "member.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:30Z",
+      "auth": "passphrase",
+      "based_on": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "a6dc67f56b74e07ca65b035348e03bc0",
+        "dk_kx_pub": "BIlUSKpH5g9UpFflsUrYfy8c7ncIRHcJp2ORIDBUDb8S4SQtpy-EAPsSOgwT5nGhQApdzXloHjknkHiRsRkpcgc",
+        "dk_sig_pub": "BAAqPda-S695x08QBckUQMV2AglUMT8Y5yq57pu8wyCZnyHo1QrmNAzup8JXqewAFFKQ6VnP5Kq8GMNfZeWI0sY",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgbGVuYTE",
+        "person_id": "6ce6085b169e8ee5111456b91dc4ae3c",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "3LAHSi-Droiur4llCSuUzsq6jxSWmpqmsak7L9vbNi82dp2nTr1rQXwE_-hRJ0ntDsrf8ER3KDThWYolZaabwQ"
+      },
+      "hash_v": 1,
+      "host_sig": "EA-9Usrmdg0-x9yGzKQ9fUrLFHcWQ7OojlVX0T5Y16oVCLalXAx1etcAeucJGcDE79aUcfj0SJ18EbEp412hlQ",
+      "id": "01J9ZK00000000000000000003",
+      "name": "Lena",
+      "person": "p_6ce6085b169e8ee5111456b91dc4ae3c",
+      "pk_pub": "BAoPza8kl-gXxaP7-Qc17lCTIw6H7vxUpVcgi6ai9wZ3jDRClQu1bQ9VmPrAqbVtoqkhi3VMVyu7SwpHydtPWGA",
+      "prev": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+      "role": "member",
+      "roster_v": 2,
+      "seq": 3,
+      "sig": "owHOjIygxUy0YeMbo0Ue0SUblTWeECYfviuJYl_mi2RY016IdrzPWU1GFOMrpqgqV0F1sEj2yh_5bydj-WPfWw",
+      "type": "member.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:40Z",
+      "auth": "passphrase",
+      "based_on": null,
+      "hash_v": 1,
+      "host_sig": "s0poqc_6VJw8Tdg0CAcYmQKy6UHwtywB1MtWu3jqPrs4YYCjrBM7caCwrHiIgH0SmPFA25T6o6w5nMMqz64yCg",
+      "id": "01J9ZK00000000000000000004",
+      "key": "DEMO-0001",
+      "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "prev": null,
+      "roster_v": 3,
+      "seq": 1,
+      "sig": "nJkkJQ7f_9NFgpCTnjjb-4odfh5_zh60gDZLp2GC1uklrBibTx6Pq-6bO9ynzzaKTSM22mXYpgn9TGc7IWcNdw",
+      "ticket_type": "feature",
+      "title": "A ticket",
+      "type": "ticket.created",
+      "v": 2,
+      "ws_seq": 3
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:50Z",
+      "auth": "passphrase",
+      "based_on": "sha256:709c05a8ff7fdfafa2b1bd09beaa6c3ff095fedbb26662e7976b8b800a8c8920",
+      "cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "762df76def3afcc7bfc48dbc595f8add",
+        "dk_kx_pub": "BMer0sSQz0g_20dVaq_5xc8W0AD5fhUMoA2hsQ8xSWbE0Vcu1rq65UATzC4MBP-eofbxYSjIOJvSlfTcHQZBs0Y",
+        "dk_sig_pub": "BGyfxShXXqBmtt_U7Fg_GayzupXs_ijPuguYSe3XltKI8-NRdaqfkdPxX6o_AZawRyomkqg-ykji9TgYl5TsjbQ",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgc2V2cDE",
+        "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "scopes_max": [
+         "look",
+         "decide"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "P_4RQ_p7FHrtbk9mn4Tn0ZJiWcTKtDc_s7pBVHwtMLFD1umlbMIhXwEsYRECr38XA_q6w3SsS6A9P0sddPvoVg"
+      },
+      "device": "d_762df76def3afcc7bfc48dbc595f8add",
+      "hash_v": 1,
+      "host_sig": "Dkf9anvRtXCl5YQ2aZg6osMRVax8tpzTJSmBKeYTIbzW8SNaXBhgVywZj27zKLMRfaWm68jOPjcySY0PJ6HN0Q",
+      "id": "01J9ZK00000000000000000005",
+      "prev": "sha256:709c05a8ff7fdfafa2b1bd09beaa6c3ff095fedbb26662e7976b8b800a8c8920",
+      "roster_v": 3,
+      "seq": 4,
+      "sig": "YhatixaBgnUZm7cXd_ocsfzwH-bnQcg4uaowAEDZ8skOdPxToKVojwpgrJQv4l92O3FNH2JuGfD2RDmTMbmrag",
+      "type": "device.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace",
+     "note": "sev1 adds sev's phone sevp1, certified for look and decide only"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:00Z",
+      "auth": "passphrase",
+      "based_on": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
+      "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+      "hash_v": 1,
+      "host_sig": "CpxzDF0tFNzXKGHAsIHwsk_rrtcNMpR9LqE6v698XErhuOWnwgl4fmoYkX40UH-VJynopBNPCsEh20dFEuIDDg",
+      "id": "01J9ZK00000000000000000006",
+      "prev": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
+      "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+      "question": {
+       "blocking": true,
+       "id": "Q1",
+       "options": [
+        {
+         "cost": "\u00bd Tag, CHF 400",
+         "key": "csv",
+         "label": "Monatliche CSV-Datei (\u00bd Tag)"
+        },
+        {
+         "key": "api",
+         "label": "Tarif-API \u2713"
+        }
+       ],
+       "text": "Welcher Tarif-Export gilt? Gr\u00f6\u00dfe \u2264 5 MB \u2014 Z\u00fcrich \u00e9t\u00e9",
+       "to": "ticket_owner",
+       "why": "Seeds"
+      },
+      "roster_v": 3,
+      "seq": 2,
+      "sig": "fIwZl2vvqqf1_bSi98DMX2uAG5yPb-BgWyWV112qXNfl_EUL0mnZ79__smPeYHuK9DxlQt2mWkQmrxEAQpgSCw",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "a non-ASCII question; the first option has a cost"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:10Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+      "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+      "hash_v": 1,
+      "host_sig": "4-G4-CNJphDc0Qip9UQ_t9egt2_6BqGgZRBFNXVGD-iVUbwfgcSNIhT-PNCxet3kQ2hhaxo5eDpt5sOojZvbvA",
+      "id": "01M4JM4RKG79RG3QTWCP60NNNG",
+      "option": "csv",
+      "prev": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+      "question": "Q1",
+      "roster_v": 3,
+      "seq": 3,
+      "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the phone answers with the costed option"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:20Z",
+      "auth": "passphrase",
+      "based_on": "sha256:0d214d9e29153a0b4bb1eda3b3a5c47ca33f0d91547ba6234f1a60db792af3a2",
+      "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+      "hash_v": 1,
+      "host_sig": "qU1XVNQ8w0IJ0OBXCDaOvZznmZ9b0iQJrQmG_rISFjK1tolanry-g2qJ3dk98EJK_2e4zAVpI_Q2TnC24sxf2w",
+      "id": "01J9ZK00000000000000000007",
+      "prev": "sha256:0d214d9e29153a0b4bb1eda3b3a5c47ca33f0d91547ba6234f1a60db792af3a2",
+      "qid": "72a37c42fc71091868c10ceed59ddd24",
+      "question": {
+       "blocking": true,
+       "id": "Q2",
+       "text": "Anything else we should know?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 4,
+      "sig": "yVyV9QI8iZgGb7ZL-1AFUFBFBr0hPpoqNWFIb8hWOg4FE42PJBQUstHFSH5d9OfEsCMxNX1y5rclQ_0UoUfR4w",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "a question with no options: ticket.get omits options, the hash uses []"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:30Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+      "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+      "hash_v": 1,
+      "host_sig": "Ne9PN7PHTBzZj3H7W2MCZfUq5HyxuZzWfRpTfH1p534gt0OrW9v_izNUNLRIjrC74qMmbKX-lGGLT_voiuYF7A",
+      "id": "01M4JM5C4GESP1D60PNEQA8N0A",
+      "prev": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+      "question": "Q2",
+      "roster_v": 3,
+      "seq": 5,
+      "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+      "text": "Keep\tthe old seeds",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "a text answer with a TAB"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:40Z",
+      "auth": "passphrase",
+      "based_on": "sha256:cd12d33d426c84467b8bb3ef10d1012f7dc6a7984f5168f65cf442a42c2c7073",
+      "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+      "hash_v": 1,
+      "host_sig": "-nifyOZH3J7vXsf-O-wTj3PmRXlNk5_fed2W0q1kTFzwg_Q7giBpZdF8Rrzbnl17eCDmyamaRMz1sA7modUP0w",
+      "id": "01J9ZK00000000000000000008",
+      "prev": "sha256:cd12d33d426c84467b8bb3ef10d1012f7dc6a7984f5168f65cf442a42c2c7073",
+      "qid": "61fe62456d362fdf6813f8ce89600141",
+      "question": {
+       "blocking": true,
+       "id": "Q3",
+       "options": [
+        {
+         "key": "yes",
+         "label": "Yes"
+        },
+        {
+         "key": "no",
+         "label": "No"
+        }
+       ],
+       "text": "Ship it?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 6,
+      "sig": "3-dHq56w38JVSR4gyL4Z11Zuim78QsWLAmo_8-jINf4OSfz7ZVHjCT_HNP9blgM5s9KTJNB8pQgOJDeKBI9H0w",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "a plain question"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:50Z",
+      "auth": "passphrase",
+      "based_on": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+      "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+      "hash_v": 1,
+      "host_sig": "4HQ2VtkbET7D33JkXxBKQFMBqI-FbLmbQt2MoNqgwBVspVwa6FjNb8pqMqKwlx-tvRoD6W-RrE48i13zDaTQMg",
+      "id": "01M4JM5ZNG61PSJPK451QT68KK",
+      "option": "yes",
+      "prev": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+      "question": "Q3",
+      "roster_v": 3,
+      "seq": 7,
+      "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "a Simulator/dev build: passphrase custody, honestly declared"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:00Z",
+      "auth": "passphrase",
+      "based_on": "sha256:8184be3149b002489b130d58f0a179eebfde54bab0e262a2b2b2c06955331a03",
+      "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+      "hash_v": 1,
+      "host_sig": "X6OFpEgxcUhIuwD2HwDtTq0eEb8kd6ECeqU5v909yqq5yGc8eOeY893vyxwJjgkGLW_HCEBaRA6gB-BgrJvmXA",
+      "id": "01J9ZK00000000000000000009",
+      "prev": "sha256:8184be3149b002489b130d58f0a179eebfde54bab0e262a2b2b2c06955331a03",
+      "qid": "9f46c887b5eb07cfec03fd4bdc91eaa8",
+      "question": {
+       "blocking": true,
+       "id": "Q4",
+       "options": [
+        {
+         "key": "mon",
+         "label": "Monday"
+        },
+        {
+         "key": "tue",
+         "label": "Tuesday"
+        }
+       ],
+       "text": "Which day?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 8,
+      "sig": "X_NouK3lcJ-TcHuTPRsqLcue8KiLWx1LnAe502wgErnmfLLq3sGzfFarzVG_J4xEc6s2Sa1HUJbPzB69N9wtKA",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "another question"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:10Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+      "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+      "hash_v": 1,
+      "host_sig": "7KFad4xG1XP3uz-xFTA4j48oAFfAVDno0ftp5ht3mnFHMeDWkFr38HSF73VdmholJOebT_aaXUZIPxR3sk0s2g",
+      "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
+      "option": "tue",
+      "prev": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+      "question": "Q4",
+      "roster_v": 3,
+      "seq": 9,
+      "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "a high-s signature (s > n/2): accepted, F1 never normalises s"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:20Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": null,
+      "hash_v": 1,
+      "host_sig": "phHfiSdI6fbhIV0Hxh0E-w7paYN9M8AMgkCMlUkw8lsVE6PPv9z6yYQ77PuZopZEb-hDCfaqbKS-LaO0rpj3TA",
+      "id": "01M4JM6WZ0S049ACN5HG00TH9Q",
+      "key": "DEMO-0002",
+      "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "prev": null,
+      "roster_v": 3,
+      "seq": 1,
+      "sig": "SJhWegNpnXDnWyC52jR_PLjh6NeU__evd3t_Hocj31HhO4gqKWACJAz_TXj1x0eoBIzH7V-raRjoOI8HokX86g",
+      "ticket_type": "feature",
+      "title": "Check the tariff seeds",
+      "type": "ticket.created",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9E",
+     "note": "the phone creates DEMO-0002: based_on null, seq 1"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:30Z",
+      "auth": "passphrase",
+      "based_on": "sha256:3c9010e538df50cfd6e2348d05d30cf6d8c8be8d84eedadeb3f15a24ec5d9909",
+      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "hash_v": 1,
+      "host_sig": "0ubloYwQgz_z0_yeF8bgThtjEqRQGtm0BpnUTF36XfIPeiFihzsCjIXrG4HRBHXuRvCPGYLYXxiTmz94nZvyVg",
+      "id": "01J9ZK0000000000000000000A",
+      "prev": "sha256:3c9010e538df50cfd6e2348d05d30cf6d8c8be8d84eedadeb3f15a24ec5d9909",
+      "qid": "f4ae0da5340793ac2e10e82ea700f3c1",
+      "question": {
+       "blocking": true,
+       "id": "Q5",
+       "options": [
+        {
+         "key": "ch",
+         "label": "Switzerland"
+        },
+        {
+         "key": "de",
+         "label": "Germany"
+        }
+       ],
+       "text": "Which region?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 10,
+      "sig": "zo-FABbrjMacO-C-qsOlieP6-BSzkE5ZF8o3ksWWmjIsS6snSrGJ-BuxD7t3gS58IdwLbYuPGuFX9wi-zTT8kQ",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "an open question"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:40Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "hash": "sha256:a337d899f83dd995c52a48824b850dd243a8854444637521e972a5d97cc51e80",
+      "hash_v": 1,
+      "host_sig": "Wbda8Z_leOeIxDA-F2iikSiT_y6N8rN5uN7r1OzfJ1LrCU2IO15ZOJHQN3sThGk5dZfVWlAs0O2oiRkHbcZNRQ",
+      "id": "01M4JM7GG0ANKQJJW2S87CB6J0",
+      "option": "ch",
+      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "question": "Q5",
+      "roster_v": 3,
+      "seq": 11,
+      "sig": "2FF0CkSDyqyiM9g5UtD18Ubc7Bl73gBTyx0Qewc7XTERxgGSaSeZo-FQXxANwEXnySPYVuxEfElwVx21Ha_74Q",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "question.stale",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the hash of content the phone saw before a re-ask"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:50Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "hash_v": 1,
+      "host_sig": "mk5fbsmTEx1IkjJyJmJ1ks5np8lvFm4y4EjcYRX5lPrIRtcu66gaDP1ryHf1vyNPKYgKxMOF5kyRuuNOW4M0Bw",
+      "id": "01M4JM7T8GD7HNY9XB0RFQQQHW",
+      "option": "ch",
+      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "question": "Q5",
+      "roster_v": 2,
+      "seq": 11,
+      "sig": "ytn4Iab7np6apvaEV0czrCXFk7ZCZQ2VrixwImgQr0gkMjQ0Qlcl99k3-KM3PAPtdge6Y1wloDXn64qq5q0Zew",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "members.stale",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "an older roster version"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:03:00Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:abababababababababababababababababababababababababababababababab",
+      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "hash_v": 1,
+      "host_sig": "Wwuab7aNInh3ETm_fnnHb7IDjv8tHUZZvxD3cXeGMc4bioRfrdj9cYNWQ8mCgETo7UiOsdDMq5O-r_Jtr5cXeQ",
+      "id": "01M4JM8410RKHM15S2RTK81G49",
+      "option": "ch",
+      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "question": "Q5",
+      "roster_v": 3,
+      "seq": 11,
+      "sig": "qDztjeJrdK5ifqd3VF9yO07jCt1YuEGbQqtiECqYF3SQ_iCgWo9jSYcR5GvadzzpSA1BonPh9pUL6FBV52wSbw",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "event.bad_base",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "based_on is no head of this log"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:03:10Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "hash_v": 1,
+      "host_sig": "wNccq2rJr4Kdt0V4UmUXO-V1DWqsgKMSQ2WFIG208oW9GopVW2S7ekwj2j0jEQTXYvEcYaFui3kDoC8vzLwxvQ",
+      "id": "01M4JM8DSG82HRH9RXRPTBGK9E",
+      "option": "ch",
+      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "question": "Q5",
+      "roster_v": 3,
+      "seq": 11,
+      "sig": "EMT0BCShPnKQZDsxSYjZrXKaN3vVboD9zNf42oUMSSTGMZ1AuH3idOIyY1nHvwDViqFYXyVI5XA2XMH4EgWT2A",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "sig.invalid",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "signed by sev1 while actor.device names the phone"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:03:20Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:afa0a30b9513ec41ed803a0c64f188db3f0c003086605f28a03e31410ffda1fc",
+      "hash_v": 1,
+      "host_sig": "uyxyZqVpI5hyNcJ6iUoLTwHBUx6uAm2d24lEV-ebJjzgae54LwZg6cwHH8JND195nNoD_bYJsaL3-MA9vnCgHg",
+      "id": "01M4JM8QJ0SDY8Z529366DX51R",
+      "prev": "sha256:afa0a30b9513ec41ed803a0c64f188db3f0c003086605f28a03e31410ffda1fc",
+      "roster_v": 3,
+      "seq": 5,
+      "set": {
+       "grant_hours": 4
+      },
+      "sig": "f8sCDOHA5j2QaTbRoZsEd3C41kshd2Grqh65fH5n0cnzEHT2Amijaghz2K5eqg60Hmh-tuZR353fghAFpCMFAQ",
+      "type": "settings.changed",
+      "v": 2
+     },
+     "expect": "device.scope",
+     "log": "workspace",
+     "note": "an operate event: the phone's certificate has no operate"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:03:30Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+      "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+      "hash_v": 1,
+      "host_sig": "BfsPr51TRCrSI2Ajr4MXxJXC4t-zOy926O5OtOZTtxbrLAKWtXAJJGnytJxnM4r4sC26j_oPenCD1TFnJ-yRzA",
+      "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
+      "option": "tue",
+      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "question": "Q4",
+      "roster_v": 3,
+      "seq": 11,
+      "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3Usd6c_TZSRFBropclgZpnFuVmFQogNfgh6F6E4aF-4gg",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "event.duplicate_id",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the high-s answer again with its low-s signature: same id"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:03:40Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": null,
+      "hash_v": 1,
+      "host_sig": "Ey4lgadvO_pII-3pFqOPooeT32hzOUz3apcSicQATnBACZhBy0jLZy_pl4zdjp07O0SAA7VKiUKDoJoV-9nVFw",
+      "id": "01M4JM9B30BTVZ8A9MG2N1KD1T",
+      "key": "DEMO-0001",
+      "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "prev": null,
+      "roster_v": 3,
+      "seq": 1,
+      "sig": "kYLZQVwQ9Uvj049oCWg-q8tlEB7RCWhTJPZIqIOxwtP82jLo2Zv-NlhSV2_84WdmRzzsa_NJ_BcEU8wlcig5BQ",
+      "ticket_type": "bug",
+      "title": "Another",
+      "type": "ticket.created",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ticket.exists",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9F",
+     "note": "a taken key at model level (the host answers ticket.key_not_next before the model, 14.6 L5)"
+    }
+   ],
+   "workspace_id": "0123456789abcdef0123456789abcdef"
+  },
+  {
+   "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+   "name": "phone_answer_semantics",
+   "now": "2026-10-10T10:03:00Z",
+   "pins": "only text and options are bound: a why-only re-ask keeps the answer; A -> B -> A clears it, and a delayed answer to A (signed before B, based_on the head it reviewed) is then accepted",
+   "steps": [
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:10Z",
+      "auth": "passphrase",
+      "based_on": null,
+      "delegation": {
+       "o": {
+        "client_hosted": false,
+        "issued_ms": 1790000000000,
+        "kind": "ws_delegation",
+        "owner_person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "suite": 2,
+        "v": 2,
+        "workspace_id": "0123456789abcdef0123456789abcdef",
+        "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+       },
+       "sig": "NwRve78-SgAnF30XOlRhDEb9KlCWIYBu5xXmOkGOE6vn70YeyeOXOcF6liH50gz6SfJNWTgZ2wi_KZc-DWXxMA"
+      },
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "c65032f21d43401cc223b05723c1e5b4",
+        "dk_kx_pub": "BFeVKX_gphRxHCfh2Uw6UQVtj12_1v9LteaSfrwG6oH3QG8yDkYojB0rOpi7i-NDHC0PY47WHle_uYaQHjI534c",
+        "dk_sig_pub": "BEtUkscP1t-MK_B-LkrM8KwbVTJ2kwZBYo-4vnk4QSaltalieRixn4XJf8Z2jR5y10cpdvNZ1i-70-cvOz5Wlwo",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgc2V2MQ",
+        "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "GMFk6HGDHI919l9dSkUuvlioYdJz-QzNR-qUAQ4kPhZevsgiEZBTlZr2SAIfUiNASTIzsMW_c_8yTbnW8kuMfQ"
+      },
+      "hash_v": 1,
+      "host_id": "h_01J9ZK00000000000000000H01",
+      "host_sig": "gmxYcJawrdR5RQtoujxISFmEW9vXbA_mpXUlFxD1oZi3kdmCMxSGUfLG541ft451incilUCTzJILGo1V056HSA",
+      "id": "01J9ZK00000000000000000001",
+      "owner": {
+       "name": "Sev",
+       "person": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "pk_pub": "BE9dWaAeWZ2MzJFlmbGeznA13dLlTv6B-2J8IC9YY9JFKzQFCcDEj0hVZhaSrJCcxP-1v9g2FRp2zo2eTKSQe94"
+      },
+      "prefix": "DEMO",
+      "prev": null,
+      "roster_v": 0,
+      "seq": 1,
+      "sig": "r5ahD9lncKkFZNVB021B3asYYRDKE8cRMWC2GJofmqLsev3YOf3LT2ZEx4QRhYGGwrcwPRee4pMy8GfA8GctHA",
+      "type": "workspace.created",
+      "v": 2,
+      "workspace_id": "0123456789abcdef0123456789abcdef",
+      "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:20Z",
+      "auth": "passphrase",
+      "based_on": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "7efc1ba896b95f9151978a1dad982e3a",
+        "dk_kx_pub": "BN7s8d4XzDSnOKNlCU8mCWaY3E3S7C3L9iZYzKbWeF222lVSoJyTrFmDFYC_Rk6rKWHos9s8Cf_UE2usnfHJS58",
+        "dk_sig_pub": "BHdTNrzFC_Z_T_TgrLfcnUV66UtadIC1wF-BvBSaejtOtFzCvjiMp43vyt7x9weta7ZyJcxyT4B5ggKsTfdEie8",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgbWFyYTE",
+        "person_id": "6aae5cce832160e6f8cd9dadfbb4c5cd",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "Ic4FvQ_KyDG9vUYVTp0f2zaZwBZ6HQk304uS9gtGVifSivw9sm187vDcmH5z9ZLnZojl6xeS6jAqBc6iwEF-8g"
+      },
+      "hash_v": 1,
+      "host_sig": "ORQ1vySOd6Anc5kH-dFm6hbdY7fOHLN-Z_Pj3gvy72Zk5SV2vHj2B-77tRXUfkbhSD2gFVRUAsal68yxy6Go1A",
+      "id": "01J9ZK00000000000000000002",
+      "name": "Mara",
+      "person": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "pk_pub": "BI14lIzDuy3ZvsMm9bkLZdzvYh9pT6NacDmef4dgenr0c78HIZjtcHf2lvbVlmMxv6lX0LXFgD8rCZLcoL_KJig",
+      "prev": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+      "role": "maintainer",
+      "roster_v": 1,
+      "seq": 2,
+      "sig": "IZhtFLpjND8rsczvMJrLcn6BZ00jO52rdr4y4Czl0_zyf8KMIzHNswq4qcHwl5bchyiui63b_zu-BZQYBXvPMg",
+      "type": "member.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:30Z",
+      "auth": "passphrase",
+      "based_on": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "a6dc67f56b74e07ca65b035348e03bc0",
+        "dk_kx_pub": "BIlUSKpH5g9UpFflsUrYfy8c7ncIRHcJp2ORIDBUDb8S4SQtpy-EAPsSOgwT5nGhQApdzXloHjknkHiRsRkpcgc",
+        "dk_sig_pub": "BAAqPda-S695x08QBckUQMV2AglUMT8Y5yq57pu8wyCZnyHo1QrmNAzup8JXqewAFFKQ6VnP5Kq8GMNfZeWI0sY",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgbGVuYTE",
+        "person_id": "6ce6085b169e8ee5111456b91dc4ae3c",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "3LAHSi-Droiur4llCSuUzsq6jxSWmpqmsak7L9vbNi82dp2nTr1rQXwE_-hRJ0ntDsrf8ER3KDThWYolZaabwQ"
+      },
+      "hash_v": 1,
+      "host_sig": "EA-9Usrmdg0-x9yGzKQ9fUrLFHcWQ7OojlVX0T5Y16oVCLalXAx1etcAeucJGcDE79aUcfj0SJ18EbEp412hlQ",
+      "id": "01J9ZK00000000000000000003",
+      "name": "Lena",
+      "person": "p_6ce6085b169e8ee5111456b91dc4ae3c",
+      "pk_pub": "BAoPza8kl-gXxaP7-Qc17lCTIw6H7vxUpVcgi6ai9wZ3jDRClQu1bQ9VmPrAqbVtoqkhi3VMVyu7SwpHydtPWGA",
+      "prev": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+      "role": "member",
+      "roster_v": 2,
+      "seq": 3,
+      "sig": "owHOjIygxUy0YeMbo0Ue0SUblTWeECYfviuJYl_mi2RY016IdrzPWU1GFOMrpqgqV0F1sEj2yh_5bydj-WPfWw",
+      "type": "member.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:40Z",
+      "auth": "passphrase",
+      "based_on": null,
+      "hash_v": 1,
+      "host_sig": "s0poqc_6VJw8Tdg0CAcYmQKy6UHwtywB1MtWu3jqPrs4YYCjrBM7caCwrHiIgH0SmPFA25T6o6w5nMMqz64yCg",
+      "id": "01J9ZK00000000000000000004",
+      "key": "DEMO-0001",
+      "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "prev": null,
+      "roster_v": 3,
+      "seq": 1,
+      "sig": "nJkkJQ7f_9NFgpCTnjjb-4odfh5_zh60gDZLp2GC1uklrBibTx6Pq-6bO9ynzzaKTSM22mXYpgn9TGc7IWcNdw",
+      "ticket_type": "feature",
+      "title": "A ticket",
+      "type": "ticket.created",
+      "v": 2,
+      "ws_seq": 3
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:50Z",
+      "auth": "passphrase",
+      "based_on": "sha256:709c05a8ff7fdfafa2b1bd09beaa6c3ff095fedbb26662e7976b8b800a8c8920",
+      "cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "762df76def3afcc7bfc48dbc595f8add",
+        "dk_kx_pub": "BMer0sSQz0g_20dVaq_5xc8W0AD5fhUMoA2hsQ8xSWbE0Vcu1rq65UATzC4MBP-eofbxYSjIOJvSlfTcHQZBs0Y",
+        "dk_sig_pub": "BGyfxShXXqBmtt_U7Fg_GayzupXs_ijPuguYSe3XltKI8-NRdaqfkdPxX6o_AZawRyomkqg-ykji9TgYl5TsjbQ",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgc2V2cDE",
+        "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "scopes_max": [
+         "look",
+         "decide"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "P_4RQ_p7FHrtbk9mn4Tn0ZJiWcTKtDc_s7pBVHwtMLFD1umlbMIhXwEsYRECr38XA_q6w3SsS6A9P0sddPvoVg"
+      },
+      "device": "d_762df76def3afcc7bfc48dbc595f8add",
+      "hash_v": 1,
+      "host_sig": "Dkf9anvRtXCl5YQ2aZg6osMRVax8tpzTJSmBKeYTIbzW8SNaXBhgVywZj27zKLMRfaWm68jOPjcySY0PJ6HN0Q",
+      "id": "01J9ZK00000000000000000005",
+      "prev": "sha256:709c05a8ff7fdfafa2b1bd09beaa6c3ff095fedbb26662e7976b8b800a8c8920",
+      "roster_v": 3,
+      "seq": 4,
+      "sig": "YhatixaBgnUZm7cXd_ocsfzwH-bnQcg4uaowAEDZ8skOdPxToKVojwpgrJQv4l92O3FNH2JuGfD2RDmTMbmrag",
+      "type": "device.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace",
+     "note": "sev1 adds sev's phone sevp1, certified for look and decide only"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:00Z",
+      "auth": "passphrase",
+      "based_on": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
+      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash_v": 1,
+      "host_sig": "ElGniLTWHLYSfrQEyI5PQyZWyrc5aMqUxpRzKIjQt_C2LY1vZEDOiTRGGx4WsPVwQuE0uZ38dDK1fJ4N8uW3UA",
+      "id": "01J9ZK00000000000000000006",
+      "prev": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
+      "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+      "question": {
+       "blocking": true,
+       "id": "Q1",
+       "options": [
+        {
+         "key": "a",
+         "label": "Alpha"
+        },
+        {
+         "key": "b",
+         "label": "Beta"
+        }
+       ],
+       "text": "Pick one",
+       "to": "ticket_owner",
+       "why": "first reason"
+      },
+      "roster_v": 3,
+      "seq": 2,
+      "sig": "b_fyrIaYLYp7hGMjFFctWLXTpzfr20B3w_WOBu3YOJwjVcCH_jSXlgiRJVw-AkFjl5xJ5U7vDr7IU-TrK2gzIg",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "Q1 asked (content A)"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:10Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash_v": 1,
+      "host_sig": "qYpVqLXHvGqp69Zb4FuRhhF8NC6lDboGVwAZ3S3ZzaoulW-s1JxD_94VmTPw7jkY3irDwSHxht3s3EMgocrA0g",
+      "id": "01M4JM4RKGVQ4TR3C35B9M93H3",
+      "option": "a",
+      "prev": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+      "question": "Q1",
+      "roster_v": 3,
+      "seq": 3,
+      "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the phone answers A"
+    },
+    {
+     "after": {
+      "tickets": {
+       "01J9ZK4Q7M3R8T2V6X0B5N1C9D": {
+        "answers": {
+         "Q1": "01M4JM4RKGVQ4TR3C35B9M93H3"
+        }
+       }
+      }
+     },
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:20Z",
+      "auth": "passphrase",
+      "based_on": "sha256:7f7b6c141b1500a4c63501fcba655887682f83819ada4d9036859b3cd9c269ea",
+      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash_v": 1,
+      "host_sig": "jl4LzZOIaH-kpZQ3KEbDBbax9VuUG8OGhqCcDsfnQo18hg18wtJK9wCKSRPUcn7Tt9bUrZnvuwyAnWpgDrlotQ",
+      "id": "01J9ZK00000000000000000007",
+      "prev": "sha256:7f7b6c141b1500a4c63501fcba655887682f83819ada4d9036859b3cd9c269ea",
+      "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+      "question": {
+       "blocking": true,
+       "id": "Q1",
+       "options": [
+        {
+         "key": "a",
+         "label": "Alpha"
+        },
+        {
+         "key": "b",
+         "label": "Beta"
+        }
+       ],
+       "text": "Pick one",
+       "to": "ticket_owner",
+       "why": "second reason"
+      },
+      "roster_v": 3,
+      "seq": 4,
+      "sig": "CUUc2Q9mJtqHzGvq3kOI5jHuo06NRdE1qsGsvjYEwQk3pazwKzJmtJT_pkOk-1ZnYD8jwgBtgbg1T5qkEppveQ",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "re-ask with only why changed: same hash, the answer stands"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:30Z",
+      "auth": "passphrase",
+      "based_on": "sha256:0a3f9cb6836e5c503ec0e104501de99e4a999a0681b0b6bf1c26a619f4ce0dae",
+      "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+      "hash_v": 1,
+      "host_sig": "oG832kPXb5bsoA0ORj4WcbOgoYsacpPRAjJYd4PmFKD5bStL_uRkMg9sw0ghPJ77u6NeWhNmHDkGo6tqdSC_4w",
+      "id": "01J9ZK00000000000000000008",
+      "prev": "sha256:0a3f9cb6836e5c503ec0e104501de99e4a999a0681b0b6bf1c26a619f4ce0dae",
+      "qid": "72a37c42fc71091868c10ceed59ddd24",
+      "question": {
+       "blocking": true,
+       "id": "Q2",
+       "options": [
+        {
+         "key": "go",
+         "label": "Go"
+        },
+        {
+         "key": "wait",
+         "label": "Wait"
+        }
+       ],
+       "text": "Go or wait?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 5,
+      "sig": "sBDEfQsB3drkzyUHioCC2xRIvIuG5UBIGH3VlsH4BiVrzdQWvpqZE6uLHFLosiKv9PTs3eX_uEHITZq2jJr7gQ",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "Q2 asked (content A)"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:40Z",
+      "auth": "passphrase",
+      "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
+      "hash": "sha256:42a21fd7c215c22ee9faff515aad5753a367ca67c4520d3e91525524314c30b5",
+      "hash_v": 1,
+      "host_sig": "_1Kb4fts6btAiMH2aObXkW6NtaB9aCgdR7KgM82MmgOg_NJ57Hbx7xfLob0AMH0kIdcUoKHT9tZGYvp1cBnvkA",
+      "id": "01J9ZK00000000000000000009",
+      "prev": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
+      "qid": "72a37c42fc71091868c10ceed59ddd24",
+      "question": {
+       "blocking": true,
+       "id": "Q2",
+       "options": [
+        {
+         "key": "go",
+         "label": "Go"
+        },
+        {
+         "key": "wait",
+         "label": "Wait"
+        },
+        {
+         "key": "stop",
+         "label": "Stop"
+        }
+       ],
+       "text": "Go, wait or stop?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 6,
+      "sig": "cxuOOP3saQIql40Kxw4L8CSz2TMuiEKmocfQoaGzu5MEndPJgalHUCSsUg8wU-39v2hXyWQfJ5Vpei-_ypE3Mg",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "Q2 re-asked (content B)"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:50Z",
+      "auth": "passphrase",
+      "based_on": "sha256:24e1a2c3b09a9d02f03311b19d69ef73f5c1b57002090cb34a1b410cde21217f",
+      "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+      "hash_v": 1,
+      "host_sig": "8B9k7F-ql_UifTFPHf4jFWyYgCyBauz4Ys_54z8FYH0CXaipmiRlDQNM3VG_FxlLWEVMRAYj3R8PY7WeXX4n9Q",
+      "id": "01J9ZK0000000000000000000A",
+      "prev": "sha256:24e1a2c3b09a9d02f03311b19d69ef73f5c1b57002090cb34a1b410cde21217f",
+      "qid": "72a37c42fc71091868c10ceed59ddd24",
+      "question": {
+       "blocking": true,
+       "id": "Q2",
+       "options": [
+        {
+         "key": "go",
+         "label": "Go"
+        },
+        {
+         "key": "wait",
+         "label": "Wait"
+        }
+       ],
+       "text": "Go or wait?",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 7,
+      "sig": "XnHNCK3BltzlCZE3-d_9Gwqyul0qHx4ZlXTv161VfyXAZ8akWk1mzLy5xLFCf4u6Ozh0ceULlJPZxR3uPdHz1w",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "Q2 re-asked (content A again)"
+    },
+    {
+     "after": {
+      "tickets": {
+       "01J9ZK4Q7M3R8T2V6X0B5N1C9D": {
+        "answers": {
+         "Q1": "01M4JM4RKGVQ4TR3C35B9M93H3",
+         "Q2": "01M4JM5NX0RXR8BEMJ102PTS1Y"
+        }
+       }
+      }
+     },
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:02:00Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
+      "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+      "hash_v": 1,
+      "host_sig": "L6h9PCZ2LVvHx3dTZgf_RUwI5FRWhYuF3fIT9qS5r6quNqTzdLAlC-iBgz8BW7GpgJGG2iAqHeBmYgZtoCdDxg",
+      "id": "01M4JM5NX0RXR8BEMJ102PTS1Y",
+      "option": "go",
+      "prev": "sha256:d6f60931f9addb97ebc5152e500b9ca634dfd1675392c875ec846ae64da1a6b9",
+      "question": "Q2",
+      "roster_v": 3,
+      "seq": 8,
+      "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the delayed answer to A arrives: based_on the earlier reviewed head; accepted (F1 semantics)"
+    }
+   ],
+   "workspace_id": "0123456789abcdef0123456789abcdef"
+  },
+  {
+   "abandoned_answer": {
+    "actor": {
+     "device": "d_762df76def3afcc7bfc48dbc595f8add",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:01:10Z",
+    "auth": "secure-enclave-unlocked",
+    "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "hash_v": 1,
+    "host_sig": "2PH9g0OhykzMp-GHuOaagUeL972bLaNqsJ_vogwj8hA15C7cxlgnlpqxyfGPkS16OEx5SjwRHNdqb2OZvBLkGQ",
+    "id": "01M4JM4RKGXDCVW0ESMRF6CT8H",
+    "option": "b",
+    "prev": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+    "question": "Q1",
+    "roster_v": 3,
+    "seq": 3,
+    "sig": "85HHTW48UylAiL-zmnTfv6Lsjz0Y1aL2_8RlBUyEEYDcxMRBuLBOPtjtFobVL6B0AkoWOh8JxfL0sig0jYdH6w",
+    "type": "question.answered",
+    "v": 2,
+    "ws_seq": 4
+   },
+   "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+   "name": "phone_abandoned_answer_replayed",
+   "now": "2026-10-10T10:02:30Z",
+   "pins": "a restore abandons a phone answer (abandoned_decisions); the same signed event appended again is event.duplicate_id (on relay.submit L3 answers event.abandoned first)",
+   "steps": [
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:10Z",
+      "auth": "passphrase",
+      "based_on": null,
+      "delegation": {
+       "o": {
+        "client_hosted": false,
+        "issued_ms": 1790000000000,
+        "kind": "ws_delegation",
+        "owner_person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "suite": 2,
+        "v": 2,
+        "workspace_id": "0123456789abcdef0123456789abcdef",
+        "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+       },
+       "sig": "NwRve78-SgAnF30XOlRhDEb9KlCWIYBu5xXmOkGOE6vn70YeyeOXOcF6liH50gz6SfJNWTgZ2wi_KZc-DWXxMA"
+      },
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "c65032f21d43401cc223b05723c1e5b4",
+        "dk_kx_pub": "BFeVKX_gphRxHCfh2Uw6UQVtj12_1v9LteaSfrwG6oH3QG8yDkYojB0rOpi7i-NDHC0PY47WHle_uYaQHjI534c",
+        "dk_sig_pub": "BEtUkscP1t-MK_B-LkrM8KwbVTJ2kwZBYo-4vnk4QSaltalieRixn4XJf8Z2jR5y10cpdvNZ1i-70-cvOz5Wlwo",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgc2V2MQ",
+        "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "GMFk6HGDHI919l9dSkUuvlioYdJz-QzNR-qUAQ4kPhZevsgiEZBTlZr2SAIfUiNASTIzsMW_c_8yTbnW8kuMfQ"
+      },
+      "hash_v": 1,
+      "host_id": "h_01J9ZK00000000000000000H01",
+      "host_sig": "gmxYcJawrdR5RQtoujxISFmEW9vXbA_mpXUlFxD1oZi3kdmCMxSGUfLG541ft451incilUCTzJILGo1V056HSA",
+      "id": "01J9ZK00000000000000000001",
+      "owner": {
+       "name": "Sev",
+       "person": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "pk_pub": "BE9dWaAeWZ2MzJFlmbGeznA13dLlTv6B-2J8IC9YY9JFKzQFCcDEj0hVZhaSrJCcxP-1v9g2FRp2zo2eTKSQe94"
+      },
+      "prefix": "DEMO",
+      "prev": null,
+      "roster_v": 0,
+      "seq": 1,
+      "sig": "r5ahD9lncKkFZNVB021B3asYYRDKE8cRMWC2GJofmqLsev3YOf3LT2ZEx4QRhYGGwrcwPRee4pMy8GfA8GctHA",
+      "type": "workspace.created",
+      "v": 2,
+      "workspace_id": "0123456789abcdef0123456789abcdef",
+      "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:20Z",
+      "auth": "passphrase",
+      "based_on": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "7efc1ba896b95f9151978a1dad982e3a",
+        "dk_kx_pub": "BN7s8d4XzDSnOKNlCU8mCWaY3E3S7C3L9iZYzKbWeF222lVSoJyTrFmDFYC_Rk6rKWHos9s8Cf_UE2usnfHJS58",
+        "dk_sig_pub": "BHdTNrzFC_Z_T_TgrLfcnUV66UtadIC1wF-BvBSaejtOtFzCvjiMp43vyt7x9weta7ZyJcxyT4B5ggKsTfdEie8",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgbWFyYTE",
+        "person_id": "6aae5cce832160e6f8cd9dadfbb4c5cd",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "Ic4FvQ_KyDG9vUYVTp0f2zaZwBZ6HQk304uS9gtGVifSivw9sm187vDcmH5z9ZLnZojl6xeS6jAqBc6iwEF-8g"
+      },
+      "hash_v": 1,
+      "host_sig": "ORQ1vySOd6Anc5kH-dFm6hbdY7fOHLN-Z_Pj3gvy72Zk5SV2vHj2B-77tRXUfkbhSD2gFVRUAsal68yxy6Go1A",
+      "id": "01J9ZK00000000000000000002",
+      "name": "Mara",
+      "person": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "pk_pub": "BI14lIzDuy3ZvsMm9bkLZdzvYh9pT6NacDmef4dgenr0c78HIZjtcHf2lvbVlmMxv6lX0LXFgD8rCZLcoL_KJig",
+      "prev": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+      "role": "maintainer",
+      "roster_v": 1,
+      "seq": 2,
+      "sig": "IZhtFLpjND8rsczvMJrLcn6BZ00jO52rdr4y4Czl0_zyf8KMIzHNswq4qcHwl5bchyiui63b_zu-BZQYBXvPMg",
+      "type": "member.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:30Z",
+      "auth": "passphrase",
+      "based_on": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+      "device_cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "a6dc67f56b74e07ca65b035348e03bc0",
+        "dk_kx_pub": "BIlUSKpH5g9UpFflsUrYfy8c7ncIRHcJp2ORIDBUDb8S4SQtpy-EAPsSOgwT5nGhQApdzXloHjknkHiRsRkpcgc",
+        "dk_sig_pub": "BAAqPda-S695x08QBckUQMV2AglUMT8Y5yq57pu8wyCZnyHo1QrmNAzup8JXqewAFFKQ6VnP5Kq8GMNfZeWI0sY",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgbGVuYTE",
+        "person_id": "6ce6085b169e8ee5111456b91dc4ae3c",
+        "scopes_max": [
+         "look",
+         "decide",
+         "operate",
+         "type"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "3LAHSi-Droiur4llCSuUzsq6jxSWmpqmsak7L9vbNi82dp2nTr1rQXwE_-hRJ0ntDsrf8ER3KDThWYolZaabwQ"
+      },
+      "hash_v": 1,
+      "host_sig": "EA-9Usrmdg0-x9yGzKQ9fUrLFHcWQ7OojlVX0T5Y16oVCLalXAx1etcAeucJGcDE79aUcfj0SJ18EbEp412hlQ",
+      "id": "01J9ZK00000000000000000003",
+      "name": "Lena",
+      "person": "p_6ce6085b169e8ee5111456b91dc4ae3c",
+      "pk_pub": "BAoPza8kl-gXxaP7-Qc17lCTIw6H7vxUpVcgi6ai9wZ3jDRClQu1bQ9VmPrAqbVtoqkhi3VMVyu7SwpHydtPWGA",
+      "prev": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+      "role": "member",
+      "roster_v": 2,
+      "seq": 3,
+      "sig": "owHOjIygxUy0YeMbo0Ue0SUblTWeECYfviuJYl_mi2RY016IdrzPWU1GFOMrpqgqV0F1sEj2yh_5bydj-WPfWw",
+      "type": "member.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:40Z",
+      "auth": "passphrase",
+      "based_on": null,
+      "hash_v": 1,
+      "host_sig": "s0poqc_6VJw8Tdg0CAcYmQKy6UHwtywB1MtWu3jqPrs4YYCjrBM7caCwrHiIgH0SmPFA25T6o6w5nMMqz64yCg",
+      "id": "01J9ZK00000000000000000004",
+      "key": "DEMO-0001",
+      "owner": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "prev": null,
+      "roster_v": 3,
+      "seq": 1,
+      "sig": "nJkkJQ7f_9NFgpCTnjjb-4odfh5_zh60gDZLp2GC1uklrBibTx6Pq-6bO9ynzzaKTSM22mXYpgn9TGc7IWcNdw",
+      "ticket_type": "feature",
+      "title": "A ticket",
+      "type": "ticket.created",
+      "v": 2,
+      "ws_seq": 3
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:00:50Z",
+      "auth": "passphrase",
+      "based_on": "sha256:709c05a8ff7fdfafa2b1bd09beaa6c3ff095fedbb26662e7976b8b800a8c8920",
+      "cert": {
+       "o": {
+        "created_ms": 1790000000000,
+        "device_id": "762df76def3afcc7bfc48dbc595f8add",
+        "dk_kx_pub": "BMer0sSQz0g_20dVaq_5xc8W0AD5fhUMoA2hsQ8xSWbE0Vcu1rq65UATzC4MBP-eofbxYSjIOJvSlfTcHQZBs0Y",
+        "dk_sig_pub": "BGyfxShXXqBmtt_U7Fg_GayzupXs_ijPuguYSe3XltKI8-NRdaqfkdPxX6o_AZawRyomkqg-ykji9TgYl5TsjbQ",
+        "expires_ms": null,
+        "kind": "device_cert",
+        "label_sealed": "bGFiZWwgc2V2cDE",
+        "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+        "scopes_max": [
+         "look",
+         "decide"
+        ],
+        "suite": 2,
+        "v": 2
+       },
+       "sig": "P_4RQ_p7FHrtbk9mn4Tn0ZJiWcTKtDc_s7pBVHwtMLFD1umlbMIhXwEsYRECr38XA_q6w3SsS6A9P0sddPvoVg"
+      },
+      "device": "d_762df76def3afcc7bfc48dbc595f8add",
+      "hash_v": 1,
+      "host_sig": "Dkf9anvRtXCl5YQ2aZg6osMRVax8tpzTJSmBKeYTIbzW8SNaXBhgVywZj27zKLMRfaWm68jOPjcySY0PJ6HN0Q",
+      "id": "01J9ZK00000000000000000005",
+      "prev": "sha256:709c05a8ff7fdfafa2b1bd09beaa6c3ff095fedbb26662e7976b8b800a8c8920",
+      "roster_v": 3,
+      "seq": 4,
+      "sig": "YhatixaBgnUZm7cXd_ocsfzwH-bnQcg4uaowAEDZ8skOdPxToKVojwpgrJQv4l92O3FNH2JuGfD2RDmTMbmrag",
+      "type": "device.added",
+      "v": 2
+     },
+     "expect": "ok",
+     "log": "workspace",
+     "note": "sev1 adds sev's phone sevp1, certified for look and decide only"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+       "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:00Z",
+      "auth": "passphrase",
+      "based_on": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
+      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash_v": 1,
+      "host_sig": "w_TZNiBe0rmWSmLXYPELpk2CBoj_MLt5MSHbYU6DdaSm4JHOV-uVSROPNU0Aubv8CHcm63tTI4WhOwzw79l-QA",
+      "id": "01J9ZK00000000000000000006",
+      "prev": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
+      "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+      "question": {
+       "blocking": true,
+       "id": "Q1",
+       "options": [
+        {
+         "key": "a",
+         "label": "Alpha"
+        },
+        {
+         "key": "b",
+         "label": "Beta"
+        }
+       ],
+       "text": "Pick one",
+       "to": "ticket_owner"
+      },
+      "roster_v": 3,
+      "seq": 2,
+      "sig": "A8bfUsrW0DdkngVa8z9tsNh_xaa3V_sxuL9n5xG4kx5ww5u6Thf8Ksfi5CW0qt2jR4IG80kIIl9vulQyGstdxg",
+      "type": "question.asked",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "Q1 asked"
+    },
+    {
+     "event": {
+      "abandoned": {
+       "head": "sha256:f191dd1b576b990c85d2da6039745862fffda5b1b8ddbd83994ee24c71c1f8bb",
+       "seq": 3
+      },
+      "abandoned_decisions": [
+       "01M4JM4RKGXDCVW0ESMRF6CT8H"
+      ],
+      "actor": {
+       "device": "d_c65032f21d43401cc223b05723c1e5b4",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:20Z",
+      "auth": "passphrase",
+      "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+      "from_seq": 2,
+      "hash_v": 1,
+      "head": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+      "host_sig": "Tl651VVxO0-1_2gWnWs79DuI8ZveKjrqFX4kZ3b9WAF5ZypA7KHiwojHGT3HfAKU0ldjicq3GH99ZIutgKtc7Q",
+      "id": "01J9ZK00000000000000000007",
+      "prev": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+      "reason": "rollback",
+      "revocations": [],
+      "roster_v": 3,
+      "seq": 3,
+      "sig": "7OlS2JJD74FBjOhXBrFYJpe8RvzyupoMFxyaJ-cFYCvspUZVdukKO_FEKSw1Gqy_0jaEJzycTct5NJpkzgaqYg",
+      "source": null,
+      "type": "restore",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "ok",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the owner restores to the question"
+    },
+    {
+     "event": {
+      "actor": {
+       "device": "d_762df76def3afcc7bfc48dbc595f8add",
+       "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+       "kind": "person"
+      },
+      "at": "2026-10-10T10:01:30Z",
+      "auth": "secure-enclave-unlocked",
+      "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash_v": 1,
+      "host_sig": "8Ha5aaDOW1zjFIGnjA_zHX5cz2HWkInMlJTBjftIa7od5mxZdNXjDyhLXFW5Kgzc6zOplT-8WQDT9Nc5G6Le2w",
+      "id": "01M4JM4RKGXDCVW0ESMRF6CT8H",
+      "option": "b",
+      "prev": "sha256:749121936824654e04b5b6c9b48d0e6018b624b1a036bb3635980d1ba2e0b4d4",
+      "question": "Q1",
+      "roster_v": 3,
+      "seq": 4,
+      "sig": "85HHTW48UylAiL-zmnTfv6Lsjz0Y1aL2_8RlBUyEEYDcxMRBuLBOPtjtFobVL6B0AkoWOh8JxfL0sig0jYdH6w",
+      "type": "question.answered",
+      "v": 2,
+      "ws_seq": 4
+     },
+     "expect": "event.duplicate_id",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "note": "the abandoned phone answer appended again"
+    }
+   ],
+   "workspace_id": "0123456789abcdef0123456789abcdef"
+  }
+ ],
+ "workspace_id": "0123456789abcdef0123456789abcdef"
+}

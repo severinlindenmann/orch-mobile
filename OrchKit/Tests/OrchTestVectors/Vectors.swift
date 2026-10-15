@@ -4,5 +4,9 @@ import Foundation
 public enum Vectors {
     public static var url: URL { Bundle.module.url(forResource: "vectors_v2", withExtension: "json")! }
     public static var data: Data { try! Data(contentsOf: url) }
-}
 
+    /// F1 vectors from orch-core `plugins/orch-core/tests/vectors/f1/` (see PROVENANCE.md), by file name without extension.
+    public static func f1(_ name: String) -> Data {
+        try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("f1/\(name).json"))
+    }
+}
