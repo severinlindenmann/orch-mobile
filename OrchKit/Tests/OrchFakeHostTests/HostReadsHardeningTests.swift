@@ -68,6 +68,52 @@ private actor Calls {
         #expect(try await w.serve(p) { try await api.decide(again, optionID: "approve") } == .notApplied)
     }
 
+    // MARK: follow-ups
+
+    @Test func aClassDRefusalOfTheConfirmingReadIsNotTheDecisionsOutcome() async throws {
+        let (w, p) = try await world()
+        let api = BridgeWorkspaceAPI(session: p.session)
+        let s = try await w.serve(p) { try await api.snapshot() }
+        let review = try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }
+        let applied = AppliedFlag()
+        await w.host.setHandler { req in
+            let op = req.meta.object?["op"]?.string
+            if op == "decision" { await applied.set(); return await w.host.handleView(req) }
+            if op == "ticket.get", await applied.value { return .refuse(.host(code: "validation.event", retryable: false, seqs: nil, nextKey: nil)) }
+            return await w.host.handleView(req)
+        }
+        let outcome = try await w.serve(p) { try await api.decide(review, optionID: "approve") }
+        #expect(outcome == .uncertain)            // the decision itself was not refused; the confirmation could not be read
+    }
+
+    @Test func aFailedDeclareLeavesNoRows() async throws {
+        let w = try await World.make()
+        let (p, _) = try await declared(w)
+        await w.host.setHandler { _ in .refuse(.host(code: "reader.decl_invalid", retryable: false, seqs: nil, nextKey: nil)) }
+        _ = try? await w.serve(p) { try await p.session.declareReader(force: true) }
+        let pending = try await p.session.pendingRequests(), uncertain = try await p.session.uncertainRequests()
+        #expect(pending.isEmpty && uncertain.isEmpty)
+    }
+
+    @Test func liveFailsClosedOnWhatItCannotCheckAndOnAnyWrite() async throws {
+        let (w, p) = try await world()
+        let live = try await liveStyle(p)
+        await #expect(throws: (any Error).self) { _ = try await live.prepare(logical: .fresh(3), plaintext: Data([1, 2])) }      // does not unframe
+        let write: JSONValue = ["op": "answer", "args": [:], "idem": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"]
+        await #expect(throws: ViewError.writesUnavailable) { _ = try await w.serve(p) { try await live.exchange(meta: write) } }
+        #expect(await w.host.coreState().rids.isEmpty)
+    }
+
+    @Test func keyDigitsAreBoundedAndACostMustBeAString() async throws {
+        #expect(validTicketKey("MOB-" + String(repeating: "1", count: 12)) && !validTicketKey("MOB-" + String(repeating: "1", count: 13)))
+        let (w, p) = try await world()
+        let s = try await w.serve(p) { try await BridgeWorkspaceAPI(session: p.session).snapshot() }
+        var q = s.questions[0].wire.object!
+        var opts = q["options"]!.array!
+        var o = opts[0].object!; o["cost"] = 5; opts[0] = .object(o); q["options"] = .array(opts)
+        #expect(throws: ViewError.malformed) { _ = try Question(wire: .object(q), workspace: w.ws) }
+    }
+
     // MARK: M2
 
     @Test func aPollerRefusalClearsTheCacheAndAnnouncesIt() async throws {
@@ -320,6 +366,8 @@ private actor Calls {
         await api.setForeground(false)
     }
 }
+
+private actor AppliedFlag { private(set) var value = false; func set() { value = true } }
 
 private actor Meta {
     private(set) var value: JSONValue?

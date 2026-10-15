@@ -588,10 +588,17 @@ public actor WorkspaceSession: RealmParticipant {
         // The closed op table: ONE choke point. A meta outside it (or an interim v0 write under a Live config) fails here, before any
         // signature or seal. A decision is built below, so it is refused up front.
         if cfg.enforcesOpTable, decision != nil { throw ViewError.writesUnavailable }
-        if decision == nil, let meta = try? Bridge.unframe(plaintext).meta {
-            let r2Shaped = (meta.object.map { Set($0.keys) } ?? []).isSubset(of: R2.metaKeys)
-            if cfg.enforcesOpTable || r2Shaped {
-                try R2.checkMeta(meta)
+        if decision == nil {
+            let meta: JSONValue?
+            if cfg.enforcesOpTable { meta = try Bridge.unframe(plaintext).meta }          // Live: a plaintext that does not unframe is refused, never passed
+            else { meta = try? Bridge.unframe(plaintext).meta }
+            if let meta {
+                let r2Shaped = (meta.object.map { Set($0.keys) } ?? []).isSubset(of: R2.metaKeys)
+                if cfg.enforcesOpTable || r2Shaped {
+                    let checked = try R2.checkMeta(meta)
+                    // the single "no writes until C2b" point of a Live session
+                    if cfg.enforcesOpTable, checked.spec.kind == .write { throw ViewError.writesUnavailable }
+                }
             }
         }
         let rd = try readerDigestForRequest(exempt: exempt)      // also the per-request marker check, for every op
@@ -1403,6 +1410,15 @@ extension WorkspaceSession {
         }
         return try await finishDecision(id, result)
     }
+    private struct DecisionRefused: Error {}
+    /// Maps a class-D refusal of the DECISION exchange (not of the confirming reads) to `DecisionRefused`; the v0 refusals that have their own
+    /// outcome (already answered, question changed, not visible) pass through.
+    private func definite<T>(_ body: () async throws -> T) async throws -> T {
+        do { return try await body() } catch ClientError.host(let r) where R2.retryClass(of: r) == .d {
+            switch r { case .alreadyAnswered, .questionChanged, .notVisible: throw ClientError.host(r)
+            default: throw DecisionRefused() }
+        }
+    }
     private func locator(of q: Question) -> QuestionLocator { QuestionLocator(key: q.ticket, uid: q.ticketUID, number: q.number) }
     /// INTERIM (v0 decision op until C2b's `relay.submit`): a closed question is OURS when the device that signed the counting answer is this
     /// device and the answer is the one in the operation. (Under R2 the answer's `id` is the id of the event this phone signed.)
@@ -1412,9 +1428,9 @@ extension WorkspaceSession {
     private func decisionNetwork(_ id: ID16, qid: ID16, locator: QuestionLocator?, op: JSONValue, old: Row?, first: Row?, reissue: Bool) async throws -> DecisionOutcome {
         var response: BridgeResponse?
         do {
-            if let first { response = try await runDriver(first, isResend: false) }
+            if let first { response = try await definite { try await runDriver(first, isResend: false) } }
             if response == nil, let old, !old.uncertain {
-                do { response = try await resend(rid: old.rid) }
+                do { response = try await definite { try await resend(rid: old.rid) } }
                 catch SessionError.uncertain { /* authoritative re-read below */ }
             }
             if response == nil {
@@ -1434,7 +1450,7 @@ extension WorkspaceSession {
                 // The old row and its state survive until the replacement commits atomically.
                 let next = try await prepare(logical: id, plaintext: Bridge.frame(meta: op, data: Data()), replacing: old?.rid, reconciled: true,
                                              clearExhausted: true)
-                response = try await runDriver(next, isResend: false)
+                response = try await definite { try await runDriver(next, isResend: false) }
             }
             let m = try fields(viewJSON(response!), ["host_api", "decision_id"])
             guard m["host_api"] == 0, m.idField("decision_id") == id else { throw ViewError.malformed }
@@ -1450,8 +1466,8 @@ extension WorkspaceSession {
             return .questionChanged(hash: hash)
         } catch ClientError.host(.notVisible) {
             return .notApplied           // sealed, terminal and definite: recorded, did not apply (orch-29 Q2)
-        } catch ClientError.host(let refusal) where R2.retryClass(of: refusal) == .d {
-            return .notApplied           // any other class-D refusal is definite too: nothing ran, nothing is sent again, never `uncertain`
+        } catch is DecisionRefused {
+            return .notApplied           // a class-D refusal of the decision exchange itself is definite: nothing ran, never sent again, never `uncertain`
         }
     }
     private func finishDecision(_ id: ID16, _ result: DecisionOutcome) async throws -> DecisionOutcome {
@@ -1723,7 +1739,14 @@ extension WorkspaceSession {
     @discardableResult
     package func declareReader(force: Bool = false) async throws -> Bool {
         guard let req = try await readerDeclareRequest(force: force) else { return false }
-        let r = try Self.result(of: try await exchange(meta: try req.meta()))
+        let logical = cfg.entropy.id16()
+        let outcome: Result<HostResult, Error>
+        do {
+            let first = try await prepare(logical: logical, plaintext: Bridge.frame(meta: try req.meta()))
+            outcome = .success(try Self.result(of: try await runDriver(first, isResend: false)))
+        } catch { outcome = .failure(error) }
+        await discardRead(logical: logical)            // a read leaves nothing to settle, whatever the outcome
+        let r = try outcome.get()
         // The answer is accepted only for THIS device and the level that was declared. Its digest is the host's (it keeps the bytes it
         // already held for the same body under another signature, H12d-3), so it may differ from the sent one; it is persisted as `rd`
         // only after these checks, and a wrong answer fails the declare (the next request then surfaces the host's own refusal).
