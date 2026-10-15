@@ -268,7 +268,7 @@ public struct RealmContext: Sendable {
     /// The identity with its signer and key agreer leased to this context's generation. Leasing an already leased handle wraps it again
     /// (harmless: both leases check the same generation); it is not a no-op.
     public func leased(_ identity: DeviceIdentity) -> DeviceIdentity {
-        DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: generation), kx: LeasedKeyAgreer(inner: identity.kx, generation: generation), realm: identity.realm)
+        DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: generation), kx: LeasedKeyAgreer(inner: identity.kx, generation: generation), realm: identity.realm, custody: identity.custody)
     }
 
     /// An identity of the other realm never signs, logs in or is bound in this one.

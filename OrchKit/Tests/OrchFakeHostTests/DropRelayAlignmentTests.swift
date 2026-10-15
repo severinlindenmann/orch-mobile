@@ -8,7 +8,7 @@ import OrchProtocol
 import OrchStore
 
 /// Sees every request that reaches the fake relay, can answer one itself, and can run code just before a request goes through.
-actor DropRecordingSender: RequestSender {
+actor DropRecordingSender: RequestSender, InProcessDemoSender {
     struct Seen: Sendable {
         let method: String, target: String, contentType: String?, ifMatch: String?
         let streamed: Bool

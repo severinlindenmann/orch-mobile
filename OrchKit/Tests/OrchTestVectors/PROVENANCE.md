@@ -54,3 +54,4 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
   class; `constants` and `tables` (ops, meta keys, auth, proto and host refusal fields, retry classes and contexts) against the phone's own).
 - The vectors' read Results come from a test fake in core: only the framing is normative there (11A.5). The shapes of the individual ops are
   host section 0.8.
+- `Sources/OrchProtocol/PhoneRetryTableGenerated.swift` is generated from `r2/r2_framing.json` (`tables.retry`, `tables.retry_context`) plus a documented four-code overlay by `OrchKit/Scripts/gen_retry_table.py`; `--check` runs in CI (job `core`) and fails when the file drifted.

@@ -142,7 +142,7 @@ extension DropServiceTests {
         #expect(sent == duplicate)
         #expect(sent.count == 2 && !FileManager.default.fileExists(atPath: job.dir.path))
 
-        let identity = DeviceIdentity(sig: SoftwareSigner(), kx: SoftwareKeyAgreer(), realm: .demo)
+        let identity = DeviceIdentity(sig: SoftwareSigner(), kx: SoftwareKeyAgreer(), realm: .demo, custody: .software)
         let keys = DemoKeys(identity.publicKeys)
         try await w.relay.publishCertificate(w.primary.certify(keys, label: "Receiver", scopesMax: World.all))
         try await w.host.rotate(remaining: [(w.phone, World.all), (w.primary.deviceKeys, World.all), (keys, World.all)], relay: w.relay, session: w.hostSession)
@@ -212,7 +212,7 @@ extension DropServiceTests {
     }
 }
 
-private actor DropAdversary: RequestSender {
+private actor DropAdversary: RequestSender, InProcessDemoSender {
     nonisolated let origin: String
     let relay: FakeRelay
     var corruptBlob = false
@@ -332,7 +332,7 @@ extension DropServiceTests {
 
 extension World {
     func independentDropWriter(clock receiverClock: TestClock? = nil) async throws -> DropService {
-        let identity = DeviceIdentity(sig: SoftwareSigner(), kx: SoftwareKeyAgreer(), realm: .demo)
+        let identity = DeviceIdentity(sig: SoftwareSigner(), kx: SoftwareKeyAgreer(), realm: .demo, custody: .software)
         let keys = DemoKeys(identity.publicKeys)
         try await relay.publishCertificate(primary.certify(keys, label: "Writer", scopesMax: World.all))
         try await host.rotate(remaining: [(phone, World.all), (primary.deviceKeys, World.all), (keys, World.all)], relay: relay, session: hostSession)

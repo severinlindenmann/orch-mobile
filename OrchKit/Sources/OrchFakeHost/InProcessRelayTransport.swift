@@ -20,8 +20,8 @@ public struct InProcessRelayTransport: RelayTransport {
     public func login(_ body: Data) async throws -> WireReply { try await inner.login(body) }
     public func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try await inner.pairingPost(envelope, route: route) }
     public func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after, wait: wait) }
-    public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
-        try await inner.bridgePost(envelope, route: route, session: session)
+    public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply {
+        try await inner.bridgePost(envelope, route: route, session: session, permit: permit)
     }
     public func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
         try await inner.bridgePoll(route: route, after: after, wait: wait, session: session)

@@ -137,7 +137,9 @@ public protocol RelayTransport: Sendable {
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
     /// `wait` is the long-poll seconds (0...25, section 19); nil sends no `wait` (an immediate answer).
     func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply
+    /// `permit` is non-nil exactly for a person-event write (C2b); a transport that carries it to a relay refuses one that is not a
+    /// live Secure Enclave permit, and the in-process Demo transport refuses any that is not a Demo one. Reads pass nil.
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply
@@ -183,6 +185,10 @@ extension RelayTransport {
 }
 
 public extension RelayTransport {
+    /// A post that is not a write (a read, a declaration).
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
+        try await bridgePost(envelope, route: route, session: session, permit: nil)
+    }
     func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await pairingPoll(route: route, after: after, wait: nil) }
     func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply {
         try await bridgePoll(route: route, after: after, wait: nil, session: session)
@@ -200,6 +206,10 @@ public protocol RequestSender: Sendable {
     var origin: String { get }
     func send(_ request: WireRequest) async throws -> WireReply
 }
+
+/// A sender that stays inside this process (the FakeRelay, or a test double standing in for it): the only kind a Demo realm may use.
+/// Package-scoped on purpose: conformance is an in-package decision, and no sender that opens a socket conforms.
+package protocol InProcessDemoSender: RequestSender {}
 
 /// Thrown by a transport. HTTP failures are not here: they are `WireReply` values.
 public enum TransportError: Error, Equatable, Sendable {

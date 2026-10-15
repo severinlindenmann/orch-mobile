@@ -36,7 +36,7 @@ private struct Forwarder: RelayTransport {
     func login(_ b: Data) async throws -> WireReply { try await t.login(b) }
     func pairingPost(_ e: Data, route: PairRoute) async throws -> WireReply { try await t.pairingPost(e, route: route) }
     func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try await t.pairingPoll(route: route, after: after, wait: wait) }
-    func bridgePost(_ e: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try await t.bridgePost(e, route: route, session: session) }
+    func bridgePost(_ e: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply { try await t.bridgePost(e, route: route, session: session, permit: permit) }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try await t.bridgePoll(route: route, after: after, wait: wait, session: session) }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply { try await t.grants(workspaceID: workspaceID, epoch: epoch, session: session) }
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try await t.memberList(workspaceID: workspaceID, session: session) }

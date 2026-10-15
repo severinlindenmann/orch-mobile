@@ -13,7 +13,12 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
 
     /// `origin` is the origin this transport talks to; it must be admitted by `context` or construction throws, so a
     /// transport for an external origin cannot exist in a Demo context.
+    ///
+    /// A `.demo` context is refused (`RealmViolation.wrongTransport`) unless the sender is an `InProcessDemoSender` (the in-process FakeRelay
+    /// and the test doubles that stand in for it): no sender that reaches a network can serve a Demo realm, so a Demo key or event can never
+    /// travel over one. The same fact decides which `WritePermit` `bridgePost` takes (see there).
     package init(context: RealmContext, origin: String, sender: Sender, clientAddress: String) throws {
+        if context.realm == .demo, !(sender is any InProcessDemoSender) { throw TransportError.realm(.wrongTransport) }
         try context.admit(origin: origin)
         guard sender.origin == origin else { throw TransportError.realm(.externalOrigin) }
         self.context = context; self.origin = origin; self.sender = sender; self.clientAddress = clientAddress
@@ -69,8 +74,20 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         try await get("\(R)/workspaces/\(route.workspaceID.hex)/pair/\(route.offerID.hex)/\(route.requestID.hex)" + (try Self.pollQuery(after: after, wait: wait)))
     }
 
-    public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
-        try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
+    /// A write permit is checked before anything is sealed into a request: it must belong to this context's lifetime and realm, and the
+    /// credential it was minted for must be the one this kind of sender may carry. A sender that reaches a network takes only a live,
+    /// `secure-enclave-unlocked` permit; the in-process Demo sender only a Demo `passphrase` one. Anything else is refused and the sender is
+    /// never touched.
+    public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply {
+        if let permit {
+            guard permit.generation === context.generation, permit.realm == context.realm else { throw TransportError.realm(.wrongStore) }
+            if sender is any InProcessDemoSender {
+                guard context.realm == .demo, permit.auth == .passphrase else { throw TransportError.realm(.wrongTransport) }
+            } else {
+                guard context.realm == .live, permit.auth == .secureEnclaveUnlocked else { throw TransportError.realm(.wrongTransport) }
+            }
+        }
+        return try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
     }
 
     public func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
