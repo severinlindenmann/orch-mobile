@@ -15,11 +15,13 @@ public struct RestoreConfig: Sendable {
     public var clock: any Clock<Duration>
     public var wall: any WallClock
     public var entropy: any Entropy
+    /// H12d: the running build's runtime KAT result and identity.
+    public var reader: ReaderRuntime
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
-                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy()) {
+                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), reader: ReaderRuntime = .production) {
         self.context = context; self.transport = transport; self.index = index; self.vault = vault; self.custody = custody
-        self.clock = clock; self.wall = wall; self.entropy = entropy
+        self.clock = clock; self.wall = wall; self.entropy = entropy; self.reader = reader
     }
 }
 
@@ -88,10 +90,14 @@ public enum WorkspaceRestoration {
               let json = try? StrictJSON.parse(p.card), let card = try? Card.verify(json, ownerKey: pk),
               card.workspace == ws, card.wsk == wsk else { throw RestoreSkip(reason: "pins") }
         if let pinned = c.context.pinnedOwner, pinned != pk { throw RestoreSkip(reason: "owner") }
+        // H12d (O3): a build below the highest level declared for this workspace never opens it ("Update orch to open this workspace")
+        let marker: ReaderStateRecord?
+        do { marker = try ReaderStore.load(c.vault.scoped(to: c.context.realm), ws: ws) } catch { throw RestoreSkip(reason: "reader_state") }
+        guard ReaderGate.opens(marker, runningLevel: c.reader.level) else { throw RestoreSkip(reason: ReaderGate.skipReason) }
         let container = try await WorkspaceContainer(index: c.index, ws: row.ws, generation: row.generation, fence: c.context.generation)
         let cfg = WorkspaceSessionConfig(context: c.context, workspace: ws, generation: row.generation, identity: identity, wsk: wsk,
                                          container: container, vault: c.vault.scoped(to: c.context.realm), transport: c.transport,
-                                         clock: c.clock, wall: c.wall, entropy: c.entropy)
+                                         clock: c.clock, wall: c.wall, entropy: c.entropy, reader: c.reader)
         let session: WorkspaceSession
         do { session = try await WorkspaceSession(cfg) }
         catch { await container.close(); throw error }

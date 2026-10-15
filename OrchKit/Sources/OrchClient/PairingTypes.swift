@@ -132,10 +132,13 @@ public struct PairingConfig: Sendable {
     public var entropy: any Entropy
     /// The device label the host shows, e.g. "Severin's iPhone".
     public var deviceLabel: String
+    /// H12d: the running build's runtime KAT result and identity (`.production` in the app).
+    public var reader: ReaderRuntime
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
-                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), deviceLabel: String) {
+                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), deviceLabel: String,
+                reader: ReaderRuntime = .production) {
         self.context = context; self.transport = transport; self.index = index; self.vault = vault; self.custody = custody
-        self.clock = clock; self.wall = wall; self.entropy = entropy; self.deviceLabel = deviceLabel
+        self.clock = clock; self.wall = wall; self.entropy = entropy; self.deviceLabel = deviceLabel; self.reader = reader
     }
 }

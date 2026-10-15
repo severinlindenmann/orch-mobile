@@ -25,15 +25,16 @@ struct PairHarness {
 
     static func make(_ scenario: PairingScenario, faults: any FaultPolicy = NoFaults(), limits: RelayLimits = RelayLimits(),
                      clientHosted: Bool = false, hostedBy: String? = nil, name: String = "Laptop",
-                     entropy: any Entropy = SystemEntropy(), phoneSkewMs: Int64 = 0) async throws -> PairHarness {
+                     entropy: any Entropy = SystemEntropy(), phoneSkewMs: Int64 = 0, reader: ReaderRuntime? = nil) async throws -> PairHarness {
         let clock = TestClock()
         let lock = SimulatedLock()
         let vault = SecretVault(group: .keys, backend: InMemoryVaultBackend(lock: lock))
         let custody = DefaultCustody.make(vault: vault)
         let env = try await DemoSetup.setup(layout: tempLayout(), custody: custody, clock: clock, wall: clock, entropy: entropy, faults: faults, limits: limits)
         let rig = try await PairingRig.make(env: env, scenario: scenario, name: name, clientHosted: clientHosted, hostedBy: hostedBy)
-        let config = PairingConfig(context: env.context, transport: env.transport, index: env.index, vault: vault, custody: custody, clock: clock,
+        var config = PairingConfig(context: env.context, transport: env.transport, index: env.index, vault: vault, custody: custody, clock: clock,
                                    wall: SkewedWall(base: clock, skewMs: phoneSkewMs), entropy: entropy, deviceLabel: "Severin's iPhone")
+        if let reader { config.reader = reader }
         return PairHarness(env: env, clock: clock, vault: vault, lock: lock, custody: custody, rig: rig, config: config, coordinator: PairingCoordinator(config))
     }
 
