@@ -699,6 +699,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try sink.put(Data("m".utf8), realm: "demo", ws: String(repeating: "c", count: 32), purpose: "push-material"))
         // The draft: written inside the fence, never without one in Live.
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
         let id = SystemEntropy().id16()
         let draftDir = FileManager.default.temporaryDirectory.appendingPathComponent("draft-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: draftDir, withIntermediateDirectories: true)

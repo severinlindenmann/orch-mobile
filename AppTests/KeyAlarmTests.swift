@@ -85,6 +85,7 @@ final class KeyAlarmTests: XCTestCase {
 
     func testNewTicketShowsTheAlarmNotTryAgain() async throws {
         let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
         let ws = workspace(services, api: AlarmedWorkspace(alarm: nil))
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
