@@ -101,6 +101,30 @@ public enum PhoneEvents {
         case badID, badTicketUID, badRoster, badBase, notOpen, unknownOption, noAnswer
         case text(F1Text.Violation), textTooLong, emptyText, titleLength
         case badKey, badType
+        /// `validateSigned`: a field set, type or value outside P1 to P5.
+        case schema(String)
+        /// `validateSigned`: a host-assigned field (`seq`, `at`, `prev`, `ws_seq`, `host_sig`) on a phone event.
+        case hostField(String)
+        /// `validateSigned` P4: the actor or `auth` is not the one this device signs as.
+        case actorMismatch
+        /// `validateSigned`: `sig` does not verify under the device key over the recomputed signing bytes.
+        case badSignature
+        /// `validateSigned`: a cached field (`bytes`, `signingBytes`, `digest`, `signature`, `id`, `log`) disagrees with the event.
+        case inconsistent(String)
+    }
+
+    /// An event as the phone would sign it, with every field the signature covers and no `sig`: what `AutoResign.decide` compares before a
+    /// key is used. Only `unsignedAnswer` / `unsignedCreate` build one, and only `sign` turns it into a `SignedPhoneEvent`.
+    public struct UnsignedPhoneEvent: Equatable, Sendable {
+        public let kind: SignedPhoneEvent.Kind
+        public let log: String
+        public let id: String
+        /// The event without `sig`.
+        public let event: [String: JSONValue]
+        public let workspace: ID16
+        fileprivate init(kind: SignedPhoneEvent.Kind, log: String, id: String, event: [String: JSONValue], workspace: ID16) {
+            self.kind = kind; self.log = log; self.id = id; self.event = event; self.workspace = workspace
+        }
     }
 
     /// Phone-authored text (title, free-text answer) to be shown on the sign sheet and signed: CRLF/CR to LF, NFC (Unicode 16.0), checks.
@@ -114,6 +138,12 @@ public enum PhoneEvents {
     /// `ticket.get` -> `doc.head.head`, `rosterV` is `members_v`. `reviewed` must come from `F1Question.reviewed` (recomputed hash).
     package static func answer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
                                actor: PhoneActor, workspace: ID16, signer: some Signer) throws -> SignedPhoneEvent {
+        try sign(try unsignedAnswer(r, option: option, text: text, id: id, actor: actor, workspace: workspace), signer: signer)
+    }
+
+    /// The unsigned `question.answered` (same checks as `answer`), for the auto re-sign decision and for `sign`.
+    package static func unsignedAnswer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
+                                       actor: PhoneActor, workspace: ID16) throws -> UnsignedPhoneEvent {
         guard ULID.isValid(id) else { throw Failure.badID }
         guard r.question.state == .open else { throw Failure.notOpen }
         guard option != nil || text != nil else { throw Failure.noAnswer }
@@ -129,7 +159,7 @@ public enum PhoneEvents {
             guard text.value.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
             e["text"] = .string(text.value)
         }
-        return try sign(e, kind: .questionAnswered, log: r.ticketUID, workspace: workspace, signer: signer)
+        return UnsignedPhoneEvent(kind: .questionAnswered, log: r.ticketUID, id: id, event: e, workspace: workspace)
     }
 
     // MARK: ticket.created
@@ -138,6 +168,13 @@ public enum PhoneEvents {
     /// `uid`, made once per review. `key` is `workspace.show` -> `next_key`.
     package static func create(ticketUID: String, key: String, ticketType: String, title: PreparedText, id: String, rosterV: Int64,
                                actor: PhoneActor, workspace: ID16, signer: some Signer) throws -> SignedPhoneEvent {
+        try sign(try unsignedCreate(ticketUID: ticketUID, key: key, ticketType: ticketType, title: title, id: id, rosterV: rosterV,
+                                    actor: actor, workspace: workspace), signer: signer)
+    }
+
+    /// The unsigned `ticket.created` (same checks as `create`).
+    package static func unsignedCreate(ticketUID: String, key: String, ticketType: String, title: PreparedText, id: String, rosterV: Int64,
+                                       actor: PhoneActor, workspace: ID16) throws -> UnsignedPhoneEvent {
         guard ULID.isValid(id) else { throw Failure.badID }
         guard ULID.isValid(ticketUID) else { throw Failure.badTicketUID }
         guard rosterV >= 0, rosterV <= maxSafeInt else { throw Failure.badRoster }
@@ -151,7 +188,7 @@ public enum PhoneEvents {
         e["ticket_type"] = .string(type)
         e["title"] = .string(title.value)
         e["owner"] = .string(actor.personID)
-        return try sign(e, kind: .ticketCreated, log: ticketUID, workspace: workspace, signer: signer)
+        return UnsignedPhoneEvent(kind: .ticketCreated, log: ticketUID, id: id, event: e, workspace: workspace)
     }
 
     // MARK: signing
@@ -173,16 +210,87 @@ public enum PhoneEvents {
     /// `sha256:` + hex(sha256(signing bytes)): the host's content identity of a signed event (14.4).
     public static func digest(signingBytes: Data) -> String { "sha256:" + Hex.encode(SHA256.hash(data: signingBytes)) }
 
-    private static func sign(_ unsigned: [String: JSONValue], kind: SignedPhoneEvent.Kind, log: String, workspace: ID16,
-                             signer: some Signer) throws -> SignedPhoneEvent {
-        let bytes = try signingBytes(event: unsigned, log: log, workspace: workspace)
+    /// Signs an unsigned event with the device key (`orch/v2/sig/ticket-event`). The only way to a `SignedPhoneEvent`.
+    package static func sign(_ u: UnsignedPhoneEvent, signer: some Signer) throws -> SignedPhoneEvent {
+        let bytes = try signingBytes(event: u.event, log: u.log, workspace: u.workspace)
         let label = Label.sigTicketEvent
         let sig = try Signature.sign(signer, label: label, message: Data(bytes.dropFirst(label.utf8.count)))
-        var signed = unsigned
+        var signed = u.event
         signed["sig"] = .string(B64U.encode(sig))
         let wire = try canonicalJSON(.object(signed))
-        guard let id = unsigned["id"]?.string else { throw Failure.badID }
-        return SignedPhoneEvent(kind: kind, log: log, id: id, event: signed, bytes: wire, signingBytes: bytes,
+        return SignedPhoneEvent(kind: u.kind, log: u.log, id: u.id, event: signed, bytes: wire, signingBytes: bytes,
                                 digest: digest(signingBytes: bytes), signature: sig)
+    }
+
+    // MARK: validation
+
+    static let hostFields: Set<String> = ["seq", "at", "prev", "ws_seq", "host_sig"]
+
+    /// Everything a signed phone event must satisfy before it is framed (host section 11A.14 14.6 P1 to P5, plus the signature): the exact
+    /// field set with no host field, `v` 2 and `hash_v` 1, the type of `kind`, valid id and log, a creation's `based_on` null, F1 text rules,
+    /// P4 (`actor` is exactly `{person, actor.personID, actor.deviceID}` and `auth` is `actor.auth`), then `sig` against the signing bytes
+    /// RECOMPUTED here from the event without `sig`, and every cached field of `e` (`bytes`, `signingBytes`, `digest`, `signature`, `id`,
+    /// `log`) against that recomputation. Nothing the caller cached is trusted.
+    public static func validateSigned(_ e: SignedPhoneEvent, kind: SignedPhoneEvent.Kind, actor: PhoneActor, workspace: ID16,
+                                      pub: SigningPublicKey) throws {
+        guard e.kind == kind else { throw Failure.schema("kind") }
+        let ev = e.event
+        if let h = ev.keys.sorted().first(where: { hostFields.contains($0) }) { throw Failure.hostField(h) }
+        let common: Set<String> = ["v", "hash_v", "id", "type", "actor", "auth", "roster_v", "based_on", "sig"]
+        let type: String
+        switch kind {
+        case .questionAnswered:
+            type = "question.answered"
+            let keys = Set(ev.keys)
+            let required = common.union(["question", "hash"])
+            guard keys.isSuperset(of: required), keys.isSubset(of: required.union(["option", "text"])) else { throw Failure.schema("fields") }
+            guard ev["option"] != nil || ev["text"] != nil else { throw Failure.schema("answer") }
+        case .ticketCreated:
+            type = "ticket.created"
+            guard Set(ev.keys) == common.union(["key", "ticket_type", "title", "owner"]) else { throw Failure.schema("fields") }
+        }
+        guard ev["v"]?.int == 2, ev["hash_v"]?.int == 1 else { throw Failure.schema("version") }
+        guard let t = ev["type"]?.string, t.bytesEqual(type) else { throw Failure.schema("type") }
+        guard let id = ev["id"]?.string, ULID.isValid(id) else { throw Failure.badID }
+        guard ULID.isValid(e.log) else { throw Failure.badTicketUID }
+        guard let roster = ev["roster_v"]?.int, roster >= 0, roster <= maxSafeInt else { throw Failure.badRoster }
+        // P4
+        guard let a = ev["actor"]?.object, Set(a.keys) == ["kind", "id", "device"],
+              a["kind"]?.string?.bytesEqual("person") == true, a["id"]?.string?.bytesEqual(actor.personID) == true,
+              a["device"]?.string?.bytesEqual(actor.deviceID) == true,
+              ev["auth"]?.string?.bytesEqual(actor.auth.rawValue) == true else { throw Failure.actorMismatch }
+        switch kind {
+        case .questionAnswered:
+            guard let q = ev["question"]?.string, F1ASCII.isQuestionID(q) else { throw Failure.schema("question") }
+            guard let h = ev["hash"]?.string, F1ASCII.isHash(h) else { throw Failure.schema("hash") }
+            guard let b = ev["based_on"]?.string, F1ASCII.isHash(b) else { throw Failure.badBase }
+            if let o = ev["option"] { guard let s = o.string, !s.isEmpty else { throw Failure.schema("option") } }
+            if let tx = ev["text"] {
+                guard let s = tx.string else { throw Failure.schema("text") }
+                guard !s.isEmpty else { throw Failure.emptyText }
+                guard s.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
+                do { try F1Text.check(s) } catch let v as F1Text.Violation { throw Failure.text(v) }
+            }
+        case .ticketCreated:
+            guard ev["based_on"] == .null else { throw Failure.badBase }
+            guard let k = ev["key"]?.string, F1ASCII.isTicketKey(k) else { throw Failure.badKey }
+            guard let tt = ev["ticket_type"]?.string, F1ASCII.oneOf(tt, ticketTypes) != nil else { throw Failure.badType }
+            guard let title = ev["title"]?.string else { throw Failure.schema("title") }
+            let n = title.unicodeScalars.count
+            guard n >= 1, n <= maxTitleScalars else { throw Failure.titleLength }
+            do { try F1Text.check(title, oneLine: true) } catch let v as F1Text.Violation { throw Failure.text(v) }
+            guard ev["owner"]?.string?.bytesEqual(actor.personID) == true else { throw Failure.actorMismatch }
+        }
+        // the signature, over bytes recomputed from the event itself
+        guard let sigText = ev["sig"]?.string, let sig = B64U.decode(sigText, length: Suite2.signatureLength) else { throw Failure.schema("sig") }
+        var unsigned = ev; unsigned["sig"] = nil
+        let bytes = try signingBytes(event: unsigned, log: e.log, workspace: workspace)
+        let label = Label.sigTicketEvent
+        guard Signature.verify(pub, signature: sig, label: label, message: Data(bytes.dropFirst(label.utf8.count))) else { throw Failure.badSignature }
+        guard e.id.bytesEqual(id) else { throw Failure.inconsistent("id") }
+        guard e.signature == sig else { throw Failure.inconsistent("signature") }
+        guard e.signingBytes == bytes else { throw Failure.inconsistent("signingBytes") }
+        guard e.digest.bytesEqual(digest(signingBytes: bytes)) else { throw Failure.inconsistent("digest") }
+        guard e.bytes == (try canonicalJSON(.object(ev))) else { throw Failure.inconsistent("bytes") }
     }
 }
