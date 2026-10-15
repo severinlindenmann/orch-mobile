@@ -49,6 +49,8 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
 struct QuestionOption: Hashable, Sendable, Identifiable {
     let id: String
     let label: String
+    /// Bound into the question hash with the label, so it is shown wherever the label is (host 11A.14 14.5).
+    var cost: String? = nil
 }
 
 struct Resolution: Hashable, Sendable {

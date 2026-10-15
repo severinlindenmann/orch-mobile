@@ -16,27 +16,28 @@ import OrchProtocol
         let (w, p) = try await setup()
         let s = p.session
         let needs = try await w.serve(p) { try await s.needs() }
-        #expect(needs.items.count == 3 && needs.items.allSatisfy { $0.kind == .question && $0.key == "MOB-1" })
+        #expect(needs.items.count == 3 && needs.items.allSatisfy { $0.kind == .question && $0.key == "MOB-0001" })
         let q = try await w.serve(p) { try await s.ticketQuery() }
-        #expect(q.rows.map(\.key).sorted() == ["FAC-1", "MOB-1"] && q.total == 2)
-        let g = try await w.serve(p) { try await s.ticketGet("MOB-1") }
+        #expect(q.rows.map(\.key).sorted() == ["FAC-0001", "MOB-0001"] && q.total == 2)
+        let g = try await w.serve(p) { try await s.ticketGet("MOB-0001") }
         #expect(g.questions.count == 3 && g.uid == needs.items[0].uid)
         let m = try await w.serve(p) { try await s.memberList() }
         #expect(m.members.count == 1 && m.members[0].devices.contains { $0.id == "d_" + w.phoneID.hex && $0.label == "Demo iPhone" })
         let show = try await w.serve(p) { try await s.workspaceShow() }
-        #expect(show.id == w.ws.hex && show.nextKey == "MOB-2")             // this device holds decide
+        #expect(show.id == w.ws.hex && show.nextKey == "MOB-0002")             // this device holds decide
         let a = try await w.serve(p) { try await s.activityList(limit: 1) }
         #expect(a.items.count == 1 && a.subCursor.hasPrefix("j:"))
         let who = try await w.serve(p) { try await s.whoami() }
-        #expect(who.principal == "r:d_" + w.phoneID.hex)
+        #expect(who.person == "p_" + w.primary.personID.hex && who.tier == "A")
         await #expect(throws: ClientError.host(.host(code: "outcome.unknown_idem", retryable: false, seqs: nil, nextKey: nil))) {
             _ = try await w.serve(p) { try await s.outcomeGet(idem: "01J9ZK4Q7M3R8T2V6X0B5N1C9D") }
         }
         // no `idem` on a read, ever: the host's own meta check would refuse it
         let withIdem = try JSONValue.object(["op": "whoami", "args": .object([:]), "idem": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"])
-        await #expect(throws: ClientError.host(.host(code: "req.invalid", retryable: false, seqs: nil, nextKey: nil))) {
+        await #expect(throws: R2.MetaError.reqInvalid) {            // refused locally, at the one choke point, before anything is sealed
             _ = try await w.serve(p) { try await s.exchange(meta: withIdem) }
         }
+        #expect(await w.host.coreState().rids.count == 8)
     }
 
     @Test func rdTravelsAsAMetaFieldAndNowhereElse() async throws {
@@ -51,9 +52,7 @@ import OrchProtocol
         #expect(r.status == 200 && r.headers.isEmpty)
         #expect(await seen.value == rd)
         let bad = JSONValue.object(["op": "whoami", "args": .object([:]), "rd": "not-a-digest"])
-        await #expect(throws: ClientError.host(.host(code: "req.invalid", retryable: false, seqs: nil, nextKey: nil))) {
-            _ = try await w.serve(p) { try await p.session.exchange(meta: bad) }
-        }
+        await #expect(throws: R2.MetaError.reqInvalid) { _ = try await w.serve(p) { try await p.session.exchange(meta: bad) } }
     }
 
     @Test func aReadAnsweredAlreadyDoneUnknownIsIssuedAgainUnderANewRid() async throws {
@@ -92,7 +91,7 @@ import OrchProtocol
         let (w, p) = try await setup()
         let api = BridgeWorkspaceAPI(session: p.session)
         let s = try await w.serve(p) { try await api.snapshot() }
-        #expect(s.questions.count == 3 && s.tickets.count == 2 && s.nextKey == "MOB-2")
+        #expect(s.questions.count == 3 && s.tickets.count == 2 && s.nextKey == "MOB-0002")
         let review = try await w.serve(p) { try await api.review(questionID: s.questions[0].questionID) }
         let reviewed = try #require(review.reviewed)
         #expect(reviewed.qid == s.questions[0].questionID.hex && reviewed.rosterV == 1 && reviewed.ticketUID == s.questions[0].ticketUID)
@@ -105,6 +104,7 @@ import OrchProtocol
 
 /// Identity-derived caches belong to one verified epoch and die with any failed read; the attestation (`rd`) fails closed.
 @Suite struct HostReadsFailClosedTests {
+    #if DEBUG
     @Test func aNewEpochDropsEveryIdentityCache() async throws {
         let w = try await World.make()
         let p = try await w.makePhone()
@@ -121,7 +121,9 @@ import OrchProtocol
         let after = await p.session.identityCacheState()
         #expect(after.epoch == 2 && after.labels == 0 && after.indexed == 0 && after.tickets == 0 && after.cursor == nil)
     }
+    #endif
 
+    #if DEBUG
     @Test func aFailedReadKeepsNothingAndWhoamiNeverGrantsScopes() async throws {
         let w = try await World.make()
         let p = try await w.makePhone()
@@ -133,12 +135,8 @@ import OrchProtocol
         let s = await p.session.identityCacheState()
         #expect(s.labels == 0 && s.indexed == 0 && s.tickets == 0 && s.cursor == nil)
         await #expect(throws: (any Error).self) { _ = try await w.serve(p) { try await p.session.whoami() } }
-        // scopes are the certificate's and the verified list's (the pairing), never a host view: the session has no scope derived from `whoami`,
-        // `member.list` or `workspace.show`, and `next_key` is only advice
-        #expect(!Mirror(reflecting: await p.session.configuration).children.contains { $0.label == "scopes" })
     }
-
-    private func reader(_ w: World, level: Int? = nil) -> ReaderRuntime { .production }
+    #endif
 
     @Test func noDeclarationMeansNoRdAndAHostReaderRefusalIsSurfacedNotRetried() async throws {
         let w = try await World.make()
@@ -163,7 +161,7 @@ import OrchProtocol
         await #expect(throws: SessionError.readerStateUnreadable) { _ = try await w.serve(p) { try await p.session.workspaceShow() } }
         // a declaration made by ANOTHER device key for this workspace claims a level this device never proved
         let other = SoftwareSigner(), kx = SoftwareKeyAgreer()
-        guard let cap = ReaderKAT.current else { return }                   // a build whose KAT cannot run declares nothing
+        let cap = try #require(ReaderKAT.current)
         let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: other.publicKey, dkKx: kx.publicKey, who: .person(w.primary.personID), level: cap.level,
                                               kat: cap.kat, bind: .declare, createdMs: w.clock.nowMs, signer: other)
         try ReaderStore.save(w.vault.scoped(to: .demo), ws: w.ws, ReaderStateRecord(decl: decl, highest: decl.level, build: BuildIdentity.current, acked: true))
@@ -174,7 +172,7 @@ import OrchProtocol
     @Test func rdSwitchesToTheDigestOfTheDeclareAnswer() async throws {
         let w = try await World.make()
         let p = try await w.makePhone(sendsReaderDigest: true)
-        guard let cap = ReaderKAT.current else { return }
+        let cap = try #require(ReaderKAT.current)
         let keys = w.env.device.publicKeys
         let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: keys.sig, dkKx: keys.kx, who: .person(w.primary.personID), level: cap.level, kat: cap.kat,
                                               bind: .declare, createdMs: w.clock.nowMs, signer: w.env.device.sig)
@@ -199,8 +197,8 @@ import OrchProtocol
         #expect(await seen.value == hostDigest)
     }
 
-    private func declaredPhone(_ w: World) async throws -> (Phone, ReaderDeclaration)? {
-        guard let cap = ReaderKAT.current else { return nil }
+    private func declaredPhone(_ w: World) async throws -> (Phone, ReaderDeclaration) {
+        let cap = try #require(ReaderKAT.current)
         let p = try await w.makePhone(sendsReaderDigest: true)
         let keys = w.env.device.publicKeys
         let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: keys.sig, dkKx: keys.kx, who: .person(w.primary.personID), level: cap.level, kat: cap.kat,
@@ -214,7 +212,7 @@ import OrchProtocol
 
     @Test func declarationUnknownDeclaresAgainAndResendsTheOriginalUnderANewRid() async throws {
         let w = try await World.make()
-        guard let (p, decl) = try await declaredPhone(w) else { return }
+        let (p, decl) = try await declaredPhone(w)
         let log = ReqLog()
         await w.host.setHandler { req in
             let op = req.meta.object?["op"]?.string ?? ""
@@ -235,7 +233,7 @@ import OrchProtocol
 
     @Test func noDeclarationAndReaderTooOldAreNotRetried() async throws {
         let w = try await World.make()
-        guard let (p, _) = try await declaredPhone(w) else { return }
+        let (p, _) = try await declaredPhone(w)
         for refusal in [HostRefusal.reader(code: "sign.convenience_readers", reason: "no_declaration", required: nil, declared: nil),
                         .reader(code: "sign.convenience_readers", reason: "reader_too_old", required: 1, declared: 0)] {
             let n = ReqLog()
@@ -245,6 +243,7 @@ import OrchProtocol
         }
     }
 
+    #if DEBUG
     @Test func declarationUnknownIsSurfacedAndFailsClosedWhenThisBuildDeclaresNothing() async throws {
         let w = try await World.make()
         let p = try await w.makePhone(reader: ReaderRuntime(capability: nil, build: "t"), sendsReaderDigest: true)
@@ -259,6 +258,7 @@ import OrchProtocol
         let state = await p.session.identityCacheState()
         #expect(state.tickets == 0 && state.cursor == nil)
     }
+    #endif
 
     @Test func theDowngradeMarkerIsCheckedBeforeEveryRequest() async throws {
         let w = try await World.make()

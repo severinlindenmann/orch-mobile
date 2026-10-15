@@ -59,7 +59,6 @@ final class SignSheetTests: XCTestCase {
         XCTAssertFalse(app.el("sign.unsafeNotice").exists, "one warning only while signing is possible")
         let text = app.el("sign.text")
         XCTAssertTrue(text.label.contains("⟨U+200B⟩"), "label: \(text.label)")
-        XCTAssertTrue(text.label.contains("⟨U+200B⟩"))
     }
 
     @MainActor
@@ -230,5 +229,18 @@ final class SignSheetStateTests: XCTestCase {
         // Not-carried-over arming is asserted deterministically in ReviewModelTests (revision bump);
         // here the button must re-arm through the delay.
         XCTAssertTrue(again.waitForEnabled())
+    }
+
+    /// An option's cost is bound into the question hash with its label, so it is shown on the option row and on the sign sheet.
+    @MainActor
+    func testOptionCostIsShownOnTheRowAndTheSheet() {
+        let app = launch("question/q8")
+        let row = app.el("question.option.cost.fast")
+        XCTAssertTrue(row.waitForExistence(timeout: 60))
+        XCTAssertTrue(row.label.contains("1 day, no soak"), row.label)
+        app.buttons["question.option.fast"].tap()
+        let cost = app.el("sign.answerCost")
+        XCTAssertTrue(cost.waitForExistence(timeout: 30))
+        XCTAssertTrue(cost.label.contains("1 day, no soak"), cost.label)
     }
 }

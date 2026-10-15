@@ -7,8 +7,8 @@ import OrchProtocol
 /// only inside a Demo environment). Everything here acts as the HOST (what a person does at the Mac); the phone's own signing and
 /// reading paths are untouched.
 public struct DemoOptionSeed: Sendable, Equatable {
-    public let id: String, label: String
-    public init(_ id: String, _ label: String) { self.id = id; self.label = label }
+    public let id: String, label: String, cost: String?
+    public init(_ id: String, _ label: String, cost: String? = nil) { self.id = id; self.label = label; self.cost = cost }
 }
 public struct DemoQuestionSeed: Sendable, Equatable {
     public struct Answer: Sendable, Equatable {
@@ -36,7 +36,7 @@ extension FakeHost {
         return viewState!
     }
 
-    private func f1Options(_ s: DemoQuestionSeed) -> [F1QuestionOption] { s.options.map { F1QuestionOption(key: $0.id, label: $0.label) } }
+    private func f1Options(_ s: DemoQuestionSeed) -> [F1QuestionOption] { s.options.map { F1QuestionOption(key: $0.id, label: $0.label, cost: $0.cost) } }
 
     /// Asks `seed` on its ticket and, for an answered seed, records the answer as a device-signed `question.answered` (by the Mac).
     private func apply(_ seed: DemoQuestionSeed, to state: inout HostViewState, now: Int64) -> ID16 {

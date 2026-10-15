@@ -8,7 +8,7 @@ import OrchShareStaging
 @MainActor
 final class RealmBoundaryTests: XCTestCase {
     private let options = LaunchOptions.parse(arguments: ["--ui-testing"], debug: true)
-    private let noOptionalSurfaces = RealmCapabilities(drop: false, share: false, push: false, demoControls: true)
+    private let noOptionalSurfaces = RealmCapabilities(drop: false, share: false, push: false, demoControls: true, writes: true)
 
     override func setUp() { PresentationGate.defaults = UserDefaults(suiteName: "orch.tests.gate.\(UUID().uuidString)")!; PresentationGate.markRebuilt() }
     override func tearDown() { PresentationGate.defaults = .standard; PresentationGate.markRebuilt() }
@@ -39,9 +39,9 @@ final class RealmBoundaryTests: XCTestCase {
 
     func testDemoHasEveryCapabilityAndNoneHasNone() {
         let all = RealmCapabilities.demo
-        XCTAssertTrue(all.drop && all.share && all.push && all.demoControls)
+        XCTAssertTrue(all.drop && all.share && all.push && all.demoControls && all.writes)
         let none = RealmCapabilities.none
-        XCTAssertFalse(none.drop || none.share || none.push || none.demoControls)
+        XCTAssertFalse(none.drop || none.share || none.push || none.demoControls || none.writes)
         XCTAssertEqual(LiveServices(options: options).capabilities, .none)      // no realm attached: nothing is offered
         XCTAssertEqual(PreviewWorld(demo: true).capabilities, .demo)
     }

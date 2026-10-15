@@ -114,7 +114,11 @@ struct WorkspaceScreen: View {
     @ViewBuilder
     private var questions: some View {
         Section("Waiting") {
-            if model.waiting.isEmpty {
+            if model.macOnlyCount > 0 {
+                Label(model.macOnlyCount == 1 ? "1 question needs your Mac" : "\(model.macOnlyCount) questions need your Mac", systemImage: "desktopcomputer")
+                    .font(OF.meta).foregroundStyle(OC.warn).accessibilityIdentifier("ws.macOnly")
+            }
+            if model.waiting.isEmpty, model.macOnlyCount == 0 {
                 Text(model.info.isLive ? "Nothing needs you here." : "Nothing was waiting when last checked.")
                     .foregroundStyle(OC.textMuted)
             }
@@ -156,6 +160,10 @@ struct WorkspaceScreen: View {
                     TicketRow(ticket: t, progress: t.kind == .factoryEpic ? model.epicProgress(for: t.key) : nil)
                 }
                 .accessibilityIdentifier("ticket.\(t.key)")
+            }
+            if model.ticketsIncomplete {
+                Text("Showing the newest tickets only. The full list is on your Mac.").font(OF.meta).foregroundStyle(OC.textMuted)
+                    .accessibilityIdentifier("ws.ticketsIncomplete")
             }
         }
     }

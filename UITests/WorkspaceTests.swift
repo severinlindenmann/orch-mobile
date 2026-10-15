@@ -7,7 +7,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertTrue(app.el("ws.segment.questions").waitForExistence(timeout: 90))
         XCTAssertTrue(app.questionRow("Enable mobile access?").waitForExistence(timeout: 30))
         app.el("ws.segment.tickets").tap()
-        XCTAssertTrue(app.el("ticket.FAC-1").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.el("ticket.FAC-0001").waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["1 of 3 done"].waitForExistence(timeout: 10))
         app.el("ws.segment.files").tap()
         XCTAssertTrue(app.el("ws.file.d-readme").waitForExistence(timeout: 30), "this workspace's verified Drop items")
@@ -27,7 +27,7 @@ final class WorkspaceTests: XCTestCase {
 
     @MainActor
     func testFactoryEpicDetail() {
-        let app = launch("ticket/laptop/FAC-1")
+        let app = launch("ticket/laptop/FAC-0001")
         XCTAssertTrue(app.el("ticket.epicProgress").waitForExistence(timeout: 90))
     }
 

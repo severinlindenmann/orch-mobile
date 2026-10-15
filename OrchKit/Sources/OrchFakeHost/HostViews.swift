@@ -62,15 +62,15 @@ struct HostViewState: Sendable {
     var revision: Int64 { jpos }
 
     init(now: Int64, entropy: any Entropy) {
-        tickets = [Self.ticket(entropy, now, "FAC-1", "Demo Factory epic", type: "epic"),
-                   Self.ticket(entropy, now, "MOB-1", "Review mobile pairing", parent: "FAC-1")]
+        tickets = [Self.ticket(entropy, now, "FAC-0001", "Demo Factory epic", type: "epic"),
+                   Self.ticket(entropy, now, "MOB-0001", "Review mobile pairing", parent: "FAC-0001")]
         for t in tickets { append(type: "ticket.created", ticket: t, at: now) }
         let texts = ["Ship this change?", String(repeating: "Review every paragraph before signing.\n", count: 100),
                      "Which one: Yes or \u{FF39}es? (a full-width look-alike; F1 text carries no bidi or invisible controls)"]
         for (i, text) in texts.enumerated() {
             let options = [F1QuestionOption(key: "approve", label: i == 2 ? "Approve (full\u{FF0D}width dash)" : "Approve"),
                            F1QuestionOption(key: "reject", label: "Reject")]
-            _ = ask(entropy, ticket: "MOB-1", text: text, options: options, at: now)
+            _ = ask(entropy, ticket: "MOB-0001", text: text, options: options, at: now - Int64(texts.count - i) * 1000)
         }
     }
 
@@ -188,11 +188,11 @@ extension FakeHost {
         let asOf: JSONValue = .string(Self.time(wall.nowMs))
         switch op {
         case "whoami":
-            return result(["op": "whoami", "principal": .string("r:d_" + device.hex), "viewer": .string(viewer)])
+            return result(["peer": ["uid": -1, "class": "person"], "person": .string(viewer), "tier": "A", "grant": .null, "session": .null])
         case "workspace.show":
             return result(["id": .string(workspace.hex), "prefix": .string(s.prefix), "name": .string(name), "genesis": .string("sha256:" + String(repeating: "0", count: 64)),
                            "epoch": .int(Int64(epoch)), "wsk_fingerprint": "demo", "members_v": .int(s.membersV), "state": "ok",
-                           "next_key": scopes.contains("decide") ? .string("\(s.prefix)-\(s.nextKeyNumber)") : .null, "required_reader": 0])
+                           "next_key": scopes.contains("decide") ? .string(s.prefix + "-" + String(format: "%04d", s.nextKeyNumber)) : .null, "required_reader": 0])
         case "member.list":
             var devices: [JSONValue] = []
             for d in core.members.keys.sorted(by: { $0.hex < $1.hex }) {
@@ -358,7 +358,7 @@ extension FakeHost {
         let now = wall.nowMs
         let n = viewState!.nextKeyNumber
         viewState!.nextKeyNumber += 1
-        let t = HostViewState.ticket(entropy, now, "\(viewState!.prefix)-\(n)", title, parent: draft.epicKey)
+        let t = HostViewState.ticket(entropy, now, viewState!.prefix + "-" + String(format: "%04d", n), title, parent: draft.epicKey)
         viewState!.tickets.append(t)
         viewState!.append(type: "ticket.created", ticket: t, at: now)
         viewState!.creations[receiptID] = (bytes, t)

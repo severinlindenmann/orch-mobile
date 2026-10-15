@@ -315,12 +315,12 @@ extension FakeHost {
             let draft = NewTicketSubmission(creationID: .fresh(92), title: title, body: "")
             await #expect(throws: ViewError.invalidDraft) { _ = try await api.newTicket(draft) }
         }
-        #expect(!validTicketKey("MOB-1\n"))
+        #expect(!validTicketKey("MOB-0001\n"))
     }
     @Test func testNewTicketRetryCreatesOnce() async throws {
         let (w, p, api, s) = try await setup()
         await w.host.setRoster([(w.phone, World.all), (w.primary.deviceKeys, World.all)])
-        let draft = NewTicketSubmission(creationID: .fresh(90), title: "A ticket", body: "Text", epicKey: "FAC-1")
+        let draft = NewTicketSubmission(creationID: .fresh(90), title: "A ticket", body: "Text", epicKey: "FAC-0001")
         let first = try await w.serve(p) { try await api.newTicket(draft) }
         let second = try await w.serve(p) { try await api.newTicket(draft) }
         #expect(first == second)

@@ -12,40 +12,55 @@ import OrchProtocol
 extension WorkspaceSession {
     static var maxReissues: Int { 2 }
     static var maxBusyRetries: Int { 3 }
+    /// At most one fresh declaration per this long after a `declaration_unknown` (a host that keeps saying it must not make the phone sign
+    /// declarations without end).
+    static var redeclareMinInterval: Duration { .seconds(300) }
 
+    /// The ONE exit for every read: whatever fails (a snapshot step, the poller's feed read, a question read) goes through `noteReadFailure`
+    /// (identity caches dropped; a reader refusal also ends the cached view and is announced), and every attempt row of the read is
+    /// discarded whatever the outcome (a read leaves nothing to settle).
     package func callRead(_ op: String, args: [String: JSONValue] = [:]) async throws -> HostResult {
+        do { return try await attemptRead(op, args: args) } catch { noteReadFailure(error); throw error }
+    }
+
+    private func attemptRead(_ op: String, args: [String: JSONValue]) async throws -> HostResult {
         guard let spec = R2.allOps[op], spec.kind == .read else { throw R2.MetaError.forbiddenScope }
-        var reissues = 0, busy = 0, redeclared = false
+        var reissues = 0, busy = 0
         while true {
             try Task.checkCancellation()
-            let meta = try R2.requestMeta(op: op, args: args)
+            let plaintext = try Bridge.frame(meta: try R2.requestMeta(op: op, args: args))
+            let logical = cfg.entropy.id16()
+            let outcome: Result<HostResult, Error>
             do {
-                return try Self.result(of: try await exchange(meta: meta))
-            } catch SessionError.uncertain(let logical) {
-                // B on a read: re-issue under a new rid. The uncertain attempt is dropped, never re-sent.
-                _ = try await resolveUncertain(logical: logical)
+                let first = try await prepare(logical: logical, plaintext: plaintext)
+                outcome = .success(try Self.result(of: try await runDriver(first, isResend: false)))
+            } catch { outcome = .failure(error) }
+            await discardRead(logical: logical)
+            switch outcome {
+            case .success(let r): return r
+            case .failure(SessionError.uncertain(let l)):
+                // B on a read: re-issue under a new rid, never re-sent
                 reissues += 1
-                guard reissues <= Self.maxReissues else { throw SessionError.uncertain(logical: logical) }
-            } catch SessionError.noResponse(let rid) {
-                // A read nobody answered leaves nothing to settle: the row goes, the next poll asks again.
-                try? await discard(rid: rid)
-                throw SessionError.noResponse(rid: rid)
-            } catch ClientError.host(.reader(let code, "declaration_unknown", _, _)) where !redeclared && code == "sign.convenience_readers" && op != "reader.declare" {
+                guard reissues <= Self.maxReissues else { throw SessionError.uncertain(logical: l) }
+            case .failure(ClientError.host(.reader(let code, "declaration_unknown", _, _))) where code == "sign.convenience_readers" && op != "reader.declare":
                 // H12d-3: the host does not hold the declaration `rd` names. Declare again (a read, exempt from `rd`), take the digest of the
-                // answer, and send the ORIGINAL request under a new rid, once. If this build can declare nothing, or the declare fails, the
-                // refusal stands: re-pair or update.
-                redeclared = true
+                // answer, and send the ORIGINAL request under a new rid, once, and at most once per `redeclareMinInterval`. If this build
+                // can declare nothing, or declared recently, the refusal stands: re-pair or update.
+                guard redeclareAllowed() else { throw ClientError.host(.reader(code: code, reason: "declaration_unknown", required: nil, declared: nil)) }
+                noteRedeclare()
                 guard try await declareReader(force: true) else { throw ClientError.host(.reader(code: code, reason: "declaration_unknown", required: nil, declared: nil)) }
-            } catch ClientError.host(let refusal) where R2.retryClass(of: refusal) == .a && busy < Self.maxBusyRetries {
+            case .failure(ClientError.host(let refusal)) where R2.retryClass(of: refusal) == .a && busy < Self.maxBusyRetries:
                 try await cfg.clock.sleep(for: .seconds(1 << busy))
                 busy += 1
+            case .failure(let e): throw e
             }
         }
     }
 
     /// An R2 success answer: status 200 (the first chunk's `{"status":"ok"}`), no headers, `cj(Result)` with `exit` 0.
     static func result(of response: BridgeResponse) throws -> HostResult {
-        guard response.status == 200, response.headers.isEmpty else { throw ViewError.malformed }
+        // R2 framing only: a v0 `{status, headers}` first chunk is not an answer to a column-R read, whatever its status
+        guard response.r2, response.status == 200, response.headers.isEmpty else { throw ViewError.malformed }
         let r = try HostResult(parsing: response.data)
         guard r.exit == 0 else { throw ViewError.malformed }
         return r

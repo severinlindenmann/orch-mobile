@@ -45,8 +45,33 @@ definite. Reads take no `idem` and leave nothing to settle, so a read that gets 
 Unsigned host views ignore unknown keys; every bound or displayed field is required and typed (`HostReads`). `reader.list` has a parser but is
 not in the closed table, so it is not called.
 
+## Caps, truncation and what the phone cannot show
+
+Per snapshot: at most 5 pages of `ticket.query` (200 rows each), at most **30 `ticket.get`** reads (tickets with an open question for this person
+first, then the tickets of the newest answers), and the answered history is the newest **50 feed items** (`activity.list`, `question.answered`)
+of which at most 20 tickets are read. Anything beyond is not read and not re-read every snapshot (a cached read stays valid while the ticket's
+`head_seq`, or for an unlisted ticket the feed cursor, did not move). The budget is checked between steps, so a snapshot never eats the 64-slot
+mutation reserve. A cut list says so: `WorkspaceSnapshot.ticketsIncomplete` (page cap, or fewer rows than the host's `total`; the App shows
+"Showing the newest tickets only"). Open questions the phone cannot show or sign (unreadable, a failed label or hash check, free text, or beyond the
+`ticket.get` cap) are counted in `macOnlyCount` and shown as "N questions need your Mac"; none is signable.
+
+## One enforcement point per invariant
+
+- The closed op table: `prepare` runs `R2.checkMeta` on every R2-shaped meta (and on every meta under a Live config, `enforcesOpTable`), before any
+  signature or seal. Live sends no interim v0 write: `submit` and `createTicket` refuse with `writesUnavailable`, and the Live capability
+  `writes` is off, which hides the sign sheet and New ticket. Demo keeps both.
+- Read failures: `callRead`'s error exit drops the identity caches (labels, question index, ticket reads) and, for a sealed reader refusal,
+  also ends the cached view and emits `readerRefused` (the App shows "Update orch to open this workspace"). Every read path goes through it, the
+  poller's feed read included. Every attempt row of a read is discarded whatever the outcome. A read accepts only R2 framing.
+- Reader state: the downgrade marker and the stored declaration are checked on every request (only the `rd` injection is exempt, for
+  `reader.declare`); a declare answer is accepted only for this device and the declared level, and a fresh declaration after
+  `declaration_unknown` is made at most once per 5 minutes.
+- Keys: one shape for every parsed key, `[A-Z][A-Z0-9]{1,9}-[0-9]{4,}` (`validTicketKey`). Only the advisory `next_key` of a
+  `ticket.key_not_next` refusal is checked loosely (`advisoryKeyHint`; the R2 vector carries `DEMO-42`). `workspace.show.next_key` is strict.
+- Option `cost` is bound in the question hash with the label, so it is shown wherever the label is (option rows, the sign sheet).
+
 ## What stays interim until C2b
 
-The sign sheet still sends the v0 detached `decision` op and the new-ticket flow the v0 `new_ticket` op, against FakeHost only; a real R2 host
-refuses both. C2b replaces them with person events signed over `relay.submit` (11A.14), using `QuestionReview.reviewed`, `members_v` and `next_key`
+In Demo the sign sheet still sends the v0 detached `decision` op and the new-ticket flow the v0 `new_ticket` op, against FakeHost only; a real R2
+host refuses both, so Live offers neither (capability `writes` off, and the session refuses them locally). C2b replaces them with person events signed over `relay.submit` (11A.14), using `QuestionReview.reviewed`, `members_v` and `next_key`
 from these reads.

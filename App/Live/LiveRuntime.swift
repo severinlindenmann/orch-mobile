@@ -392,5 +392,5 @@ final class LiveRuntime: RealmRuntime {
 
 extension RealmCapabilities {
     /// Live starts with Drop, share, push and Demo controls off (docs/live-mode.md).
-    static let live = RealmCapabilities(drop: false, share: false, push: false, demoControls: false)
+    static let live = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: false)
 }

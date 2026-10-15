@@ -170,7 +170,7 @@ public struct ReaderDeclareRequest: Equatable, Sendable {
     /// The caller's request id (kept for logs; it is not on the wire).
     public let id: String
     public init(declaration: ReaderDeclaration, id: String) { self.declaration = declaration; self.id = id }
-    public var meta: JSONValue { (try? R2.requestMeta(op: "reader.declare", args: ["reader_decl": declaration.json])) ?? .null }
+    public func meta() throws -> JSONValue { try R2.requestMeta(op: "reader.declare", args: ["reader_decl": declaration.json]) }
 }
 
 /// The host's answer to a `reader.declare` (host 9.10/9.11): `{device, reader, level, digest}`.

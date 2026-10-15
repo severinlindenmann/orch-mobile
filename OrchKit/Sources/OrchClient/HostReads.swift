@@ -117,16 +117,14 @@ enum ViewShape {
 
 private func personID(_ s: String) -> Bool { ViewShape.isPrefixedHex32(s, prefix: "p_") }
 private func deviceID(_ s: String) -> Bool { ViewShape.isPrefixedHex32(s, prefix: "d_") }
-/// A ticket key as the phone accepts it from a view: `[A-Z][A-Z0-9]*-[1-9][0-9]*` (looser than the host's four-digit minimum, which the R2
-/// vectors themselves do not keep; the key is displayed, and what is bound is the uid).
-func validViewTicketKey(_ s: String) -> Bool { validTicketKey(s) }
 
 // MARK: needs
 
 public struct NeedItem: Equatable, Sendable {
     public enum Kind: String, Sendable { case question, approve, noEligible = "no_eligible", acknowledge, addon }
     public enum Payload: Equatable, Sendable {
-        case question(id: String, blocking: Bool, to: String, options: [F1QuestionOption], recommended: String?, why: String?)
+        /// No options here: a question's options are bound into its hash, so they are read only from `ticket.get` through `F1Question` (never from a needs item).
+        case question(id: String, blocking: Bool, to: String, recommended: String?, why: String?)
         case approve(gate: String, gen: Int64, count: Int64, have: Int64)
         case noEligible(gate: String, cause: String)
         case acknowledge(scope: String)
@@ -159,7 +157,7 @@ public struct NeedsResult: Equatable, Sendable {
             let i = try ViewObject(v)
             guard let kind = NeedItem.Kind(rawValue: try i.str("kind")) else { continue }
             let key = try i.nullableStr("key"), uid = try i.nullableStr("uid"), ref = try i.nullableStr("ref")
-            if let k = key { guard validViewTicketKey(k) else { throw ViewError.malformed } }
+            if let k = key { guard validTicketKey(k) else { throw ViewError.malformed } }
             if let u = uid { guard ViewShape.isULID(u) else { throw ViewError.malformed } }
             guard (key == nil) == (uid == nil) else { throw ViewError.malformed }
             let who = try i.strings("who")
@@ -169,12 +167,7 @@ public struct NeedsResult: Equatable, Sendable {
                 let p = try ViewObject(pv)
                 switch kind {
                 case .question:
-                    var options: [F1QuestionOption] = []
-                    for ov in try p.array("options") {
-                        let oo = try ViewObject(ov)
-                        options.append(F1QuestionOption(key: try oo.str("key"), label: try oo.str("label"), cost: try oo.optStr("cost")))
-                    }
-                    payload = .question(id: try p.str("question"), blocking: try p.bool("blocking"), to: try p.str("to"), options: options,
+                    payload = .question(id: try p.str("question"), blocking: try p.bool("blocking"), to: try p.str("to"),
                                         recommended: try p.optStr("recommended"), why: try p.optStr("why"))
                 case .approve: payload = .approve(gate: try p.str("gate"), gen: try p.int("gen"), count: try p.int("count"), have: try p.int("have"))
                 case .noEligible: payload = .noEligible(gate: try p.str("gate"), cause: try p.str("cause"))
@@ -183,7 +176,7 @@ public struct NeedsResult: Equatable, Sendable {
                 }
             }
             if kind == .question {
-                guard key != nil, let ref, ViewShape.isQuestionID(ref), case .question(let qid, _, _, _, _, _)? = payload, qid.bytesEqual(ref) else { throw ViewError.malformed }
+                guard key != nil, let ref, ViewShape.isQuestionID(ref), case .question(let qid, _, _, _, _)? = payload, qid.bytesEqual(ref) else { throw ViewError.malformed }
             }
             items.append(NeedItem(kind: kind, key: key, uid: uid, ref: ref, detail: try i.str("detail"), who: who, sinceMs: try i.optTime("since"),
                                   text: try i.optStr("text"), textCut: try i.optBool("text_cut") ?? false, status: try i.optStr("status"), payload: payload))
@@ -228,9 +221,9 @@ public struct TicketPage: Equatable, Sendable {
         for v in try o.array("rows") {
             let r = try ViewObject(v)
             let key = try r.str("key"), uid = try r.str("uid")
-            guard validViewTicketKey(key), ViewShape.isULID(uid) else { throw ViewError.malformed }
+            guard validTicketKey(key), ViewShape.isULID(uid) else { throw ViewError.malformed }
             let parent = try r.nullableStr("parent"), epic = try r.nullableStr("epic")
-            for k in [parent, epic] { if let k { guard validViewTicketKey(k) else { throw ViewError.malformed } } }
+            for k in [parent, epic] { if let k { guard validTicketKey(k) else { throw ViewError.malformed } } }
             rows.append(TicketRow(key: key, uid: uid, title: try r.str("title"), type: try r.str("type"), status: try r.str("status"), parent: parent,
                                   epic: epic, updatedMs: try r.time("updated_at"), headSeq: try r.int("head_seq"),
                                   restricted: try r.optBool("restricted") ?? false, blockingQuestions: try r.optInt("blocking_questions")))
@@ -273,7 +266,7 @@ public struct TicketGet: Equatable, Sendable {
         let o = try ViewObject(data)
         let d = try ViewObject(o.value("doc"))
         uid = try d.str("uid"); key = try d.str("key")
-        guard ViewShape.isULID(uid), validViewTicketKey(key) else { throw ViewError.malformed }
+        guard ViewShape.isULID(uid), validTicketKey(key) else { throw ViewError.malformed }
         title = try d.str("title"); type = try d.str("type"); status = try d.str("status")
         owner = try d.optStr("owner")
         let head = try ViewObject(d.value("head"))
@@ -361,7 +354,7 @@ public struct WorkspaceShowResult: Equatable, Sendable {
         state = st
         // `next_key` is sent by every v1.7 host; absent means a host that does not propose keys: nil, never an error
         let nk = try o.optStr("next_key")
-        if let nk { guard (1...64).contains(nk.utf8.count), validViewTicketKey(nk) else { throw ViewError.malformed } }
+        if let nk { guard (1...64).contains(nk.utf8.count), validTicketKey(nk) else { throw ViewError.malformed } }
         nextKey = nk
         requiredReader = try o.optInt("required_reader", 0...1)
     }
@@ -403,15 +396,14 @@ public struct ActivityPage: Equatable, Sendable {
 
 // MARK: whoami, outcome.get, reader.list
 
-/// `whoami` as column R answers it. Nothing here is bound or displayed as a fact about the person; every field is optional.
+/// `whoami` (host 0.8: `{peer, person, tier, grant, session}`). Display data of an unsigned view: it never grants a scope or changes trust. Every
+/// field is optional.
 public struct WhoAmIResult: Equatable, Sendable {
     public let person: String?
-    public let principal: String?
     public let tier: String?
     init(_ data: JSONValue) throws {
         let o = try ViewObject(data)
-        person = try o.optStr("person") ?? o.optStr("viewer")
-        principal = try o.optStr("principal")
+        person = try o.optStr("person")
         tier = try o.optStr("tier")
     }
 }

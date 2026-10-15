@@ -16,9 +16,12 @@ struct RealmCapabilities: Equatable, Sendable {
     var push: Bool
     /// Scenario controls, fake host/primary panels, fault and offline simulation, notification simulation, `SimulationNotice`.
     var demoControls: Bool
+    /// Answering a question and creating a ticket from this iPhone (the sign sheet, New ticket). Off in Live until C2b's `relay.submit`: the
+    /// only write path today is the interim v0 one, which a real R2 host refuses. Reads are never gated.
+    var writes: Bool
 
-    static let demo = RealmCapabilities(drop: true, share: true, push: true, demoControls: true)
-    static let none = RealmCapabilities(drop: false, share: false, push: false, demoControls: false)
+    static let demo = RealmCapabilities(drop: true, share: true, push: true, demoControls: true, writes: true)
+    static let none = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: false)
 }
 
 /// One realm's lifetime. A transition invalidates it; every late completion (pairing, session, decision) checks it before it writes,

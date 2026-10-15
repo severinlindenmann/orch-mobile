@@ -9,7 +9,7 @@ final class ScreenshotTests: XCTestCase {
         ("03-needs-you", "needs-you", true),
         ("04-workspace-questions", "workspace/laptop", true),
         ("05-workspace-tickets", "workspace/laptop/tickets", true),
-        ("06-ticket-factory-epic", "ticket/laptop/FAC-1", true),
+        ("06-ticket-factory-epic", "ticket/laptop/FAC-0001", true),
         ("07-workspace-files", "workspace/laptop/files", true),
         ("08-workspace-terminal", "workspace/laptop/terminal", true),
         ("09-workspace-hosted", "workspace/client-vm", true),

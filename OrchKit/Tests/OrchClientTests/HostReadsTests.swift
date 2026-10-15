@@ -11,7 +11,7 @@ import OrchProtocol
     let hash = "sha256:" + String(repeating: "a", count: 64)
 
     func needs(_ item: [String: JSONValue] = [:]) -> JSONValue {
-        var i: [String: JSONValue] = ["kind": "question", "key": "MOB-1", "uid": .string(uid), "ref": "Q1", "detail": "blocking", "who": [.string(person)],
+        var i: [String: JSONValue] = ["kind": "question", "key": "MOB-0001", "uid": .string(uid), "ref": "Q1", "detail": "blocking", "who": [.string(person)],
                                       "since": "2026-10-15T10:00:00Z", "text": "Which?", "status": "open",
                                       "payload": ["question": "Q1", "blocking": true, "to": .string(person), "options": [["key": "a", "label": "A"]]]]
         for (k, v) in item { i[k] = v }
@@ -24,9 +24,9 @@ import OrchProtocol
         let r = try NeedsResult(v)
         #expect(r.subCursor == "j:1" && r.items.count == 1)
         let i = r.items[0]
-        #expect(i.kind == .question && i.key == "MOB-1" && i.uid == uid && i.ref == "Q1" && i.sinceMs == 1_792_058_400_000 && !i.textCut)
-        guard case .question(let id, let blocking, _, let options, _, _)? = i.payload else { Issue.record("payload"); return }
-        #expect(id == "Q1" && blocking && options == [F1QuestionOption(key: "a", label: "A")])
+        #expect(i.kind == .question && i.key == "MOB-0001" && i.uid == uid && i.ref == "Q1" && i.sinceMs == 1_792_058_400_000 && !i.textCut)
+        guard case .question(let id, let blocking, _, _, _)? = i.payload else { Issue.record("payload"); return }
+        #expect(id == "Q1" && blocking)
     }
 
     @Test func needsRefusesWhatItDepends() {
@@ -40,11 +40,11 @@ import OrchProtocol
     }
 
     @Test func ticketQueryRows() throws {
-        let row: JSONValue = ["key": "MOB-1", "uid": .string(uid), "title": "T", "type": "ticket", "status": "in_progress", "parent": "FAC-1", "epic": "FAC-1",
+        let row: JSONValue = ["key": "MOB-0001", "uid": .string(uid), "title": "T", "type": "ticket", "status": "in_progress", "parent": "FAC-0001", "epic": "FAC-0001",
                               "updated_at": "2026-10-15T10:00:00.250Z", "head_seq": 3, "labels": [], "blocking_questions": 2, "anything": "else"]
         let p = try TicketPage(["rows": [row], "next_page": .null, "total": 1, "sub_cursor": "j:3", "as_of": "2026-10-15T10:00:01Z"])
         #expect(p.rows[0].updatedMs == 1_792_058_400_250 && p.rows[0].blockingQuestions == 2 && p.nextPage == nil)
-        #expect(Ticket(row: p.rows[0]).state == "in_progress" && Ticket(row: p.rows[0]).epicKey == "FAC-1")
+        #expect(Ticket(row: p.rows[0]).state == "in_progress" && Ticket(row: p.rows[0]).epicKey == "FAC-0001")
         var bad = row.object!; bad["head_seq"] = -1
         #expect(throws: ViewError.malformed) { _ = try TicketPage(["rows": [.object(bad)], "next_page": .null, "total": 1, "sub_cursor": "j", "as_of": "2026-10-15T10:00:01Z"]) }
         #expect(throws: ViewError.malformed) { _ = try TicketPage(["rows": [row, row], "next_page": .null, "total": 2, "sub_cursor": "j", "as_of": "2026-10-15T10:00:01Z"]) }
@@ -53,7 +53,7 @@ import OrchProtocol
     @Test func ticketGetNeedsTheBoundFields() throws {
         let q: JSONValue = ["id": "Q1", "state": "open", "to": [.string(person)], "blocking": true, "answered_by": .null, "answered_seq": .null, "text": "Which?"]
         func get(_ edit: (inout [String: JSONValue]) -> Void = { _ in }) -> JSONValue {
-            var o: [String: JSONValue] = ["doc": ["uid": .string(uid), "key": "MOB-1", "title": "T", "type": "ticket", "status": "open", "head": ["seq": 4, "head": .string(hash)]],
+            var o: [String: JSONValue] = ["doc": ["uid": .string(uid), "key": "MOB-0001", "title": "T", "type": "ticket", "status": "open", "head": ["seq": 4, "head": .string(hash)]],
                                           "log": [], "log_more": false, "questions": [q, ["garbage": 1]], "criteria": [], "gates": [:], "sub_cursor": "j:4", "members_v": 7]
             edit(&o)
             return .object(o)
@@ -76,11 +76,11 @@ import OrchProtocol
         #expect(throws: ViewError.malformed) { _ = try MemberListResult(["members": [["person": "x", "name": "A", "role": "owner", "devices": []]]]) }
         func show(_ edit: (inout [String: JSONValue]) -> Void = { _ in }) -> JSONValue {
             var o: [String: JSONValue] = ["id": .string(String(repeating: "a", count: 32)), "prefix": "MOB", "name": "W", "genesis": .string(hash), "epoch": 2,
-                                          "wsk_fingerprint": "x", "members_v": 7, "state": "ok", "next_key": "MOB-12", "required_reader": 0]
+                                          "wsk_fingerprint": "x", "members_v": 7, "state": "ok", "next_key": "MOB-0012", "required_reader": 0]
             edit(&o)
             return .object(o)
         }
-        #expect(try WorkspaceShowResult(show()).nextKey == "MOB-12")
+        #expect(try WorkspaceShowResult(show()).nextKey == "MOB-0012")
         #expect(try WorkspaceShowResult(show { $0["next_key"] = .null }).nextKey == nil)
         #expect(try WorkspaceShowResult(show { $0["next_key"] = nil }).nextKey == nil)
         #expect(throws: ViewError.malformed) { _ = try WorkspaceShowResult(show { $0["state"] = "weird" }) }
@@ -89,7 +89,7 @@ import OrchProtocol
     }
 
     @Test func activityOutcomeWhoamiReaders() throws {
-        let item: JSONValue = ["id": "01J9ZK4Q7M3R8T2V6X0B5N1C9D", "jpos": 12, "log": .string(uid), "key": "MOB-1", "uid": .string(uid), "title": "T", "seq": 3, "ws_seq": 9,
+        let item: JSONValue = ["id": "01J9ZK4Q7M3R8T2V6X0B5N1C9D", "jpos": 12, "log": .string(uid), "key": "MOB-0001", "uid": .string(uid), "title": "T", "seq": 3, "ws_seq": 9,
                                "type": "question.answered", "at": "2026-10-15T10:00:00Z", "actor": ["kind": "person"], "summary": "s", "data": [:]]
         let a = try ActivityPage(["items": [item], "next_page": .null, "sub_cursor": "j:12", "as_of": "2026-10-15T10:00:01Z"])
         #expect(a.items[0].jpos == 12 && a.subCursor == "j:12")
@@ -99,7 +99,7 @@ import OrchProtocol
         #expect(try OutcomeResult(["state": "failed", "error": ["code": "ticket.exists"], "exit": 5]).seqs == nil)
         #expect(throws: ViewError.malformed) { _ = try OutcomeResult(["state": "failed", "exit": 5]) }               // failed without a code
         #expect(throws: ViewError.malformed) { _ = try OutcomeResult(["state": "partial", "error": ["code": "x"], "exit": 5, "seqs": []]) }
-        #expect(try WhoAmIResult(["op": "whoami", "principal": .string("r:" + device), "viewer": .string(person)]).person == person)
+        #expect(try WhoAmIResult(["peer": ["uid": -1, "class": "person"], "person": .string(person), "tier": "A", "grant": .null, "session": .null]).person == person)
         let readers = try ReaderListResult(["readers": [["device": .string(device), "person": .string(person), "reader": 1, "level": 1]], "required_reader": 1])
         #expect(readers.readers.count == 1 && readers.requiredReader == 1)
         // reader.list is not in the closed op table: the phone cannot call it

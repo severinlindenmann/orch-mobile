@@ -131,7 +131,7 @@ public extension HostRefusal {
         }
         var nextKey: String?
         if let k = m["next_key"] {
-            guard code.bytesEqual("ticket.key_not_next"), let s = k.string, (1...64).contains(s.utf8.count), validTicketKeyShape(s) else { return nil }
+            guard code.bytesEqual("ticket.key_not_next"), let s = k.string, advisoryKeyHint(s) else { return nil }
             nextKey = s
         }
         return .host(code: code, retryable: retryable, seqs: seqs, nextKey: nextKey)
@@ -155,14 +155,9 @@ public extension HostRefusal {
         }
         return .reader(code: code, reason: reason, required: req, declared: dec)
     }
+}
 
-    /// A ticket key as a display hint: `[A-Z][A-Z0-9]*-[0-9]+`. The `Key` type of host 0.1 says four or more digits, but the R2 vector
-    /// (`ticket_key_not_next`) carries `DEMO-42`, and `next_key` is advisory (never a reservation, never bound), so the shape is checked
-    /// loosely and only the length is capped.
-    private static func validTicketKeyShape(_ s: String) -> Bool {
-        let u = Array(s.utf8)
-        guard let dash = u.firstIndex(of: 0x2D), dash >= 1, u.count - dash - 1 >= 1 else { return false }
-        guard let f = u.first, f >= 0x41, f <= 0x5A else { return false }
-        return u[..<dash].allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) } && u[(dash + 1)...].allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
-    }
+extension HostRefusal {
+    /// A sealed reader refusal (`sign.convenience_readers`, `reader.decl_invalid`; H12d-3).
+    public var isReaderRefusal: Bool { if case .reader = self { return true }; return false }
 }

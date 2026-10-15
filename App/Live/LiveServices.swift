@@ -486,7 +486,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func review(workspaceID: String, questionID: String, optionID: String) -> any QuestionReviewModel {
-        guard canUse(workspaceID), let ws = live.first(where: { $0.info.id == workspaceID }) else { return UnavailableReviewModel() }
+        guard capabilities.writes, canUse(workspaceID), let ws = live.first(where: { $0.info.id == workspaceID }) else { return UnavailableReviewModel() }
         return LiveReviewModel(services: self, workspace: ws, questionID: questionID, optionID: optionID)
     }
 

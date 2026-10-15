@@ -91,7 +91,7 @@ struct QuestionScreen: View {
         let pending = services.home.pendingDecisions.first { $0.questionID == q.id }
         let labels = q.options.map(\.label)
         let refusal = SafeText.optionRefusal(labels)
-        let block = info.answerBlock
+        let block = info.answerBlock ?? (services.capabilities.writes ? nil : "Answering from this iPhone is not available yet. Answer on your Mac.")
         if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
         if pending != nil {
             VStack(alignment: .leading, spacing: OS.s2) {
@@ -105,13 +105,21 @@ struct QuestionScreen: View {
         } else {
             Text("Choose an answer").font(OF.section)
             ForEach(q.options) { option in
-                Button { startSigning(option.id) } label: { SafeTextView(option.label, strictLabel: true) }
+                Button { startSigning(option.id) } label: {
+                    VStack(alignment: .leading, spacing: OS.s1) {
+                        SafeTextView(option.label, strictLabel: true)
+                        if let cost = option.cost {
+                            SafeTextView(cost, strictLabel: true).font(OF.meta).foregroundStyle(OC.textMuted)
+                                .accessibilityIdentifier("question.option.cost.\(option.id)")
+                        }
+                    }
+                }
                     .buttonStyle(OrchOptionButtonStyle())
                     .disabled(block != nil || refusal != nil)
                     .accessibilityIdentifier("question.option.\(option.id)")
                     .accessibilityHint("Opens a review before you sign")
             }
-            if let block { Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted) }
+            if let block { Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("question.answerBlock") }
             if let refusal {
                 Label { Text(verbatim: refusal.message) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
                     .font(OF.meta).foregroundStyle(OC.warn)
@@ -149,6 +157,11 @@ private struct ExactTextDisclosure: View {
                 Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
                 Text(SafeText.attributed(review.optionLabel, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel(SafeText.spoken(review.optionLabel, strictLabel: true))
+                if let cost = review.options.first(where: { $0.id == review.optionID })?.cost {
+                    Text("Cost").font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text(SafeText.attributed(cost, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel(SafeText.spoken(cost, strictLabel: true))
+                }
             }
             .padding(.top, OS.s2)
             .accessibilityElement(children: .contain)
@@ -213,6 +226,10 @@ struct SignSheet: View {
                 VStack(alignment: .leading, spacing: OS.s1) {
                     Text("Selected answer").font(.footnote.weight(.bold)).foregroundStyle(OC.brand)
                     SafeTextView(review.optionLabel, strictLabel: true).accessibilityIdentifier("sign.answer")
+                    if let cost = review.options.first(where: { $0.id == review.optionID })?.cost {
+                        SafeTextView(cost, strictLabel: true).font(OF.meta).foregroundStyle(OC.textMuted)
+                            .accessibilityIdentifier("sign.answerCost")
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(OS.s3)
@@ -378,7 +395,7 @@ struct SignSheet: View {
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("sign.closeChecking")
             case .notApplied:
                 stateView("eye.slash", OC.warn, "Your answer wasn't applied",
-                          "The host recorded it but did not apply it: this question is not visible to this iPhone. Nothing is sent again.", id: "sign.notApplied")
+                          "The host refused it for good, so nothing was applied and nothing is sent again. Answer this question on your Mac.", id: "sign.notApplied")
                 doneButton
             case .needsRetry:
                 stateView("exclamationmark.arrow.circlepath", OC.warn, "Your answer was not delivered",

@@ -242,8 +242,9 @@ import OrchProtocol
         let req = try #require(try await session.readerDeclareRequest())
         #expect(req.declaration.via == "declare" && req.declaration.digest != first.digest && req.declaration.level == 1)
         // column R: a READ frame, no idem (a read with one is req.invalid), no rd (exempt)
-        #expect(req.meta == ["op": "reader.declare", "args": ["reader_decl": req.declaration.json]])
-        #expect(req.meta.object?["idem"] == nil && req.meta.object?["rd"] == nil)
+        #expect(try req.meta() == ["op": "reader.declare", "args": ["reader_decl": req.declaration.json]])
+        let wire = try req.meta()
+        #expect(wire.object?["idem"] == nil && wire.object?["rd"] == nil)
         #expect(R2.allOps["reader.declare"]?.kind == .read && R2.ops["reader.declare"] != nil)
         #expect(throws: R2.MetaError.reqInvalid) { try R2.checkMeta(["op": "reader.declare", "args": [:], "idem": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"]) }
         #expect(throws: R2.MetaError.reqInvalid) { try R2.checkMeta(["op": "reader.declare", "args": [:], "rd": .string("sha256:" + String(repeating: "a", count: 64))]) }
@@ -390,7 +391,7 @@ import OrchProtocol
         let s = try await WorkspaceSession(cfg)
         await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.exchange(meta: httpGet) }
         let req = try #require(try await s.readerDeclareRequest())
-        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: req.meta) }
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: try req.meta()) }
         let stored = try await s.pendingRequests()
         #expect(stored.count == 1)
         _ = decl

@@ -36,7 +36,10 @@ public protocol WorkspaceAPI: Sendable {
 extension WorkspaceAPI {
     public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
 }
-public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String) }
+public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String)
+    /// Writes from this phone are not offered (Live until C2b): nothing was signed, sealed or sent.
+    case writesUnavailable
+}
 public enum DecisionOutcome: Equatable, Sendable {
     case accepted, alreadyAnswered(label: String, at: Int64), questionChanged(hash: Data), uncertain
     /// The relay ended delivery with 409 `retry_exhausted` (protocol-v2 section 19.6) and the question is still open: nothing is sent
@@ -68,7 +71,10 @@ public enum WorkspaceKeyAlarm: Equatable, Sendable {
         }
     }
 }
-public enum WorkspaceEvent: Equatable, Sendable { case snapshot(WorkspaceSnapshot), invalidated, connection(ConnectionState), removed }
+public enum WorkspaceEvent: Equatable, Sendable { case snapshot(WorkspaceSnapshot), invalidated, connection(ConnectionState), removed
+    /// A sealed reader refusal ended the cached view: the person updates orch or pairs again; nothing cached is current.
+    case readerRefused
+}
 public struct QuestionOption: Equatable, Sendable {
     /// The option's `key` (host section 0.8 `Question.options`); what a decision binds.
     public let id: String, label: String
@@ -226,12 +232,17 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
     public let questions: [Question], tickets: [Ticket], members: [WorkspaceMember]
     /// `workspace.show`: the host's name for the workspace and its advisory next ticket key (`nil` when this device may not create one).
     public let name: String, nextKey: String?
+    /// Open questions this phone cannot show or sign (unreadable, failing a label or hash check, or free text): "N questions need your Mac".
+    public let macOnlyCount: Int
+    /// The ticket list is cut (page cap, or fewer rows than the host's `total`): more tickets exist than are shown.
+    public let ticketsIncomplete: Bool
     package init(workspace: ID16, revision: Int64, checkedMs: Int64, questions: [Question], tickets: [Ticket], members: [WorkspaceMember],
-                 name: String, nextKey: String?) throws {
+                 name: String, nextKey: String?, macOnlyCount: Int = 0, ticketsIncomplete: Bool = false) throws {
         guard revision >= 1, validViewTime(checkedMs),
               Set(questions.map(\.questionID)).count == questions.count, Set(tickets.map(\.key)).count == tickets.count else { throw ViewError.malformed }
         workspaceID = workspace; self.revision = revision; self.checkedMs = checkedMs; self.questions = questions; self.tickets = tickets
         self.members = members; self.name = name; self.nextKey = nextKey
+        self.macOnlyCount = macOnlyCount; self.ticketsIncomplete = ticketsIncomplete
     }
 }
 public struct NewTicketSubmission: Equatable, Sendable {
@@ -251,8 +262,18 @@ public struct NewTicketSubmission: Equatable, Sendable {
 package func fields(_ v: JSONValue, _ keys: Set<String>) throws -> [String: JSONValue] {
     guard let m = v.object, m.exactly(keys) else { throw ViewError.malformed }; return m
 }
+/// THE ticket key shape (host section 0.1 `Key`): `[A-Z][A-Z0-9]{1,9}-[0-9]{4,}`. Every view parser and every stored form uses this one function.
 package func validTicketKey(_ s: String) -> Bool {
-    s.range(of: "^[A-Z][A-Z0-9]*-[1-9][0-9]*$", options: .regularExpression) == s.startIndex..<s.endIndex
+    let u = Array(s.utf8)
+    guard let dash = u.firstIndex(of: 0x2D), (2...10).contains(dash), u.count - dash - 1 >= 4, let f = u.first, f >= 0x41, f <= 0x5A else { return false }
+    return u[..<dash].allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) } && u[(dash + 1)...].allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
+}
+/// ONLY for the advisory `next_key` of a `ticket.key_not_next` refusal (never bound, never a reservation): the R2 vector itself carries
+/// `DEMO-42`, so the hint is checked loosely and capped in length. Nothing else may use it.
+package func advisoryKeyHint(_ s: String) -> Bool {
+    let u = Array(s.utf8)
+    guard u.count <= 64, let dash = u.firstIndex(of: 0x2D), dash >= 1, u.count - dash - 1 >= 1, let f = u.first, f >= 0x41, f <= 0x5A else { return false }
+    return u[..<dash].allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) } && u[(dash + 1)...].allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
 }
 private func unsafeDraft(_ s: String) -> Bool {
     s.unicodeScalars.contains { c in
