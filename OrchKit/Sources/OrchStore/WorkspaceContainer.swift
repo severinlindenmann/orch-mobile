@@ -121,6 +121,10 @@ public actor WorkspaceContainer {
             """,
             "ALTER TABLE bridge_requests ADD COLUMN attempt TEXT REFERENCES pe_attempts(idem)",
             "CREATE INDEX bridge_requests_attempt ON bridge_requests(attempt)",
+            // one active review per question, in SQL: a double tap or a second sheet can never hold two signed reviews of one question
+            "CREATE UNIQUE INDEX pe_reviews_one_active ON pe_reviews(question) WHERE state = 'active'",
+            // NOTE: `INSERT OR REPLACE` / `REPLACE INTO` is never used on pe_reviews or pe_attempts (a REPLACE deletes the old row WITHOUT
+            // firing the delete triggers below, recursive_triggers being off). Pinned by `PersonEventTriggerTests.noReplaceOnTheWriteTables`.
             // immutability: what was signed, and when, never changes
             """
             CREATE TRIGGER pe_attempts_immutable BEFORE UPDATE ON pe_attempts
@@ -140,10 +144,25 @@ public actor WorkspaceContainer {
             BEGIN SELECT RAISE(ABORT, 'pe_attempts: landed is final'); END
             """,
             "CREATE TRIGGER pe_attempts_keep_landed BEFORE DELETE ON pe_attempts WHEN OLD.state = 'landed' BEGIN SELECT RAISE(ABORT, 'pe_attempts: landed is final'); END",
-            // evidence is append-only: the new JSON array extends the old one
+            // a possibly sent attempt is kept until it is settled: only a definite refusal (c_review, d) may go
+            """
+            CREATE TRIGGER pe_attempts_keep_dispatched BEFORE DELETE ON pe_attempts WHEN OLD.dispatched = 1 AND OLD.state NOT IN ('landed','c_review','d')
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: a dispatched attempt is kept until settled'); END
+            """,
+            // a possibly sent attempt is never declared unsigned or unsent again
+            """
+            CREATE TRIGGER pe_attempts_sent_stays_sent BEFORE UPDATE ON pe_attempts
+            WHEN NEW.state IN ('signed','discarded') AND NEW.state IS NOT OLD.state AND (OLD.dispatched = 1 OR NEW.dispatched = 1)
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: a dispatched attempt is never signed or discarded again'); END
+            """,
+            // evidence is truly append-only: longer, the old array minus its `]` is a prefix, the first appended character is `,` (or the
+            // first element's `{` after an empty `[]`), and the result is still a valid JSON array
             """
             CREATE TRIGGER pe_attempts_evidence BEFORE UPDATE OF evidence ON pe_attempts
-            WHEN NEW.evidence IS NOT OLD.evidence AND substr(NEW.evidence, 1, length(OLD.evidence) - 1) <> substr(OLD.evidence, 1, length(OLD.evidence) - 1)
+            WHEN NEW.evidence IS NOT OLD.evidence AND NOT (
+              json_valid(NEW.evidence) AND length(NEW.evidence) > length(OLD.evidence) AND substr(OLD.evidence, -1) = ']' AND substr(NEW.evidence, -1) = ']'
+              AND substr(NEW.evidence, 1, length(OLD.evidence) - 1) = substr(OLD.evidence, 1, length(OLD.evidence) - 1)
+              AND substr(NEW.evidence, length(OLD.evidence), 1) = CASE WHEN OLD.evidence = '[]' THEN '{' ELSE ',' END)
             BEGIN SELECT RAISE(ABORT, 'pe_attempts: evidence is append-only'); END
             """,
             // a review that landed stays landed (confirmed or not), with the same landed attempt

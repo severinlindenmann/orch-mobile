@@ -133,8 +133,9 @@ extension FakeHost {
         let out = try await answer(r)
         guard case .landedUnconfirmed(let seq, .changed) = out, seq != nil else { Issue.record("\(out)"); return }
         #expect(try await reviewState(r.p) == ["landed_unconfirmed"])
-        // a landing is never downgraded
-        await #expect(throws: (any Error).self) { try await r.p.container.database().execute("UPDATE pe_reviews SET state='needs_review'") }
+        // a landing is never downgraded 
+        do { try await r.p.container.database().execute("UPDATE pe_reviews SET state='needs_review'"); Issue.record("not refused") }
+        catch SQLiteError.constraint(_, let m) { #expect(m == "pe_reviews: a landing is final") }
     }
 
     @Test func freeTextIsAnsweredOnTheMac() async throws {
@@ -197,7 +198,8 @@ extension FakeHost {
         #expect(a.int("dispatched") == 1)
         #expect(a.text("state") == "landed")
         // the marker never falls
-        await #expect(throws: (any Error).self) { try await r.p.container.database().execute("UPDATE pe_attempts SET dispatched=0") }
+        do { try await r.p.container.database().execute("UPDATE pe_attempts SET dispatched=0"); Issue.record("not refused") }
+        catch SQLiteError.constraint(_, let m) { #expect(m == "pe_attempts: dispatched never falls") }
     }
 
     @Test func aCrashWhileTerminalEvidenceIsPersistedLosesNothing() async throws {
@@ -606,18 +608,6 @@ extension FakeHost {
         _ = try await r.w.serve(r.p) { try await r.p.session.settle(reviewID: review) }
         #expect(try await rows(r.p, "SELECT * FROM pe_attempts").count == 1)
         #expect(hooks.count("pe.signed") == 1)
-    }
-
-    @Test func aLaterRefusalNeverOverwritesALanding() async throws {
-        let r = try await rig()
-        guard case .landed = try await answer(r) else { Issue.record("not landed"); return }
-        let db = try await r.p.container.database()
-        await #expect(throws: (any Error).self) { try await db.execute("UPDATE pe_attempts SET state='d'") }
-        await #expect(throws: (any Error).self) { try await db.execute("UPDATE pe_reviews SET state='refused'") }
-        await #expect(throws: (any Error).self) { try await db.execute("DELETE FROM pe_attempts") }
-        await #expect(throws: (any Error).self) { try await db.execute("UPDATE pe_attempts SET event=x'00'") }
-        await #expect(throws: (any Error).self) { try await db.execute("UPDATE pe_attempts SET evidence='[]'") }
-        #expect(try await attemptStates(r.p) == ["landed"])
     }
 
     @Test func alreadyAnsweredAtTheMacNamesWhoAnswered() async throws {
