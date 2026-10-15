@@ -14,9 +14,12 @@ A call is one sealed bridge request (relay protocol 8.6). The sealed meta is exa
 - no `auth` key, no grant-shaped string anywhere (`R2.checkMeta` is the host's check, run by the phone on what it builds and by FakeHost on what it
   receives);
 - `idem` on every write (the event id), never on a read;
-- `rd` (H12d) is a meta field, sealed, a sibling of `op`: one injection point (`ReaderRD`), on for paired sessions. `reader.declare` is not in the
-  table and stays unsent (H12d-3); `blocksUntilDeclared` is off for paired sessions, so reads are never blocked by a missing declaration, and a host
-  that requires readers answers a sealed refusal, which is surfaced as it is.
+- `rd` (H12d) is a meta field, sealed, a sibling of `op`: one injection point (`ReaderRD`), on for paired sessions. `reader.declare` (H12d-3, core #555)
+  is a READ in the table: `{"op":"reader.declare","args":{"reader_decl":{...}}}`, no `idem`, no `rd`; the answer's `digest` is persisted in the reader state
+  and is the `rd` from then on (until then the pair declaration's own digest). On `declaration_unknown` the phone declares again and sends the
+  original request once more under a new rid; `no_declaration`, `reader_too_old` and `reader.decl_invalid` are class D, never retried, and the App
+  shows "Update orch to open this workspace". `blocksUntilDeclared` is off for paired sessions, so a missing declaration sends no `rd` and blocks
+  nothing locally; a corrupt or foreign declaration, or a level below the stored marker, refuses every request before it is sealed.
 
 The answer: chunk 0 meta exactly `{"status":"ok"}` and later chunks `{}`, data across the chunks `cj(Result)` (at most 2 095 587 bytes), or one
 `LAST | REFUSAL` chunk whose meta has exactly the per-code field set (`HostRefusal(meta:)`): proto codes with `high`, `host_ms`, `epoch`, `status`;

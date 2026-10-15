@@ -199,7 +199,53 @@ import OrchProtocol
         #expect(await seen.value == hostDigest)
     }
 
-    @Test func declarationUnknownIsSurfacedAndFailsClosedUntilReDeclareIsWired() async throws {
+    private func declaredPhone(_ w: World) async throws -> (Phone, ReaderDeclaration)? {
+        guard let cap = ReaderKAT.current else { return nil }
+        let p = try await w.makePhone(sendsReaderDigest: true)
+        let keys = w.env.device.publicKeys
+        let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: keys.sig, dkKx: keys.kx, who: .person(w.primary.personID), level: cap.level, kat: cap.kat,
+                                              bind: .declare, createdMs: w.clock.nowMs, signer: w.env.device.sig)
+        try ReaderStore.save(w.vault.scoped(to: .demo), ws: w.ws, ReaderStateRecord(decl: decl, highest: decl.level, build: p.session.configuration.reader.build, acked: true))
+        // the realm's certificate record: the person a re-declaration is for
+        let pk = B64U.encode(await w.primary.publicKey.x963)
+        try w.vault.scoped(to: .demo).put(try canonicalJSON(["pk_pub": .string(pk)]), purpose: "device.cert")
+        return (p, decl)
+    }
+
+    @Test func declarationUnknownDeclaresAgainAndResendsTheOriginalUnderANewRid() async throws {
+        let w = try await World.make()
+        guard let (p, decl) = try await declaredPhone(w) else { return }
+        let log = ReqLog()
+        await w.host.setHandler { req in
+            let op = req.meta.object?["op"]?.string ?? ""
+            await log.add(op, rd: req.meta.object?["rd"]?.string, idem: req.meta.object?["idem"] != nil)
+            if op == "needs", await log.count(of: "needs") == 1 {
+                return .refuse(.reader(code: "sign.convenience_readers", reason: "declaration_unknown", required: nil, declared: nil))
+            }
+            return await w.host.handleView(req)
+        }
+        let r = try await w.serve(p) { try await p.session.needs() }
+        #expect(r.items.count == 3)
+        let entries = await log.entries
+        #expect(entries.map(\.op) == ["needs", "reader.declare", "needs"])
+        #expect(entries[1].rd == nil && !entries[1].idem)                  // the declare is exempt from rd and has no idem
+        #expect(entries[0].rd == decl.digest && entries[2].rd != nil)
+        #expect(await w.host.coreState().rids.count == 3)                   // the original went again under a NEW rid
+    }
+
+    @Test func noDeclarationAndReaderTooOldAreNotRetried() async throws {
+        let w = try await World.make()
+        guard let (p, _) = try await declaredPhone(w) else { return }
+        for refusal in [HostRefusal.reader(code: "sign.convenience_readers", reason: "no_declaration", required: nil, declared: nil),
+                        .reader(code: "sign.convenience_readers", reason: "reader_too_old", required: 1, declared: 0)] {
+            let n = ReqLog()
+            await w.host.setHandler { req in await n.add(req.meta.object?["op"]?.string ?? "", rd: nil, idem: false); return .refuse(refusal) }
+            await #expect(throws: ClientError.host(refusal)) { _ = try await w.serve(p) { try await p.session.needs() } }
+            #expect(await n.entries.map(\.op) == ["needs"])               // no re-declare, no resend: "Update orch to use this workspace"
+        }
+    }
+
+    @Test func declarationUnknownIsSurfacedAndFailsClosedWhenThisBuildDeclaresNothing() async throws {
         let w = try await World.make()
         let p = try await w.makePhone(reader: ReaderRuntime(capability: nil, build: "t"), sendsReaderDigest: true)
         let seen = Seen()
@@ -222,6 +268,13 @@ import OrchProtocol
         await #expect(throws: SessionError.readerDowngrade) { _ = try await w.serve(p) { try await p.session.workspaceShow() } }
         #expect(await w.host.coreState().rids.isEmpty)
     }
+}
+
+private actor ReqLog {
+    struct Entry: Sendable { let op: String; let rd: String?; let idem: Bool }
+    private(set) var entries: [Entry] = []
+    func add(_ op: String, rd: String?, idem: Bool) { entries.append(Entry(op: op, rd: rd, idem: idem)) }
+    func count(of op: String) -> Int { entries.filter { $0.op == op }.count }
 }
 
 private actor Seen {

@@ -162,19 +162,15 @@ public enum ReaderRD {
     }
 }
 
-/// A `reader.declare` ready to send (host 9.11), in the op frame orch-52 fixed:
-/// `{"t":"req","id":…,"op":"reader.declare","args":{"reader_decl":{"o":…,"sig":…}},"opts":{"idem":"a_…"}}`, exempt from `rd`.
-/// `idem` is derived from the declaration digest (the host is idempotent on `digest`), so a resend of the same declaration is the same
-/// request. The answer is `{device, reader, level, digest}` (`ReaderDeclareResult`).
+/// A `reader.declare` ready to send on column R (host 9.11, H12d-3): framed as a READ, `{"op":"reader.declare","args":{"reader_decl":{"o":...,"sig":...}}}`,
+/// with no `idem` and no `rd` (exempt). It is idempotent on the declaration digest and answered synchronously (`ReaderDeclareResult`), so a
+/// resend or a re-issue under a new rid is the same request.
 public struct ReaderDeclareRequest: Equatable, Sendable {
     public let declaration: ReaderDeclaration
-    /// The op frame's request id (the caller's, e.g. its logical id hex).
+    /// The caller's request id (kept for logs; it is not on the wire).
     public let id: String
     public init(declaration: ReaderDeclaration, id: String) { self.declaration = declaration; self.id = id }
-    public var idem: String { "a_" + String(declaration.digest.dropFirst("sha256:".count).prefix(32)) }
-    public var meta: JSONValue {
-        ["t": "req", "id": .string(id), "op": "reader.declare", "args": ["reader_decl": declaration.json], "opts": ["idem": .string(idem)]]
-    }
+    public var meta: JSONValue { (try? R2.requestMeta(op: "reader.declare", args: ["reader_decl": declaration.json])) ?? .null }
 }
 
 /// The host's answer to a `reader.declare` (host 9.10/9.11): `{device, reader, level, digest}`.

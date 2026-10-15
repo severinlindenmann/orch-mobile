@@ -91,6 +91,9 @@ final class LiveWorkspace: WorkspaceModel {
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
     @discardableResult
     func noteKeyAlarm(_ error: any Error) -> Bool {
+        // H12d-3: a sealed reader refusal (no declaration, reader too old, an invalid or unknown declaration) is not "try again": the person
+        // updates orch or pairs again, and the cached view is not shown as current
+        if case ClientError.host(.reader) = error { info.keyAlarm = ReaderGate.updateMessage; return true }
         guard WorkspaceKeyAlarm(error: error) != nil else { return false }
         info.keyAlarm = Self.keyAlarmMessage
         return true

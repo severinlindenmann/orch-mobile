@@ -1625,11 +1625,10 @@ extension WorkspaceSession {
     /// O5: on the first launch of a new build (or when the host never confirmed the last declaration) builds, signs through the leased
     /// signer and persists the `reader.declare` request, before any other op. nil when nothing is due (same build, acknowledged) or the
     /// build declares nothing. A retry within the host's window re-sends the stored declaration byte for byte.
-    /// TODO(R2, orch-core #467): sending it (exempt from `rd`) waits for the R2 framing.
-    package func readerDeclareRequest() async throws -> ReaderDeclareRequest? {
+    package func readerDeclareRequest(force: Bool = false) async throws -> ReaderDeclareRequest? {
         try await ensureCurrent()
         let state = try readerState()
-        guard ReaderGate.needsDeclare(state, runtime: cfg.reader), let cap = cfg.reader.capability else { return nil }
+        guard force || ReaderGate.needsDeclare(state, runtime: cfg.reader), let cap = cfg.reader.capability else { return nil }
         // host time as this phone knows it: `created_ms` is judged against the HOST clock (+-300 s), so both the reuse test and a new
         // declaration use the wall clock plus the adopted offset
         let offset = try await clockOffsetMs()
@@ -1657,6 +1656,17 @@ extension WorkspaceSession {
         else { return false }                                              // an answer for another (older) declaration changes nothing
         s.acked = true
         try ReaderStore.save(cfg.vault, ws: cfg.workspace, s)
+        return true
+    }
+
+    /// Sends the `reader.declare` (a read, exempt from `rd`) and takes the answer's digest into the reader state. `force` declares again even
+    /// when nothing is due (the host answered `declaration_unknown`). False when this build declares nothing.
+    @discardableResult
+    package func declareReader(force: Bool = false) async throws -> Bool {
+        guard let req = try await readerDeclareRequest(force: force) else { return false }
+        let r = try Self.result(of: try await exchange(meta: req.meta))
+        guard let answer = ReaderDeclareResult(r.data), answer.device == "d_" + cfg.deviceID.hex, answer.level == req.declaration.level,
+              try readerDeclareAcknowledged(digest: answer.digest, level: answer.level) else { throw ViewError.malformed }
         return true
     }
 

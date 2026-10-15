@@ -138,7 +138,7 @@ public extension HostRefusal {
     }
 
     static let readerReasons: [String: Set<String>] = [
-        "sign.convenience_readers": ["no_declaration", "declaration_unknown", "reader_too_old", "relay_too_old", "unknown_readers", "reader_version"],
+        "sign.convenience_readers": ["no_declaration", "declaration_unknown", "reader_too_old"],
         "reader.decl_invalid": ["shape", "signature", "workspace", "device", "keys", "who", "bind", "time", "kat_missing", "kat_mismatch"],
     ]
 

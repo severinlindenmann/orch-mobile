@@ -263,6 +263,10 @@ extension FakeHost {
         case "outcome.get":
             guard let idem = args["idem"]?.string, ULID.isValid(idem) else { return hostRefusal("invalid.input") }
             return hostRefusal("outcome.unknown_idem")
+        case "reader.declare":
+            // H12d-3 (a read on column R): the host stores the declaration and answers `{device, reader, level, digest}`
+            guard let v = args["reader_decl"], let d = try? ReaderDeclaration(signed: v) else { return hostRefusal("reader.decl_invalid") }
+            return result(["device": .string("d_" + device.hex), "reader": .int(Int64(d.level)), "level": .int(Int64(d.level)), "digest": .string(d.digest)])
         case "workspace.settings": return result(["settings": [:]])
         default: return hostRefusal("not_found")
         }

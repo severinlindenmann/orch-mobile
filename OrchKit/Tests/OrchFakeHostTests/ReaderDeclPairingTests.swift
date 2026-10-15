@@ -241,9 +241,12 @@ import OrchProtocol
         let session = handle.joined.session
         let req = try #require(try await session.readerDeclareRequest())
         #expect(req.declaration.via == "declare" && req.declaration.digest != first.digest && req.declaration.level == 1)
-        #expect(req.meta == ["t": "req", "id": .string(req.id), "op": "reader.declare", "args": ["reader_decl": req.declaration.json],
-                             "opts": ["idem": .string(req.idem)]])
-        #expect(req.idem.hasPrefix("a_") && req.idem.count == 34)
+        // column R: a READ frame, no idem (a read with one is req.invalid), no rd (exempt)
+        #expect(req.meta == ["op": "reader.declare", "args": ["reader_decl": req.declaration.json]])
+        #expect(req.meta.object?["idem"] == nil && req.meta.object?["rd"] == nil)
+        #expect(R2.allOps["reader.declare"]?.kind == .read && R2.ops["reader.declare"] != nil)
+        #expect(throws: R2.MetaError.reqInvalid) { try R2.checkMeta(["op": "reader.declare", "args": [:], "idem": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"]) }
+        #expect(throws: R2.MetaError.reqInvalid) { try R2.checkMeta(["op": "reader.declare", "args": [:], "rd": .string("sha256:" + String(repeating: "a", count: 64))]) }
         let idk = try h.env.context.deviceIdentity(custody: h.custody, createIfMissing: false)
         var ctx = ReaderDecl.Context(workspace: h.host.workspace, dkSig: idk.publicKeys.sig, dkKx: idk.publicKeys.kx,
                                      who: .person(Identifiers.personID(await h.primary.publicKey)), bind: .declare)

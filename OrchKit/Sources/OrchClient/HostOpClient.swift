@@ -14,8 +14,8 @@ extension WorkspaceSession {
     static var maxBusyRetries: Int { 3 }
 
     package func callRead(_ op: String, args: [String: JSONValue] = [:]) async throws -> HostResult {
-        guard let spec = R2.ops[op], spec.kind == .read else { throw R2.MetaError.forbiddenScope }
-        var reissues = 0, busy = 0
+        guard let spec = R2.allOps[op], spec.kind == .read else { throw R2.MetaError.forbiddenScope }
+        var reissues = 0, busy = 0, redeclared = false
         while true {
             try Task.checkCancellation()
             let meta = try R2.requestMeta(op: op, args: args)
@@ -30,6 +30,12 @@ extension WorkspaceSession {
                 // A read nobody answered leaves nothing to settle: the row goes, the next poll asks again.
                 try? await discard(rid: rid)
                 throw SessionError.noResponse(rid: rid)
+            } catch ClientError.host(.reader(let code, "declaration_unknown", _, _)) where !redeclared && code == "sign.convenience_readers" && op != "reader.declare" {
+                // H12d-3: the host does not hold the declaration `rd` names. Declare again (a read, exempt from `rd`), take the digest of the
+                // answer, and send the ORIGINAL request under a new rid, once. If this build can declare nothing, or the declare fails, the
+                // refusal stands: re-pair or update.
+                redeclared = true
+                guard try await declareReader(force: true) else { throw ClientError.host(.reader(code: code, reason: "declaration_unknown", required: nil, declared: nil)) }
             } catch ClientError.host(let refusal) where R2.retryClass(of: refusal) == .a && busy < Self.maxBusyRetries {
                 try await cfg.clock.sleep(for: .seconds(1 << busy))
                 busy += 1

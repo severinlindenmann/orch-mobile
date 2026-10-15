@@ -32,7 +32,12 @@ public enum R2 {
         "outcome.get": OpSpec(backend: "outcome.get", kind: .read, scope: "look", event: nil),
         "new_ticket": OpSpec(backend: "relay.submit", kind: .write, scope: "decide", event: "ticket.created"),
         "answer": OpSpec(backend: "relay.submit", kind: .write, scope: "decide", event: "question.answered"),
+        // H12d-3 (core #555): a READ on column R, `{"op":"reader.declare","args":{"reader_decl":{...}}}`: no `idem` (a read with one is
+        // `req.invalid`) and no `rd` (exempt from the check). Idempotent on the declaration digest and answered synchronously, so after a
+        // crash or `already_done {unknown}` it is issued again under a new rid.
+        "reader.declare": OpSpec(backend: "reader.declare", kind: .read, scope: "look", event: nil),
     ]
+    public static var allOps: [String: OpSpec] { ops }
 
     public static let metaKeys: Set<String> = ["op", "args", "idem", "rd"]
     /// `auth` values column R accepts on a person event (`COLUMN_R_AUTH`).
@@ -75,7 +80,7 @@ public enum R2 {
         guard let m = meta.object, m.allSatisfy({ !$0.key.isEmpty && $0.key.utf8.allSatisfy { $0 < 0x80 } }) else { throw MetaError.reqInvalid }
         if m["auth"] != nil { throw MetaError.reqInvalid }
         if grantShaped(meta) { throw MetaError.grantSecretInArgs }
-        guard let op = m["op"]?.string, let spec = ops.first(where: { $0.key.utf8.elementsEqual(op.utf8) })?.value else { throw MetaError.forbiddenScope }
+        guard let op = m["op"]?.string, let spec = allOps.first(where: { $0.key.utf8.elementsEqual(op.utf8) })?.value else { throw MetaError.forbiddenScope }
         guard Set(m.keys).isSubset(of: metaKeys), let args = m["args"]?.object, data.isEmpty else { throw MetaError.reqInvalid }
         let idem = m["idem"]
         if spec.kind == .write {
@@ -83,6 +88,7 @@ public enum R2 {
             guard let s = idem.string, ULID.isValid(s) else { throw MetaError.idemInvalid }
         } else if idem != nil { throw MetaError.reqInvalid }
         var rd: String?
+        if m["rd"] != nil, op.utf8.elementsEqual("reader.declare".utf8) { throw MetaError.reqInvalid }         // exempt from the check
         if let r = m["rd"] {
             guard let s = r.string, isDigest(s) else { throw MetaError.reqInvalid }
             rd = s
