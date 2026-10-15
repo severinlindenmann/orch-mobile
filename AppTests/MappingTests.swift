@@ -86,6 +86,18 @@ final class MappingTests: XCTestCase {
         XCTAssertEqual(Mapping.reviewValue(question, info: info, optionID: "gone", revision: 0, isDemo: false).optionLabel, "gone")
     }
 
+    func testOptionCostTravelsThroughTheMapping() {
+        let opt = QuestionOption(id: "fast", label: "Fast", cost: "1 day")
+        XCTAssertEqual(opt.cost, "1 day")
+        XCTAssertNil(QuestionOption(id: "a", label: "A").cost)
+        let info = WorkspaceInfo(id: "ws", name: "Laptop", host: "Mac", hue: 1, hostedBy: nil, clientHosted: false, scopes: [.decide],
+                                 connection: .online, primaryLabel: "Mac", notificationsOn: true)
+        let question = Mapping.question(id: "q", workspaceID: "ws", ticket: "MOB-0001", text: "T", options: [opt], contentHash: "00", createdMs: 1,
+                                        state: "open", decisionID: nil, optionID: nil, byLabel: nil, atMs: nil)
+        let v = Mapping.reviewValue(question, info: info, optionID: "fast", revision: 0, isDemo: true)
+        XCTAssertEqual(v.options.first { $0.id == "fast" }?.cost, "1 day")
+    }
+
     func testDateIsMilliseconds() {
         XCTAssertEqual(Mapping.date(1_500).timeIntervalSince1970, 1.5, accuracy: 0.0001)
     }

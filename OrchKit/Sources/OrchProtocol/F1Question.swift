@@ -149,6 +149,7 @@ public struct F1Question: Equatable, Sendable {
             var opts: [F1QuestionOption] = []
             for item in arr { opts.append(try F1Question.parseOption(item)) }
             guard Set(opts.map { Array($0.key.utf8) }).count == opts.count else { throw Refusal.malformed }
+            guard F1Question.labelsDistinct(opts) else { throw Refusal.malformed }
             options = opts
         } else { options = [] }
         if let r = recommended, !options.isEmpty, !options.contains(where: { $0.key.bytesEqual(r) }) { throw Refusal.malformed }
@@ -166,6 +167,13 @@ public struct F1Question: Equatable, Sendable {
     }
 
     // MARK: parsing helpers
+
+    /// Display safety of a signing surface: two options whose labels are the same after the phone's own NFC port (`F1Text.nfc`, never
+    /// Foundation's) and case folding would look alike, so a question carrying them is refused. Keys are byte-unique separately.
+    public static func labelsDistinct(_ options: [F1QuestionOption]) -> Bool {
+        let folded = options.map { F1Text.nfc(F1Text.nfc($0.label).folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))) }
+        return Set(folded.map { Array($0.utf8) }).count == options.count
+    }
 
     /// `closed: false` ignores unknown keys (known keys are still checked by the callers); `closed: true` refuses them.
     private static func keysOK(_ m: [String: JSONValue], required: Set<String>, optional: Set<String>, closed: Bool = false) -> Bool {

@@ -148,7 +148,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertTrue(runtime.context.isCurrent && runtime.skipped.isEmpty)
         // The realm and its capabilities are the runtime's: nothing optional is on.
         XCTAssertEqual(services.realm, .live)
-        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: false, demoControls: false))
+        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: false))
         XCTAssertNil(ws.drop)
         XCTAssertFalse(services.eligibleShareDestination(ws.info.id))
         XCTAssertNil(services.demo)
@@ -445,7 +445,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertEqual(reads + registrations, 0)
         XCTAssertNil(ShareBridge.make(world: services, override: FileManager.default.temporaryDirectory))      // no Live share without the capability
         // Even a Live runtime offering share would need the fence: the bridge runs inside it (it exists only for a fenced Live).
-        runtime.capabilities = RealmCapabilities(drop: false, share: true, push: false, demoControls: false)
+        runtime.capabilities = RealmCapabilities(drop: false, share: true, push: false, demoControls: false, writes: false)
         XCTAssertNotNil(ShareBridge.make(world: services, override: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))
         runtime.invalidate()
         services.retire()
@@ -455,7 +455,7 @@ final class LiveRuntimeTests: XCTestCase {
 
     private func pushServices(_ rig: Rig, push: FakePush? = nil) throws -> (LiveServices, LiveRuntime, LiveWorkspace, FakePush) {
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
-        runtime.capabilities = RealmCapabilities(drop: false, share: false, push: true, demoControls: false)
+        runtime.capabilities = RealmCapabilities(drop: false, share: false, push: true, demoControls: false, writes: false)
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
         services.pushEnvironment = { .sandbox }
         services.pushToken = { B64U.encode(Data(repeating: 5, count: 32)) }
@@ -691,6 +691,7 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire()
     }
 
+    #if DEBUG
     func testPushMaterialAndTheDraftFileGoThroughTheRealmFence() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
@@ -699,6 +700,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try sink.put(Data("m".utf8), realm: "demo", ws: String(repeating: "c", count: 32), purpose: "push-material"))
         // The draft: written inside the fence, never without one in Live.
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
         let id = SystemEntropy().id16()
         let draftDir = FileManager.default.temporaryDirectory.appendingPathComponent("draft-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: draftDir, withIntermediateDirectories: true)
@@ -725,6 +727,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: draftDir.appendingPathComponent("ticket-draft.json").path))
         XCTAssertThrowsError(try sink.put(Data("m".utf8), realm: "live", ws: String(repeating: "c", count: 32), purpose: "push-material"))
     }
+    #endif
 
     func testAStaleRealmEndsAPairingAsCancelledNotAsABadLink() {
         XCTAssertEqual(LivePairingModel.state(forRealm: .staleGeneration), .entry)

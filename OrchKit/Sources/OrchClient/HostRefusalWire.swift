@@ -26,6 +26,8 @@ public extension HostRefusal {
         case .otherPerson: "other_person"
         case .certInvalid: "cert_invalid"
         case .certExpired: "cert_expired"
+        case .host(let code, _, _, _): code
+        case .reader(let code, _, _, _): code
         }
     }
 
@@ -39,6 +41,14 @@ public extension HostRefusal {
         case .staleEpoch(let e): o["epoch"] = .int(Int64(e))
         case .alreadyAnswered(let l, let at): o["by_device_label"] = .string(l); o["at_ms"] = .int(at)
         case .questionChanged(let h): o["content_hash"] = .string(B64U.encode(h))
+        case .reader(_, let reason, let required, let declared):
+            o["retryable"] = .bool(false); o["reason"] = .string(reason)
+            if let required { o["required"] = .int(required) }
+            if let declared { o["declared"] = .int(declared) }
+        case .host(_, let retryable, let seqs, let nextKey):
+            o["retryable"] = .bool(retryable)
+            if let seqs { o["seqs"] = .array(seqs.map { .int($0) }) }
+            if let nextKey { o["next_key"] = .string(nextKey) }
         default: break
         }
         return .object(o)
@@ -80,7 +90,74 @@ public extension HostRefusal {
         case "question_changed":
             guard rest == ["content_hash"], let h = m["content_hash"]?.string.flatMap({ B64U.decode($0, length: 32) }) else { return nil }
             self = .questionChanged(contentHash: h)
-        default: return nil
+        case "sign.convenience_readers", "reader.decl_invalid":
+            // with a `reason` the closed reader shapes (H12d-3); without one, the plain host-code shape
+            if m["reason"] != nil { guard let r = Self.readerRefusal(code, m) else { return nil }; self = r }
+            else { guard let r = Self.hostCode(code, m) else { return nil }; self = r }
+        default: guard let r = Self.hostCode(code, m) else { return nil }; self = r
         }
     }
+
+    /// The code spellings the R2 sheet's `retryable` field is checked against: a dotted section 0.6 code, or one of the undotted codes of
+    /// `framing.RETRY`.
+    private static func isHostCode(_ code: String) -> Bool {
+        let u = Array(code.utf8)
+        guard (1...64).contains(u.count) else { return false }
+        func lower(_ c: UInt8) -> Bool { c >= 0x61 && c <= 0x7A }
+        func word(_ c: UInt8) -> Bool { lower(c) || (c >= 0x30 && c <= 0x39) || c == 0x5F }
+        let parts = u.split(separator: 0x2E, omittingEmptySubsequences: false)
+        guard parts.allSatisfy({ !$0.isEmpty && lower($0.first!) && $0.allSatisfy(word) }) else { return false }
+        return parts.count >= 2 || PhoneRetryTable.knownCodes.contains(where: { $0.utf8.elementsEqual(u) })
+    }
+
+    /// `{"refusal": code, "retryable": bool, "seqs"?: [int], "next_key"?: Key}` and nothing else (host section 0.6 code, 11A.5).
+    /// `retryable` must equal what the code's class derives (A and B true, C and D false); `internal` and `outcome.unknown_idem` depend on
+    /// a context the answer does not carry, so either value is accepted for those two. `seqs` is a non-empty list of positive integers
+    /// (the events that LANDED), `next_key` only for `ticket.key_not_next`.
+    private static func hostCode(_ code: String, _ m: [String: JSONValue]) -> HostRefusal? {
+        guard isHostCode(code), let retryable = m["retryable"]?.bool,
+              Set(m.keys).isSubset(of: ["refusal", "retryable", "seqs", "next_key"]) else { return nil }
+        let contextual = code.bytesEqual("internal") || code.bytesEqual("outcome.unknown_idem")
+        if !contextual {
+            let derived = PhoneRetryTable.classify(code, PhoneRefusalContext(eventID: "", hostNowMs: 0)).retryable
+            guard retryable == derived else { return nil }
+        }
+        var seqs: [Int64]?
+        if let s = m["seqs"] {
+            guard let a = s.array, (1...1024).contains(a.count) else { return nil }
+            var out: [Int64] = []
+            for v in a { guard let n = v.int, n >= 1, n <= maxSafeInt else { return nil }; out.append(n) }
+            seqs = out
+        }
+        var nextKey: String?
+        if let k = m["next_key"] {
+            guard code.bytesEqual("ticket.key_not_next"), let s = k.string, advisoryKeyHint(s) else { return nil }
+            nextKey = s
+        }
+        return .host(code: code, retryable: retryable, seqs: seqs, nextKey: nextKey)
+    }
+
+    static let readerReasons: [String: Set<String>] = [
+        "sign.convenience_readers": ["no_declaration", "declaration_unknown", "reader_too_old"],
+        "reader.decl_invalid": ["shape", "signature", "workspace", "device", "keys", "who", "bind", "time", "kat_missing", "kat_mismatch"],
+    ]
+
+    /// `{"refusal": code, "retryable": false, "reason": r}` plus `required` and `declared` (integers) for `reader_too_old` only.
+    private static func readerRefusal(_ code: String, _ m: [String: JSONValue]) -> HostRefusal? {
+        guard m["retryable"]?.bool == false, let reason = m["reason"]?.string, readerReasons[code]?.contains(where: { $0.utf8.elementsEqual(reason.utf8) }) == true,
+              Set(m.keys).isSubset(of: ["refusal", "retryable", "reason", "required", "declared"]) else { return nil }
+        let tooOld = code == "sign.convenience_readers" && reason == "reader_too_old"
+        if !tooOld { guard m["required"] == nil, m["declared"] == nil else { return nil } }
+        var req: Int64?, dec: Int64?
+        if tooOld {
+            guard let r = m["required"]?.int, let d = m["declared"]?.int, (0...Int64(ReaderDecl.levelMax)).contains(r), (0...Int64(ReaderDecl.levelMax)).contains(d) else { return nil }
+            req = r; dec = d
+        }
+        return .reader(code: code, reason: reason, required: req, declared: dec)
+    }
+}
+
+extension HostRefusal {
+    /// A sealed reader refusal (`sign.convenience_readers`, `reader.decl_invalid`; H12d-3).
+    public var isReaderRefusal: Bool { if case .reader = self { return true }; return false }
 }

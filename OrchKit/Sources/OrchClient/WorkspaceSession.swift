@@ -35,7 +35,7 @@ public enum SessionError: Error, Equatable, Sendable {
     /// H12d: the reader marker exists but cannot be decoded; the workspace is not opened. (A locked or unavailable vault is not this: it is
     /// `ReaderStoreError.locked` / `.unavailable`, thrown for the caller to retry.)
     case readerStateUnreadable
-    /// H12d (O5): a new build must `reader.declare` before any other op (only enforced once the R2 framing sends `rd`).
+    /// H12d (O5): a new build must `reader.declare` before any other op (enforced while `blocksUntilDeclared` is on; paired sessions send `rd` when they hold a declaration instead).
     case readerDeclarationRequired
     /// The relay refused a new rid with its unsigned `stale_epoch` hint, but the signed member list and grants do not (yet) confirm a
     /// newer epoch. Nothing was queued; the request stays pending until the signed list arrives. `hint` is unsigned data only.
@@ -47,6 +47,8 @@ public struct BridgeResponse: Equatable, Sendable {
     public let status: Int
     public let headers: [String: String]
     public let data: Data
+    /// The answer carried the R2 framing (first-chunk meta exactly `{"status":"ok"}`), not a v0 `{status, headers}`.
+    public let r2: Bool
 }
 
 public struct PendingRequestInfo: Equatable, Sendable {
@@ -91,9 +93,16 @@ public struct WorkspaceSessionConfig: Sendable {
     public var longPollSeconds: Int?
     /// H12d: the running build's runtime KAT result and identity.
     public var reader: ReaderRuntime
-    /// TODO(R2, orch-core #467): the R2 framing wiring turns this on. While false no request carries `rd` and no op waits for a
-    /// `reader.declare` (the injection point is `prepare`, via `ReaderRD.inject`).
+    /// R2 (11A.5): the request meta's `rd` field. On for paired sessions (Live and Demo). While false no request carries `rd` (the injection
+    /// point is `prepare`, via `ReaderRD.inject`).
     public var sendsReaderDigest: Bool
+    /// O5: with `rd` on, a new build must have declared before any op (`readerDeclarationRequired`). Paired sessions turn this off: a session
+    /// sends `rd` when it holds a declaration and does not wait for one (a host with `required_reader` 0 serves it); one that requires readers
+    /// answers a sealed reader refusal, which is surfaced, and `declaration_unknown` triggers a re-declare (`reader.declare`, a column-R read).
+    public var blocksUntilDeclared: Bool
+    /// Live: every request must be an op of the closed R2 table (`R2.checkMeta`, run in `prepare`, the one choke point). The interim v0
+    /// `decision` and `new_ticket` metas (FakeHost only, until C2b's `relay.submit`) are refused locally, before anything is signed or sealed.
+    public var enforcesOpTable: Bool
     /// Where `rd` goes in the request meta (protocol 8.6: `metaField`). See `ReaderRD`.
     public var readerDigestPlacement: ReaderRD.Placement
 
@@ -101,14 +110,14 @@ public struct WorkspaceSessionConfig: Sendable {
                 container: WorkspaceContainer, vault: RealmVault, transport: any RelayTransport, clock: any Clock<Duration>,
                 wall: any WallClock, entropy: any Entropy = SystemEntropy(), pollInterval: Duration = .milliseconds(500),
                 responseTimeout: Duration = .seconds(30), longPollSeconds: Int? = nil,
-                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false,
+                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false, blocksUntilDeclared: Bool = true, enforcesOpTable: Bool = false,
                 readerDigestPlacement: ReaderRD.Placement = .metaField) {
         self.context = context; self.workspace = workspace; self.generation = generation
         self.deviceID = Identifiers.deviceID(identity.publicKeys.sig); self.identity = identity; self.wsk = wsk
         self.container = container; self.vault = vault; self.transport = transport; self.clock = clock; self.wall = wall
         self.entropy = entropy; self.pollInterval = pollInterval; self.responseTimeout = responseTimeout
         self.longPollSeconds = longPollSeconds.map { min(max($0, 1), 25) }
-        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest; self.readerDigestPlacement = readerDigestPlacement
+        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest; self.blocksUntilDeclared = blocksUntilDeclared; self.enforcesOpTable = enforcesOpTable; self.readerDigestPlacement = readerDigestPlacement
     }
 }
 
@@ -130,8 +139,26 @@ public actor WorkspaceSession: RealmParticipant {
     private var poller: Task<Void, Never>?
     private var hintRefresh: Task<Void, Never>?
     private var foreground = true
-    private var lastRevision: Int64?
+    private var lastCursor: String?
+    private var snapshotRevision: Int64 = 0
     private var cachedSnapshot: WorkspaceSnapshot?
+    private var questionIndex: [ID16: QuestionLocator] = [:]
+    private var ticketCache: [String: (headSeq: Int64?, cursor: String, get: TicketGet)] = [:]
+    private var deviceLabels: [String: String] = [:]
+    private var personNames: [String: String] = [:]
+    /// The epoch the identity-derived caches (labels, question index, ticket reads) were filled under.
+    private var cacheEpoch: UInt32?
+    private var lastRedeclare: Duration?
+    func redeclareAllowed() -> Bool {
+        guard let last = lastRedeclare else { return true }
+        return sessionAge() - last >= Self.redeclareMinInterval
+    }
+    func noteRedeclare() { lastRedeclare = sessionAge() }
+    /// Drops the attempt rows of one logical READ (never a decision: those live in `decisions`).
+    func discardRead(logical: ID16) async {
+        _ = try? await cfg.container.database().execute("DELETE FROM bridge_requests WHERE logical=? AND NOT EXISTS (SELECT 1 FROM decisions WHERE id=?)",
+                                                         [.text(logical.hex), .text(logical.hex)])
+    }
     private var connectionState: ConnectionState = .offline
     private var hintIdentity: UUID?
     private var recovery: Task<Void, Never>?
@@ -471,7 +498,7 @@ public actor WorkspaceSession: RealmParticipant {
 
     // MARK: durable requests
 
-    private struct Row {
+    struct Row {
         let rid: ID16, logical: ID16
         let seq: UInt64
         let epoch: UInt32
@@ -550,15 +577,24 @@ public actor WorkspaceSession: RealmParticipant {
     /// sent until this returns, and a crash after it leaves a record that can be re-sent unchanged. With `replacing`, the
     /// refused attempt is deleted in the SAME transaction (and only if it is still there): the logical request is never
     /// without a durable attempt, and two drivers cannot both replace one row.
-    private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
+    func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
                          clearExhausted: Bool = false, reuseRid: Bool = false, decision: (QuestionReview, String)? = nil,
                          ) async throws -> Row {
         let lifecycle = reviewLifecycle
         try Task.checkCancellation()
         try await ensureCurrent()
-        // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it once R2 switches it on
+        // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it while `sendsReaderDigest` is on
         let exempt = (try? Bridge.unframe(plaintext).meta.object?["op"]?.string) == "reader.declare"
-        let rd = exempt ? nil : try readerDigestForRequest()
+        // The closed op table: ONE choke point. A meta outside it (or an interim v0 write under a Live config) fails here, before any
+        // signature or seal. A decision is built below, so it is refused up front.
+        if cfg.enforcesOpTable, decision != nil { throw ViewError.writesUnavailable }
+        if decision == nil, let meta = try? Bridge.unframe(plaintext).meta {
+            let r2Shaped = (meta.object.map { Set($0.keys) } ?? []).isSubset(of: R2.metaKeys)
+            if cfg.enforcesOpTable || r2Shaped {
+                try R2.checkMeta(meta)
+            }
+        }
+        let rd = try readerDigestForRequest(exempt: exempt)      // also the per-request marker check, for every op
         // a NEW rid replacing a refused attempt carries the current declaration's `rd`; a same-rid re-seal keeps the first
         let freshRD = old != nil && !reuseRid
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
@@ -731,7 +767,7 @@ public actor WorkspaceSession: RealmParticipant {
 
     /// One driver Task per logical request. The map is read and written without a suspension in between, so two callers can
     /// never both start a driver for the same request.
-    private func runDriver(_ row: Row, isResend: Bool) async throws -> BridgeResponse {
+    func runDriver(_ row: Row, isResend: Bool) async throws -> BridgeResponse {
         let logical = row.logical
         if let t = inflight[logical] { return try await t.value }
         guard !closed else { throw SessionError.staleGeneration }          // closed by realm shutdown: no new drivers
@@ -918,6 +954,7 @@ public actor WorkspaceSession: RealmParticipant {
         var progress = Bridge.PendingRequest(next: 0, stream: row.stream, epoch: row.epoch, offsetAdopted: row.offsetAdopted)
         var table: [ID16: Bridge.PendingRequest] = [row.rid: progress]
         var first: (status: Int, headers: [String: String])?
+        var r2Framed = false
         var body = Data()
         var waited = Duration.zero
         var counted = Set<UInt64>()       // one pin failure per chunk, however often a poll shows it again
@@ -977,16 +1014,21 @@ public actor WorkspaceSession: RealmParticipant {
                         return .refusal(refusal, fetchGrants: a.fetchGrants, offsetAdopted: a.offsetMs != nil)
                     }
                     if first == nil {
-                        guard let m = a.meta.object, Set(m.keys) == ["status", "headers"], let st = m["status"]?.int, (100...599).contains(st),
-                              let hs = m["headers"]?.object else { throw SessionError.badResponse }
-                        var headers: [String: String] = [:]
-                        for (k, v) in hs { guard let s = v.string else { throw SessionError.badResponse }; headers[k] = s }
-                        first = (Int(st), headers)
+                        if R2.isOKMeta(a.meta) {
+                            // R2 (host 11A.5): chunk 0 meta exactly {"status":"ok"}, the data across the chunks is cj(Result)
+                            first = (200, [:]); r2Framed = true
+                        } else {
+                            guard let m = a.meta.object, Set(m.keys) == ["status", "headers"], let st = m["status"]?.int, (100...599).contains(st),
+                                  let hs = m["headers"]?.object else { throw SessionError.badResponse }
+                            var headers: [String: String] = [:]
+                            for (k, v) in hs { guard let s = v.string else { throw SessionError.badResponse }; headers[k] = s }
+                            first = (Int(st), headers)
+                        }
                     } else if a.meta.object?.isEmpty != true { throw SessionError.badResponse }
                     body.append(a.data)
                     if body.count > Self.maxResponseBytes { throw SessionError.tooLarge }
                     _ = current
-                    if a.last, let f = first { return .response(BridgeResponse(status: f.status, headers: f.headers, data: body)) }
+                    if a.last, let f = first { return .response(BridgeResponse(status: f.status, headers: f.headers, data: body, r2: r2Framed)) }
                 }
                 progress = table[row.rid] ?? progress
             }
@@ -1027,16 +1069,150 @@ extension WorkspaceSession {
         }
         return v
     }
-    private func getView(_ path: String) async throws -> JSONValue {
-        try viewJSON(await exchange(meta: ["op": "http", "method": "GET", "path": .string(path), "headers": [:]]))
+    // MARK: reads over column R (host 11A.5): needs + ticket.query + member.list + workspace.show + ticket.get + activity.list
+
+    /// Where a question lives on the host: its ticket (key for display and as the `ticket.get` ref, uid for what is bound) and its id
+    /// on that ticket (`Q1`).
+    package struct QuestionLocator: Equatable, Sendable { package let key: String, uid: String, number: String }
+
+    private func label(forDevice device: String?, person: String) -> String {
+        if let device, let l = deviceLabels[device] { return l }
+        if let n = personNames[person] { return n }
+        return "Unknown device"
     }
+
+    private func absorb(_ m: MemberListResult) {
+        var devices: [String: String] = [:], people: [String: String] = [:]
+        for member in m.members {
+            people[member.person] = member.name
+            for d in member.devices { devices[d.id] = d.label ?? member.name }
+        }
+        deviceLabels = devices; personNames = people
+    }
+
+    /// Per-snapshot caps (documented in host-api-v1.md): at most `maxTicketPages` pages of `ticket.query`, `maxTicketGets` `ticket.get` reads
+    /// (tickets with open questions first, then the newest answers of the feed), and 50 feed items. Anything beyond is not read, and a
+    /// truncated list says so (`ticketsIncomplete`).
+    static var maxTicketPages: Int { 5 }
+    static var maxTicketGets: Int { 30 }
+
+    /// The questions of one ticket this phone may show, and the ones it cannot (`macOnly`): unreadable entries, a label or hash check that
+    /// fails, and free-text questions (no options: nothing to choose from, C2b). Those are counted, never dropped silently; none is signable.
+    private func questions(of t: TicketGet, askedByNeeds since: [String: Int64], openIn needs: Set<String>) -> (shown: [Question], macOnly: Set<String>) {
+        var out: [Question] = [], mac: Set<String> = []
+        for entry in t.questions {
+            guard case .question(let q) = entry else {
+                if case .unreadable(let id?) = entry, needs.contains(id) { mac.insert(id) }
+                continue
+            }
+            guard q.state != .stale else { continue }
+            if q.state == .open, !needs.contains(q.id) { continue }       // open for someone else: not this person's to answer
+            let created = since[q.id] ?? q.askedAt.flatMap(HostTime.ms) ?? q.answer.flatMap { HostTime.ms($0.at) } ?? 0
+            if let made = try? Question(q, ticketKey: t.key, ticketUID: t.uid, workspace: workspace, createdMs: created,
+                                        deviceLabel: { self.label(forDevice: $0, person: $1) }), !(made.options.isEmpty && made.state == "open") {
+                out.append(made)
+            } else if q.state == .open { mac.insert(q.id) }
+        }
+        return (out, mac)
+    }
+
+    /// Everything derived from host views about who is who (labels, the question index, ticket reads that carry `members_v`) belongs to one
+    /// verified member-list epoch: a new epoch (a rotation, a revocation, a re-pair) drops it, and so does any failed read.
+    private func dropIdentityCaches() {
+        deviceLabels = [:]; personNames = [:]; questionIndex = [:]; ticketCache = [:]; lastCursor = nil
+    }
+    private func checkCacheEpoch() async throws {
+        let e = try await currentEpoch()
+        if cacheEpoch != e { dropIdentityCaches(); cacheEpoch = e }
+    }
+    /// Fail closed, ONCE for every read path (`callRead`'s error exit): after a failed read nothing identity-derived survives. A host reader
+    /// refusal also ends the cached view (it must not keep being served as current) and is announced to subscribers.
+    func noteReadFailure(_ error: Error) {
+        if error is CancellationError { return }
+        dropIdentityCaches()
+        if case ClientError.host(let r) = error, r.isReaderRefusal {
+            cachedSnapshot = nil
+            emit(.readerRefused)
+        }
+    }
+    #if DEBUG
+    package func identityCacheState() -> (epoch: UInt32?, labels: Int, indexed: Int, tickets: Int, cursor: String?) {
+        (cacheEpoch, deviceLabels.count + personNames.count, questionIndex.count, ticketCache.count, lastCursor)
+    }
+    #endif
+
+    private func assembleSnapshot() async throws -> WorkspaceSnapshot {
+        try await checkCacheEpoch()
+        // The activity feed first: its cursor is what the poller compares, and an answer seen here is fetched below.
+        let answered = try await activityList(limit: 50, types: ["question.answered"])
+        let show = try await workspaceShow()
+        let members = try await memberList()
+        absorb(members)
+        let needs = try await needs()
+        var rows: [TicketRow] = [], page: String?, pages = 0, total: Int64 = 0
+        repeat {
+            guard try await readBudgetAvailable() else { throw ViewError.readDeferred }       // never eat the mutation reserve between steps
+            let p = try await ticketQuery(page: page)
+            if pages == 0 { total = p.total }
+            rows += p.rows; page = p.nextPage; pages += 1
+        } while page != nil && pages < Self.maxTicketPages
+        let rowsByKey = Dictionary(rows.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        guard rowsByKey.count == rows.count else { throw ViewError.malformed }
+        let incomplete = page != nil || Int64(rows.count) < total
+        let now = cfg.wall.nowMs
+        var openByTicket: [String: Set<String>] = [:], since: [String: [String: Int64]] = [:], needed: [(key: String, ref: String)] = []
+        for n in needs.items where n.kind == .question {
+            guard let key = n.key, let ref = n.ref else { continue }
+            openByTicket[key, default: []].insert(ref)
+            needed.append((key, ref))
+            if let s = n.sinceMs { since[key, default: [:]][ref] = s }
+        }
+        var keys: [String] = []
+        for k in openByTicket.keys.sorted() + answered.items.compactMap(\.key) where !keys.contains(k) && keys.count < Self.maxTicketGets { keys.append(k) }
+        var questions: [Question] = [], index: [ID16: QuestionLocator] = [:], macOnly: Set<String> = []
+        for key in keys {
+            let row = rowsByKey[key]
+            let get: TicketGet
+            // a cached read is valid while its ticket's head did not move (a listed ticket), or while the feed did not move (an unlisted one)
+            if let c = ticketCache[key], (row.map { c.headSeq == $0.headSeq && c.get.uid == $0.uid } ?? (c.cursor == answered.subCursor)) { get = c.get }
+            else {
+                guard try await readBudgetAvailable() else { throw ViewError.readDeferred }
+                get = try await ticketGet(key)
+                ticketCache[key] = (row?.headSeq, answered.subCursor, get)
+            }
+            let (shown, mac) = self.questions(of: get, askedByNeeds: since[key] ?? [:], openIn: openByTicket[key] ?? [])
+            for q in shown { questions.append(q); index[q.questionID] = QuestionLocator(key: key, uid: get.uid, number: q.number) }
+            for n in mac { macOnly.insert(key + "#" + n) }
+        }
+        // a needed question whose ticket was not read (cap) is also one this phone cannot show
+        for n in needed where !keys.contains(n.key) { macOnly.insert(n.key + "#" + n.ref) }
+        ticketCache = ticketCache.filter { keys.contains($0.key) }
+        questionIndex = index
+        let tickets = rows.map { Ticket(row: $0) }
+        let people: [WorkspaceMember] = members.members.flatMap { m in
+            m.devices.filter(\.valid).compactMap { d in
+                ID16(hex: String(d.id.dropFirst(2))).map { WorkspaceMember(deviceID: $0, label: d.label ?? m.name) }
+            }
+        }
+        let sorted = questions.sorted { $0.createdMs != $1.createdMs ? $0.createdMs < $1.createdMs : $0.questionID.hex < $1.questionID.hex }
+        // monotonic: a dropped cache (a failed read, a reader refusal) never lowers it
+        let previous = cachedSnapshot
+        let same = previous.map {
+            $0.questions == sorted && $0.tickets == tickets && $0.members == people && $0.name == show.name && $0.nextKey == show.nextKey
+                && $0.macOnlyCount == macOnly.count && $0.ticketsIncomplete == incomplete
+        } ?? false
+        snapshotRevision = same ? snapshotRevision : snapshotRevision + 1
+        lastCursor = answered.subCursor
+        return try WorkspaceSnapshot(workspace: workspace, revision: max(snapshotRevision, 1), checkedMs: now, questions: sorted, tickets: tickets, members: people,
+                                     name: show.name, nextKey: show.nextKey, macOnlyCount: macOnly.count, ticketsIncomplete: incomplete)
+    }
+
     package func snapshotView() async throws -> WorkspaceSnapshot {
         try await ensureCurrent()
         if let snapshotTask { return try await snapshotTask.value }
         let task = Task { () throws -> WorkspaceSnapshot in
             guard try await self.readBudgetAvailable() else { throw ViewError.readDeferred }
-            let v = try await self.getView("/v2/snapshot")
-            let snapshot = try WorkspaceSnapshot(v, workspace: self.workspace)
+            let snapshot = try await self.assembleSnapshot()
             try await self.ensureCurrent()
             self.verifiedReceiptMs = self.cfg.wall.nowMs
             self.cachedSnapshot = snapshot
@@ -1047,22 +1223,37 @@ extension WorkspaceSession {
         defer { snapshotTask = nil }
         return try await task.value
     }
-    private func readQuestion(_ id: ID16) async throws -> Question {
-        let m = try fields(await getView("/v2/questions/" + id.hex), ["host_api", "workspace_id", "question"])
-        guard m["host_api"] == 0, m.idField("workspace_id") == workspace else { throw ViewError.malformed }
-        let q = try Question(m["question"]!)
+
+    /// One question read afresh from its ticket (`ticket.get`), the F1 gate included: an OPEN question comes back with `reviewed`, the
+    /// recomputed `qid` and `hash` bound to the `doc.head` and `members_v` of the same read (what a person event will sign, C2b).
+    private func readQuestion(_ id: ID16, hint: QuestionLocator? = nil) async throws -> (question: Question, reviewed: F1Question.Reviewed?) {
+        try await checkCacheEpoch()
+        var locator = hint ?? questionIndex[id]
+        if locator == nil {
+            _ = try await snapshotView()                     // a fresh process knows no question yet: one snapshot fills the index
+            locator = questionIndex[id]
+        }
+        guard let locator else { throw ViewError.malformed }
+        let get = try await ticketGet(locator.key)
+        guard get.uid.utf8Equal(locator.uid), let entry = get.questions.first(where: { $0.question?.id.utf8Equal(locator.number) == true }),
+              let f1 = entry.question, f1.state != .stale else { throw ViewError.malformed }
+        if let signer = f1.answer?.signerDevice, deviceLabels[signer] == nil { absorb(try await memberList()) }   // a device that joined since the last snapshot
+        let created = f1.askedAt.flatMap(HostTime.ms) ?? 0
+        let q = try Question(f1, ticketKey: get.key, ticketUID: get.uid, workspace: workspace, createdMs: created,
+                             deviceLabel: { self.label(forDevice: $0, person: $1) })
         guard q.questionID == id else { throw ViewError.malformed }
-        return q
+        let reviewed = f1.state == .open ? try f1.reviewed(ticketUID: get.uid, workspace: workspace, basedOn: get.headHash, rosterV: get.membersV) : nil
+        return (q, reviewed)
     }
     package func reviewQuestion(_ id: ID16) async throws -> QuestionReview {
         try await ensureCurrent()
         let lifecycle = reviewLifecycle
-        let q = try await readQuestion(id)
+        let (q, reviewed) = try await readQuestion(id)
         try await ensureCurrent()
         guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
         reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
         if reviews.count >= 128 { reviews.removeAll() }
-        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID())
+        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
         reviews[review.token] = review
         return review
     }
@@ -1094,13 +1285,14 @@ extension WorkspaceSession {
 
     package func submit(_ review: QuestionReview, optionID: String) async throws -> DecisionOutcome {
         try await ensureCurrent()
+        guard !cfg.enforcesOpTable else { throw ViewError.writesUnavailable }       // Live: no write path until C2b
         guard foreground, reviews[review.token] == review, review.workspaceID == workspace,
               review.generation == generation, review.realm == cfg.context.realm else { throw ViewError.invalidReview }
         guard review.question.options.contains(where: { $0.id.utf8Equal(optionID) }) else { throw ViewError.invalidOption }
         // Offline work remains unsigned. Reconfirm reachability/open state before entering custody;
         // the host still performs CAS because it can change again after this read.
         let current: Question
-        do { current = try await readQuestion(review.question.questionID) }
+        do { current = try await readQuestion(review.question.questionID, hint: locator(of: review.question)).question }
         catch { try await ensureCurrent(); throw ViewError.offline }
         try await ensureCurrent()
         guard foreground, reviews[review.token] == review else { throw ViewError.invalidReview }
@@ -1192,7 +1384,8 @@ extension WorkspaceSession {
         // Derived from the marker written atomically with the attempt's state, not from `decisions.state` alone (written with it).
         let exhausted = try await isExhausted(id) || record.text("state") == "exhausted"
         do {
-            result = try await decisionNetwork(id, qid: qid, op: op, old: old, first: first, reissue: explicit || !exhausted)
+            let stored = try record.blob("review").map { try Question(wire: StrictJSON.parse($0), workspace: workspace) }
+            result = try await decisionNetwork(id, qid: qid, locator: stored.map(locator(of:)), op: op, old: old, first: first, reissue: explicit || !exhausted)
         } catch {
             try await ensureCurrent()
             let db = try await cfg.container.database()
@@ -1210,7 +1403,13 @@ extension WorkspaceSession {
         }
         return try await finishDecision(id, result)
     }
-    private func decisionNetwork(_ id: ID16, qid: ID16, op: JSONValue, old: Row?, first: Row?, reissue: Bool) async throws -> DecisionOutcome {
+    private func locator(of q: Question) -> QuestionLocator { QuestionLocator(key: q.ticket, uid: q.ticketUID, number: q.number) }
+    /// INTERIM (v0 decision op until C2b's `relay.submit`): a closed question is OURS when the device that signed the counting answer is this
+    /// device and the answer is the one in the operation. (Under R2 the answer's `id` is the id of the event this phone signed.)
+    private func isOurs(_ r: QuestionResolution, op: JSONValue) -> Bool {
+        r.byDeviceID?.utf8Equal("d_" + cfg.deviceID.hex) == true && r.answer == op.object?["answer"]
+    }
+    private func decisionNetwork(_ id: ID16, qid: ID16, locator: QuestionLocator?, op: JSONValue, old: Row?, first: Row?, reissue: Bool) async throws -> DecisionOutcome {
         var response: BridgeResponse?
         do {
             if let first { response = try await runDriver(first, isResend: false) }
@@ -1221,10 +1420,9 @@ extension WorkspaceSession {
             if response == nil {
                 // Only previously dispatched decisions can reach authoritative reconciliation.
                 emit(.connection(.reconciling))
-                let q = try await readQuestion(qid)
+                let q = try await readQuestion(qid, hint: locator).question
                 if let r = q.resolution {
-                    let result: DecisionOutcome = r.decisionID == id && r.answer == op.object?["answer"]
-                        ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
+                    let result: DecisionOutcome = isOurs(r, op: op) ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
                     return result
                 }
                 guard q.contentHash == op.object?["content_hash"]?.string.flatMap({ B64U.decode($0) }) else {
@@ -1238,20 +1436,22 @@ extension WorkspaceSession {
                                              clearExhausted: true)
                 response = try await runDriver(next, isResend: false)
             }
-            let m = try fields(viewJSON(response!), ["host_api", "decision_id", "question"])
+            let m = try fields(viewJSON(response!), ["host_api", "decision_id"])
             guard m["host_api"] == 0, m.idField("decision_id") == id else { throw ViewError.malformed }
-            let closed = try Question(m["question"]!)
-            guard closed.questionID == qid, let r = closed.resolution, r.decisionID == id, r.answer == op.object?["answer"] else { throw ViewError.malformed }
+            // the host's word is confirmed by reading the question: closed, by this device, with this answer
+            let closed = try await readQuestion(qid, hint: locator).question
+            guard let r = closed.resolution, isOurs(r, op: op) else { throw ViewError.malformed }
             return .accepted
         } catch ClientError.host(.alreadyAnswered) {
-            let q = try await readQuestion(qid)
+            let q = try await readQuestion(qid, hint: locator).question
             guard let r = q.resolution else { throw ViewError.malformed }
-            return r.decisionID == id && r.answer == op.object?["answer"]
-                ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
+            return isOurs(r, op: op) ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
         } catch ClientError.host(.questionChanged(let hash)) {
             return .questionChanged(hash: hash)
         } catch ClientError.host(.notVisible) {
             return .notApplied           // sealed, terminal and definite: recorded, did not apply (orch-29 Q2)
+        } catch ClientError.host(let refusal) where R2.retryClass(of: refusal) == .d {
+            return .notApplied           // any other class-D refusal is definite too: nothing ran, nothing is sent again, never `uncertain`
         }
     }
     private func finishDecision(_ id: ID16, _ result: DecisionOutcome) async throws -> DecisionOutcome {
@@ -1271,6 +1471,7 @@ extension WorkspaceSession {
         return result
     }
     package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
+        guard !cfg.enforcesOpTable else { throw ViewError.writesUnavailable }       // Live: no write path until C2b
         try draft.validate()
         try await ensureCurrent()
         guard foreground else { throw ViewError.offline }
@@ -1298,7 +1499,7 @@ extension WorkspaceSession {
         emit(.invalidated)
         return ticket
     }
-    private func emit(_ event: WorkspaceEvent) {
+    func emit(_ event: WorkspaceEvent) {
         if case .connection(let state) = event { connectionState = state }
         if case .snapshot = event, !subscribers.isEmpty { snapshotsEmitted += 1 }
         for c in subscribers.values { c.yield(event) }
@@ -1345,18 +1546,24 @@ extension WorkspaceSession {
         let charged = try await cfg.container.database().query("SELECT COUNT(*) AS n FROM bridge_charges WHERE created_ms > ?", [.int(cfg.wall.nowMs - Self.hostWindowMs)]).first?.int("n") ?? 0
         return charged < 960
     }
+    /// Change detection by polling (`wait` is not served on the relay): one `activity.list {limit: 1}` per interval; its `sub_cursor` is the
+    /// journal position. The snapshot is read again only when that cursor moved (or no snapshot is held), and the interval backs off while
+    /// nothing changes (15 s doubling to 60 s).
     private func pollViews() async {
         var delay: Int64 = 15
         while !Task.isCancelled && foreground && !subscribers.isEmpty {
-
             // Imported host v1 defaults: 1024 per device, 16384 global. Reserve 64 slots for mutations.
             if (try? await readBudgetAvailable()) == true {
                 do {
-                    let s = try await snapshotView()
+                    let cursor = try await activityList(limit: 1).subCursor
                     if Task.isCancelled { return }
-                    delay = lastRevision == s.revision ? min(delay * 2, 60) : 15
-                    lastRevision = s.revision
-                    emit(.snapshot(s)); emit(.connection(.online))
+                    if cachedSnapshot == nil || lastCursor != cursor {
+                        let s = try await snapshotView()
+                        if Task.isCancelled { return }
+                        delay = 15
+                        emit(.snapshot(s))
+                    } else { delay = min(delay * 2, 60) }
+                    emit(.connection(.online))
                 } catch ClientError.relay(let r) where r.status == 429 || r.status == 503 {
                     delay = max(min(delay * 2, 60), Int64(r.retryAfter ?? 0)); emit(.connection(.offline))
                 } catch { if Task.isCancelled { return }; delay = min(delay * 2, 60); emit(.connection(.offline)) }
@@ -1444,13 +1651,23 @@ extension WorkspaceSession {
 // MARK: H12d reader declaration (host 9.5, 9.11; orch-f1 O3, O5)
 
 extension WorkspaceSession {
-    /// `rd` for the next column-R request: the digest of this device's current declaration. nil while R2 has not switched
-    /// `sendsReaderDigest` on, or before any declaration. With the switch on, a new build must have declared first (O5).
-    package func readerDigestForRequest() throws -> String? {
-        guard cfg.sendsReaderDigest else { return nil }
-        let state = try ReaderStore.load(cfg.vault, ws: cfg.workspace)
-        if ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
-        return ReaderGate.rd(state)
+    /// `rd` for the next column-R request: the host's digest of this device's declaration (the `reader.declare` answer's, else the pair
+    /// declaration's own). nil with `sendsReaderDigest` off or before any declaration. The downgrade marker and the stored record are
+    /// checked on EVERY call (`exempt` only skips the `rd` itself, for `reader.declare`).
+    package func readerDigestForRequest(exempt: Bool = false) throws -> String? {
+        // The downgrade marker (the level never falls) and the stored record are checked before EVERY request, `rd` or not.
+        let state: ReaderStateRecord?
+        do { state = try ReaderStore.load(cfg.vault, ws: cfg.workspace) } catch ReaderStoreError.corrupt { throw SessionError.readerStateUnreadable }
+        guard ReaderGate.opens(state, runningLevel: cfg.reader.level) else { throw SessionError.readerDowngrade }
+        guard cfg.sendsReaderDigest, !exempt else { return nil }
+        if cfg.blocksUntilDeclared, ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
+        // No declaration: no `rd` at all (never an empty or invented one). A host that requires readers refuses, and that is surfaced.
+        guard let decl = state?.decl else { return nil }
+        // A declaration claims a level: it must be this device's, for this workspace, and not above what this build proved (KAT).
+        guard let o = decl.json.object?["o"]?.object, o["workspace_id"]?.string == cfg.workspace.hex,
+              o["device_id"]?.string == cfg.deviceID.hex else { throw SessionError.readerStateUnreadable }
+        guard decl.level <= cfg.reader.level else { throw SessionError.readerDowngrade }
+        return ReaderGate.rd(state)       // the host's digest once a declare answer exists, else the pair declaration's own
     }
 
     /// Tests: the session's configuration.
@@ -1465,11 +1682,10 @@ extension WorkspaceSession {
     /// O5: on the first launch of a new build (or when the host never confirmed the last declaration) builds, signs through the leased
     /// signer and persists the `reader.declare` request, before any other op. nil when nothing is due (same build, acknowledged) or the
     /// build declares nothing. A retry within the host's window re-sends the stored declaration byte for byte.
-    /// TODO(R2, orch-core #467): sending it (exempt from `rd`) waits for the R2 framing.
-    package func readerDeclareRequest() async throws -> ReaderDeclareRequest? {
+    package func readerDeclareRequest(force: Bool = false) async throws -> ReaderDeclareRequest? {
         try await ensureCurrent()
         let state = try readerState()
-        guard ReaderGate.needsDeclare(state, runtime: cfg.reader), let cap = cfg.reader.capability else { return nil }
+        guard force || ReaderGate.needsDeclare(state, runtime: cfg.reader), let cap = cfg.reader.capability else { return nil }
         // host time as this phone knows it: `created_ms` is judged against the HOST clock (+-300 s), so both the reuse test and a new
         // declaration use the wall clock plus the adopted offset
         let offset = try await clockOffsetMs()
@@ -1483,6 +1699,7 @@ extension WorkspaceSession {
         let decl = try ReaderDeclaration.make(workspace: cfg.workspace, dkSig: sig.sig, dkKx: sig.kx, who: .person(person), level: cap.level, kat: cap.kat,
                                               bind: .declare, createdMs: now, signer: cfg.identity.sig)
         let base = state ?? ReaderStateRecord(decl: nil, highest: 0, build: cfg.reader.build, acked: false)
+        try await ensureCurrent()           // after the awaits above: a finished realm writes nothing into its successor's vault
         try ReaderStore.save(cfg.vault, ws: cfg.workspace, base.recording(decl, build: cfg.reader.build, acked: false))
         return ReaderDeclareRequest(declaration: decl, id: rid)
     }
@@ -1490,10 +1707,29 @@ extension WorkspaceSession {
     /// The host answered the `reader.declare` with `digest`: acknowledged only if that is the stored declaration's digest (an answer for
     /// an older declaration, or another device's, changes nothing). Returns whether it was.
     @discardableResult
-    package func readerDeclareAcknowledged(digest: String) throws -> Bool {
-        guard var s = try readerState(), let d = s.decl, d.digest.utf8.elementsEqual(digest.utf8) else { return false }
+    package func readerDeclareAcknowledged(digest: String, level: Int? = nil) async throws -> Bool {
+        try await ensureCurrent()
+        guard var s = try readerState(), let d = s.decl, R2.isDigest(digest) else { return false }
+        if d.digest.utf8.elementsEqual(digest.utf8) { s.hostDigest = nil }
+        else if let level, level == d.level { s.hostDigest = digest }      // the host kept the bytes it already held for this body: its digest is the one `rd` carries
+        else { return false }                                              // an answer for another (older) declaration changes nothing
         s.acked = true
         try ReaderStore.save(cfg.vault, ws: cfg.workspace, s)
+        return true
+    }
+
+    /// Sends the `reader.declare` (a read, exempt from `rd`) and takes the answer's digest into the reader state. `force` declares again even
+    /// when nothing is due (the host answered `declaration_unknown`). False when this build declares nothing.
+    @discardableResult
+    package func declareReader(force: Bool = false) async throws -> Bool {
+        guard let req = try await readerDeclareRequest(force: force) else { return false }
+        let r = try Self.result(of: try await exchange(meta: try req.meta()))
+        // The answer is accepted only for THIS device and the level that was declared. Its digest is the host's (it keeps the bytes it
+        // already held for the same body under another signature, H12d-3), so it may differ from the sent one; it is persisted as `rd`
+        // only after these checks, and a wrong answer fails the declare (the next request then surfaces the host's own refusal).
+        guard let answer = ReaderDeclareResult(r.data), answer.device == "d_" + cfg.deviceID.hex, answer.reader == req.declaration.level,
+              answer.level == req.declaration.level,
+              try await readerDeclareAcknowledged(digest: answer.digest, level: answer.level) else { throw ViewError.malformed }
         return true
     }
 

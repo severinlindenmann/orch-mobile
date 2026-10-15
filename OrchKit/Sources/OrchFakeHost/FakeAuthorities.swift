@@ -108,7 +108,7 @@ public actor FakeHost {
     let entropy: any Entropy
     let origin: String
     private let clientHosted: Bool
-    private let name: String
+    let name: String
     private let hostedBy: String?
     var wks: [UInt32: SymmetricKey] = [:]
     var cks: [UInt32: SymmetricKey] = [:]

@@ -45,6 +45,10 @@ protocol WorkspaceModel: AnyObject, Observable {
     func epicProgress(for epicKey: String) -> EpicProgress
     func children(of epicKey: String) -> [Ticket]
     func question(id: String) -> Question?
+    /// Open questions this iPhone cannot show or sign (unreadable, failing a check, or free text): they are answered on the Mac.
+    var macOnlyCount: Int { get }
+    /// The ticket list is cut: more tickets exist on the host than are listed.
+    var ticketsIncomplete: Bool { get }
     /// Only a workspace this iPhone may operate can take new tickets.
     var canCreateTickets: Bool { get }
     /// One `creationID` per exact draft (persisted with it until a verified result): a retry of the same fields creates once.
@@ -57,6 +61,8 @@ enum TicketCreation: Hashable, Sendable {
 }
 
 extension WorkspaceModel {
+    var macOnlyCount: Int { 0 }
+    var ticketsIncomplete: Bool { false }
     var canCreateTickets: Bool { false }
     func createTicket(title: String, body: String) async -> TicketCreation { .failed("Not available here.") }
 }

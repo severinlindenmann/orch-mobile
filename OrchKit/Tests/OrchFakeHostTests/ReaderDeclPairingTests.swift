@@ -241,9 +241,13 @@ import OrchProtocol
         let session = handle.joined.session
         let req = try #require(try await session.readerDeclareRequest())
         #expect(req.declaration.via == "declare" && req.declaration.digest != first.digest && req.declaration.level == 1)
-        #expect(req.meta == ["t": "req", "id": .string(req.id), "op": "reader.declare", "args": ["reader_decl": req.declaration.json],
-                             "opts": ["idem": .string(req.idem)]])
-        #expect(req.idem.hasPrefix("a_") && req.idem.count == 34)
+        // column R: a READ frame, no idem (a read with one is req.invalid), no rd (exempt)
+        #expect(try req.meta() == ["op": "reader.declare", "args": ["reader_decl": req.declaration.json]])
+        let wire = try req.meta()
+        #expect(wire.object?["idem"] == nil && wire.object?["rd"] == nil)
+        #expect(R2.allOps["reader.declare"]?.kind == .read && R2.ops["reader.declare"] != nil)
+        #expect(throws: R2.MetaError.reqInvalid) { try R2.checkMeta(["op": "reader.declare", "args": [:], "idem": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"]) }
+        #expect(throws: R2.MetaError.reqInvalid) { try R2.checkMeta(["op": "reader.declare", "args": [:], "rd": .string("sha256:" + String(repeating: "a", count: 64))]) }
         let idk = try h.env.context.deviceIdentity(custody: h.custody, createIfMissing: false)
         var ctx = ReaderDecl.Context(workspace: h.host.workspace, dkSig: idk.publicKeys.sig, dkKx: idk.publicKeys.kx,
                                      who: .person(Identifiers.personID(await h.primary.publicKey)), bind: .declare)
@@ -266,10 +270,15 @@ import OrchProtocol
         let h = try await joined()
         let handle = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, level(1, build: "2.0 (1)"))).handles.first)
         var cfg = handle.joined.session.configuration
-        cfg.sendsReaderDigest = true
+        // a restored session sends `rd` and does not wait for a declaration (H12d-3 is not built); the O5 gate stays available
+        #expect(cfg.sendsReaderDigest && !cfg.blocksUntilDeclared)
+        cfg.blocksUntilDeclared = true
         await h.env.context.shutdownParticipants()
         let s = try await WorkspaceSession(cfg)
         await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.readerDigestForRequest() }
+        var relaxed = cfg; relaxed.blocksUntilDeclared = false
+        let r2 = try await WorkspaceSession(relaxed)
+        _ = try await r2.readerDigestForRequest()            // does not throw: reads are not blocked while no declaration can be sent
         _ = try await s.readerDeclareRequest()
         let r = try #require(try await s.readerDeclareRequest())
         #expect(try await s.readerDeclareAcknowledged(digest: r.declaration.digest))
@@ -382,7 +391,7 @@ import OrchProtocol
         let s = try await WorkspaceSession(cfg)
         await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.exchange(meta: httpGet) }
         let req = try #require(try await s.readerDeclareRequest())
-        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: req.meta) }
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: try req.meta()) }
         let stored = try await s.pendingRequests()
         #expect(stored.count == 1)
         _ = decl

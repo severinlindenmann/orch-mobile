@@ -467,8 +467,31 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertNil(services.runtime)
     }
 
+    /// Live offers no write until C2b: with `writes` off there is no New ticket, no draft and no sign sheet, and nothing reaches the API.
+    func testWithoutTheWritesCapabilityNothingIsOfferedOrSent() async throws {
+        let services = LiveServices(options: options)
+        XCTAssertFalse(services.capabilities.writes)
+        let api = WorkspaceStub()
+        let ws = workspace(services, api: api)
+        XCTAssertFalse(ws.canCreateTickets)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        let result = await ws.createTicket(title: "Ticket", body: "Body")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ws.draftURL!.path))
+        let review = services.review(workspaceID: ws.info.id, questionID: "q", optionID: "a")
+        await review.loadReview()
+        XCTAssertNil(review.review)
+    }
+
+    #if DEBUG
     func testDraftWriteFailureAndLostResponseRetry() async throws {
         let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
         let api = WorkspaceStub()
         let ws = workspace(services, api: api)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -494,6 +517,7 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(Set(ids).count, 1)
     }
+    #endif
 
     func testCloseDuringDemoNewLinkDoesNotStartPanel() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)

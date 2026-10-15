@@ -66,7 +66,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private(set) var pendingServerCleanups: [PendingServerCleanup] = []
     /// What the attached realm offers (Drop, share, push, Demo controls), derived from its runtime. A graph with no realm (Welcome,
     /// recovery) offers nothing: no push registration, no share destinations, no Drop. Features are gated on these, never on `isDemo`.
+    #if DEBUG
+    /// Tests exercise the write machinery (drafts, key alarm) that C2b will reuse while Live's `writes` capability is off.
+    @ObservationIgnored var capabilitiesOverride: RealmCapabilities?
+    var capabilities: RealmCapabilities { capabilitiesOverride ?? runtime?.capabilities ?? .none }
+    #else
     var capabilities: RealmCapabilities { runtime?.capabilities ?? .none }
+    #endif
     /// The realm of the attached runtime; nil while no realm is attached.
     var realm: Realm? { runtime?.realm }
     /// nil without an attached realm: such a graph has no share bridge.
@@ -486,7 +492,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func review(workspaceID: String, questionID: String, optionID: String) -> any QuestionReviewModel {
-        guard canUse(workspaceID), let ws = live.first(where: { $0.info.id == workspaceID }) else { return UnavailableReviewModel() }
+        guard capabilities.writes, canUse(workspaceID), let ws = live.first(where: { $0.info.id == workspaceID }) else { return UnavailableReviewModel() }
         return LiveReviewModel(services: self, workspace: ws, questionID: questionID, optionID: optionID)
     }
 

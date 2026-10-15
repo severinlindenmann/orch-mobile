@@ -24,6 +24,8 @@ final class LiveWorkspace: WorkspaceModel {
     private(set) var questions: [Question] = []
     private(set) var allTickets: [Ticket] = []
     private(set) var loaded = false
+    private(set) var macOnlyCount = 0
+    private(set) var ticketsIncomplete = false
     @ObservationIgnored weak var services: LiveServices?
     @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
     @ObservationIgnored private var eventRevision = 0
@@ -91,6 +93,9 @@ final class LiveWorkspace: WorkspaceModel {
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
     @discardableResult
     func noteKeyAlarm(_ error: any Error) -> Bool {
+        // H12d-3: a sealed reader refusal (no declaration, reader too old, an invalid or unknown declaration) is not "try again": the person
+        // updates orch or pairs again, and the cached view is not shown as current
+        if case ClientError.host(.reader) = error { info.keyAlarm = ReaderGate.updateMessage; return true }
         guard WorkspaceKeyAlarm(error: error) != nil else { return false }
         info.keyAlarm = Self.keyAlarmMessage
         return true
@@ -106,6 +111,11 @@ final class LiveWorkspace: WorkspaceModel {
             case .offline: markOffline()
             case .reconciling: info.connection = .reconciling
             }
+        case .readerRefused:
+            // a sealed reader refusal: nothing cached is shown as current; the person updates orch or pairs again
+            questions = []; allTickets = []; macOnlyCount = 0; ticketsIncomplete = false; loaded = false
+            info.keyAlarm = ReaderGate.updateMessage
+            markOffline()
         case .invalidated: break          // the session re-reads on its own (foreground, with a subscriber)
         case .removed: services?.workspaceRemoved(self)
         }
@@ -120,6 +130,7 @@ final class LiveWorkspace: WorkspaceModel {
     private func apply(_ s: WorkspaceSnapshot) {
         questions = s.questions.map { Mapping.question($0, workspaceID: info.id) }
         allTickets = s.tickets.map { Mapping.ticket($0, workspaceID: info.id) }
+        macOnlyCount = s.macOnlyCount; ticketsIncomplete = s.ticketsIncomplete
         loaded = true
         offlineSince = nil
         info.connection = .online
@@ -150,7 +161,7 @@ final class LiveWorkspace: WorkspaceModel {
         else { try data.write(to: url, options: [.atomic, .completeFileProtection]) }
     }
 
-    var canCreateTickets: Bool { usable && info.scopes.contains(.operate) }
+    var canCreateTickets: Bool { usable && services?.capabilities.writes == true && info.scopes.contains(.operate) }
 
     /// The creation ID is persisted with the exact draft; the same fields reuse it, an edit gets a new one, success clears it.
     func createTicket(title: String, body: String) async -> TicketCreation {
