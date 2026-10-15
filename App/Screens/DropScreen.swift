@@ -176,7 +176,9 @@ struct DropRow: View {
 
 @MainActor @ViewBuilder
 private func statusParts(_ item: DropItem) -> some View {
-    if item.verified {
+    if item.outdated {
+        StatusChip("May be outdated", systemImage: "clock.badge.exclamationmark", color: OC.warn).fixedSize(horizontal: false, vertical: true)
+    } else if item.verified {
         StatusChip("Verified", systemImage: "checkmark.shield", color: OC.ok).fixedSize()
         if item.hasSignedExpiry {
             let left = Fmt.timeLeft(item.expires)
@@ -237,7 +239,7 @@ struct DropItemScreen: View {
                             .disabled(!drop.canOperate).accessibilityIdentifier("drop.claim")
                     }
                     Button("Open") { Task { await drop.open(item.id) } }
-                        .disabled(!drop.usable || !item.verified || item.bytes == 0)
+                        .disabled(!drop.usable || !item.verified || item.bytes == 0 || item.outdated)
                         .accessibilityIdentifier("drop.open")
                 }
                 if let text = item.text {

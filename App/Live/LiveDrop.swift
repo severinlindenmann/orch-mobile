@@ -18,8 +18,18 @@ final class LiveDrop {
     private(set) var warning = false
     private(set) var unauthorized = false
     private(set) var loading = false
+    /// The last list walk did not complete (offline, too large, a page error): cached copies are not shown as current and `open` is
+    /// refused until a complete walk succeeds. Nothing is purged on an incomplete walk.
+    private(set) var outdated = false
     private(set) var sending = false
     var canOperate: Bool { usable && workspace?.info.scopes.contains(.operate) == true }
+    #if DEBUG
+    /// Runs before each list walk; a throw stands for an incomplete walk (offline, a page error).
+    /// Runs inside `open` right after the download returned (a walk finishing or failing at that point).
+    @ObservationIgnored var afterDownload: (() async -> Void)?
+    @ObservationIgnored var walkOmits: Set<String> = []
+    @ObservationIgnored var listHook: (() async throws -> Void)?
+    #endif
     @ObservationIgnored var beforePublication: (() async -> Void)?
     @ObservationIgnored private var sendTask: Task<Void, Never>?
     private var notSent = false
@@ -78,6 +88,9 @@ extension LiveDrop {
         defer { loading = false }
         do {
             try await purge()
+            #if DEBUG
+            try await listHook?()
+            #endif
             let received = try await service.listVerifiedRows(.received)
             let sending = try await service.listVerifiedRows(.sending)
             let failed = try await service.failedUploads()
@@ -85,6 +98,7 @@ extension LiveDrop {
             await beforePublication?()
             guard usable, mine == revision, !Task.isCancelled else { return }
             confirmed = confirmations
+            outdated = false                       // before the rows are built: they must not carry a stale flag or hide a transcript
             var next: [String: DropObject] = [:]
             var display: [DropItem] = []
             for (direction, values) in [(DropDirection.received, received), (.sending, sending)] {
@@ -95,6 +109,9 @@ extension LiveDrop {
                 }
                 for object in values.objects {
                     let id = object.descriptor.object.hex
+                    #if DEBUG
+                    if walkOmits.contains(id) { continue }          // a complete walk that does not list it (tombstoned, retired, absent)
+                    #endif
                     if objects[id]?.descriptor.version != object.descriptor.version {
                         metadata[id] = nil; downloads[id] = nil; previewURL = nil
                     }
@@ -104,13 +121,28 @@ extension LiveDrop {
             }
             objects = next; rows = display; failures = failed
             listRevision += 1
+            if let preview = previewURL, downloads.contains(where: { next[$0.key] == nil && $0.value.url == preview }) { previewURL = nil }
             downloads = downloads.filter { next[$0.key] != nil }
-            if !received.blocked.isEmpty || !sending.blocked.isEmpty {
-                warning = true; downloads = [:]; metadata = [:]; previewURL = nil
-                try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max)
-            }
-            status = warning ? "Verification warning: blocked items" : (notSent ? "Not sent" : nil)
-        } catch { if mine == revision && workspace?.usable == true { report(error) } }
+            if !received.blocked.isEmpty || !sending.blocked.isEmpty { warning = true }
+            // A complete verified walk is the authority on what may stay cached: the cache of every object it did not show live (blocked,
+            // tombstoned expired/retired, or absent) goes, per object; the cache of every live object is untouched.
+            // A failed purge after a complete walk is a cleanup problem, not an incomplete walk: the list is current, so nothing is marked
+            // outdated. Every refresh runs this purge again, which is the retry; until then the status says so.
+            var cleanupFailed = false
+            do { try await purgeLocal(except: Set(next.keys)) } catch { cleanupFailed = true }
+            status = cleanupFailed ? "Local cleanup needs retry" : warning ? "Verification warning: blocked items" : (notSent ? "Not sent" : nil)
+        } catch {
+            if mine == revision && workspace?.usable == true { markOutdated(error); report(error) }
+        }
+    }
+
+    /// An incomplete walk purges nothing, but a cached copy is no longer shown as current and cannot be opened.
+    private func markOutdated(_ error: any Error) {
+        if error is CancellationError || (error as? DropError) == .suspended { return }
+        outdated = true; previewURL = nil
+        for index in rows.indices where rows[index].verified || rows[index].text != nil {
+            rows[index].outdated = true; rows[index].text = nil
+        }
     }
 
     func verifyVisible(_ id: String) async {
@@ -137,13 +169,12 @@ extension LiveDrop {
             case DropError.integrity, DropError.malformed, DropError.rollback, DropError.unauthorized,
                  is Refusal, is CryptoFailure, is CryptoKitError, is DropDocument.Fork, DropStoreError.rollback:
                 warning = true; status = "Verification warning: blocked items"
-                downloads = [:]; metadata = [:]; previewURL = nil
                 objects[id] = nil
                 if let index = rows.firstIndex(where: { $0.id == id }) {
                     rows[index].blocked = true; rows[index].verified = false; rows[index].name = "Blocked item"
                     rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil
                 }
-                do { try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max) }
+                do { try await purgeLocal(objects: [id]) }
                 catch { status = "Verification warning: local cleanup needs retry" }
             default: report(error)
             }
@@ -151,12 +182,12 @@ extension LiveDrop {
     }
 
     private func row(_ object: DropObject, direction: DropDirection) -> DropItem {
-        let d = object.descriptor, download = downloads[d.object.hex]
+        let d = object.descriptor, download = outdated ? nil : downloads[d.object.hex]
         let metadata = metadata[d.object.hex] ?? download?.metadata
         let isText = metadata?.name == "note.txt" || (metadata?.mime == "text/plain" && aliases[d.object.hex]?.hasPrefix("share-") == true)
         let kind: DropKind = metadata?.mime == "text/uri-list" ? .url : (isText ? .note : .file)
         let content = (kind == .note || kind == .url) ? download.flatMap { try? String(contentsOf: $0.url, encoding: .utf8) } : nil
-        let text = content.map { body in metadata?.transcript.map { body + "\n\n" + $0 } ?? body } ?? metadata?.transcript
+        let text = outdated ? nil : content.map { body in metadata?.transcript.map { body + "\n\n" + $0 } ?? body } ?? metadata?.transcript
         let fixtureAlias = d.authorKind == "workspace" ? ["readme.txt": "d-readme", "empty.txt": "d-empty", "note.txt": "d-note",
             "link.txt": "d-url", "deployment.txt": "d-deploy", "Runbook": "d-runbook"][metadata?.name ?? ""] : nil
         return DropItem(id: d.object.hex, workspaceID: workspace?.info.id ?? "",
@@ -164,11 +195,27 @@ extension LiveDrop {
                         direction: direction, expires: d.expiresMs.map { Date(timeIntervalSince1970: Double($0) / 1000) } ?? .distantFuture,
                         versions: Int(d.version), unread: direction == .received && !readIDs.contains(d.object.hex), text: text,
                         from: d.authorID.hex, simulatedDone: confirmed.contains { $0.object == d.object && $0.version == d.version },
-                        verified: metadata != nil, alias: aliases[d.object.hex] ?? fixtureAlias, stopped: stopped.contains(d.object.hex), mime: metadata?.mime, hasSignedExpiry: d.expiresMs != nil)
+                        verified: metadata != nil, alias: aliases[d.object.hex] ?? fixtureAlias, stopped: stopped.contains(d.object.hex), mime: metadata?.mime, hasSignedExpiry: d.expiresMs != nil, outdated: outdated && metadata != nil)
     }
 }
 
- extension LiveDrop {
+extension LiveDrop {
+    /// Forgets and deletes the local plaintext of exactly these objects (or of every object but `keep`). The download is a cache, not
+    /// evidence: stale plaintext of a retired, expired, blocked or vanished object is the riskier failure, so a complete walk purges it
+    /// even on a relay hint. Pending uploads, chain heads and signed descriptors are never touched here.
+    func purgeLocal(except keep: Set<String>) async throws {
+        let dropped = Set(downloads.keys).union(metadata.keys).subtracting(keep)
+        if let preview = previewURL, dropped.contains(where: { downloads[$0]?.url == preview }) { previewURL = nil }
+        for id in dropped { downloads[id] = nil; metadata[id] = nil }
+        try await service.downloadContainer.purgeDownloads(keeping: keep)
+    }
+
+    func purgeLocal(objects ids: Set<String>) async throws {
+        guard !ids.isEmpty else { return }
+        if let preview = previewURL, ids.contains(where: { downloads[$0]?.url == preview }) { previewURL = nil }
+        for id in ids { downloads[id] = nil; metadata[id] = nil }
+        try await service.downloadContainer.purgeDownloads(objects: ids)
+    }
     func purge() async throws {
         try await service.downloadContainer.purgeExpiredDownloads(nowMs: alarm ? .max : nowMs)
         let expired = downloads.filter { $0.value.deadlineMs <= nowMs }.map(\.key)
@@ -203,13 +250,29 @@ extension LiveDrop {
     }
     func open(_ id: String) async {
         guard usable else { return }
+        guard !outdated else { status = "List may be outdated: refresh first"; return }
         let mine = revision
         do {
             try await purge()
             guard usable, mine == revision else { return }
             guard let object = objects[id] else { return }
+            let version = object.descriptor.version
             let file = try await service.downloadVerified(object)
-            guard usable, mine == revision, file.deadlineMs > nowMs else { return }
+            #if DEBUG
+            await afterDownload?()
+            #endif
+            guard usable, mine == revision, file.deadlineMs > nowMs else {
+                try? await service.downloadContainer.purgeDownloads(objects: [id])      // the file just written is not shown: it goes
+                return
+            }
+            // A walk may have finished (or failed) while the download was in flight: the file is kept and shown only if the list still
+            // shows this object live at the version opened and is not outdated. Otherwise the file just written goes too (this object only).
+            guard !outdated, objects[id]?.descriptor.version == version else {
+                downloads[id] = nil; metadata[id] = nil; previewURL = nil
+                status = outdated ? "List may be outdated: refresh first" : "No longer available"
+                do { try await purgeLocal(objects: [id]) } catch { status = "Local cleanup needs retry" }
+                return
+            }
             downloads[id] = file; metadata[id] = file.metadata
             if let index = rows.firstIndex(where: { $0.id == id }) { rows[index] = row(object, direction: rows[index].direction) }
             let kind = rows.first(where: { $0.id == id })?.kind

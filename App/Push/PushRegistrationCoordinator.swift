@@ -78,6 +78,9 @@ final class PushRegistrationCoordinator {
     /// Workspaces the relay refused permanently (403, 400, an unusable reply): not asked again in this process.
     private var suppressed: Set<String> = []
 
+    #if DEBUG
+    func inFlightCount(workspace: ID16) -> Int { inFlight.keys.filter { $0.hasPrefix(workspace.hex + "/") }.count }
+    #endif
     func beginClosing() { closing = true }
     private func key(_ t: any PushRegistering) -> String { "\(t.workspace.hex)/\(t.generation)" }
 
@@ -169,8 +172,9 @@ final class PushRegistrationCoordinator {
         left.insert(ws)                       // no registration for this workspace may start or be kept from here on
         let started = Date()
         let running = inFlight.filter { $0.key.hasPrefix(ws + "/") }.map(\.value)
-        for r in running {
-            let waited: Void? = await racing(seconds: seconds) { await r.value }
+        if !running.isEmpty {
+            // One bound for all in-flight generations together, not one per generation.
+            let waited: Void? = await racing(seconds: seconds) { for r in running { await r.value } }
             if waited == nil { status[ws] = nil; return .owed }
         }
         let remaining = max(seconds - Date().timeIntervalSince(started), 0.05)
@@ -182,7 +186,10 @@ final class PushRegistrationCoordinator {
 
     nonisolated static func removal(for outcome: PushRegistrationOutcome?) -> Removal {
         switch outcome {
-        case .removed?, .pushOff?, .refused?: .done
+        // Only a definite answer is done: removed, push off, or the relay's 403 (the host removed this device: nothing left to ask). Anything
+        // unknown (an unreadable reply, a malformed request, a new code) stays owed.
+        case .refused(let code)?: ["not_eligible", "revoked", "not_for_this_device"].contains(code) ? .done : .owed
+        case .removed?, .pushOff?: .done
         case .rateLimited?, .failed?, .registered?, nil: .owed
         }
     }

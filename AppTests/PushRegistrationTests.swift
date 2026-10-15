@@ -10,7 +10,7 @@ import XCTest
 /// A workspace's push service that answers from a script.
 final class FakePush: PushRegistering, @unchecked Sendable {
     let workspace: ID16
-    var generation: Int64 { 1 }
+    let generation: Int64
     private let lock = NSLock()
     private var registerScript: [PushRegistrationOutcome]
     private var unregisterScript: [PushRegistrationOutcome]
@@ -21,8 +21,8 @@ final class FakePush: PushRegistering, @unchecked Sendable {
     var onRegister: (@Sendable () -> Void)?
     var material: (wsk: SigningPublicKey, kPush: [UInt32: Data])?
 
-    init(_ ws: ID16 = PushFixtures.workspaceA.id, register: [PushRegistrationOutcome] = [], unregister: [PushRegistrationOutcome] = []) {
-        workspace = ws; registerScript = register; unregisterScript = unregister
+    init(_ ws: ID16 = PushFixtures.workspaceA.id, generation: Int64 = 1, register: [PushRegistrationOutcome] = [], unregister: [PushRegistrationOutcome] = []) {
+        workspace = ws; self.generation = generation; registerScript = register; unregisterScript = unregister
     }
     var registerCalls: [(token: String, env: PushEnvironment)] { lock.withLock { _registerCalls } }
     var unregisterCalls: Int { lock.withLock { _unregisterCalls } }
@@ -199,6 +199,26 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         let r = await unregister(c, a, seconds: 0.2)
         XCTAssertEqual(r, .owed)
         reg.cancel()
+    }
+
+    func testSeveralInFlightGenerationsShareOneBound() async {
+        let c = makeCoordinator(), a = FakePush(generation: 1)
+        let b = FakePush(a.workspace, generation: 2)
+        a.registerDelay = 30; b.registerDelay = 30     // both outlast the bound; per-generation waits would add up to 0.8 s
+        // distinct keys: same workspace, two generations; both are in flight (counted) before the unregister starts
+        let t1 = Task { @MainActor in await c.register(a) }, t2 = Task { @MainActor in await c.register(b) }
+        for _ in 0..<400 where c.inFlightCount(workspace: a.workspace) < 2 { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(c.inFlightCount(workspace: a.workspace), 2)
+        let started = Date()
+        let r = await unregister(c, a, seconds: 0.4)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+        XCTAssertEqual(r, .owed)
+        t1.cancel(); t2.cancel()
+    }
+
+    func testAnUnreadableUnregisterReplyStaysOwed() {
+        XCTAssertEqual(PushRegistrationCoordinator.removal(for: .refused("bad_reply")), .owed)
+        XCTAssertEqual(PushRegistrationCoordinator.removal(for: .refused("revoked")), .done)
     }
 
     func testPermanentRefusalsAreNotRetried() async {

@@ -251,17 +251,32 @@ Findings of the B2a review that belong to the entry flow. All done in B2b except
 
 Drop stays capability-off in Live until the relay serves the routes. When it is wired:
 
-* **List `state` is presentational.** `DropListing.gone` (`expired`, `retired`, unknown or `pruned`) comes from an unauthenticated relay
-  field. Use it only to hide or grey an item and to stop offering open/download; word it as a report ("Removed (reported by relay)",
-  "Expired"), not as fact. It must never purge local plaintext, rows or chain heads, and never stops a pending upload from being reconciled
-  by its signed-descriptor read-back. `claimed_by` is a hint as well; a download re-reads the wraps and only a wrap that opens to the
-  committed DEK counts.
+* **List `state` is presentational for evidence, authoritative for the cache.** `DropListing.gone` (`expired`, `retired`, unknown or `pruned`)
+  comes from an unauthenticated relay field: word it as a report ("Removed (reported by relay)", "Expired"), never as fact, and never stop a
+  pending upload from being reconciled by its signed-descriptor read-back. It must never purge pending-upload rows, chain heads or signed
+  descriptors. `claimed_by` is a hint as well; a download re-reads the wraps and only a wrap that opens to the committed DEK counts.
+* **The local download is a cache, not evidence (decision, 15 Oct).** Stale plaintext of an object the host retired, that expired or that can
+  no longer be verified is the riskier failure; losing a cache to a lying relay is an availability nuisance. So after a COMPLETE verified
+  list walk (both directions, `listVerifiedRows` returned) `LiveDrop.refresh` calls `purgeLocal(except:)`: the cached plaintext of every
+  object that is not shown live (blocked, tombstoned, or absent) goes, object by object (`WorkspaceContainer.purgeDownloads(keeping:)`; the
+  live objects' caches are untouched). `verifyVisible` failing for one object purges that object only (`purgeDownloads(objects:)`). An entry
+  that did not parse names no object. The only purge-everything paths are the verification alarm (`report`) and Leave workspace / Leave
+  Live / Reset (the wipe removes the files directory; verified by `LocalWipe`).
+* **Incomplete walk: fail closed on display, purge nothing.** If the walk throws (offline, `tooLarge`, a page error), `LiveDrop.outdated`
+  is set: nothing is purged, but cached copies are not shown as current (the row says "May be outdated", no text or preview) and `open` is
+  refused until a complete walk succeeds.
 * **Stalled uploads.** `DropService.stalledUploads()` lists pending uploads whose object the relay reports gone while the signed expiry has
   not passed ("Removed by the host? Retry or discard"); they are retried at most hourly, `retryUpload` and `discardUpload` resolve them.
   `storageFull` and `retryLater` carry the seconds to wait; `rotationPending` means the host has a rotation due.
-* **Purge granularity (open).** `LiveDrop` calls `purgeExpiredDownloads(nowMs: .max)` (all local downloads) when ANY list entry is blocked
-  (`LiveDrop.swift` around the blocked handling and `purge()` with `alarm`). That should become per entry (the blocked object's own file
-  only); it needs a per-object purge in `WorkspaceContainer` and is left for the wiring change.
+* **Purge granularity (done).** Purging is per object. After a complete walk `LiveDrop.refresh` calls `purgeLocal(except:)` with the set
+  of objects shown live (`WorkspaceContainer.purgeDownloads(keeping:)`); `verifyVisible` failing for one object calls
+  `purgeLocal(objects:)` (`purgeDownloads(objects:)`). The list's `blocked` ids are opaque and name no object, so they drive no purge: a
+  blocked object is simply not in the live set. Heads and every live object's cache are untouched.
+* **`open` racing a walk.** After the download returns, `open` keeps the file only if the list is not outdated and still shows the object
+  live at the version it opened; otherwise that object's file is purged, nothing is shown and the status says "No longer available" (or "List
+  may be outdated: refresh first"). A refused `open` while outdated says so in the status.
+* **Failed cleanup after a complete walk** is not an incomplete walk: the list is current, so nothing is marked outdated; the status says
+  "Local cleanup needs retry" and the next refresh runs the same purge again.
 
 ## Relay push wiring notes (P3-D40, protocol-v2 section 19.10)
 
@@ -290,16 +305,23 @@ asked again until the next launch. 403 `not_eligible` / `revoked`: shown, not re
 * **Epoch.** `WorkspaceSession.setEpochObserver` fires when the confirmed epoch rises (a key was installed); the coordinator republishes
   `K_push` (one keychain item per workspace, `PushMaterial`, never `WK`) in the same step. Right after a rotation, before that step,
   pushes show generic text (acceptable, A12).
-* **Leave workspace.** The wipe's tombstone is written first (`LocalWipe.begin`: the intent is durable, a relaunch finishes it), then
-  `registration_id: null` (all of this device's registrations in the workspace; allowed without membership) goes out through the realm
-  transport and the device key (the workspace session is stopped), bounded to 3 s. If the relay cannot be reached, or an in-flight
-  registration outlasts the bound, the cleanup is recorded in `ServerCleanupStore` (workspace and generation only), shown under "Finish on
+* **Leave workspace.** The wipe's tombstone is written first (`LocalWipe.begin`: the intent is durable, a relaunch finishes it); only then
+  the owed cleanup is recorded (a kill in the window below must not lose it; never before the tombstone, so no owed item exists for a
+  workspace that could reopen), then `registration_id: null` (all of this device's registrations in the workspace; allowed without membership) goes out through the realm
+  transport and the device key (the workspace session is stopped), bounded to 3 s in total (all in-flight generations share the bound). The
+  item is removed only on a definite done (removed, push off, or a 403 `not_eligible`/`revoked`/`not_for_this_device`); an unreadable
+  reply (`bad_reply`), a timeout, an error or any unknown outcome stays owed (one classifier, `PushRegistrationCoordinator.removal(for:)`,
+  serves both Leave and the retry `LiveRuntime.unregisterPush`; an unknown refusal is therefore retried for up to 60 days).
+  An item whose workspace is still listed with its own generation (a Leave in progress, or `removalIncomplete` after a failed wipe) is
+  neither sent nor dropped by a retry; one whose workspace is listed with another generation (a re-pair) is dropped unsent. A retry running meanwhile neither sends nor drops that item.
+  If the relay cannot be reached, or an in-flight registration outlasts the bound, the cleanup stays in `ServerCleanupStore` (workspace and generation only), shown under "Finish on
   your Mac", and retried by `serverCleanup` (`LiveRuntime.unregisterPush`) at every Live start, every foreground and on "Retry now", before
-  any registration. An owed item for a workspace that is joined again (a re-pair is a new membership) is dropped unsent, and one older than 60
+  any registration (bounded to 3 s for the registration; the retry itself continues in the background and never drops an item on a timeout). An owed item for a workspace that is joined again (a re-pair is a new membership) is dropped unsent, and one older than 60
   days is dropped (the relay deletes unrefreshed registrations by then).
 * **Leave Live / Reset.** In this order: (1) synchronously, the Live reset gate is persisted, the controller is `.leaving`, the push
-  coordinator refuses every register and publish (`closing`), and every workspace is `removing` (shown as such, never presented); (2) the
-  registrations of all workspaces are removed at once through the realm transport and device key, 3 s bound; (3) the realm is invalidated and
+  coordinator refuses every register and publish (`closing`), every workspace is `removing` (shown as such, never presented) and background
+  reconcile tasks are cancelled, all before any await; (2) the sessions are stopped and the registrations of all workspaces removed at
+  once through the realm transport and device key, under ONE 3 s deadline for the whole step (when it passes, step 3 proceeds regardless); (3) the realm is invalidated and
   wiped. A kill in step 1 or 2 is finished at relaunch, which finds the gate, skips the relay and completes the wipe. The device key goes
   with the wipe, so nothing can be owed afterwards: if the relay was unreachable the registration ends by the host's removal of the device
   from the member list, an APNs 410 / `BadDeviceToken`, the device's revocation, or 60 days without a refresh. A second tap with another
@@ -319,3 +341,22 @@ App Store) is `production`; a profile file that exists but cannot be read or par
 never read. There is no collapse id: a `question.closed` push replaces the delivered question through the entity key (`orch_key`), exactly as
 before, and the app's reconciler does the same when it opens. Open for the first device test: the extension adds the sound, the relay sends
 none (inferred, not verified).
+
+## Enable checklist: Drop and push in Live (both capabilities are OFF today)
+
+Flip `RealmCapabilities.live` in `App/Live/LiveRuntime.swift` (`drop: true`, `push: true`) only when ALL of these hold.
+
+1. **Relay routes deployed on relay.dev.** Verify with an unauthenticated probe, no VPS actions, respecting the relay's ~60/min throttle (a
+   handful of requests, a couple of seconds apart): `POST https://relay.dev.severin.io/v2/push/register`, `/v2/push/unregister` and
+   `/v2/drop/list` with body `{}` and no bearer must answer **401** (`unauthenticated`), not **404** (`{"detail":"Not Found"}` is the FastAPI
+   routing 404 of a route that does not exist; `{"error":"not_found"}` is push not configured). Result on 15 Oct 2026 (after #77 merged):
+   all three still 404, so neither capability may be enabled yet.
+2. **Readiness items done** (this PR): Drop per-object cache purge with the cache policy above (blocked, tombstoned and absent purge only
+   their own cache after a complete walk; an incomplete walk purges nothing and disables open); push follow-ups #78 (L-a to L-e: owed
+   cleanup durable after the tombstone and before the window, one global drain bound that never skips teardown, bounded owed-cleanup retry
+   that never drops on timeout, unreadable unregister reply stays owed, reconcile cancelled in `beginLeave`).
+3. **Device test for the notification extension's sound is still pending** (the relay sends none; the extension adds it; inferred, not
+   verified). Do it on a real device with a TestFlight or development build before relying on push.
+4. After flipping: run the simulator suites, `scripts/check-release-flags.sh`, and re-run the probe once more.
+5. **Do not flip `push` off while registrations exist.** With the capability off there is no coordinator, so Leave owes nothing and the
+   relay keeps the device's registrations until a host removal, an APNs 410 or 60 days without a refresh.

@@ -17,6 +17,11 @@ private func tokenB64(_ n: UInt8, count: Int = 32) -> String { B64U.encode(Data(
         return (w, phone, PushService(session: phone.session))
     }
 
+    @Test func anUnreadableUnregisterReplyIsOwedNotDone() {
+        #expect(PushService.unregisterOutcome(of: ClientError.badReply) == .failed("bad_reply"))
+        #expect(PushService.outcome(of: ClientError.badReply) == .refused("bad_reply"))
+    }
+
     @Test func pushOffRelayAnswers404AndPersistsNothingConfirmed() async throws {
         let (w, phone, service) = try await setup(push: false)
         #expect(await service.register(token: tokenB64(1), env: .sandbox) == .pushOff)
