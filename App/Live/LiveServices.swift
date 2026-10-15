@@ -991,7 +991,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             environment: { [weak self] in self?.pushEnvironment() },
             token: { [weak self] in self?.pushToken() },
             permissionAllowed: { [weak self] in self?.notificationStatus == .allowed },
-            sink: { [weak self] in self?.runtime?.makePushSink() }))
+            sink: { [weak self] in self?.runtime?.makePushSink() },
+            isActive: { [weak self, weak runtime] id in
+                guard let self, let runtime, self.runtime === runtime else { return false }
+                return self.canUse(id.hex)
+            }))
         pushCoordinator = c
         // iOS hands the token over at every launch that registers: refresh the relay registrations then (a changed token gets a new id).
         OrchAppDelegate.onTokenReceived = { [weak self] _ in Task { @MainActor in await self?.registerPushAll() } }
@@ -1004,6 +1008,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         guard let c = pushCoordinatorForLive() else { return }
         let service: any PushRegistering = makePushService(j)
         ws.push = service
+        c.workspaceStarted(j.workspace)
         let observer: @Sendable (UInt32) -> Void = { [weak self, weak ws] _ in
             Task { @MainActor in
                 guard let self, let ws, let c = self.pushCoordinator, let s = ws.push, self.canUse(ws.info.id) else { return }
