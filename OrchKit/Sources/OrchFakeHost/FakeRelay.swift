@@ -69,7 +69,7 @@ public struct RelayLimits: Sendable {
 /// A reply carried through a `Result` failure (WireReply is not an Error).
 struct WireReplyBox: Error { let reply: WireReply; init(_ r: WireReply) { reply = r } }
 
-public actor FakeRelay: RequestSender {
+public actor FakeRelay: RequestSender, InProcessDemoSender {
     var demoDropRejections = 0
     public nonisolated let context: RealmContext
     public nonisolated let origin: String

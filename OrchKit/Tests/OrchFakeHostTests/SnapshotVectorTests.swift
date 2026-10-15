@@ -83,7 +83,7 @@ import OrchTestVectors
             try await w.env.index.addWorkspace(ws: ws.hex, generation: 1)
             let container = try await WorkspaceContainer(index: w.env.index, ws: ws.hex, generation: 1)
             let identity = DeviceIdentity(sig: try SoftwareSigner(testScalar: Self.seed("phone.sig")),
-                                          kx: try SoftwareKeyAgreer(testScalar: Self.seed("phone.kx")), realm: .demo)
+                                          kx: try SoftwareKeyAgreer(testScalar: Self.seed("phone.kx")), realm: .demo, custody: .software)
             let clock = TestClock()
             let cfg = WorkspaceSessionConfig(context: w.env.context, workspace: ws, generation: 1, identity: identity,
                                              wsk: try SigningPublicKey(x963: Hex.decode(co["wsk_pub"]!.string!)!), container: container,

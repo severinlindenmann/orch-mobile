@@ -38,27 +38,16 @@ public enum PhoneRetryTable {
     /// ULID time + 900 s (host window) + 300 s (skew): after it an unknown idem is definite.
     public static let unknownIdemBoundMs: Int64 = 1_200_000
 
-    static let classA: Set<String> = [
-        "stale_epoch", "stale_timestamp", "stale_sequence", "no_answer", "silence",
-        "timeout", "relay.timeout", "relay.silence", "relay.stale_epoch_hint", "cancelled", "store.busy", "lock.busy", "busy", "rate.limited", "quota.host", "host.restarting", "conn.overloaded",
-        "outcome.unknown",
-    ]
-    static let classB: Set<String> = ["already_done.unknown", "already_done", "rid_conflict", "outcome.pending", "pending", "idem.expired"]
-    static let classCAuto: Set<String> = ["members.stale", "ticket.key_not_next"]
-    static let classCReview: Set<String> = ["event.bad_base", "question.stale", "event.expired", "event.abandoned"]
-    static let classD: Set<String> = [
-        "committed", "failed.landed",
-        "question.answered", "question.unknown", "answer.not_allowed", "answer.bad_option",
-        "role.denied", "member.unknown", "device.scope", "device.invalid", "device.unknown", "ticket.frozen", "freeze.active",
-        "ticket.not_visible", "not_found",
-        "ticket.exists", "ticket.bad_reference", "event.duplicate_id",
-        "forbidden_scope", "op.not_allowed", "sig.invalid", "validation.event", "validation.text", "invalid.input", "idem.conflict",
-        "idem.required",
-    ]
+    // Generated from the vendored R2 framing data (Scripts/gen_retry_table.py --check); a bare `timeout` is not in it (D), `relay.timeout` is A.
+    static let classA = PhoneRetryTableGenerated.classA
+    static let classB = PhoneRetryTableGenerated.classB
+    static let classCAuto = PhoneRetryTableGenerated.classCAuto
+    static let classCReview = PhoneRetryTableGenerated.classCReview
+    static let classD = PhoneRetryTableGenerated.classD
 
     /// Every code the table names (the shared-data-file check of 14.4 will compare against core's emitted codes).
     public static var knownCodes: Set<String> {
-        classA.union(classB).union(classCAuto).union(classCReview).union(classD).union(["outcome.unknown_idem", "internal"])
+        classA.union(classB).union(classCAuto).union(classCReview).union(classD).union(PhoneRetryTableGenerated.contextual)
     }
 
     /// Maps a code to its class. Codes are compared byte-exactly; an unknown code is D.

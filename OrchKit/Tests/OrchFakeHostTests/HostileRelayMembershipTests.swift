@@ -24,7 +24,7 @@ final class ReplayingTransport: RelayTransport, @unchecked Sendable {
     func login(_ body: Data) async throws -> WireReply { try await inner.login(body) }
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try await inner.pairingPost(envelope, route: route) }
     func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after, wait: wait) }
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try await inner.bridgePost(envelope, route: route, session: session) }
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply { try await inner.bridgePost(envelope, route: route, session: session, permit: permit) }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try await inner.bridgePoll(route: route, after: after, wait: wait, session: session) }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply {
         if let g = lock.withLock({ grantsOverride }) { return try reply(["grants": .array(g)]) }

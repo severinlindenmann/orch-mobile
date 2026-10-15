@@ -40,7 +40,7 @@ public struct SecureEnclaveCustody: DeviceKeyCustody {
     static func identity(sigBlob: Data, kxBlob: Data, realm: Realm) throws -> DeviceIdentity {
         do {
             return DeviceIdentity(
-                sig: try SecureEnclaveSigner(blob: sigBlob), kx: try SecureEnclaveKeyAgreer(blob: kxBlob), realm: realm)
+                sig: try SecureEnclaveSigner(blob: sigBlob), kx: try SecureEnclaveKeyAgreer(blob: kxBlob), realm: realm, custody: .secureEnclave)
         } catch {
             // A blob that the Secure Enclave will not restore could be a lock, a transient failure or a dead
             // key (passcode removed): it cannot be told apart here, so refuse to use it without declaring it lost.
