@@ -48,6 +48,8 @@ public enum Label {
     public static let sigWebAuthnBind = "orch/v2/sig/webauthn-bind|"
     public static let sigRelayAuth = "orch/v2/sig/relay-auth|"
     public static let sigPublish = "orch/v2/publish|"
+    /// F1 person events over `relay.submit` (host section 11A.14 14.2); core `sig_ticket_event` in `DEVICE_KEY_LABELS`.
+    public static let sigTicketEvent = "orch/v2/sig/ticket-event|"
     // hash labels
     public static let hDeviceID = "orch/v2/id/device|"
     public static let hPersonID = "orch/v2/id/person|"
@@ -63,6 +65,8 @@ public enum Label {
     public static let hDropParent = "orch/v2/drop-parent|"
     public static let hWSEnvelope = "orch/v2/ws-envelope-hash|"
     public static let hQuestion = "orch/v2/question|"
+    /// F1 section 5.6 (host section 11A.14 14.5): `qid = hex(H("orch/v2/question-id|" || cj({question, ticket, workspace_id}))[0:16])`.
+    public static let hQuestionID = "orch/v2/question-id|"
     public static let hAssert = "orch/v2/assert|"
     public static let hWebAuthnReg = "orch/v2/webauthn-reg|"
     public static let macEnroll = "orch/v2/enroll|"
