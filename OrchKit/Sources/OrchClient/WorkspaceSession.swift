@@ -32,6 +32,9 @@ public enum SessionError: Error, Equatable, Sendable {
     case epochRefetchDeferred(retryAfterMs: Int64)
     /// H12d (O3): this build's reader level is below the highest this device declared for the workspace. "Update orch to open this workspace".
     case readerDowngrade
+    /// H12d: the reader marker exists but cannot be decoded; the workspace is not opened. (A locked or unavailable vault is not this: it is
+    /// `ReaderStoreError.locked` / `.unavailable`, thrown for the caller to retry.)
+    case readerStateUnreadable
     /// H12d (O5): a new build must `reader.declare` before any other op (only enforced once the R2 framing sends `rd`).
     case readerDeclarationRequired
     /// The relay refused a new rid with its unsigned `stale_epoch` hint, but the signed member list and grants do not (yet) confirm a
@@ -91,18 +94,21 @@ public struct WorkspaceSessionConfig: Sendable {
     /// TODO(R2, orch-core #467): the R2 framing wiring turns this on. While false no request carries `rd` and no op waits for a
     /// `reader.declare` (the injection point is `prepare`, via `ReaderRD.inject`).
     public var sendsReaderDigest: Bool
+    /// Where `rd` goes in the request meta (protocol 8.6: `metaField`). See `ReaderRD`.
+    public var readerDigestPlacement: ReaderRD.Placement
 
     public init(context: RealmContext, workspace: ID16, generation: Int64, identity: DeviceIdentity, wsk: SigningPublicKey,
                 container: WorkspaceContainer, vault: RealmVault, transport: any RelayTransport, clock: any Clock<Duration>,
                 wall: any WallClock, entropy: any Entropy = SystemEntropy(), pollInterval: Duration = .milliseconds(500),
                 responseTimeout: Duration = .seconds(30), longPollSeconds: Int? = nil,
-                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false) {
+                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false,
+                readerDigestPlacement: ReaderRD.Placement = .metaField) {
         self.context = context; self.workspace = workspace; self.generation = generation
         self.deviceID = Identifiers.deviceID(identity.publicKeys.sig); self.identity = identity; self.wsk = wsk
         self.container = container; self.vault = vault; self.transport = transport; self.clock = clock; self.wall = wall
         self.entropy = entropy; self.pollInterval = pollInterval; self.responseTimeout = responseTimeout
         self.longPollSeconds = longPollSeconds.map { min(max($0, 1), 25) }
-        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest
+        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest; self.readerDigestPlacement = readerDigestPlacement
     }
 }
 
@@ -179,7 +185,7 @@ public actor WorkspaceSession: RealmParticipant {
         c.vault = try c.vault.fenced(by: fence)
         // H12d (O3): a build below the highest level declared for this workspace never opens it; an unreadable marker fails closed
         do { guard ReaderGate.opens(try ReaderStore.load(c.vault, ws: c.workspace), runningLevel: c.reader.level) else { throw SessionError.readerDowngrade } }
-        catch let e as SessionError { throw e } catch { throw SessionError.readerDowngrade }
+        catch ReaderStoreError.corrupt { throw SessionError.readerStateUnreadable }
         try c.container.bind(fence: fence)
         cfg = c
         sessionAge = Self.marker(c.clock)
@@ -534,11 +540,15 @@ public actor WorkspaceSession: RealmParticipant {
     /// without a durable attempt, and two drivers cannot both replace one row.
     private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
                          clearExhausted: Bool = false, reuseRid: Bool = false, decision: (QuestionReview, String)? = nil,
-                         withRD: Bool = true) async throws -> Row {
+                         ) async throws -> Row {
         let lifecycle = reviewLifecycle
         try Task.checkCancellation()
         try await ensureCurrent()
-        let rd = withRD ? try readerDigestForRequest() : nil
+        // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it once R2 switches it on
+        let exempt = (try? Bridge.unframe(plaintext).meta.object?["op"]?.string) == "reader.declare"
+        let rd = exempt ? nil : try readerDigestForRequest()
+        // a NEW rid replacing a refused attempt carries the current declaration's `rd`; a same-rid re-seal keeps the first
+        let freshRD = old != nil && !reuseRid
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
         let (epoch, wk) = try await sealingKeyRecovering()
         let offset = try await clockOffsetMs()
@@ -560,7 +570,9 @@ public actor WorkspaceSession: RealmParticipant {
                      .blob(try canonicalJSON(review.question.wire)), .blob(try canonicalJSON(op))])
                 try hook?("decision.inserted")
             }
-            plaintext = try ReaderRD.inject(into: plaintext, rd: rd)          // H12d: the one injection point of `rd` (protocol 8.6)
+            // H12d: the one injection point of `rd` (protocol 8.6); the size is checked AFTER it
+            plaintext = try ReaderRD.inject(into: plaintext, rd: rd, overwrite: freshRD, placement: cfg.readerDigestPlacement)
+            guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
             if let old, try tx.query("SELECT 1 AS x FROM bridge_requests WHERE rid=? AND (state='pending' OR ?=1)", [.text(old.hex), .int(reconciled ? 1 : 0)]).isEmpty {
                 throw SessionError.unknownRequest
             }
@@ -1415,25 +1427,31 @@ extension WorkspaceSession {
         try await ensureCurrent()
         let state = try readerState()
         guard ReaderGate.needsDeclare(state, runtime: cfg.reader), let cap = cfg.reader.capability else { return nil }
-        let now = cfg.wall.nowMs
+        // host time as this phone knows it: `created_ms` is judged against the HOST clock (+-300 s), so both the reuse test and a new
+        // declaration use the wall clock plus the adopted offset
+        let offset = try await clockOffsetMs()
+        let now = saturatingAddMs(cfg.wall.nowMs, offset)
+        let rid = cfg.entropy.id16().hex
         if let s = state, !s.acked, s.build == cfg.reader.build, let d = s.decl, d.via == "declare", abs(now - d.createdMs) <= Self.declareReuseMs {
-            return ReaderDeclareRequest(declaration: d)
+            return ReaderDeclareRequest(declaration: d, id: rid)
         }
         guard let person = try? storedPerson() else { throw SessionError.badResponse }
-        let offset = try await clockOffsetMs()
         let sig = cfg.identity.publicKeys
         let decl = try ReaderDeclaration.make(workspace: cfg.workspace, dkSig: sig.sig, dkKx: sig.kx, who: .person(person), level: cap.level, kat: cap.kat,
-                                              bind: .declare, createdMs: saturatingAddMs(now, offset), signer: cfg.identity.sig)
+                                              bind: .declare, createdMs: now, signer: cfg.identity.sig)
         let base = state ?? ReaderStateRecord(decl: nil, highest: 0, build: cfg.reader.build, acked: false)
         try ReaderStore.save(cfg.vault, ws: cfg.workspace, base.recording(decl, build: cfg.reader.build, acked: false))
-        return ReaderDeclareRequest(declaration: decl)
+        return ReaderDeclareRequest(declaration: decl, id: rid)
     }
 
-    /// The host answered the `reader.declare`: the declaration is current there.
-    package func readerDeclareAcknowledged() throws {
-        guard var s = try readerState(), s.decl != nil else { return }
+    /// The host answered the `reader.declare` with `digest`: acknowledged only if that is the stored declaration's digest (an answer for
+    /// an older declaration, or another device's, changes nothing). Returns whether it was.
+    @discardableResult
+    package func readerDeclareAcknowledged(digest: String) throws -> Bool {
+        guard var s = try readerState(), let d = s.decl, d.digest.utf8.elementsEqual(digest.utf8) else { return false }
         s.acked = true
         try ReaderStore.save(cfg.vault, ws: cfg.workspace, s)
+        return true
     }
 
     /// A stored declaration stays reusable for a resend while the host's +-300 s window surely holds.

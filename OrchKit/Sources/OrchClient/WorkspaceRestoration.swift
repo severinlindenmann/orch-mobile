@@ -92,7 +92,8 @@ public enum WorkspaceRestoration {
         if let pinned = c.context.pinnedOwner, pinned != pk { throw RestoreSkip(reason: "owner") }
         // H12d (O3): a build below the highest level declared for this workspace never opens it ("Update orch to open this workspace")
         let marker: ReaderStateRecord?
-        do { marker = try ReaderStore.load(c.vault.scoped(to: c.context.realm), ws: ws) } catch { throw RestoreSkip(reason: "reader_state") }
+        do { marker = try ReaderStore.load(c.vault.scoped(to: c.context.realm), ws: ws) }
+        catch ReaderStoreError.corrupt { throw RestoreSkip(reason: "reader_state") }       // locked / unavailable: rethrown, the caller retries
         guard ReaderGate.opens(marker, runningLevel: c.reader.level) else { throw RestoreSkip(reason: ReaderGate.skipReason) }
         let container = try await WorkspaceContainer(index: c.index, ws: row.ws, generation: row.generation, fence: c.context.generation)
         let cfg = WorkspaceSessionConfig(context: c.context, workspace: ws, generation: row.generation, identity: identity, wsk: wsk,

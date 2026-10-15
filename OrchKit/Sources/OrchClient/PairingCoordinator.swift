@@ -90,6 +90,8 @@ public actor PairingCoordinator: RealmParticipant {
     static let joinRetryWindowMs: Int64 = 600_000
     static let pairResendMs: Int64 = 15_000
     static let statusResendMs: Int64 = 30_000
+    /// A pair declaration is rebuilt when its `created_ms` is more than this far ahead of the corrected host time (the host refuses > 300 s).
+    static let readerClockSlackMs: Int64 = 60_000
 
     private let elapsedMs: @Sendable () -> Int64
     private var wallAnchorMs: Int64
@@ -303,7 +305,7 @@ public actor PairingCoordinator: RealmParticipant {
             } catch { await dropNewKeys(created); return fail(violation(error), mine) }
         }
         var r = PairingRecord(generation: generation, origin: link.origin, ws: ws, offer: link.offer, secret: link.secret, wskPin: link.wskPin,
-                              pkPin: link.pkPin, deviceID: deviceID, label: cfg.deviceLabel, attempt: attempt, dkHash: dkHash, readerDecl: decl,
+                              pkPin: link.pkPin, deviceID: deviceID, label: cfg.deviceLabel, attempt: attempt, dkHash: dkHash, readerDecl: decl, readerBuild: decl == nil ? nil : cfg.reader.build,
                               createdKeys: created, existingCert: existing,
                               startedMs: now, lastProgressMs: now)
         r.seq = 1
@@ -572,6 +574,15 @@ public actor PairingCoordinator: RealmParticipant {
         // `pair` until a `pending` was accepted (that is what pins the host's nonce); a clock correction, which also teaches the
         // host's key, must be answered with another `pair`, not a `pair_status` for a pairing the host never saw
         let isPair = r.sasNonce == nil
+        // H12d: `created_ms` is ordered and bounded by the HOST clock (never more than 300 s ahead, for every `via`; core's verify_decl). A
+        // phone clock that runs fast is corrected by the first `stale_timestamp` (offset adopted). While no host has stored a declaration
+        // (no `pending` answer yet, `sasNonce == nil`), a declaration that is now ahead of the corrected host time is signed again with it.
+        // After a host stored one, the first stored declaration wins and nothing is rebuilt.
+        if isPair, let d = r.readerDecl, d.createdMs > saturatingAdd(now, r.offsetMs) + Self.readerClockSlackMs {
+            do {
+                r.readerDecl = try d.resigned(createdMs: max(saturatingAdd(now, r.offsetMs), 0), dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx, signer: id.sig)
+            } catch { _ = await finish(.failed(violation(error)), mine); return false }
+        }
         let op: PairingWire.Op = isPair ? .pair(label: r.label, cert: r.existingCert, readerDecl: r.readerDecl) : .status
         let rid = cfg.entropy.id16()
         do {
@@ -1316,6 +1327,8 @@ extension PairingCoordinator {
         let vault = self.vault()
         let priorCert: Data? = try? vault.get(purpose: "device.cert")
         var wroteCert = false
+        // a marker that existed before this join (a leftover of an earlier membership) survives a rollback: the highest level never falls
+        var priorReader: ReaderStateRecord?
         var container: WorkspaceContainer?
         func restoreCert() {
             guard wroteCert else { return }
@@ -1328,6 +1341,7 @@ extension PairingCoordinator {
             for item in (try? cfg.vault.ids()) ?? [] where item.realm == cfg.context.realm && item.ws == wsHex && item.purpose != "pairing" {
                 try? vault.delete(item: item)
             }
+            if let p = priorReader { try? ReaderStore.save(vault, ws: r.ws, p) }
             await cfg.index.containers.suspendAll(ws: wsHex)
             if let dir = try? cfg.index.layout.wsDir(wsHex) { try? FileManager.default.removeItem(at: dir) }
         }
@@ -1340,8 +1354,10 @@ extension PairingCoordinator {
             // H12d (O3): the declaration the host accepted at its gate and the highest-level marker, in the device-key realm, before the
             // commit (a rollback deletes every workspace item with the rest)
             let prior = try ReaderStore.load(vault, ws: r.ws)
-            let base = prior ?? ReaderStateRecord(decl: nil, highest: 0, build: cfg.reader.build, acked: false)
-            if let d = r.readerDecl { try ReaderStore.save(vault, ws: r.ws, base.recording(d, build: cfg.reader.build, acked: true)) }
+            priorReader = prior
+            let declBuild = r.readerBuild ?? cfg.reader.build
+            let base = prior ?? ReaderStateRecord(decl: nil, highest: 0, build: declBuild, acked: false)
+            if let d = r.readerDecl { try ReaderStore.save(vault, ws: r.ws, base.recording(d, build: declBuild, acked: true)) }
             else if prior == nil { try ReaderStore.save(vault, ws: r.ws, base) }
             let c = try await WorkspaceContainer(index: cfg.index, ws: wsHex, generation: r.generation, fence: cfg.context.generation)
             container = c

@@ -72,6 +72,11 @@ import OrchProtocol
         let rec = try #require(h.pairingRecord)
         #expect(rec.readerDecl == nil)
         #expect(await h.host.pairingReaderDecl(of: rec.deviceID) == nil)
+        // a record without the H12d keys (what an earlier build wrote) decodes, and stays without a declaration
+        let raw = try #require(try StrictJSON.parse(try rec.encode()).object)
+        #expect(raw["reader_decl"] == nil && raw["reader_build"] == nil)
+        let legacy = try #require(PairingRecord.decode(try rec.encode()))
+        #expect(legacy.readerDecl == nil && legacy.readerBuild == nil && legacy.attempt == rec.attempt)
     }
 
     @Test func theJoinStoresTheDeclarationAndTheHighestLevelInTheKeysVault() async throws {
@@ -147,11 +152,59 @@ import OrchProtocol
         let zero = try ReaderDeclaration.make(workspace: h.host.workspace, dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx,
                                               who: .person(Identifiers.personID(await h.primary.publicKey)), level: 0, kat: [:], bind: .declare,
                                               createdMs: 1, signer: id.sig)
-        let lowered = st.recording(zero, build: "0.9 (1)", acked: false)
-        #expect(lowered.highest == 1)
+        try ReaderStore.save(vault, ws: h.host.workspace, st.recording(zero, build: "0.9 (1)", acked: false))      // a real save, a real load
+        let reloaded = try #require(try ReaderStore.load(vault, ws: h.host.workspace))
+        #expect(reloaded.highest == 1 && reloaded.decl == zero && reloaded.build == "0.9 (1)")
+        #expect(!ReaderGate.opens(reloaded, runningLevel: 0))
         try vault.put(Data("not json".utf8), ws: h.host.workspace.hex, purpose: "reader.state")
         let out = try await WorkspaceRestoration.restore(restoreConfig(h, level(1)))
         #expect(out.handles.isEmpty && out.skipped.map(\.reason) == ["reader_state"])
+    }
+
+    @Test func aLockedVaultIsNotADowngradeNorASkip() async throws {
+        let h = try await joined()
+        h.lock.isLocked = true
+        #expect(throws: ReaderStoreError.locked) { _ = try ReaderStore.load(h.vault.scoped(to: .demo), ws: h.host.workspace) }
+        await #expect(throws: (any Error).self) { _ = try await WorkspaceRestoration.restore(restoreConfig(h, level(1))) }
+        h.lock.isLocked = false
+        let ok = try await WorkspaceRestoration.restore(restoreConfig(h, level(1)))
+        #expect(ok.handles.count == 1 && ok.skipped.isEmpty)
+        await h.env.context.shutdownParticipants()
+    }
+
+    @Test func aCorruptMarkerGivesADistinctSessionError() async throws {
+        let h = try await joined()
+        let ok = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, level(1))).handles.first)
+        let cfg = ok.joined.session.configuration
+        await h.env.context.shutdownParticipants()
+        try h.vault.scoped(to: .demo).put(Data("x".utf8), ws: h.host.workspace.hex, purpose: "reader.state")
+        await #expect(throws: SessionError.readerStateUnreadable) { _ = try await WorkspaceSession(cfg) }
+    }
+
+    @Test func aWorkspaceFromBeforeH12dOpensAndDeclaresOnFirstLaunch() async throws {
+        let h = try await joined()
+        try h.vault.scoped(to: .demo).delete(ws: h.host.workspace.hex, purpose: "reader.state")            // no marker at all
+        let out = try await WorkspaceRestoration.restore(restoreConfig(h, level(1)))
+        let session = try #require(out.handles.first).joined.session
+        let before = try await session.readerState()
+        #expect(out.skipped.isEmpty && before == nil)
+        let req = try #require(try await session.readerDeclareRequest())
+        #expect(req.declaration.via == "declare" && req.declaration.level == 1)
+        let st = try #require(try await session.readerState())
+        #expect(st.highest == 1 && !st.acked && st.decl == req.declaration)
+        await h.env.context.shutdownParticipants()
+    }
+
+    @Test func aFastPhoneClockDoesNotMakeTheDeclarationFutureDated() async throws {
+        // 10 minutes fast: the first pair request is refused as stale and the offset adopted; the declaration is signed again with host time
+        let h = try await PairHarness.make(.firstTime, phoneSkewMs: 600_000, reader: ReaderRuntime(capability: ReaderKAT.current, build: ReaderDeclPairingTests.build))
+        _ = try await h.startToHostCode()
+        let rec = try #require(h.pairingRecord)
+        let d = try #require(rec.readerDecl)
+        let (stored, verdict) = try #require(await h.host.pairingReaderDecl(of: rec.deviceID))
+        #expect(verdict == .success(1) && stored == d.json)
+        #expect(d.createdMs <= h.clock.nowMs + 300_000 && abs(d.createdMs - h.clock.nowMs) < 120_000, "created \(d.createdMs) host \(h.clock.nowMs)")
+        #expect(rec.offsetMs != 0)
     }
 
     @Test func aNewBuildDeclaresAgainBeforeAnyOtherOp() async throws {
@@ -167,7 +220,9 @@ import OrchProtocol
         let session = handle.joined.session
         let req = try #require(try await session.readerDeclareRequest())
         #expect(req.declaration.via == "declare" && req.declaration.digest != first.digest && req.declaration.level == 1)
-        #expect(req.meta == ["op": "reader.declare", "reader_decl": req.declaration.json])
+        #expect(req.meta == ["t": "req", "id": .string(req.id), "op": "reader.declare", "args": ["reader_decl": req.declaration.json],
+                             "opts": ["idem": .string(req.idem)]])
+        #expect(req.idem.hasPrefix("a_") && req.idem.count == 34)
         let idk = try h.env.context.deviceIdentity(custody: h.custody, createIfMissing: false)
         var ctx = ReaderDecl.Context(workspace: h.host.workspace, dkSig: idk.publicKeys.sig, dkKx: idk.publicKeys.kx,
                                      who: .person(Identifiers.personID(await h.primary.publicKey)), bind: .declare)
@@ -177,7 +232,10 @@ import OrchProtocol
         #expect(!st.acked && st.build == "1.1 (8)" && st.highest == 1 && st.decl == req.declaration)
         // a retry re-sends the stored bytes; once acknowledged nothing is due
         #expect(try await session.readerDeclareRequest()?.declaration.bytes == req.declaration.bytes)
-        try await session.readerDeclareAcknowledged()
+        #expect(try await session.readerDeclareAcknowledged(digest: "sha256:" + String(repeating: "0", count: 64)) == false)   // another digest: nothing
+        let notYet = try await session.readerState()
+        #expect(notYet?.acked == false)
+        #expect(try await session.readerDeclareAcknowledged(digest: req.declaration.digest))
         #expect(try await session.readerDeclareRequest() == nil)
         #expect(try await session.currentReaderDigest() == req.declaration.digest)
         await h.env.context.shutdownParticipants()
@@ -192,7 +250,8 @@ import OrchProtocol
         let s = try await WorkspaceSession(cfg)
         await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.readerDigestForRequest() }
         _ = try await s.readerDeclareRequest()
-        try await s.readerDeclareAcknowledged()
+        let r = try #require(try await s.readerDeclareRequest())
+        #expect(try await s.readerDeclareAcknowledged(digest: r.declaration.digest))
         #expect(try await s.readerDigestForRequest() == (try await s.currentReaderDigest()))
         // with the switch off (today) no request carries `rd` and nothing waits
         var off = cfg; off.sendsReaderDigest = false
@@ -212,5 +271,99 @@ import OrchProtocol
         #expect(try ReaderRD.inject(into: with, rd: "sha256:" + String(repeating: "b", count: 64)) == with)
         #expect(try ReaderRD.inject(into: plain, rd: nil) == plain)
         #expect(try ReaderRD.inject(into: plain, rd: rd) == with)
+    }
+}
+
+/// H12d `rd` through the session's real `prepare` (protocol 8.6): the stored, sealed request carries it.
+@Suite struct ReaderDigestPrepareTests {
+    final class Seen: @unchecked Sendable {
+        private let lock = NSLock(); private var metas: [JSONValue] = []
+        func add(_ m: JSONValue) { lock.withLock { metas.append(m) } }
+        var all: [JSONValue] { lock.withLock { metas } }
+    }
+
+    /// A World whose phone holds a stored declaration (as after a pairing) and sends `rd`.
+    private func world(faults: any FaultPolicy = NoFaults(), sends: Bool = true) async throws -> (World, Phone, ReaderDeclaration) {
+        let w = try await World.make(faults: faults)
+        let id = w.env.device
+        let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx, who: .pkPin(Data(repeating: 7, count: 32)),
+                                              level: 1, kat: ReaderKAT.current!.kat, bind: .pair(offer: ID16.fresh(3), attempt: String(repeating: "a", count: 32)),
+                                              createdMs: w.clock.nowMs, signer: id.sig)
+        let rt = ReaderRuntime(capability: ReaderKAT.current, build: ReaderDeclPairingTests.build)
+        try ReaderStore.save(w.vault.scoped(to: .demo), ws: w.ws, ReaderStateRecord(decl: decl, highest: 1, build: rt.build, acked: true))
+        let p = try await w.makePhone(reader: rt, sendsReaderDigest: sends)
+        return (w, p, decl)
+    }
+
+    @Test func aPlainRequestAndADecisionCarryRdInTheSealedMeta() async throws {
+        let (w, p, decl) = try await world()
+        let seen = Seen()
+        // the fake host's views and detached decision demand exact field sets, so it is handed the request WITHOUT `rd` (recorded first)
+        await w.host.setHandler { req in
+            seen.add(req.meta)
+            var m = req.meta.object ?? [:]; m["rd"] = nil
+            return await w.host.handleView(HostRequest(device: req.device, scopes: req.scopes, meta: .object(m), data: req.data, epoch: req.epoch))
+        }
+        let api = BridgeWorkspaceAPI(session: p.session)
+        let snap = try await w.serve(p) { try await api.snapshot() }
+        let review = try await w.serve(p) { try await api.review(questionID: snap.questions[0].questionID) }
+        _ = try? await w.serve(p) { try await api.decide(review, optionID: "approve") }
+        let metas = seen.all
+        #expect(metas.count >= 3)
+        for m in metas { #expect(m.object?["rd"] == .string(decl.digest), "\(m.object?["op"]?.string ?? "?")") }
+        #expect(metas.contains { $0.object?["op"] == "decision" })
+        // the detached decision signature covers only its body, so `rd` beside `op` does not touch it
+        let dec = try #require(metas.first { $0.object?["op"] == "decision" })
+        var bare = dec.object!; bare["rd"] = nil
+        try Decisions.verifyOp(.object(bare), workspace: w.ws, deviceKey: w.env.device.publicKeys.sig)
+    }
+
+    @Test func withTheSwitchOffNothingCarriesRd() async throws {
+        let (w, p, _) = try await world(sends: false)
+        let seen = Seen()
+        await w.host.setHandler { req in seen.add(req.meta); return await w.host.handleView(req) }
+        _ = try await w.serve(p) { try await BridgeWorkspaceAPI(session: p.session).snapshot() }
+        #expect(!seen.all.isEmpty && seen.all.allSatisfy { $0.object?["rd"] == nil })
+    }
+
+    @Test func theSizeLimitAppliesAfterRdIsInjected() async throws {
+        let faults = ScriptedFaults().enqueue(.drop, at: .beforeQueue)
+        let (_, p, _) = try await world(faults: faults)
+        let meta = httpGet
+        let base = try Bridge.frame(meta: meta, data: Data()).count
+        // exactly the largest request that fits WITHOUT rd
+        let data = Data(count: Bridge.maxRequest - Bridge.overhead - base)
+        await #expect(throws: SessionError.tooLarge) { _ = try await p.session.exchange(meta: meta, data: data) }
+    }
+
+    @Test func aNewRidReplacementRefreshesRdAndASameRidReSealKeepsTheFirst() throws {
+        let old = "sha256:" + String(repeating: "1", count: 64), new = "sha256:" + String(repeating: "2", count: 64)
+        let first = try ReaderRD.inject(into: Bridge.frame(meta: ["op": "http"]), rd: old)
+        let reseal = try ReaderRD.inject(into: first, rd: new, overwrite: false)
+        #expect(try Bridge.unframe(reseal).meta.object?["rd"] == .string(old))
+        let replaced = try ReaderRD.inject(into: first, rd: new, overwrite: true)
+        #expect(try Bridge.unframe(replaced).meta.object?["rd"] == .string(new))
+        // the alternative placement is inside `args` of a t:"req" frame, and leaves other frames alone
+        let frame = try Bridge.frame(meta: ["t": "req", "op": "x", "args": [:]])
+        #expect(try Bridge.unframe(ReaderRD.inject(into: frame, rd: new, placement: .argsField)).meta.object?["args"]?.object?["rd"] == .string(new))
+        let plain = try Bridge.frame(meta: ["op": "http"])
+        #expect(try ReaderRD.inject(into: plain, rd: new, placement: .argsField) == plain)
+    }
+
+    @Test func readerDeclareIsExemptFromRd() async throws {
+        let faults = ScriptedFaults().enqueue(.drop, at: .beforeQueue)
+        let (w, p, decl) = try await world(faults: faults)
+        let cert: JSONValue = ["cert": .object([:]), "pk_pub": .string(B64U.encode(w.env.device.publicKeys.sig.x963))]
+        try w.vault.scoped(to: .demo).put(try canonicalJSON(cert), purpose: "device.cert")
+        // a new build: other ops would wait for the declaration, the declare itself does not
+        let rt = ReaderRuntime(capability: ReaderKAT.current, build: "9.9 (9)")
+        var cfg = p.session.configuration; cfg.reader = rt
+        let s = try await WorkspaceSession(cfg)
+        await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.exchange(meta: httpGet) }
+        let req = try #require(try await s.readerDeclareRequest())
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: req.meta) }
+        let stored = try await s.pendingRequests()
+        #expect(stored.count == 1)
+        _ = decl
     }
 }

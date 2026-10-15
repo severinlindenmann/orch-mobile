@@ -67,8 +67,12 @@ public struct ReaderStateRecord: Equatable, Sendable {
 }
 
 public enum ReaderStoreError: Error, Equatable, Sendable {
-    /// The record exists but cannot be read: the workspace is not opened (fail closed).
+    /// The record exists but cannot be decoded: the workspace is not opened (fail closed, skip reason `reader_state`).
     case corrupt
+    /// The vault is temporarily unreachable (device locked). Not a downgrade and not a skip: retry later.
+    case locked
+    /// The vault cannot say (any other keychain error). Also retried, never read as "no marker".
+    case unavailable
 }
 
 public enum ReaderStore {
@@ -77,7 +81,10 @@ public enum ReaderStore {
     /// nil: no state (a workspace paired by a build before H12d).
     public static func load(_ vault: RealmVault, ws: ID16) throws -> ReaderStateRecord? {
         let data: Data
-        do { data = try vault.get(ws: ws.hex, purpose: purpose) } catch VaultError.notFound { return nil }
+        do { data = try vault.get(ws: ws.hex, purpose: purpose) }
+        catch VaultError.notFound { return nil }
+        catch VaultError.locked { throw ReaderStoreError.locked }
+        catch { throw ReaderStoreError.unavailable }
         guard let r = ReaderStateRecord.decode(data) else { throw ReaderStoreError.corrupt }
         return r
     }
@@ -112,22 +119,59 @@ public enum ReaderGate {
 
 /// The single injection point of `rd` into a column-R request (protocol v2 8.6: a field of the sealed request meta, never read by the
 /// relay). TODO(R2, orch-core #467): `WorkspaceSessionConfig.sendsReaderDigest` is switched on by the R2 framing wiring; until then
-/// no request carries it. Idempotent: a meta that already has `rd` (a re-seal of a request) keeps its first value.
+/// no request carries it.
+///
+/// Semantics: with `overwrite: false` (a same-rid re-seal, a byte-identical resend) a meta that already has `rd` keeps its FIRST value
+/// (protocol 8.6: a resend carries the `rd` of its first send); with `overwrite: true` (a NEW rid replacing a refused attempt) the
+/// current declaration's `rd` replaces the old one.
+///
+/// Placement (`Placement`): `metaField` is protocol 8.6, a sibling of `op` in the sealed meta. NOTE for R2: that field sits OUTSIDE what a
+/// detached decision signature covers (`Decisions.body`), but the fake host's `Decisions.verifyOp` demands the exact field set
+/// `op, decision_id, question_id, content_hash, answer, sig`, so a detached `decision` with `rd` is refused there. 11A.12 retires the
+/// detached decision (phones answer with `relay.submit`), so this is moot once R2 lands; if R2 wants `rd` elsewhere, `argsField` puts it
+/// inside the `args` object of a `{"t":"req",...,"args":{...}}` frame, and a different placement is a change of this one function.
 public enum ReaderRD {
-    public static func inject(into plaintext: Data, rd: String?) throws -> Data {
+    public enum Placement: Sendable, Equatable { case metaField, argsField }
+
+    public static func inject(into plaintext: Data, rd: String?, overwrite: Bool = false, placement: Placement = .metaField) throws -> Data {
         guard let rd else { return plaintext }
         let (meta, data) = try Bridge.unframe(plaintext)
         guard var m = meta.object else { throw Refusal.malformed }
-        if m["rd"] != nil { return plaintext }
-        m["rd"] = .string(rd)
+        switch placement {
+        case .metaField:
+            if m["rd"] != nil, !overwrite { return plaintext }
+            m["rd"] = .string(rd)
+        case .argsField:
+            guard var args = m["args"]?.object else { return plaintext }
+            if args["rd"] != nil, !overwrite { return plaintext }
+            args["rd"] = .string(rd)
+            m["args"] = .object(args)
+        }
         return try Bridge.frame(meta: .object(m), data: data)
     }
 }
 
-/// A `reader.declare` ready to send (host 9.11): the declaration and the meta that carries it.
-/// TODO(R2, orch-core #467): the closed op table of 11A.4 pins the wire spelling of `reader.declare`; this is the proposed one
-/// (`{"op":"reader.declare","reader_decl":{...}}`, exempt from `rd`) and lives only here.
+/// A `reader.declare` ready to send (host 9.11), in the op frame orch-52 fixed:
+/// `{"t":"req","id":…,"op":"reader.declare","args":{"reader_decl":{"o":…,"sig":…}},"opts":{"idem":"a_…"}}`, exempt from `rd`.
+/// `idem` is derived from the declaration digest (the host is idempotent on `digest`), so a resend of the same declaration is the same
+/// request. The answer is `{device, reader, level, digest}` (`ReaderDeclareResult`).
 public struct ReaderDeclareRequest: Equatable, Sendable {
     public let declaration: ReaderDeclaration
-    public var meta: JSONValue { ["op": "reader.declare", "reader_decl": declaration.json] }
+    /// The op frame's request id (the caller's, e.g. its logical id hex).
+    public let id: String
+    public init(declaration: ReaderDeclaration, id: String) { self.declaration = declaration; self.id = id }
+    public var idem: String { "a_" + String(declaration.digest.dropFirst("sha256:".count).prefix(32)) }
+    public var meta: JSONValue {
+        ["t": "req", "id": .string(id), "op": "reader.declare", "args": ["reader_decl": declaration.json], "opts": ["idem": .string(idem)]]
+    }
+}
+
+/// The host's answer to a `reader.declare` (host 9.10/9.11): `{device, reader, level, digest}`.
+public struct ReaderDeclareResult: Equatable, Sendable {
+    public let device: String, reader: Int, level: Int, digest: String
+    public init?(_ v: JSONValue) {
+        guard let o = v.object, Set(o.keys) == ["device", "reader", "level", "digest"], let d = o["device"]?.string, let r = o["reader"]?.int,
+              let l = o["level"]?.int, let g = o["digest"]?.string, r >= 0, l >= 0 else { return nil }
+        device = d; reader = Int(r); level = Int(l); digest = g
+    }
 }

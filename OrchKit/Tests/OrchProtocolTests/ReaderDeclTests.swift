@@ -33,7 +33,6 @@ enum ReaderVectors {
         #expect(results.map(\.accepted) == [true, true, false])
         #expect(results.map(\.auth) == ["convenience", "passphrase", nil])
         #expect(ReaderKAT.current == ReaderKAT.Capability(level: 1, kat: [1: ["view": expected]]))
-        #expect(ReaderKAT.runningLevel == 1)
     }
 
     @Test func viewIDsAndCaseOrderMatchTheVector() {

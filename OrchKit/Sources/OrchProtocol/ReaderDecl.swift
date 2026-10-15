@@ -8,8 +8,6 @@ import Foundation
 /// outcome is the expected one (convenience accepted, passphrase accepted, bogus refused with `auth: null`) and the digest equals the one
 /// core pins in `reader_kat_1.json` (`expected["1"].view`). Otherwise it declares nothing (level 0).
 public enum ReaderKAT {
-    /// The highest level this build can reach (level 1: understands `auth: "convenience"` and refuses unknown `auth` values).
-    public static let supportedLevel = 1
     /// `READER_VIEWS_1` (host 9.11): the signer on a question's answer in `ticket.get`. A phone that renders a signer in another view needs
     /// `READER_VIEWS_2`, a new corpus and a new level, never an edit of this list.
     public static let views1 = ["ticket.get.questions.answer"]
@@ -83,8 +81,6 @@ public enum ReaderKAT {
 
     /// The production result, computed once per process.
     public static let current: Capability? = capability(parse: productionParser)
-    /// The level this running build may declare and open workspaces with: 0 when the KAT fails.
-    public static var runningLevel: Int { current?.level ?? 0 }
 }
 
 /// A signed `reader_decl` (9.3): `{"o": {...}, "sig": b64u(Sign(dk_sig, "orch/v2/sig/reader-decl|" || cj(o)))}`. Kept verbatim: the exact
@@ -133,7 +129,7 @@ public struct ReaderDeclaration: Equatable, Sendable {
         let (whoJSON, bindJSON) = (who.json, bind.json)
         // `kat` holds the levels 1...level (9.3): a level the build cannot prove is not declared
         var katJSON: [String: JSONValue] = [:]
-        for l in 1...max(level, 1) where level >= 1 {
+        for l in stride(from: 1, through: level, by: 1) {
             guard let entry = kat[l], !entry.isEmpty else { throw Refusal.malformed }
             katJSON[String(l)] = .object(entry.mapValues { .string($0) })
         }
@@ -143,7 +139,23 @@ public struct ReaderDeclaration: Equatable, Sendable {
             "who": whoJSON, "reader": .int(Int64(level)), "kat": .object(katJSON), "bind": bindJSON, "created_ms": .int(createdMs),
         ]
         let sig = try Signature.sign(signer, label: Label.sigReaderDecl, message: try canonicalJSON(.object(o)))
-        return try ReaderDeclaration(signed: ["o": .object(o), "sig": .string(B64U.encode(sig))])
+        let made = try ReaderDeclaration(signed: ["o": .object(o), "sig": .string(B64U.encode(sig))])
+        // our own declaration must pass the gate we expect the host to apply (shape, signature, binding, kat form)
+        let ctx = ReaderDecl.Context(workspace: workspace, dkSig: dkSig, dkKx: dkKx, who: who, bind: bind)
+        guard case .success = ReaderDecl.check(made.json, ctx) else { throw Refusal.malformed }
+        return made
+    }
+
+    /// The same declaration with a new `created_ms`, signed again (a pair declaration rebuilt after a clock correction, before any host
+    /// stored it). Everything else, `who` and `bind` included, is copied from `self`.
+    package func resigned(createdMs: Int64, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, signer: some Signer) throws -> ReaderDeclaration {
+        guard signer.publicKey == dkSig, createdMs >= 0, createdMs <= maxSafeInt, var o = json.object?["o"]?.object else { throw Refusal.malformed }
+        o["created_ms"] = .int(createdMs)
+        let sig = try Signature.sign(signer, label: Label.sigReaderDecl, message: try canonicalJSON(.object(o)))
+        let made = try ReaderDeclaration(signed: ["o": .object(o), "sig": .string(B64U.encode(sig))])
+        guard let who = o["who"], let bind = o["bind"], let ws = o["workspace_id"]?.string.flatMap({ ID16(hex: $0) }) else { throw Refusal.malformed }
+        guard case .success = ReaderDecl.check(made.json, ReaderDecl.Context(workspace: ws, dkSig: dkSig, dkKx: dkKx, who: who, bind: bind)) else { throw Refusal.malformed }
+        return made
     }
 
     /// Reads a stored or received declaration. The byte cap is checked BEFORE parsing (host 9.3 note I2); the form is strict. The

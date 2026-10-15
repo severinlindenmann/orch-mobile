@@ -29,7 +29,9 @@ public struct SignerLine: View {
     private let auth: String
     private let device: String
 
-    public init(auth: String, device: String) { self.auth = auth; self.device = device }
+    /// Generic over the wire enum (`F1Auth` in OrchProtocol, which OrchUI does not link: it is extension-safe and dependency-free).
+    /// A raw `String` is not accepted, so a screen cannot pass an unparsed host value.
+    public init<A: RawRepresentable>(auth: A, device: String) where A.RawValue == String { self.auth = auth.rawValue; self.device = device }
 
     public var body: some View {
         if let label = SignerAuthLabel.text(forWire: auth) {
