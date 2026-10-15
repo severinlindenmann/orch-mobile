@@ -76,7 +76,7 @@ final class SettingsTests: XCTestCase {
         }
         let send = app.buttons["demo.sendNotification"]
         var tries = 0
-        while !send.exists && tries < 6 { app.swipeUp(); tries += 1 }
+        while !send.exists && tries < 12 { app.swipeUp(); tries += 1 }       // the Realm section added rows above the Demo controls
         XCTAssertTrue(send.waitForExistence(timeout: 90))
         send.tap()
         let result = app.el("demo.sendNotification.result")
