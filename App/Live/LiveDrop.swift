@@ -27,6 +27,7 @@ final class LiveDrop {
     /// Runs before each list walk; a throw stands for an incomplete walk (offline, a page error).
     /// Runs inside `open` right after the download returned (a walk finishing or failing at that point).
     @ObservationIgnored var afterDownload: (() async -> Void)?
+    @ObservationIgnored var walkOmits: Set<String> = []
     @ObservationIgnored var listHook: (() async throws -> Void)?
     #endif
     @ObservationIgnored var beforePublication: (() async -> Void)?
@@ -108,6 +109,9 @@ extension LiveDrop {
                 }
                 for object in values.objects {
                     let id = object.descriptor.object.hex
+                    #if DEBUG
+                    if walkOmits.contains(id) { continue }          // a complete walk that does not list it (tombstoned, retired, absent)
+                    #endif
                     if objects[id]?.descriptor.version != object.descriptor.version {
                         metadata[id] = nil; downloads[id] = nil; previewURL = nil
                     }
@@ -117,6 +121,7 @@ extension LiveDrop {
             }
             objects = next; rows = display; failures = failed
             listRevision += 1
+            if let preview = previewURL, downloads.contains(where: { next[$0.key] == nil && $0.value.url == preview }) { previewURL = nil }
             downloads = downloads.filter { next[$0.key] != nil }
             if !received.blocked.isEmpty || !sending.blocked.isEmpty { warning = true }
             // A complete verified walk is the authority on what may stay cached: the cache of every object it did not show live (blocked,
@@ -256,7 +261,10 @@ extension LiveDrop {
             #if DEBUG
             await afterDownload?()
             #endif
-            guard usable, mine == revision, file.deadlineMs > nowMs else { return }
+            guard usable, mine == revision, file.deadlineMs > nowMs else {
+                try? await service.downloadContainer.purgeDownloads(objects: [id])      // the file just written is not shown: it goes
+                return
+            }
             // A walk may have finished (or failed) while the download was in flight: the file is kept and shown only if the list still
             // shows this object live at the version opened and is not outdated. Otherwise the file just written goes too (this object only).
             guard !outdated, objects[id]?.descriptor.version == version else {

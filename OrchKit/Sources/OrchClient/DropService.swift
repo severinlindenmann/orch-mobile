@@ -490,7 +490,7 @@ public actor DropService {
         var result: [DropObject] = []
         var blocked: [String] = (0..<blockedCount).map { "blocked-\(direction.rawValue)-entry-\($0)" }
         var gone: [DropGone] = []
-                for (index, id) in order.enumerated() {
+        for (index, id) in order.enumerated() {
             let entry = entries[id]!
             do {
                 switch entry.state {

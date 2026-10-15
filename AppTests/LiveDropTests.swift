@@ -210,6 +210,24 @@ final class LiveDropTests: XCTestCase {
     }
     #endif
 
+    #if DEBUG
+    func testCompleteWalkDroppingTheObjectClosesItsOpenPreview() async throws {
+        let (services, drop) = try await fixture()
+        let object = try await drop.service.send(Data("preview me".utf8), name: "doc.bin")
+        await drop.refresh()
+        let id = object.descriptor.object.hex
+        await drop.open(id)
+        let file = try XCTUnwrap(drop.downloads[id])
+        XCTAssertEqual(drop.previewURL, file.url)
+        drop.walkOmits = [id]
+        await drop.refresh()
+        XCTAssertNil(drop.previewURL, "the open preview of a dropped object closes")
+        XCTAssertNil(drop.downloads[id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+    #endif
+
     func testBusyAndUnknownRemovalPreserveRowsAndAlarmBlocksContent() async throws {
         let (services, drop) = try await fixture()
         let rows = drop.rows
