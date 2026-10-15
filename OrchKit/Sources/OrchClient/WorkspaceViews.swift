@@ -160,6 +160,7 @@ public struct Question: Equatable, Sendable {
         let options = try opts.map { v -> QuestionOption in
             let o = v.object ?? [:]
             guard Set(o.keys).isSubset(of: ["id", "label", "cost"]), let id = o["id"]?.string, let label = o["label"]?.string else { throw ViewError.malformed }
+            if let c = o["cost"] { guard c.string != nil else { throw ViewError.malformed } }       // present, it is a string
             return QuestionOption(id: id, label: label, cost: o["cost"]?.string)
         }
         // The stored form is re-checked like a host view: option keys byte-unique and clean, labels distinct (NFC and case), and the F1 hash
@@ -265,7 +266,7 @@ package func fields(_ v: JSONValue, _ keys: Set<String>) throws -> [String: JSON
 /// THE ticket key shape (host section 0.1 `Key`): `[A-Z][A-Z0-9]{1,9}-[0-9]{4,}`. Every view parser and every stored form uses this one function.
 package func validTicketKey(_ s: String) -> Bool {
     let u = Array(s.utf8)
-    guard let dash = u.firstIndex(of: 0x2D), (2...10).contains(dash), u.count - dash - 1 >= 4, let f = u.first, f >= 0x41, f <= 0x5A else { return false }
+    guard let dash = u.firstIndex(of: 0x2D), (2...10).contains(dash), (4...12).contains(u.count - dash - 1), let f = u.first, f >= 0x41, f <= 0x5A else { return false }
     return u[..<dash].allSatisfy { ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) } && u[(dash + 1)...].allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
 }
 /// ONLY for the advisory `next_key` of a `ticket.key_not_next` refusal (never bound, never a reservation): the R2 vector itself carries
