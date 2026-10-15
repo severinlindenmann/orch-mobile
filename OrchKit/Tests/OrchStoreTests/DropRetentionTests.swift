@@ -20,4 +20,24 @@ struct DropRetentionTests {
         #expect(!FileManager.default.fileExists(atPath: file.path))
         #expect(try await container.database().query("SELECT version FROM drop_heads").first?.int("version") == 1)
     }
+
+    @Test func perObjectPurgeRemovesOnlyThatObjectsFiles() async throws {
+        let layout = try makeLayout(tempDir()), index = try await WorkspaceIndex(layout: layout)
+        try layout.prepareWorkspace(A)
+        let container = try await WorkspaceContainer(index: index, ws: A, generation: 1)
+        let dir = try layout.filesDir(A)
+        for id in [A, B] {
+            try await container.acceptDropChain(object: id, chain: [Data([1])])
+            _ = try await container.writeDropVerified(Data("plain-\(id)".utf8), object: id, version: 1, expiresMs: nil, now: { 1_000 })
+        }
+        try await container.purgeDownloads(objects: [])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).count == 2)
+        try await container.purgeDownloads(objects: [A, String(repeating: "c", count: 32)])
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(A)-1").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(B)-1").path))
+        let heads = try await container.database().query("SELECT object,version,file_version FROM drop_heads ORDER BY object")
+        #expect(heads.count == 2 && heads[0].int("file_version") == nil && heads[1].int("file_version") == 1)
+        #expect(heads.allSatisfy { $0.int("version") == 1 })
+        await #expect(throws: (any Error).self) { try await container.purgeDownloads(objects: ["../x"]) }
+    }
 }

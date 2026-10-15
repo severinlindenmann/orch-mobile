@@ -106,8 +106,9 @@ extension LiveDrop {
             listRevision += 1
             downloads = downloads.filter { next[$0.key] != nil }
             if !received.blocked.isEmpty || !sending.blocked.isEmpty {
-                warning = true; downloads = [:]; metadata = [:]; previewURL = nil
-                try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max)
+                // Per object: only the blocked object's own local evidence goes. An entry that did not parse names no object, so it purges nothing.
+                warning = true
+                try await purgeLocal(Set((received.blockedObjects + sending.blockedObjects).map(\.hex)))
             }
             status = warning ? "Verification warning: blocked items" : (notSent ? "Not sent" : nil)
         } catch { if mine == revision && workspace?.usable == true { report(error) } }
@@ -137,13 +138,12 @@ extension LiveDrop {
             case DropError.integrity, DropError.malformed, DropError.rollback, DropError.unauthorized,
                  is Refusal, is CryptoFailure, is CryptoKitError, is DropDocument.Fork, DropStoreError.rollback:
                 warning = true; status = "Verification warning: blocked items"
-                downloads = [:]; metadata = [:]; previewURL = nil
                 objects[id] = nil
                 if let index = rows.firstIndex(where: { $0.id == id }) {
                     rows[index].blocked = true; rows[index].verified = false; rows[index].name = "Blocked item"
                     rows[index].text = nil; rows[index].bytes = 0; rows[index].mime = nil
                 }
-                do { try await service.downloadContainer.purgeExpiredDownloads(nowMs: .max) }
+                do { try await purgeLocal([id]) }
                 catch { status = "Verification warning: local cleanup needs retry" }
             default: report(error)
             }
@@ -168,7 +168,15 @@ extension LiveDrop {
     }
 }
 
- extension LiveDrop {
+extension LiveDrop {
+    /// Forgets and deletes the local plaintext of exactly these objects. A relay-reported tombstone (`DropListing.gone`) is never passed
+    /// here: it is an unauthenticated hint, so it hides the row but leaves its cached download to the retention deadline.
+    func purgeLocal(_ ids: Set<String>) async throws {
+        guard !ids.isEmpty else { return }
+        if let preview = previewURL, ids.contains(where: { downloads[$0]?.url == preview }) { previewURL = nil }
+        for id in ids { downloads[id] = nil; metadata[id] = nil }
+        try await service.downloadContainer.purgeDownloads(objects: ids)
+    }
     func purge() async throws {
         try await service.downloadContainer.purgeExpiredDownloads(nowMs: alarm ? .max : nowMs)
         let expired = downloads.filter { $0.value.deadlineMs <= nowMs }.map(\.key)

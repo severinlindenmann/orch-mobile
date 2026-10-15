@@ -302,6 +302,23 @@ extension WorkspaceContainer {
         }
     }
 
+    /// Removes the local plaintext download of exactly these objects (every version) and clears their retention columns. Every other
+    /// object's file, retention and chain head are untouched; unknown objects are a no-op. Heads stay: a purge never rewinds the chain.
+    public func purgeDownloads(objects: Set<String>) async throws {
+        guard !objects.isEmpty else { return }
+        for object in objects { try StoreLayout.validate(ws: object) }
+        let layout = self.layout, ws = self.ws, generation = self.generation
+        try await database().transaction { tx in
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                for object in objects {
+                    try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL,downloaded_at=NULL WHERE object=?", [.text(object)])
+                }
+                for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                where objects.contains(where: { file.lastPathComponent.hasPrefix($0 + "-") }) { try FileManager.default.removeItem(at: file) }
+            }
+        }
+    }
+
     public func writeDrop(_ data: Data, object: String, version: UInt32, expiresMs: Int64?,
                           now: @Sendable @escaping () -> Int64) async throws -> URL {
         try await writeDropVerified(data, object: object, version: version, expiresMs: expiresMs, now: now).url

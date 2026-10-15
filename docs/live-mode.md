@@ -259,9 +259,14 @@ Drop stays capability-off in Live until the relay serves the routes. When it is 
 * **Stalled uploads.** `DropService.stalledUploads()` lists pending uploads whose object the relay reports gone while the signed expiry has
   not passed ("Removed by the host? Retry or discard"); they are retried at most hourly, `retryUpload` and `discardUpload` resolve them.
   `storageFull` and `retryLater` carry the seconds to wait; `rotationPending` means the host has a rotation due.
-* **Purge granularity (open).** `LiveDrop` calls `purgeExpiredDownloads(nowMs: .max)` (all local downloads) when ANY list entry is blocked
-  (`LiveDrop.swift` around the blocked handling and `purge()` with `alarm`). That should become per entry (the blocked object's own file
-  only); it needs a per-object purge in `WorkspaceContainer` and is left for the wiring change.
+* **Purge granularity (done).** A blocked entry purges only its own object: `DropListing.blockedObjects` names the objects whose row parsed
+  but failed verification, `LiveDrop.purgeLocal` forgets their in-memory downloads and calls `WorkspaceContainer.purgeDownloads(objects:)`
+  (their files and retention columns; heads and every other object untouched). A row that did not parse names no object and purges nothing.
+  `verifyVisible` failing for one object purges that object only. The only purge-everything paths are the verification alarm
+  (`report`, workspace-level: chain/signature/rollback evidence) and Leave/Reset.
+* **Relay tombstones never purge (decision).** `gone` entries (expired, retired, unavailable) are an unauthenticated hint. They hide or
+  grey the row and stop offering open/download; they purge neither other objects' evidence nor the object's own cached download. That file
+  leaves by its own retention deadline (7 days, bounded by signed expiry), a verified host retire, or a local user action (Leave/Reset).
 
 ## Relay push wiring notes (P3-D40, protocol-v2 section 19.10)
 

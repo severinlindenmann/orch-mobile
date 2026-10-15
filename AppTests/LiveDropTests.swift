@@ -92,6 +92,27 @@ final class LiveDropTests: XCTestCase {
         }
     }
 
+    func testBlockedObjectPurgesOnlyItsOwnDownload() async throws {
+        let (services, drop) = try await fixture()
+        var files: [String: DropDownload] = [:]
+        for name in ["one", "two"] {
+            let object = try await drop.service.send(Data(name.utf8), name: name)
+            await drop.refresh()
+            let id = object.descriptor.object.hex
+            await drop.open(id)
+            files[id] = try XCTUnwrap(drop.downloads[id])
+        }
+        let ids = files.keys.sorted(), gone = ids[0], kept = ids[1]
+        try await drop.purgeLocal([gone])
+        XCTAssertNil(drop.downloads[gone])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[gone]!.url.path))
+        XCTAssertNotNil(drop.downloads[kept])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[kept]!.url.path))
+        try await drop.purgeLocal([])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[kept]!.url.path))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
     func testBusyAndUnknownRemovalPreserveRowsAndAlarmBlocksContent() async throws {
         let (services, drop) = try await fixture()
         let rows = drop.rows

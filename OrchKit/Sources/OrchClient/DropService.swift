@@ -63,6 +63,9 @@ public struct DropListing: Sendable {
     public let objects: [DropObject]
     /// Opaque local identifiers; no unverified descriptor fields are exposed.
     public let blocked: [String]
+    /// Objects whose entry failed verification but whose identity the relay named (a row that parsed). Only these may have local evidence
+    /// purged, and only their own; a row that did not parse names nobody.
+    public let blockedObjects: [ID16]
     /// Tombstones (`expired`, `retired`) and entries that are not live: shown as gone, never opened.
     public let gone: [DropGone]
 }
@@ -490,6 +493,7 @@ public actor DropService {
         var result: [DropObject] = []
         var blocked: [String] = (0..<blockedCount).map { "blocked-\(direction.rawValue)-entry-\($0)" }
         var gone: [DropGone] = []
+        var blockedObjects: [ID16] = []
         for (index, id) in order.enumerated() {
             let entry = entries[id]!
             do {
@@ -513,13 +517,13 @@ public actor DropService {
                 switch error {
                 case DropError.malformed, DropError.integrity, DropError.rollback, DropError.unauthorized, DropError.expired, DropError.tooLarge,
                      is Refusal, is DropDocument.Fork, is CryptoFailure, is CryptoKitError, DropStoreError.rollback:
-                    blocked.append("blocked-\(direction.rawValue)-\(index)")
+                    blocked.append("blocked-\(direction.rawValue)-\(index)"); blockedObjects.append(id)
                 default: throw error
                 }
             }
         }
         try await check()
-        return DropListing(objects: result, blocked: blocked, gone: gone)
+        return DropListing(objects: result, blocked: blocked, blockedObjects: blockedObjects, gone: gone)
     }
 
     /// Imports only this generation's claimed destination. The SQLite item mapping survives crashes;

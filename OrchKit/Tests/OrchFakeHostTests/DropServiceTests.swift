@@ -252,6 +252,7 @@ extension DropServiceTests {
         await adversary.set(descriptor: true)
         let tampered = try await service.listVerifiedRows(.sending)
         #expect(tampered.objects.isEmpty && tampered.blocked.count == 1)
+        #expect(tampered.blockedObjects == [first.descriptor.object])
         await adversary.set()
         _ = try await service.send(Data("updated".utf8), name: "doc", document: first)
         let restarted = try await w.dropService(phone)
