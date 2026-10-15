@@ -76,12 +76,17 @@ are invalidated and comparison codes hidden; resume verifies and keeps the origi
 
 PR A is a boundary for Demo; the following are blockers for making Live reachable (Opus review).
 
-1. **Realm generation fence inside OrchClient (H1).** The app-level `RealmLifetime` only guards app code. The Live `RealmContext`,
-   custody and transport must check a realm-level generation themselves with `perform()` semantics, as `DemoGeneration` does, so a
-   stale handle cannot sign or write after Leave.
-2. **Synchronous `RealmRuntime.invalidate()`** is the first statement of teardown. The runtime tracks every pairing coordinator and
-   every `WorkspaceSession`, and `shutdown` cancels and awaits them, so a late pairing commit or decision sign cannot survive
-   Leave Live.
+1. **Done (PR B1): realm generation fence inside OrchClient (H1).** Every `RealmContext`, Demo and Live, owns a `RealmGeneration`
+   (`DemoGeneration` is an alias). Its `perform {}` is a recursive lock held only across synchronous check-and-act bodies; `invalidate()`
+   takes the same lock, so nothing that passed the check is running when it returns and nothing starts later. Enforced once per resource:
+   custody leases (`LeasedSigner`/`LeasedKeyAgreer`, also re-leased by `WorkspaceSession.init`), transport send (check immediately before
+   `sender.send`; an await cannot be held under the lock), the workspace store (`SQLiteDatabase` writes and transactions, BEGIN..COMMIT
+   inside the fence, bound to the container by `WorkspaceSession.init` and by pairing), vault `put` (`RealmVault.fenced`), and the pairing
+   commit (`commitJoin`, `savePairing` with the fence). Reads, deletes and wipes stay open so the teardown wipe still works.
+2. **Done (PR B1): synchronous `RealmRuntime.invalidate()`** is the first statement of `LiveServices.teardown`. Sessions and pairing
+   coordinators register (weakly) with the realm generation; `RealmContext.shutdownParticipants` cancels and awaits them (bounded)
+   before the wipe (`DemoRuntime.reset`). A future `LiveRuntime` must do the same in `shutdown`. Known limit: a signature or SQLite
+   transaction in flight holds the gate, so `invalidate()` can wait that long (a Touch ID signing prompt must not run inside `perform`; B2/phase 3).
 3. **`retire()` (L1)** must not be used on a realm with live sessions, or must be completed to stop and drain them.
 4. **Pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
 5. **Failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.
