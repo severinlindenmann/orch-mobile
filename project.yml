@@ -42,6 +42,12 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         UILaunchScreen: {}
+        # The `orch://pair?relay=<origin>#v2...` pairing link (decisions D-3). An open only ever lands on a review screen.
+        CFBundleURLTypes:
+          - CFBundleURLName: io.severin.orch.pair
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [orch]
+        NSCameraUsageDescription: orch uses the camera only to scan the pairing QR code shown by orch on your Mac.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

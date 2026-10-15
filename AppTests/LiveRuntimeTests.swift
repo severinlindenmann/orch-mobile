@@ -5,6 +5,7 @@ import OrchCustody
 import OrchFakeHost
 import OrchProtocol
 import OrchShareStaging
+import AVFoundation
 import OrchStore
 #if DEBUG // uses DEBUG-only seams (LiveTransport.testingTransport, liveBootGate); the Release flag check compiles all tests
 @testable import Orch
@@ -78,7 +79,7 @@ final class LiveRuntimeTests: XCTestCase {
                                   purgeNotifications: { _ in })
         let suite = "orch.liveruntime.\(UUID().uuidString)"
         let rig = Rig(storage: storage, flags: UserDefaults(suiteName: suite)!, suite: suite)
-        if installed { rig.install.save(LiveInstall(origin: origin, owner: nil)) }
+        if installed { try rig.install.save(LiveInstall(origin: origin, owner: nil)) }
         return rig
     }
 
@@ -489,5 +490,544 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertEqual(LivePairingModel.state(forRealm: .staleGeneration), .entry)
         XCTAssertEqual(LivePairingModel.state(forRealm: .externalOrigin), .refused(.invalidLink))
     }
+}
+
+// MARK: - Live entry (B2b)
+
+private final class SendCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func hit() { lock.withLock { n += 1 } }
+    var count: Int { lock.withLock { n } }
+}
+
+private struct CountingSender: RequestSender {
+    let origin: String
+    let counter: SendCounter
+    func send(_ request: WireRequest) async throws -> WireReply { counter.hit(); throw TransportError.disconnected }
+}
+
+private func invitation(origin: String = "https://relay.example.org", orch: Bool = false) -> String {
+    let id = String(repeating: "ab", count: 16)
+    let pin = B64U.encode(Data(repeating: 7, count: 32))
+    let fragment = "v2.\(id).\(id).\(pin).\(pin).\(pin)"
+    if orch {
+        let encoded = origin.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")) ?? origin
+        return "orch://pair?relay=\(encoded)#\(fragment)"
+    }
+    return "\(origin)/app/pair#\(fragment)"
+}
+
+extension LiveRuntimeTests {
+    private func parsed(_ text: String) throws -> PairingLink { try PairingLink.parse(text) }
+
+    private func seedOrphans(_ rig: Rig) throws {
+        let ws = ID16.random().hex
+        try rig.keys.put(Data("k".utf8), for: SecretID(realm: .live, ws: ws, purpose: "pairing"))
+        try rig.push.put(Data("p".utf8), for: SecretID(realm: .live, ws: ws, purpose: "push"))
+        _ = try rig.storage.makeCustody().create(realm: .live)           // device keys that survived an uninstall
+    }
+
+    /// What exists on disk and in the keychain for Live right now.
+    private struct Footprint: Equatable {
+        var items: Int, custody: CustodyStatus, realmDir: Bool, install: Bool
+    }
+    private func footprint(_ rig: Rig) throws -> Footprint {
+        Footprint(items: try liveVaultItems(rig), custody: rig.storage.makeCustody().status(realm: .live),
+                  realmDir: FileManager.default.fileExists(atPath: rig.storage.layout.realmDir.path), install: rig.install.exists)
+    }
+
+    // MARK: Install-record ordering (Opus M2, Sonnet LOW 7)
+
+    func testFreshEntryWipesOrphansThenPersistsTheRecordThenCreatesTheRuntime() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        try seedOrphans(rig)
+        XCTAssertGreaterThan(try footprint(rig).items, 0)
+        let services = makeServices(rig)
+        await services.boot()
+        XCTAssertNil(services.runtime)
+        var atSave: Footprint?
+        services.persistInstall = { install in
+            atSave = try self.footprint(rig)                 // what exists the moment the record is written
+            try rig.install.save(install)
+        }
+        let runtime = try await services.liveRuntimeForPairing(origin: origin)
+        // Before the record: no Live keychain item, no device keys, no index, no record.
+        XCTAssertEqual(atSave, Footprint(items: 0, custody: .missing, realmDir: false, install: false))
+        XCTAssertEqual(rig.install.load(), LiveInstall(origin: origin, owner: nil))
+        XCTAssertTrue(runtime.booted && services.isLive && services.runtime === runtime)
+        // A second Connect for the same origin reuses the running Live (a second workspace), another origin is refused.
+        let again = try await services.liveRuntimeForPairing(origin: origin)
+        XCTAssertTrue(again === runtime)
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertEqual(try footprint(rig), Footprint(items: 0, custody: .missing, realmDir: false, install: false))
+    }
+
+    func testAnInstallRecordThatCannotBeSavedFailsTheFlowAndLeavesNothing() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        try seedOrphans(rig)
+        let services = makeServices(rig)
+        await services.boot()
+        services.persistInstall = { _ in throw LiveError.installNotSaved }
+        do { _ = try await services.liveRuntimeForPairing(origin: origin); XCTFail("must fail") }
+        catch { XCTAssertEqual(error as? LiveError, .installNotSaved) }
+        // The crash window: the orphan wipe ran, the record did not. Nothing is left, nothing is attached, no Live start next launch.
+        XCTAssertEqual(try footprint(rig), Footprint(items: 0, custody: .missing, realmDir: false, install: false))
+        XCTAssertNil(services.runtime)
+        XCTAssertFalse(services.hasLiveInstall)
+        let next = makeServices(rig)
+        await next.boot()
+        XCTAssertNil(next.runtime)
+        XCTAssertFalse(next.isLive)
+        // And the person can simply try again.
+        services.persistInstall = nil
+        let runtime = try await services.liveRuntimeForPairing(origin: origin)
+        XCTAssertTrue(runtime.booted)
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testTheInstallStoreThrowsWhenItCannotEncodeOrReadBack() throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        try rig.install.save(LiveInstall(origin: origin, owner: nil))
+        XCTAssertEqual(rig.install.load()?.origin, origin)
+        XCTAssertThrowsError(try LiveInstallStore(defaults: ReadBackFailsDefaults()).save(LiveInstall(origin: origin, owner: nil)))
+    }
+
+    // MARK: One origin per install, https only, decided before any network access
+
+    func testAnOtherOriginAndInsecureOriginsAreRefusedBeforeAnyNetworkAccess() async throws {
+        let counter = SendCounter()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        var storage = rig.storage
+        storage.makeTransport = { try LiveTransport.testingTransport(context: $0, sender: CountingSender(origin: $0.origin, counter: counter)) }
+        let services = LiveServices(options: options, resetFlags: rig.flags)
+        services.liveStorage = { storage }
+        await services.boot()
+        let runtime = try XCTUnwrap(services.runtime as? LiveRuntime)
+        for (offered, expected) in [("https://other.example.org", LiveError.differentOrigin), ("http://127.0.0.1:8080", .unsupportedOrigin),
+                                    ("https://relay.demo.invalid", .unsupportedOrigin), ("http://relay.example.org", .unsupportedOrigin)] {
+            do { _ = try await services.liveRuntimeForPairing(origin: offered); XCTFail("\(offered) must be refused") }
+            catch { XCTAssertEqual(error as? LiveError, expected, offered) }
+        }
+        XCTAssertEqual(counter.count, 0)
+        XCTAssertTrue(services.runtime === runtime)
+        XCTAssertEqual(rig.install.load()?.origin, origin)            // never retargeted
+        XCTAssertFalse(LiveServices.isLiveOrigin("http://127.0.0.1:1234"))
+        XCTAssertTrue(LiveServices.isLiveOrigin("https://relay.example.org"))
+        let again = try await services.liveRuntimeForPairing(origin: origin)
+        XCTAssertTrue(again === runtime)
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testLiveEntryIsRefusedOverDemoAndWhileAnyWipeIsUnfinished() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        rig.flags.set(true, forKey: "orch.live.resetPending")
+        let services = makeServices(rig)
+        var attempts = 0
+        services.finishInterruptedLiveReset = { _ in attempts += 1; throw ViewError.offline }
+        await services.boot()
+        XCTAssertTrue(services.resetIncomplete)
+        do { _ = try await services.liveRuntimeForPairing(origin: origin); XCTFail("must be refused") }
+        catch { XCTAssertEqual(error as? LiveError, .entryUnavailable) }
+        XCTAssertFalse(rig.install.exists)
+    }
+
+    // MARK: Owner pin (Opus M1)
+
+    func testTheOwnerPinIsDerivedFromTheCommittedProfileAtBootAndRecorded() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }                  // an install record WITHOUT an owner: a crash after commitJoin
+        try await commit(joined, into: rig)
+        XCTAssertNil(rig.install.load()?.owner)
+        let services = makeServices(rig)
+        await services.boot()
+        let runtime = try XCTUnwrap(services.runtime as? LiveRuntime)
+        XCTAssertEqual(runtime.derivedOwner, joined.profile.pkPub)
+        XCTAssertEqual(rig.install.load()?.owner, joined.profile.pkPub)   // recorded with a throwing save
+        XCTAssertEqual(runtime.recordedOwner, joined.profile.pkPub)
+        XCTAssertEqual(services.live.count, 1)
+        XCTAssertNil(services.liveNotice)
+        services.retire(); await services.waitForRetire()
+        // The next launch is pinned from the record: the context refuses another owner's certificate.
+        let second = makeServices(rig)
+        await second.boot()
+        let pinned = try XCTUnwrap(second.runtime as? LiveRuntime)
+        XCTAssertNotNil(pinned.context.pinnedOwner)
+        XCTAssertNil(pinned.derivedOwner)
+        second.resetThisiPhone(); await second.waitForReset()
+    }
+
+    func testAFailedOwnerWriteIsVisibleAndTheJoinSurvives() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let services = makeServices(rig)
+        services.persistInstall = { _ in throw LiveError.installNotSaved }
+        await services.boot()
+        XCTAssertEqual(services.live.count, 1)                            // the committed workspace is not undone
+        XCTAssertNotNil(services.liveNotice)
+        XCTAssertNil(rig.install.load()?.owner)                           // and the next boot derives it again
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testTwoOwnersInOneInstallRefuseTheBootAndRebuildNothing() async throws {
+        let first = try await demoJoin(), second = try await demoJoin()
+        XCTAssertNotEqual(first.profile.pkPub, second.profile.pkPub)
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(first, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var profile = second.profile
+        profile.origin = origin
+        try await index.savePairing(PairingRow(ws: profile.ws, offer: String(repeating: "1", count: 32), generation: 1, origin: origin,
+                                               phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: profile)
+        await index.close()
+        let services = makeServices(rig)
+        await services.boot()
+        XCTAssertTrue(services.live.isEmpty)
+        XCTAssertNotNil(services.liveBootError)
+        XCTAssertEqual((services.runtime as? LiveRuntime)?.booted, false)
+        XCTAssertNil(rig.install.load()?.owner)                           // nothing was pinned from a contradictory store
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rig.storage.layout.indexURL.path))    // and nothing was erased
+        services.resetThisiPhone(); await services.waitForReset()         // Leave Live is the way out
+        XCTAssertFalse(services.resetIncomplete)
+        XCTAssertFalse(rig.install.exists)
+    }
+
+    func testAWorkspaceOfAnotherOwnerThanThePinIsNotRebuiltAndIsSurfaced() async throws {
+        let first = try await demoJoin(), other = try await demoJoin()
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        try rig.install.save(LiveInstall(origin: origin, owner: other.profile.pkPub))
+        try await commit(first, into: rig)
+        let services = makeServices(rig)
+        await services.boot()
+        XCTAssertTrue(services.live.isEmpty)
+        XCTAssertEqual((services.runtime as? LiveRuntime)?.skipped.map(\.reason), ["owner"])
+        XCTAssertEqual(services.skippedWorkspaceCount, 1)                 // Live Home shows "1 workspace couldn't be verified"
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    // MARK: Retired graphs, stuck wipes
+
+    func testARetiredGraphDoesNotStartLive() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let services = makeServices(rig)
+        services.retire()
+        await services.boot()
+        XCTAssertNil(services.runtime)                                     // guard !retired in startLive (Opus L1)
+        let other = makeServices(rig)
+        await other.boot()
+        other.resetThisiPhone(); await other.waitForReset()
+    }
+
+    func testTheForceEraseEscapeRemovesLiveFilesWithoutTheKeychainAndTheNextEntryCleansTheKeychain() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        rig.flags.set(true, forKey: "orch.live.resetPending")
+        let services = makeServices(rig)
+        services.finishInterruptedLiveReset = { _ in throw ViewError.offline }
+        services.removeLiveFiles = { try LiveStorage.removeLiveFiles(layout: rig.storage.layout) }
+        await services.boot()
+        XCTAssertTrue(services.resetIncomplete)
+        try await services.forceEraseLive()
+        XCTAssertFalse(services.resetIncomplete)
+        XCTAssertFalse(rig.install.exists)
+        XCTAssertFalse(rig.flags.bool(forKey: "orch.live.resetPending"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.storage.layout.realmDir.path))
+        XCTAssertGreaterThan(try liveVaultItems(rig), 0)                  // the keychain was not touched (it may be what is unavailable)
+        // The orphans go before the next install record exists.
+        let next = makeServices(rig)
+        await next.boot()
+        var itemsAtSave = -1
+        next.persistInstall = { install in itemsAtSave = try self.liveVaultItems(rig); try rig.install.save(install) }
+        _ = try await next.liveRuntimeForPairing(origin: origin)
+        XCTAssertEqual(itemsAtSave, 0)
+        next.resetThisiPhone(); await next.waitForReset()
+    }
+
+    // MARK: Intake (scan, paste, orch://) and the controller
+
+    private func makeController(_ rig: Rig, demo: Bool = false) -> RealmController {
+        let opts = LaunchOptions.parse(arguments: ["--ui-testing"] + (demo ? ["--demo"] : []), debug: true)
+        let controller = RealmController(options: opts, resetFlags: rig.flags)
+        controller.shareArea = nil
+        controller.services.liveStorage = { rig.storage }
+        controller.makeServices = { o, d in
+            let s = LiveServices(options: o, resetFlags: d)
+            s.liveStorage = { rig.storage }
+            return s
+        }
+        return controller
+    }
+
+    func testAnOpenedOrchLinkAlwaysLandsOnAReviewScreenAndNeverConnects() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let counter = SendCounter()
+        let controller = makeController(rig)
+        let intake = LiveIntake(realm: controller)
+        // Cold launch: the URL arrives before the realm booted and is held.
+        intake.handle(url: try XCTUnwrap(URL(string: invitation(orch: true))))
+        XCTAssertNil(intake.screen)
+        await controller.boot()
+        intake.realmBooted()
+        guard case .review(let link)? = intake.screen else { return XCTFail("\(String(describing: intake.screen))") }
+        XCTAssertEqual(link.reviewedOrigin, "https://relay.example.org")
+        XCTAssertEqual(controller.state, .welcome)                         // no connection, no install, no realm change
+        XCTAssertFalse(controller.services.hasLiveInstall)
+        XCTAssertNil(controller.services.runtime)
+        XCTAssertEqual(counter.count, 0)
+        // Only the orch scheme is ours; text that is not a pairing link is not a review.
+        intake.dismiss()
+        intake.handle(url: try XCTUnwrap(URL(string: "https://example.org/")))
+        XCTAssertNil(intake.screen)
+        intake.handle(text: "not a link")
+        XCTAssertEqual(intake.screen, .refused(.invalidLink))
+        intake.dismiss()
+        // https paste form, and loopback http / Demo origins never reach the review.
+        intake.handle(text: invitation())
+        guard case .review? = intake.screen else { return XCTFail("paste form") }
+        intake.dismiss()
+        intake.handle(text: invitation(origin: "http://127.0.0.1:8080"))
+        XCTAssertEqual(intake.screen, .refused(.unsupportedOrigin("http://127.0.0.1:8080")))
+        intake.dismiss()
+        intake.handle(text: invitation(origin: "https://relay.demo.invalid"))
+        XCTAssertEqual(intake.screen, .refused(.unsupportedOrigin("https://relay.demo.invalid")))
+    }
+
+    func testALiveLinkDuringDemoIsHeldAndOffersTheSwitchButNeverSwitches() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let controller = makeController(rig, demo: true)
+        await controller.boot()
+        XCTAssertEqual(controller.state, .demo)
+        let intake = LiveIntake(realm: controller)
+        intake.realmBooted()
+        intake.handle(text: invitation(orch: true))
+        guard case .switchOffer(let link)? = intake.screen else { return XCTFail("\(String(describing: intake.screen))") }
+        XCTAssertEqual(intake.held, link)
+        XCTAssertEqual(controller.state, .demo)                            // still Demo: nothing switched
+        XCTAssertTrue(controller.services.isDemo)
+        XCTAssertFalse(controller.services.hasLiveInstall)
+        // Connect from the switch offer is impossible: only the explicit, confirmed leave moves on, and it lands on the REVIEW.
+        intake.connect(link)
+        XCTAssertEqual(intake.screen, .switchOffer(link))
+        intake.leaveDemoAndPair()
+        intake.handle(text: invitation(origin: "https://other.example.org"))      // ignored while Demo is being left
+        XCTAssertEqual(intake.screen, .leavingDemo)
+        XCTAssertNotNil(intake.notice)
+        await controller.waitForTransition()
+        for _ in 0..<400 where intake.screen == .leavingDemo { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(controller.state, .welcome)
+        XCTAssertEqual(intake.screen, .review(link))
+        XCTAssertFalse(controller.services.hasLiveInstall)                 // reviewing is not connecting
+    }
+
+    func testAnInvitationForAnotherOriginIsRefusedOnAnExistingLiveInstall() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let controller = makeController(rig)
+        await controller.boot()
+        XCTAssertEqual(controller.state, .live)
+        let intake = LiveIntake(realm: controller)
+        intake.realmBooted()
+        intake.handle(text: invitation(origin: "https://other.example.org"))
+        XCTAssertEqual(intake.screen, .refused(.differentOrigin(existing: origin, offered: "https://other.example.org")))
+        intake.handle(text: invitation())
+        guard case .review? = intake.screen else { return XCTFail("same origin reviews") }
+        controller.realmLeave(thenDemo: false); await controller.waitForTransition()
+    }
+
+    func testEnteringLiveFromWelcomeMovesTheControllerAndLeaveReturnsToWelcomeTruthfully() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let controller = makeController(rig)
+        await controller.boot()
+        XCTAssertEqual(controller.state, .welcome)
+        _ = try await controller.services.liveRuntimeForPairing(origin: origin)
+        XCTAssertEqual(controller.state, .live)
+        XCTAssertTrue(controller.services.isLive)
+        controller.realmLeave(thenDemo: false)
+        await controller.waitForTransition()
+        XCTAssertEqual(controller.state, .welcome)
+        XCTAssertFalse(rig.install.exists)
+        XCTAssertEqual(try liveVaultItems(rig), 0)
+        // No join ever happened: nothing to finish on the Mac.
+        XCTAssertEqual(controller.notice, "Removed from this iPhone.")
+    }
+
+    func testTheLeaveNoticeMentionsTheMacOnlyAfterAJoin() {
+        XCTAssertEqual(RealmController.leftLiveNotice(hadJoin: true), "Removed from this iPhone; finish removing it on your Mac.")
+        XCTAssertEqual(RealmController.leftLiveNotice(hadJoin: false), "Removed from this iPhone.")
+    }
+
+    func testALateOwnerRecordAfterALeaveDoesNotUndoIt() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let services = makeServices(rig)
+        await services.boot()
+        let runtime = try XCTUnwrap(services.runtime as? LiveRuntime)
+        XCTAssertTrue(services.liveHadJoin)
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertFalse(rig.install.exists)
+        runtime.recordedOwner = nil                                           // the post-join task of a pairing that outlived the Leave
+        services.recordOwner(joined.profile.pkPub, runtime: runtime)
+        XCTAssertFalse(rig.install.exists)                                    // the install record is not resurrected
+        // And a runtime other than the attached one is refused too.
+        let live = makeServices(rig)
+        try rig.install.save(LiveInstall(origin: origin, owner: nil))
+        await live.boot()
+        runtime.recordedOwner = nil
+        live.recordOwner(joined.profile.pkPub, runtime: runtime)
+        XCTAssertNil(rig.install.load()?.owner)
+        live.resetThisiPhone(); await live.waitForReset()
+    }
+
+    func testAnUndecodableOwnerKeyIsNeverUsedAsAPin() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var p = joined.profile
+        p.pkPub = "not-a-key"
+        p.ws = ID16.random().hex
+        try await index.savePairing(PairingRow(ws: p.ws, offer: String(repeating: "2", count: 32), generation: 1, origin: origin, phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: p)
+        do { _ = try await LiveRuntime.agreedOwner(index: index, pinned: nil); XCTFail("must refuse") }
+        catch { XCTAssertEqual(error as? LiveError, .invalidInstall) }
+        await index.close()
+    }
+
+    func testTwoOwnersShowTheirOwnCopy() async throws {
+        let first = try await demoJoin(), second = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(first, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var profile = second.profile
+        profile.origin = origin
+        try await index.savePairing(PairingRow(ws: profile.ws, offer: String(repeating: "1", count: 32), generation: 1, origin: origin,
+                                               phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: profile)
+        await index.close()
+        let services = makeServices(rig)
+        await services.boot()
+        XCTAssertTrue(try XCTUnwrap(services.liveBootError).contains("two different owners"))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testAnUnbootedLiveInstallLeavesWithTheMacStep() async throws {
+        let first = try await demoJoin(), second = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(first, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var profile = second.profile
+        profile.origin = origin
+        try await index.savePairing(PairingRow(ws: profile.ws, offer: String(repeating: "1", count: 32), generation: 1, origin: origin,
+                                               phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: profile)
+        await index.close()
+        let controller = makeController(rig)
+        await controller.boot()
+        XCTAssertNotNil(controller.services.liveBootError)               // ownerDisagreement: no runtime booted, nothing in memory
+        XCTAssertTrue(controller.services.liveHadJoin)                   // unknown counts as "a join may exist"
+        controller.realmLeave(thenDemo: false); await controller.waitForTransition()
+        XCTAssertEqual(controller.notice, "Removed from this iPhone; finish removing it on your Mac.")
+    }
+
+    func testAPairingThatReachedTheHostIsRememberedEvenWithoutACommit() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let services = makeServices(rig)
+        await services.boot()
+        _ = try await services.liveRuntimeForPairing(origin: origin)
+        XCTAssertFalse(services.liveHadJoin)
+        services.notePairingProgress()
+        XCTAssertTrue(services.liveHadJoin)
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertFalse(services.liveHadJoin)                            // the flag goes with the install
+    }
+
+    func testAPinnedBootSkipsAnUndecodableRowInsteadOfRefusingTheBoot() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let index = try await WorkspaceIndex(layout: rig.storage.layout)
+        var p = joined.profile
+        p.pkPub = "not-a-key"
+        p.ws = ID16.random().hex
+        try await index.savePairing(PairingRow(ws: p.ws, offer: String(repeating: "2", count: 32), generation: 1, origin: origin, phase: "joining", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: 1, profile: p)
+        let owner = try await LiveRuntime.agreedOwner(index: index, pinned: joined.profile.pkPub)   // pinned: no throw, nothing recorded
+        XCTAssertNil(owner)
+        await index.close()
+    }
+
+    func testASecondInvitationNeverSwapsTheOneUnderReviewAndInputIsIgnoredWhileLeavingDemo() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let controller = makeController(rig)
+        await controller.boot()
+        let intake = LiveIntake(realm: controller)
+        intake.realmBooted()
+        intake.handle(text: invitation(orch: true), source: .otherApp)
+        guard case .review(let first)? = intake.screen else { return XCTFail("review") }
+        XCTAssertEqual(intake.source, .otherApp)
+        // Another invitation (another relay) while one is under review: refused with a visible notice; the reviewed origin is unchanged.
+        intake.handle(text: invitation(origin: "https://other.example.org"), source: .scanned)
+        XCTAssertEqual(intake.screen, .review(first))
+        XCTAssertEqual(intake.source, .otherApp)
+        XCTAssertNotNil(intake.notice)
+        intake.clearNotice()
+        XCTAssertNil(intake.notice)
+        intake.dismiss()
+        XCTAssertNil(intake.notice)
+        intake.handle(text: invitation(), source: .scanned)
+        XCTAssertEqual(intake.source, .scanned)
+    }
+
+    // MARK: Live pairing model
+
+    func testALivePairingPausesAndHidesCodesInTheBackground() async throws {
+        let rig = try makeRig(installed: false); defer { rig.cleanup() }
+        let services = makeServices(rig)
+        await services.boot()
+        let model = LivePairingModel(services: services, link: try parsed(invitation()))
+        XCTAssertEqual(model.state, .connecting)
+        XCTAssertFalse(model.isDemo)
+        XCTAssertEqual(model.hostLabel, "your Mac")
+        model.setActive(false)
+        XCTAssertTrue(model.obscured)
+        model.setActive(true)
+        XCTAssertFalse(model.obscured)
+        model.cancel()
+        try await Task.sleep(for: .milliseconds(300))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testEntryFailuresMapToRefusalsAndARealmEndedPairingIsACancel() {
+        XCTAssertEqual(LivePairingModel.refusal(forEntry: LiveError.differentOrigin), .refused(.originRefused))
+        XCTAssertEqual(LivePairingModel.refusal(forEntry: LiveError.unsupportedOrigin), .refused(.originRefused))
+        XCTAssertEqual(LivePairingModel.refusal(forEntry: LiveError.installNotSaved), .refused(.liveNotPrepared))
+        XCTAssertEqual(LivePairingModel.refusal(forEntry: LiveError.keychainUnavailable), .refused(.liveNotPrepared))
+    }
+
+    // MARK: Scanner
+
+    func testTheScannerReportsWhyItCannotRun() {
+        typealias A = ScannerAvailability
+        XCTAssertEqual(A.resolve(isSupported: false, isAvailable: false, authorization: .authorized), .noCamera)
+        XCTAssertEqual(A.resolve(isSupported: false, isAvailable: true, authorization: .notDetermined), .noCamera)
+        // Not asked yet: the permission prompt comes first, "camera off" is never shown for it.
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: false, authorization: .notDetermined), .undetermined)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: true, authorization: .notDetermined), .undetermined)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: false, authorization: .denied), .notAllowed)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: true, authorization: .restricted), .notAllowed)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: false, authorization: .authorized), .notAllowed)
+        XCTAssertEqual(A.resolve(isSupported: true, isAvailable: true, authorization: .authorized), .available)
+        XCTAssertFalse(ScannerAvailability.noCamera.explanation.isEmpty)
+        XCTAssertTrue(ScannerAvailability.notAllowed.explanation.contains("Paste") || ScannerAvailability.notAllowed.explanation.contains("paste"))
+    }
+}
+
+/// A `UserDefaults` whose writes never read back (a full or protected store).
+private final class ReadBackFailsDefaults: UserDefaults, @unchecked Sendable {
+    init() { super.init(suiteName: "orch.tests.readback.\(UUID().uuidString)")! }
+    override func set(_ value: Any?, forKey defaultName: String) {}
 }
 #endif

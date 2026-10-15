@@ -296,6 +296,21 @@ enum PairingRefusal: String, Hashable, Sendable {
     case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
     /// Fresh keys could not be drawn for this attempt (G3b): another pairing may use the current ones, or that could not be confirmed.
     case keysInUse
+    /// Live could not be prepared on this iPhone (the install record or the keychain): nothing was added.
+    case liveNotPrepared
+    /// The invitation's relay is not the one this iPhone uses, or is not an https relay: refused before any network access.
+    case originRefused
+}
+
+/// What Settings shows about the active realm. No secrets, tokens or workspace keys.
+struct RealmSummary: Equatable, Sendable {
+    var name: String
+    /// The reviewed relay origin (Live only), read-only.
+    var origin: String?
+    var custody: String
+    var connection: String
+    var lastChecked: Date?
+    var build: String
 }
 
 enum PairingState: Hashable, Sendable {

@@ -18,6 +18,21 @@ protocol HomeModel: AnyObject, Observable {
     var pendingDecisions: [DecisionStatus] { get }
     var dropSummary: DropSummary { get }
     func enterDemo()
+    /// A Live install is on record (running, or failed to start): the Home is Live's, never Welcome.
+    var liveInstalled: Bool { get }
+    /// Why the Live runtime is not running (nil when it is, or when Live is not in use).
+    var liveProblem: String? { get }
+    /// Committed workspaces that could not be verified at restore (kept on disk, not shown): "Leave and pair again".
+    var skippedWorkspaceCount: Int { get }
+    /// A transient Live notice (for example "the owner could not be recorded yet").
+    var liveNotice: String? { get }
+}
+
+extension HomeModel {
+    var liveInstalled: Bool { false }
+    var liveProblem: String? { nil }
+    var skippedWorkspaceCount: Int { 0 }
+    var liveNotice: String? { nil }
 }
 
 @MainActor
@@ -94,6 +109,15 @@ protocol PairingFlowModel: AnyObject, Observable {
     /// Both clocks are model transitions: expiry clears codes and disables approval everywhere.
     func primaryTimeElapses()
     func codeTimeElapses()
+    /// The app left the foreground: codes are hidden and polling is paused; false again on return (the original deadlines still apply).
+    var obscured: Bool { get }
+    /// The verified scopes of the joined workspace (Live ready screen).
+    var joinedScopes: [String] { get }
+}
+
+extension PairingFlowModel {
+    var obscured: Bool { false }
+    var joinedScopes: [String] { [] }
 }
 
 @MainActor
@@ -140,6 +164,15 @@ protocol SettingsModel: AnyObject, Observable {
     func resetThisiPhone()
     func exitDemo()
     func resetDemoData()
+    /// What the active realm is, for Settings (no secrets, no tokens). nil without a realm.
+    var realmSummary: RealmSummary? { get }
+    /// Leave Live: wipes the Live realm from this iPhone, then Welcome (or Demo). The server side is never claimed removed.
+    func leaveLive(thenDemo: Bool)
+}
+
+extension SettingsModel {
+    var realmSummary: RealmSummary? { nil }
+    func leaveLive(thenDemo: Bool) {}
 }
 
 /// Entry point screens receive (A4): never FakeHost or custody.

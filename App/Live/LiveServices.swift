@@ -19,6 +19,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         /// The Live realm's own gate: set at the start of a Live Leave/Reset, cleared only after the realm-wide wipe succeeded. A launch that
         /// finds it set completes the wipe BEFORE any realm starts, so no Live successor ever runs next to unwiped Live data.
         static let liveResetPending = "orch.live.resetPending"
+        /// A Live pairing got as far as the host's comparison or beyond (the Mac may hold a device entry). Cleared with the install.
+        static let pairingProgressed = "orch.live.pairingProgressed"
     }
 
     let options: LaunchOptions
@@ -33,6 +35,24 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// untouched; foregrounding retries.
     private(set) var liveBootError: String?
     private(set) var live: [LiveWorkspace] = []
+    /// Committed Live workspaces `LiveRuntime` could not rebuild at restore (kept on disk): surfaced in Live Home.
+    private(set) var skippedWorkspaceCount = 0
+    private(set) var liveNotice: String?
+    @ObservationIgnored private var lastLiveBootError: (any Error)?
+    /// True once this Live install ever had a join: a workspace on screen or kept, or a recorded owner. Decides whether a Leave says
+    /// "finish removing it on your Mac" (there may be a device entry there) or only "Removed from this iPhone."
+    /// UNKNOWN counts as yes: an install whose runtime did not boot (owner disagreement, bad record, no runtime) cannot say what the Mac
+    /// saw, and a pairing that reached the host's approval is remembered in a flag even if nothing committed.
+    var liveHadJoin: Bool {
+        guard hasLiveInstall else { return false }
+        if resetFlags.bool(forKey: Keys.pairingProgressed) { return true }
+        guard let rt = runtime as? LiveRuntime, rt.booted else { return true }
+        return rt.recordedOwner != nil || rt.install.owner != nil || !live.isEmpty || !rt.skipped.isEmpty || rt.derivedOwner != nil
+    }
+    /// Observed by the views: the install record lives in `UserDefaults`, which SwiftUI cannot track, so every change of it bumps this.
+    private var installRevision = 0
+    var liveInstalled: Bool { _ = installRevision; return hasLiveInstall }
+    var liveProblem: String? { liveBootError }
     private(set) var pendingDecisions: [DecisionStatus] = []
     private(set) var lastChecked = Date()
     private var heldDropItems: [DropItem] = []
@@ -95,6 +115,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Everything Live stands on (layout, keychain, clocks, transport). Production fails closed without a keychain configuration.
     @ObservationIgnored var liveStorage: () throws -> LiveStorage = { try LiveStorage.production() }
     /// Completes an interrupted Live wipe from storage alone (no runtime).
+    /// Writes the install record. The default is the throwing `LiveInstallStore.save`; a failure fails the Live entry (a test seam).
+    @ObservationIgnored var persistInstall: ((LiveInstall) throws -> Void)?
+    /// Removes the Live files without touching the keychain (the stuck-wipe escape). Keychain leftovers go at the next Live entry.
+    /// (DEBUG `--live-test-relay` points it at the test layout.)
+    @ObservationIgnored var removeLiveFiles: () throws -> Void = { try LiveStorage.removeLiveFiles(layout: try LiveStorage.liveLayout()) }
+    @ObservationIgnored private var enteringLive = false
+    /// The Live pairing on screen, if any (scene changes pause and resume it).
+    @ObservationIgnored weak var livePairing: LivePairingModel?
     @ObservationIgnored var finishInterruptedLiveReset: (LiveStorage) async throws -> Void = { try await LiveRuntime.finishInterruptedReset(storage: $0) }
     #if DEBUG
     /// Tests: installed on the Live runtime at creation so a teardown can be raced against a boot in progress.
@@ -131,6 +159,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         self.resetFlags = resetFlags ?? (options.uiTesting
             ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
         self.options = options
+        #if DEBUG
+        if options.uiTesting, options.liveTestRelay {
+            let storage = LiveUITestSupport.makeStorage()
+            liveStorage = storage
+            removeLiveFiles = { try LiveStorage.removeLiveFiles(layout: try storage().layout) }
+        }
+        #endif
         if let runtime { attach(runtime) }
     }
 
@@ -203,6 +238,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// What a successful Live wipe also removes: the install record and the realm's pending server cleanups.
     private func clearLiveRealmRecords() {
         installStore.clear()
+        resetFlags.removeObject(forKey: Keys.pairingProgressed)
+        installRevision += 1
         ServerCleanupStore(defaults: resetFlags, realm: .live).clear()
     }
 
@@ -210,7 +247,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// synchronously, BEFORE the boot task starts, so `teardown` can invalidate a boot in progress (M3). A start that fails keeps the
     /// runtime attached and Live data untouched; the failure is visible as `liveBootError` and foregrounding retries.
     private func startLive() async {
-        guard runtime == nil else { return }
+        guard !retired, runtime == nil else { return }
         guard let install = installStore.load() else { liveBootError = "The Live record on this iPhone is unreadable."; PresentationGate.requireRebuild(); return }
         let runtime: LiveRuntime
         do { runtime = try LiveRuntime(install: install, storage: try liveStorage()) }
@@ -232,20 +269,120 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let bootTask { _ = await bootTask.value; return }
         let revision = resetRevision
         let task = Task { () -> (any RealmRuntime)? in
-            do { try await runtime.boot(); return runtime } catch { return nil }
+            do { try await runtime.boot(); return runtime } catch { self.lastLiveBootError = error; return nil }
         }
         bootTask = task
         let result = await task.value
         guard revision == resetRevision, self.runtime === runtime else { return }     // a teardown replaced this boot
         bootTask = nil
         guard result != nil else {
+            if let e = lastLiveBootError as? LiveError, e == .ownerDisagreement {
+                liveBootError = "This iPhone holds workspaces from two different owners, which one Live install never allows, so nothing was opened. Leave Live to start over; your Macs are not changed."
+            } else {
             liveBootError = "Live could not start. It will try again when you return to orch."
+            }
             PresentationGate.requireRebuild()
             return
         }
         liveBootError = nil
+        skippedWorkspaceCount = runtime.skipped.count
+        // The owner pin is derived from the committed profiles when the record has none yet (a crash between the first commit and the
+        // record write): recorded with a throwing save, so a failure is visible and retried at the next launch.
+        recordOwner(runtime.derivedOwner, runtime: runtime)
         await runtime.rebuildPresentationGate()
         for handle in (try? await runtime.restoreWorkspaces()) ?? [] { workspaceJoined(handle, lifetime: lifetime) }
+    }
+
+    func notePairingProgress() { if hasLiveInstall { resetFlags.set(true, forKey: Keys.pairingProgressed) } }
+
+    private func save(_ install: LiveInstall) throws {
+        if let persistInstall { try persistInstall(install) } else { try installStore.save(install) }
+    }
+
+    /// Records the single owner of this Live install (once). A failed write keeps the join and says so; the next boot derives it again.
+    /// Only for the runtime it was started for, in a graph that is still alive: a Leave that ran meanwhile must not be partly undone by
+    /// re-saving the install record.
+    func recordOwner(_ owner: String?, runtime: LiveRuntime) {
+        guard let owner, runtime.recordedOwner == nil, !retired, lifetime.isActive, (self.runtime as AnyObject?) === runtime else { return }
+        do {
+            try save(LiveInstall(origin: runtime.install.origin, owner: owner))
+            runtime.recordedOwner = owner
+            liveNotice = nil
+        } catch {
+            liveNotice = "orch could not record the owner of this workspace yet. It will try again the next time orch starts."
+        }
+    }
+
+    // MARK: Live entry (B2b)
+
+    /// The runtime a Live pairing for an invitation at `origin` runs on. Everything that must not happen before the person said "Connect"
+    /// has not: this is called by the Connect action only.
+    ///
+    /// Order for a first entry (each step completes before the next):
+    ///   1. the origin must be an `https` Live origin (no loopback `http`, no Demo origin), and no other realm may be active;
+    ///   2. orphans are wiped: the keychain survives an uninstall, so leftover Live items and device keys are removed first
+    ///      (`wipe(realm: .live)` on both vault groups, `custody.delete(realm: .live)`, the Live files) and a keychain that cannot be
+    ///      read stops the entry here, before anything is written;
+    ///   3. the install record is persisted (throwing); a failure fails the entry with nothing left behind;
+    ///   4. only then the runtime is created and booted, so no Live keychain item or index row can exist without an install record.
+    /// An existing install is reused only for its own origin; any other origin is refused before any network access.
+    func liveRuntimeForPairing(origin: String) async throws -> LiveRuntime {
+        guard !retired, lifetime.isActive else { throw LiveError.entryUnavailable }
+        guard Self.isLiveOrigin(origin) else { throw LiveError.unsupportedOrigin }
+        if let existing = runtime as? LiveRuntime {
+            guard existing.install.origin == origin else { throw LiveError.differentOrigin }
+            guard existing.booted else { throw LiveError.notBooted }
+            return existing
+        }
+        if let install = installStore.load() {
+            guard install.origin == origin else { throw LiveError.differentOrigin }
+            throw LiveError.entryUnavailable           // Live is installed but not running: it recovers or is left, never re-entered
+        }
+        guard runtime == nil, !hasLiveInstall, !resetIncomplete, !enteringLive else { throw LiveError.entryUnavailable }
+        enteringLive = true
+        defer { enteringLive = false }
+        let storage = try liveStorage()
+        // 2. orphans
+        try await storage.realmWipe(hooks: storage.wipeHooks()).run(index: nil)
+        guard !retired, lifetime.isActive, runtime == nil, !hasLiveInstall else { throw LiveError.entryUnavailable }
+        // 3. the record
+        let install = LiveInstall(origin: origin, owner: nil)
+        do { try save(install) } catch { installStore.clear(); throw error }
+        // 4. the runtime
+        let created: LiveRuntime
+        do { created = try LiveRuntime(install: install, storage: storage) }
+        catch { installStore.clear(); throw error }
+        attach(created)
+        installRevision += 1
+        created.deviceLabel = deviceLabel
+        #if DEBUG
+        created.bootGate = liveBootGate
+        #endif
+        transitions?.realmEnteredLive()
+        await bootLive(created)
+        guard created.booted else { throw LiveError.notBooted }
+        return created
+    }
+
+    /// `https` only and not the Demo origin: what `RealmContext.live` accepts, checked here too so a refusal happens before anything else.
+    static func isLiveOrigin(_ origin: String) -> Bool {
+        origin.hasPrefix("https://") && (try? RealmContext.live(origin: origin)) != nil
+    }
+
+    /// The reviewed origin of the active or recorded Live install (nil without one).
+    var liveOrigin: String? { (runtime as? LiveRuntime)?.install.origin ?? installStore.load()?.origin }
+
+    /// The stuck-wipe escape: erases the Live files on this iPhone without waiting for the keychain or the index. Keychain items that
+    /// cannot be removed now are removed at the next Live entry (the orphan wipe). Used only from the recovery card, after a confirmation.
+    func forceEraseLive() async throws {
+        retire()
+        await waitForRetire()
+        try removeLiveFiles()
+        clearLiveRealmRecords()
+        resetFlags.set(false, forKey: Keys.liveResetPending)
+        resetIncomplete = false
+        liveBootError = nil
+        PresentationGate.openWithoutIndex()
     }
 
     /// Opens the foreground-presentation gate once the workspace index has been read. The app has one index, the runtime's
@@ -341,6 +478,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func makePairing(start: PairingState?) -> any PairingFlowModel { LivePairingModel(services: self, start: start) }
+    /// A Live pairing for a reviewed invitation; started by the person's explicit "Connect".
+    func makeLivePairing(link: PairingLink) -> any PairingFlowModel { LivePairingModel(services: self, link: link) }
 
     func workspaceID(forQuestion id: String) -> String? { resolveQuestion(id)?.workspaceID }
 
@@ -392,6 +531,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
         ws.start()
         Task { await refreshPending() }
+        if let live = runtime as? LiveRuntime, live.recordedOwner == nil {
+            let hex = j.workspace.hex
+            Task { [weak self, weak live] in
+                guard let live, let owner = try? await live.index?.profile(ws: hex)?.pkPub else { return }
+                self?.recordOwner(owner, runtime: live)
+            }
+        }
     }
 
     func workspaceRemoved(_ ws: LiveWorkspace) {
@@ -437,6 +583,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
+        livePairing?.setActive(active)
         if active, ready, liveBootError != nil {
             if let live = runtime as? LiveRuntime { if !live.booted { Task { await bootLive(live) } } }
             else if runtime == nil, hasLiveInstall { Task { await startLive() } }      // the runtime could not even be built: try again
@@ -711,6 +858,21 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     var custody: String { DefaultCustody.isSecureEnclave ? "Secure Enclave" : "Software key (Simulator)" }
 
+    var realmSummary: RealmSummary? {
+        guard let realm else { return nil }
+        let build = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") + " ("
+            + (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") + ")"
+        let connection: String
+        if realm == .demo { connection = "Simulated on this iPhone" }
+        else if live.isEmpty { connection = "No workspace yet" }
+        else if live.allSatisfy({ if case .online = $0.info.connection { true } else { false } }) { connection = "Connected" }
+        else { connection = "Offline" }
+        return RealmSummary(name: realm == .live ? "Live" : "Demo", origin: realm == .live ? liveOrigin : nil, custody: custody,
+                            connection: connection, lastChecked: live.isEmpty ? nil : lastChecked, build: build)
+    }
+
+    func leaveLive(thenDemo: Bool) { leaveRealm(thenDemo: thenDemo) }
+
     func setNotifications(_ on: Bool, workspaceID: String) {
         guard capabilities.push, isLive(workspaceID) else { return }
         live.first { $0.info.id == workspaceID }?.setNotifications(on)
@@ -978,6 +1140,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 protocol RealmTransitions: AnyObject {
     func realmEnterDemo()
     func realmLeave(thenDemo: Bool)
+    /// A Live entry attached its runtime to the current (Welcome) graph.
+    func realmEnteredLive()
+    /// The stuck-wipe escape for Live (see `LiveServices.forceEraseLive`).
+    func realmForceEraseLive()
 }
 
 /// A review for a workspace that is no longer on this iPhone: it can load nothing.

@@ -9,6 +9,9 @@ struct HomeScreen: View {
     @State private var forceWelcome: Bool
     @State private var bridge: ShareBridge?
     @Environment(\.scenePhase) private var scenePhase
+    /// The Live entry (scan, paste, review). nil where there is none (the in-memory preview).
+    @Environment(LiveIntake.self) private var intake: LiveIntake?
+    @State private var confirmErase = false
     private let initial: InitialRoute
     private let options: LaunchOptions
     @Environment(\.colorScheme) private var scheme
@@ -76,13 +79,23 @@ struct HomeScreen: View {
         }
     }
 
-    private func startPairing() { pairing = PairingPresentation(model: services.makePairing(start: nil)) }
+    /// Demo pairs through the Demo panels; everything else (Live) goes through scan or paste and a review screen.
+    private func startPairing() {
+        if let intake, !services.home.isDemo { intake.openEntry() }
+        else { pairing = PairingPresentation(model: services.makePairing(start: nil)) }
+    }
+
+    private var showsWelcome: Bool {
+        forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo && !services.home.liveInstalled)
+    }
 
     private var homeStack: some View {
         NavigationStack(path: $path) {
             Group {
-                if forceWelcome || (services.home.workspaces.isEmpty && !services.home.isDemo) {
+                if showsWelcome {
                     WelcomeScreen(onDemo: { services.home.enterDemo(); forceWelcome = false }, onPair: startPairing)
+                } else if services.home.workspaces.isEmpty, services.home.liveInstalled {
+                    LiveEmptyHome(home: services.home, onPair: startPairing, onSettings: { path.append(.settings) })
                 } else if services.home.workspaces.isEmpty {
                     EmptyHome(onPair: startPairing, onSettings: { path.append(.settings) })
                 } else {
@@ -94,6 +107,11 @@ struct HomeScreen: View {
                     VStack(spacing: 4) {
                         Text("Reset incomplete — will finish on next launch")
                         Button("Try again") { live.resetThisiPhone() }
+                        if live.hasLiveInstall {
+                            // The stuck-wipe escape: the keychain or the index cannot be reached, so the wipe cannot finish.
+                            Button("Erase Live data on this iPhone", role: .destructive) { confirmErase = true }
+                                .accessibilityIdentifier("home.forceErase")
+                        }
                     }
                     .font(.footnote)
                     .padding()
@@ -170,7 +188,7 @@ struct HomeScreen: View {
             if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() }
         }
         .onChange(of: scenePhase) { _, phase in
-            (services as? LiveServices)?.setActive(phase == .active)
+            // Scene ownership lives in AppRoot (it pauses workspaces and pairings); this view only claims share jobs.
             if phase == .active { if options.holdShareImport { bridge?.publishTargets() } else { bridge?.refresh() } }
         }
         .onChange(of: services.home.workspaces) { _, _ in bridge?.publishTargets() }
@@ -186,6 +204,13 @@ struct HomeScreen: View {
                     .accessibilityElement().accessibilityIdentifier("debug.scheme")
                     .accessibilityValue(scheme == .dark ? "dark" : "light")
             }
+        }
+        .alert("Erase Live data on this iPhone?", isPresented: $confirmErase) {
+            Button("Erase", role: .destructive) { (services as? LiveServices)?.transitions?.realmForceEraseLive() }
+                .accessibilityIdentifier("home.forceErase.confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Use this only if \"Try again\" keeps failing. It deletes the Live files here without waiting for the keychain. Keys that cannot be removed now are removed the next time you pair. Nothing changes on your Mac.")
         }
         .fullScreenCover(item: $pairing) { presentation in
             PairingScreen(model: presentation.model, onClose: { pairing = nil })
@@ -255,10 +280,13 @@ struct WelcomeScreen: View {
                     Button(action: onDemo) { Text("Try Demo") }
                         .buttonStyle(.orchProminent)
                         .accessibilityIdentifier("welcome.demo")
-                    Button(action: onPair) { Text("Pair a workspace").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
+                    Button(action: onPair) { Text("Pair your Mac").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
                         .buttonStyle(.bordered).controlSize(.large)
                         .accessibilityIdentifier("welcome.pair")
                 }
+                Text("Connect to orch on your Mac. Your Mac approves this iPhone.")
+                    .font(OF.meta).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
+                    .accessibilityIdentifier("welcome.pair.hint")
                 Text("Demo uses made-up workspaces on this iPhone. Nothing leaves it.")
                     .font(OF.meta).foregroundStyle(OC.demo).multilineTextAlignment(.center)
                 SimulationNotice()
@@ -291,6 +319,55 @@ struct EmptyHome: View {
     }
 }
 
+/// Live with no workspace (yet): never Welcome. Shows why Live is not running when it is not, and the way out.
+struct LiveEmptyHome: View {
+    let home: any HomeModel
+    let onPair: () -> Void
+    let onSettings: () -> Void
+    var body: some View {
+        ScrollView {
+            VStack(spacing: OS.s4) {
+                EmptyState(systemImage: "tray", title: "No workspace yet",
+                           detail: "Pair one from orch on your Mac (Remote, then Pair phone). Your Mac approves this iPhone.")
+                if let problem = home.liveProblem {
+                    Label { Text(verbatim: problem) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+                        .font(OF.body).foregroundStyle(OC.warn).accessibilityIdentifier("live.problem")
+                }
+                if let notice = home.liveNotice { Text(verbatim: notice).font(OF.meta).foregroundStyle(OC.textMuted) }
+                SkippedWorkspacesRow(count: home.skippedWorkspaceCount, onSettings: onSettings)
+                Button(action: onPair) { Text("Pair your Mac") }.buttonStyle(.orchProminent)
+                    .accessibilityIdentifier("live.pair")
+                Button(action: onSettings) { Text("Settings").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
+                    .buttonStyle(.bordered).accessibilityIdentifier("live.settings")
+            }
+            .padding(OS.s4)
+        }
+        .foregroundStyle(OC.text)
+        .accessibilityIdentifier("home.liveEmpty")
+    }
+}
+
+/// "1 workspace couldn't be verified": the restore kept it on disk but did not rebuild it. The way out is Leave Live, then pair again.
+struct SkippedWorkspacesRow: View {
+    let count: Int
+    let onSettings: () -> Void
+    var body: some View {
+        if count > 0 {
+            Button(action: onSettings) {
+                VStack(alignment: .leading, spacing: OS.s1) {
+                    Label(count == 1 ? "1 workspace couldn't be verified" : "\(count) workspaces couldn't be verified",
+                          systemImage: "exclamationmark.triangle.fill").font(OF.section).foregroundStyle(OC.warn)
+                    Text("Leave and pair again").font(OF.meta).foregroundStyle(OC.textMuted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(OS.s4).orchCard()
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("home.skipped")
+        }
+    }
+}
+
 // MARK: Home content
 
 struct HomeContent: View {
@@ -308,10 +385,16 @@ struct HomeContent: View {
                 header
                 if home.needsYouCount > 0, let oldest = home.oldestWaiting { needsYouStrip(oldest) }
                 ForEach(home.pendingDecisions) { d in pendingRow(d) }
+                SkippedWorkspacesRow(count: home.skippedWorkspaceCount, onSettings: { path.append(.settings) })
+                if let notice = home.liveNotice { Text(verbatim: notice).font(OF.meta).foregroundStyle(OC.textMuted) }
                 Text(verbatim: "Last checked \(Fmt.relative(home.lastChecked))")
                     .font(.footnote).foregroundStyle(OC.textFaint)
                     .padding(.horizontal, OS.s1).padding(.top, OS.s1)
                     .accessibilityIdentifier("home.lastChecked")
+                if home.liveInstalled {
+                    Text("Updates arrive while orch is open.").font(OF.meta).foregroundStyle(OC.textMuted)
+                        .padding(.horizontal, OS.s1).accessibilityIdentifier("home.updatesNote")
+                }
                 SectionCaption("Your workspaces").padding(.horizontal, OS.s1)
                 ForEach(home.workspaces) { ws in
                     NavigationLink(value: Route.workspace(ws.id, .questions)) {

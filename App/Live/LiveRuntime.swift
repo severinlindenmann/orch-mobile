@@ -14,6 +14,17 @@ enum LiveError: Error, Equatable {
     case invalidInstall
     /// The runtime has not finished booting (no index yet).
     case notBooted
+    /// The committed workspaces of this install name more than one owner (or an owner other than the pinned one): one owner per install,
+    /// so the boot is refused and nothing is rebuilt. Leaving Live is the way out.
+    case ownerDisagreement
+    /// The install record could not be written (or did not read back): the flow stops before any Live secret or index row exists.
+    case installNotSaved
+    /// Live entry is not possible in the current state (a realm is active, a wipe is unfinished, or an entry is already running).
+    case entryUnavailable
+    /// The invitation names another relay origin than this install's: refused before any network access.
+    case differentOrigin
+    /// Not an `https` relay origin the Live realm accepts (no loopback `http`, no Demo origin).
+    case unsupportedOrigin
 }
 
 /// The persisted fact that this iPhone is a Live install: the ONE relay origin (taken only from an invitation, B2b) and, once the first
@@ -28,7 +39,14 @@ struct LiveInstallStore {
     static let key = "orch.live.install"
     let defaults: UserDefaults
     func load() -> LiveInstall? { defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(LiveInstall.self, from: $0) } }
-    func save(_ install: LiveInstall) { if let data = try? JSONEncoder().encode(install) { defaults.set(data, forKey: Self.key) } }
+    /// Limits: the read-back goes through the same `UserDefaults` object, so it catches an encoding fault or a store that drops the write,
+    /// not a failed flush to disk after it. Throws when the record cannot be encoded or does not read back: a Live install that is not durably recorded must fail the flow that
+    /// needed it (no silent `try?`).
+    func save(_ install: LiveInstall) throws {
+        let data = try JSONEncoder().encode(install)
+        defaults.set(data, forKey: Self.key)
+        guard defaults.data(forKey: Self.key) == data else { throw LiveError.installNotSaved }
+    }
     func clear() { defaults.removeObject(forKey: Self.key) }
     /// Present but unreadable still counts as an install: a corrupt record must not read as "no Live" (it would let Demo start next to
     /// Live data). `load` is nil then and boot reports a failed start instead.
@@ -82,6 +100,21 @@ struct LiveStorage: Sendable {
         #else
         DefaultCustody.make(vault: keysVault())
         #endif
+    }
+
+    /// Removes the Live files (realm directory and the Live subdirectories of both App Groups) without the keychain or the index. Tombstone
+    /// coordination files stay (a burnt generation stays burnt).
+    static func removeLiveFiles(layout: StoreLayout) throws {
+        let fm = FileManager.default
+        var first: (any Error)?
+        for dir in [layout.realmDir,
+                    layout.pushDir.appendingPathComponent("state").appendingPathComponent(layout.realm, isDirectory: true),
+                    layout.shareDir.appendingPathComponent("staging").appendingPathComponent(layout.realm, isDirectory: true),
+                    layout.shareDir.appendingPathComponent("quarantine").appendingPathComponent(layout.realm, isDirectory: true)]
+        where fm.fileExists(atPath: dir.path) {
+            do { try fm.removeItem(at: dir) } catch { if first == nil { first = error } }
+        }
+        if let first { throw first }
     }
 
     /// The realm-wide local wipe over UNFENCED vaults: what Leave Live runs, and what a launch runs to finish an interrupted one.
@@ -146,6 +179,12 @@ final class LiveRuntime: RealmRuntime {
     private(set) var booted = false
     /// Committed workspaces that could not be rebuilt (stable reason tags). They stay in the index untouched.
     private(set) var skipped: [(ws: String, reason: String)] = []
+    /// The owner key (base64url x963) the committed workspaces agree on, derived at boot when the install record carries no pin yet (the
+    /// record is written after the first commit, so a crash between the two leaves the profiles as the source of truth). The services
+    /// persist it with a throwing save. nil when no workspace is committed or the record already pins one.
+    private(set) var derivedOwner: String?
+    /// The owner key the install record carries (base64url x963); set once it is durably recorded.
+    var recordedOwner: String?
     private var restored: [JoinedHandle] = []
     private var realmWipe: RealmWipe?
     #if DEBUG
@@ -173,6 +212,7 @@ final class LiveRuntime: RealmRuntime {
             throw RealmViolation.wrongTransport
         }
         self.install = install; self.storage = storage; self.context = context; self.transport = transport
+        recordedOwner = install.owner
         keys = storage.keysVault(); push = storage.pushVault(); custody = storage.makeCustody()
     }
 
@@ -197,6 +237,7 @@ final class LiveRuntime: RealmRuntime {
         _ = await recovery.recover()
         await recovery.realmShutdown()                 // the recovery coordinator is not kept: a retried boot builds a fresh one
         try await step("recover")
+        derivedOwner = try await Self.agreedOwner(index: idx, pinned: install.owner)
         let outcome = try await WorkspaceRestoration.restore(RestoreConfig(
             context: context, transport: transport, index: idx, vault: keys, custody: custody, clock: storage.clock, wall: storage.wall,
             entropy: storage.entropy))
@@ -206,6 +247,26 @@ final class LiveRuntime: RealmRuntime {
         restored = outcome.handles
         skipped = outcome.skipped
         booted = true
+    }
+
+    /// One owner per install. With no pin yet, the committed profiles must agree with each other: more than one owner refuses the boot
+    /// (nothing is rebuilt, nothing is erased), because the single-owner invariant was broken. Returns the owner to record when exactly one
+    /// is committed. With a pin, a profile naming another owner is not rebuilt by `WorkspaceRestoration` (skipped with reason "owner",
+    /// kept on disk, surfaced in Live Home); it never joins the session set.
+    static func agreedOwner(index: WorkspaceIndex, pinned: String?) async throws -> String? {
+        var owners = Set<String>()
+        for row in try await index.workspaces() {
+            guard let profile = try await index.profile(ws: row.ws) else { continue }
+            // With a pin nothing is recorded: an undecodable row is left to the restore, which skips it ("pins") and Live Home flags it.
+            // Without one, the value that WOULD be recorded must be a real key.
+            if pinned == nil {
+                guard let bytes = B64U.decode(profile.pkPub), (try? SigningPublicKey(x963: bytes)) != nil else { throw LiveError.invalidInstall }
+            }
+            owners.insert(profile.pkPub)
+        }
+        if pinned != nil { return nil }
+        guard owners.count <= 1 else { throw LiveError.ownerDisagreement }
+        return owners.first
     }
 
     private func checkCurrent() throws { guard context.isCurrent else { throw RealmViolation.staleGeneration } }
