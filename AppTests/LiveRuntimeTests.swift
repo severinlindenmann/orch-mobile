@@ -567,6 +567,59 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire(); services2.retire()
     }
 
+    func testLeaveWorkspaceMakesTheCleanupDurableBeforeTheWindowAndClearsItOnlyWhenDone() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, _) = try pushServices(rig)
+        var inWindow: [String] = []
+        services.beginWorkspaceWipe = { _, _ in inWindow = services.cleanupStore?.load().map(\.ws) ?? [] }
+        _ = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertEqual(inWindow, [ws.workspaceID.hex], "a kill inside the window finds the owed cleanup")
+        XCTAssertTrue(services.cleanupStore?.load().isEmpty == true, "removed on done")
+        let (services2, _, ws2, _) = try pushServices(rig)
+        services2.pushUnregister = { _ in .failed("offline") }
+        _ = await services2.leave(workspaceID: ws2.info.id, simulateOffline: false)
+        XCTAssertEqual(services2.cleanupStore?.load().map(\.ws), [ws2.workspaceID.hex], "owed stays")
+        services.retire(); services2.retire()
+    }
+
+    func testBeginLeaveCancelsReconcileTasks() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, _) = try pushServices(rig)
+        services.startReconcile(workspace: ws, decisionID: SystemEntropy().id16())
+        XCTAssertEqual(services.reconcileTaskCount, 1)
+        XCTAssertTrue(services.beginLeave())
+        XCTAssertEqual(services.reconcileTaskCount, 0)
+        await services.drainPushRegistrations()
+        services.retire()
+    }
+
+    func testTheDrainHasOneBoundIncludingTheSessionStops() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, _, push) = try pushServices(rig)
+        services.drainBound = 0.3
+        services.drainBeforeStop = { try? await Task.sleep(for: .seconds(30)) }
+        XCTAssertTrue(services.beginLeave())
+        let started = Date()
+        await services.drainPushRegistrations()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        XCTAssertFalse(services.leavingRealm)
+        _ = push
+        services.retire()
+    }
+
+    func testOwedCleanupsDoNotDelayRegistrationBeyondTheirBound() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, _) = try pushServices(rig)
+        services.serverCleanup = { _ in try? await Task.sleep(for: .seconds(30)); throw ViewError.offline }
+        services.cleanupStore?.add(PendingServerCleanup(ws: SystemEntropy().id16().hex, generation: 1, since: Date()))
+        let started = Date()
+        await services.retryServerCleanup(within: 0.2)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        XCTAssertEqual(services.cleanupStore?.load().count, 1)
+        _ = ws
+        services.retire()
+    }
+
     func testAnOwedCleanupNeverReachesAReJoinedWorkspaceAndOldOnesAreDropped() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, ws, _) = try pushServices(rig)

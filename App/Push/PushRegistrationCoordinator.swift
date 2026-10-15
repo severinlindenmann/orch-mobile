@@ -169,8 +169,9 @@ final class PushRegistrationCoordinator {
         left.insert(ws)                       // no registration for this workspace may start or be kept from here on
         let started = Date()
         let running = inFlight.filter { $0.key.hasPrefix(ws + "/") }.map(\.value)
-        for r in running {
-            let waited: Void? = await racing(seconds: seconds) { await r.value }
+        if !running.isEmpty {
+            // One bound for all in-flight generations together, not one per generation.
+            let waited: Void? = await racing(seconds: seconds) { for r in running { await r.value } }
             if waited == nil { status[ws] = nil; return .owed }
         }
         let remaining = max(seconds - Date().timeIntervalSince(started), 0.05)
@@ -182,6 +183,8 @@ final class PushRegistrationCoordinator {
 
     nonisolated static func removal(for outcome: PushRegistrationOutcome?) -> Removal {
         switch outcome {
+        // `bad_reply` is an answer this build could not read, not the relay saying there is nothing to remove: keep it owed.
+        case .refused("bad_reply")?: .owed
         case .removed?, .pushOff?, .refused?: .done
         case .rateLimited?, .failed?, .registered?, nil: .owed
         }

@@ -125,7 +125,13 @@ public struct PushService: Sendable {
             try await session.pushRelay { s in try await client.unregisterPush(workspace: ws, registrationID: nil, session: s) }
             try? await container.clearPushRegistrations()
             return .removed
-        } catch { return Self.outcome(of: error) }
+        } catch { return Self.unregisterOutcome(of: error) }
+    }
+
+    /// An unregister whose reply cannot be read did not prove the relay holds nothing: failed (owed), unlike a register where it is permanent.
+    static func unregisterOutcome(of error: any Error) -> PushRegistrationOutcome {
+        if case ClientError.badReply = error { return .failed("bad_reply") }
+        return outcome(of: error)
     }
 
     static func outcome(of error: any Error) -> PushRegistrationOutcome {
@@ -151,6 +157,6 @@ public struct PushService: Sendable {
             let opened = try await client.openDeviceSession(identity: identity, deviceID: Identifiers.deviceID(identity.sig.publicKey))
             try await client.unregisterPush(workspace: workspace, registrationID: nil, session: opened.session)
             return .removed
-        } catch { return outcome(of: error) }
+        } catch { return unregisterOutcome(of: error) }
     }
 }

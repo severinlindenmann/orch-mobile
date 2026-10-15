@@ -1037,7 +1037,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             await c.publishMaterial(service, name: ws.info.name, generation: ws.generation)
             await self.refreshNotificationStatus()         // reads the permission; allowed -> asks iOS for the token (never prompts)
             // Owed cleanups first: a removal still owed for an earlier membership must reach the relay before this device registers anew.
-            await self.retryServerCleanup()
+            await self.retryServerCleanup(within: self.registrationCleanupBound)
             await c.register(service)
         }
     }
@@ -1063,8 +1063,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Back online (a start, a foreground, "Retry now"): tries each pending server-side cleanup once, one run at a time. Successes leave the
     /// list; failures stay for the next try. An item whose workspace is joined again (a re-pair is a new membership) is dropped without
     /// being sent, so an old cleanup can never remove a fresh registration; one older than `owedCleanupLifetime` is dropped too.
-    func retryServerCleanup() async {
-        if let running = cleanupRun { await running.value; return }
+    ///
+    /// `within` bounds how long THIS caller waits (an unreachable relay must not hold a registration for the transport timeout); the run itself
+    /// is not cancelled and finishes in the background, and a later call joins it.
+    func retryServerCleanup() async { await retryServerCleanup(within: nil) }
+
+    func retryServerCleanup(within seconds: Double?) async {
+        if let running = cleanupRun { await waitBounded(running, seconds); return }
         guard let cleanupStore else { return }
         let run = Task { @MainActor [self] in
             defer { cleanupRun = nil }
@@ -1078,8 +1083,16 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             pendingServerCleanups = cleanupStore.load()
         }
         cleanupRun = run
-        await run.value
+        await waitBounded(run, seconds)
     }
+
+    private func waitBounded(_ run: Task<Void, Never>, _ seconds: Double?) async {
+        guard let seconds else { await run.value; return }
+        _ = await racing(seconds: seconds) { await run.value }
+    }
+
+    /// How long a registration waits for owed cleanups before it goes ahead (they continue in the background).
+    @ObservationIgnored var registrationCleanupBound: Double = 3
 
     /// Leave = "Remove from this iPhone": the real local wipe first and network-independent; server cleanup is reported separately (U9).
     func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport {
@@ -1106,10 +1119,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         // blocks or changes the local wipe beyond the bound.
         var pushOwed = false
         if let c = pushCoordinator, ws.push != nil {
+            // The owed cleanup is durable BEFORE the window (a kill between the tombstone and the end of the wipe must not lose it) and is
+            // removed only when the relay answered done.
+            enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation)
             do {
                 try await beginWorkspaceWipe(runtime, ws)
                 pushOwed = await c.unregister(workspace: ws.workspaceID) == .owed
             } catch { pushOwed = true }       // the wipe below writes the tombstone itself; the cleanup stays owed
+            if !pushOwed { pendingServerCleanups = cleanupStore?.remove(ws: ws.workspaceID.hex, generation: ws.generation) ?? [] }
         }
         let prefix = ws.workspaceID.hex + "/"
         for (key, task) in reconcileTasks where key.hasPrefix(prefix) { task.cancel(); reconcileTasks[key] = nil; reconcileSerials[key] = nil }
@@ -1162,6 +1179,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         c.beginClosing()
         resetFlags.set(true, forKey: Keys.liveResetPending)
         drainTargets = live.map { ($0.workspaceID, $0) }
+        // Nothing reconciles in the background any more: the realm is cut off from the UI, and now from its own tasks too.
+        reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         for ws in live { transition(ws.info.id, to: .removing) }
         PresentationGate.blockAll(live.map { $0.workspaceID.hex })
         return true
@@ -1170,15 +1189,37 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Second half, bounded (a few seconds): sessions stop, then every registration of this device is removed through the realm transport
     /// and device key, all workspaces at once. If the relay cannot be reached nothing can be owed afterwards (the device key goes with the
     /// wipe): the registration ends by the host's removal of the device, an APNs 410, revocation, or 60 days without a refresh.
+    ///
+    /// One deadline (`drainBound`) covers the whole drain: stopping every session, every in-flight registration and every unregister. When it
+    /// passes the drain returns (the teardown that follows stops what is left); nothing here can hold the wipe past it.
     func drainPushRegistrations() async {
         defer { leavingRealm = false }
         guard let c = pushCoordinator else { return }
         let targets = drainTargets
         drainTargets = []
-        for t in targets { await t.workspace.drop?.service.invalidate(); await t.workspace.stop() }
-        let running = targets.map { t in Task { @MainActor in _ = await c.unregister(workspace: t.ws) } }
-        for r in running { await r.value }
+        let bound = drainBound
+        let started = Date()
+        #if DEBUG
+        let beforeStop = drainBeforeStop
+        #endif
+        _ = await racing(seconds: bound) {
+            #if DEBUG
+            await beforeStop?()
+            #endif
+            // Sessions first: from here no workspace write or send can race the unregister.
+            for t in targets { await t.workspace.drop?.service.invalidate(); await t.workspace.stop() }
+            let left = max(bound - Date().timeIntervalSince(started), 0.05)
+            let running = targets.map { t in Task { @MainActor in _ = await c.unregister(workspace: t.ws, seconds: left) } }
+            for r in running { await r.value }
+        }
     }
+
+    /// The one bound of the realm drain, in seconds.
+    @ObservationIgnored var drainBound: Double = 3
+    #if DEBUG
+    @ObservationIgnored var drainBeforeStop: (@Sendable () async -> Void)?
+    var reconcileTaskCount: Int { reconcileTasks.count }
+    #endif
 
     /// True once a transition replaced this graph: a stray call into it must not touch the active realm's storage.
     @ObservationIgnored private(set) var retired = false
