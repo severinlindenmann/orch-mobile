@@ -43,6 +43,14 @@ public final class LocalWipe: Sendable {
         try await run(ws: ws, generation: g, from: 0)
     }
 
+    /// Makes the intent to remove `ws` durable and nothing else: the index tombstone and both coordination files (phase 1). From then on a
+    /// relaunch finishes the wipe (`resumePendingWipes`) and the workspace is never reopened. Idempotent; `wipe` continues from here.
+    public func begin(ws: String, generation: Int64) async throws {
+        try StoreLayout.validate(ws: ws)
+        let g = try await index.recordTombstone(ws: ws, generation: generation)
+        try await run(ws: ws, generation: g, from: 0, through: 1)
+    }
+
     /// Finishes every tombstone whose phase is below done. Returns the workspaces resumed.
     @discardableResult
     public func resumePendingWipes() async throws -> [String] {
@@ -69,7 +77,7 @@ public final class LocalWipe: Sendable {
         try? FileManager.default.removeItem(at: layout.wsDir(ws))
     }
 
-    private func run(ws: String, generation: Int64, from: Int) async throws {
+    private func run(ws: String, generation: Int64, from: Int, through: Int = Int.max) async throws {
         let layout = index.layout
         let realm = layout.realm
         if from < 1 {
@@ -81,6 +89,7 @@ public final class LocalWipe: Sendable {
             try layout.tombstones.republish(complete: records)
             try await finish(1, ws, generation)
         }
+        if through < 2 { return }
         if from < 2 {
             try await hooks.quiesce(realm: realm, ws: ws)
             await index.containers.suspendAll(ws: ws)

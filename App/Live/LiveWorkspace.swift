@@ -9,6 +9,8 @@ import OrchStore
 @MainActor @Observable
 final class LiveWorkspace: WorkspaceModel {
     var drop: LiveDrop?
+    /// Relay push registration and key material for this workspace (Live with the push capability only; nil in Demo).
+    @ObservationIgnored var push: (any PushRegistering)?
     var downloadContainer: WorkspaceContainer?
     let workspaceID: ID16
     let generation: Int64

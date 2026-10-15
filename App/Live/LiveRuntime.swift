@@ -21,6 +21,8 @@ enum LiveError: Error, Equatable {
     case installNotSaved
     /// Live entry is not possible in the current state (a realm is active, a wipe is unfinished, or an entry is already running).
     case entryUnavailable
+    /// The relay could not be reached to remove a push registration; the cleanup stays owed.
+    case pushCleanupFailed(String)
     /// The invitation names another relay origin than this install's: refused before any network access.
     case differentOrigin
     /// Not an `https` relay origin the Live realm accepts (no loopback `http`, no Demo origin).
@@ -346,7 +348,30 @@ final class LiveRuntime: RealmRuntime {
     }
 
     /// Push material for this realm, written through the realm's fence (a successor realm reuses the ids). Not used while `push` is off.
-    func makePushSink() -> VaultPushSink { VaultPushSink(vault: push.scoped(to: .live, fence: context.writeFence)) }
+    func makePushSink() -> VaultPushSink? { VaultPushSink(vault: push.scoped(to: .live, fence: context.writeFence)) }
+
+    /// The owed half of a Leave: the workspace's session is gone, the realm's device key is not (it goes with Leave Live or Reset, which
+    /// unregister before they wipe). `registration_id: null` needs no membership, so it works after the host removed this device.
+    func unregisterPush(workspace: ID16) async throws {
+        switch await unregisterPushOutcome(workspace: workspace) {
+        case .failed(let why): throw LiveError.pushCleanupFailed(why)
+        case .rateLimited: throw LiveError.pushCleanupFailed("rate_limited")
+        case .removed, .pushOff, .refused, .registered: return
+        }
+    }
+
+    func unregisterPushOutcome(workspace: ID16) async -> PushRegistrationOutcome {
+        do {
+            try checkCurrent()
+            let identity = try context.deviceIdentity(custody: custody, createIfMissing: false)
+            return await PushService.unregisterAll(workspace: workspace, identity: identity, transport: transport)
+        } catch { return .failed("\(error)") }
+    }
+
+    func beginWipe(workspace: ID16, generation: Int64) async throws {
+        guard let index else { throw LiveError.notBooted }
+        try await LocalWipe(index: index, hooks: storage.wipeHooks()).begin(ws: workspace.hex, generation: generation)
+    }
 
     /// Completes a Live wipe that an earlier launch started and did not finish. No runtime is built: the wipe works from the layout and
     /// the vaults alone.

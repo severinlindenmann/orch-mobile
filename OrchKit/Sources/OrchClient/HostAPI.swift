@@ -217,6 +217,8 @@ public struct RelayRefusal: Error, Equatable, Sendable {
         case chunkConflict = "chunk_conflict", staleEpoch = "stale_epoch", holderConflict = "holder_conflict", fenced
         case requestOpen = "request_open", replayed, alreadySigned = "already_signed"
         case preconditionRequired = "precondition_required"
+        /// Push registration (P3-D40, protocol 19.10): the same `registration_id` with another body, or another device's id.
+        case registrationConflict = "registration_conflict"
         case rateLimited = "rate_limited", quotaExceeded = "quota_exceeded", overloaded
     }
     public let status: Int
@@ -254,7 +256,7 @@ public struct RelayRefusal: Error, Equatable, Sendable {
         case .otherWorkspace, .wskChanged, .delegationChanged, .staleCard, .wxkChangedWithoutVersion, .badWxkVersion, .staleList,
              .badEpoch, .rotationRequired, .missingGrant, .wkCommitChanged, .alreadyClaimed, .versionConflict, .accountExists, .certConflict,
              .grantConflict, .wrapConflict, .ridConflict, .retryExhausted, .chunkConflict, .staleEpoch, .holderConflict, .fenced,
-             .requestOpen, .replayed, .alreadySigned: [409]
+             .requestOpen, .replayed, .alreadySigned, .registrationConflict: [409]
         case .preconditionRequired: [428]
         case .rateLimited, .quotaExceeded: [429]
         case .overloaded: [503]

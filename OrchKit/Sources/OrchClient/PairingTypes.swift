@@ -81,6 +81,8 @@ public struct JoinedWorkspace: Sendable {
     package let dropCard: VerifiedCard
     public var downloadContainer: WorkspaceContainer { session.cfg.container }
     public func makeDropService() throws -> DropService { try DropService(session: session, card: dropCard) }
+    /// Relay push registration and the notification extension's key material for this workspace (P3-D40).
+    public func makePushService() -> PushService { PushService(session: session) }
 }
 
 /// One state per U5 screen. Codes appear only in `comparingHost` and `comparingPrimary`, never together.

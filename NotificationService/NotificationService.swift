@@ -43,7 +43,7 @@ final class NotificationService: UNNotificationServiceExtension {
             }
         }
         delivery = d
-        d.start(o: request.content.userInfo["o"] as? String) { contentHandler(Self.content(for: $0)) }
+        d.start(o: RelayPushBody.outer(userInfo: request.content.userInfo)) { contentHandler(Self.content(for: $0)) }
     }
 
     override func serviceExtensionTimeWillExpire() {

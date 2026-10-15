@@ -144,6 +144,7 @@ public actor WorkspaceSession: RealmParticipant {
     private var absentKeys: Set<UInt32> = []
     static let maxAbsentKeys = 64
     private var relay: (session: RelaySession, expiresMs: Int64)?
+    private var epochObserver: (@Sendable (UInt32) -> Void)?
     /// A bounded number of re-sends of one logical request within a single call (stale epoch, offset, sequence).
     static let maxAttempts = 4
     static let hostWindowMs: Int64 = 900_000
@@ -348,8 +349,19 @@ public actor WorkspaceSession: RealmParticipant {
     /// Stores `WK_e` (vault first, then the high-water mark, so the mark never runs ahead of its key) and makes `e` current.
     package func install(epoch: UInt32, key: SymmetricKey) async throws {
         try await store(epoch: epoch, key: key)
-        try await cfg.container.raiseEpochHighWater(Int64(epoch))
+        try await raiseEpoch(epoch)
     }
+
+    /// Raises the confirmed epoch and tells the observer when it actually moved up (push material follows the epoch).
+    private func raiseEpoch(_ e: UInt32) async throws {
+        let before = try await currentEpoch()
+        try await cfg.container.raiseEpochHighWater(Int64(e))
+        if e > before { epochObserver?(e) }
+    }
+
+    /// Called (inside the session's isolation, so it must only hand off) after this device's confirmed epoch rose.
+    /// The App republishes push material from it; the observer holds no key.
+    public func setEpochObserver(_ f: (@Sendable (UInt32) -> Void)?) { epochObserver = f }
 
     package func install(_ grant: VerifiedWKGrant) async throws { try await install(epoch: grant.epoch, key: grant.wk) }
 
@@ -390,7 +402,7 @@ public actor WorkspaceSession: RealmParticipant {
         for e in stored.sorted(by: >) where Int64(e) <= head {
             guard let c = try await cfg.container.wkCommit(epoch: Int64(e)), let k = try? cfg.vault.get(ws: cfg.workspace.hex, purpose: wkPurpose(e)),
                   WKCommit.matches(c, workspace: cfg.workspace, epoch: e, wk: SymmetricKey(data: k)) else { continue }
-            try await cfg.container.raiseEpochHighWater(Int64(e))
+            try await raiseEpoch(e)
             break
         }
         let now = try await currentEpoch()
@@ -1395,6 +1407,37 @@ extension WorkspaceSession {
         let s = try await sealingKeyRecovering()
         guard s.epoch == epoch else { throw SessionError.noKeyForEpoch(epoch) }
         return s.key
+    }
+}
+
+extension WorkspaceSession {
+    /// A device relay session for a push call, with the one re-login on 401 every session call has.
+    package func pushRelay<T: Sendable>(_ body: (RelaySession) async throws -> T) async throws -> T {
+        try await ensureCurrent()
+        return try await withRelay(body)
+    }
+
+    package func pushEntropy() -> any Entropy { cfg.entropy }
+    package func pushWallMs() -> Int64 { cfg.wall.nowMs }
+    package var pushTransport: any RelayTransport { cfg.transport }
+    package var pushContainer: WorkspaceContainer { cfg.container }
+
+    /// What the notification extension needs for this workspace: the pinned `WSK` and `K_push(e)` for the newest epochs this device holds
+    /// a committed key for (at most `maxEpochs`; `WK` itself never leaves the session). Epochs without a usable key are left out.
+    package func pushKeyMaterial(maxEpochs: Int) async throws -> (wsk: SigningPublicKey, kPush: [UInt32: Data]) {
+        try await ensureCurrent()
+        let head = try await currentEpoch()
+        var out: [UInt32: Data] = [:]
+        var e = head
+        var steps = 0
+        while e >= 1, out.count < maxEpochs, steps < 32 {
+            steps += 1
+            if let k = try? await readKey(e) {
+                out[e] = KDF.kPush(wk: k, workspace: cfg.workspace, epoch: e).withUnsafeBytes { Data($0) }
+            }
+            e -= 1
+        }
+        return (cfg.wsk, out)
     }
 }
 
