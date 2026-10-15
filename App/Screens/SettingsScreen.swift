@@ -6,11 +6,16 @@ struct SettingsScreen: View {
     let services: any AppServices
     @Binding var path: [Route]
     @State private var confirmReset = false
+    @State private var confirmLeaveLive = false
+    @State private var confirmLiveToDemo = false
+    @State private var confirmDemoToLive = false
+    @Environment(LiveIntake.self) private var intake: LiveIntake?
 
     private var model: any SettingsModel { services.settings }
 
     var body: some View {
         Form {
+            if let summary = model.realmSummary { realmSection(summary) }
             Section("This iPhone") {
                 TextField("Device label", text: Binding(get: { model.deviceLabel }, set: { model.deviceLabel = $0 }))
                     .accessibilityIdentifier("settings.deviceLabel")
@@ -64,6 +69,15 @@ struct SettingsScreen: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("settings.revocation")
             }
+            if services.home.liveInstalled { liveSection }
+            if services.home.isDemo, intake != nil {
+                Section {
+                    Button("Leave Demo and pair your Mac", role: .destructive) { confirmDemoToLive = true }
+                        .accessibilityIdentifier("settings.demoToLive")
+                } footer: {
+                    Text("Deletes the Demo workspaces from this iPhone, then helps you pair your Mac. Demo and Live never run together.")
+                }
+            }
             Section {
                 Button("Reset this iPhone", role: .destructive) { confirmReset = true }
                     .accessibilityIdentifier("settings.reset")
@@ -78,12 +92,57 @@ struct SettingsScreen: View {
         .toolbarBackground(.regularMaterial, for: .tabBar)
         .navigationTitle("Settings")
         .task { await model.refreshNotificationStatus() }
+        .alert("Leave Live?", isPresented: $confirmLeaveLive) {
+            Button("Leave Live", role: .destructive) { model.leaveLive(thenDemo: false); path = [] }
+                .accessibilityIdentifier("settings.leaveLive.confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes every Live workspace, file and the device keys from this iPhone now. It does not remove this iPhone from your Mac: finish that on your Mac. You will need to pair again.")
+        }
+        .alert("Leave Live and try Demo?", isPresented: $confirmLiveToDemo) {
+            Button("Leave Live and try Demo", role: .destructive) { model.leaveLive(thenDemo: true); path = [] }
+                .accessibilityIdentifier("settings.liveToDemo.confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes the Live data from this iPhone, then starts the Demo. Finish removing this iPhone on your Mac.")
+        }
+        .alert("Leave Demo and pair your Mac?", isPresented: $confirmDemoToLive) {
+            Button("Leave Demo", role: .destructive) { intake?.leaveDemoAndPair(); path = [] }
+                .accessibilityIdentifier("settings.demoToLive.confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes the Demo workspaces from this iPhone. Then you can pair your Mac.")
+        }
         .alert("Reset this iPhone?", isPresented: $confirmReset) {
             Button("Reset this iPhone", role: .destructive) { model.resetThisiPhone(); path = [] }
                 .accessibilityIdentifier("settings.reset.confirm")
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This wipes all workspaces, files and the device keys from this iPhone. You will need to pair again.")
+        }
+    }
+
+    private func realmSection(_ s: RealmSummary) -> some View {
+        Section("Realm") {
+            LabeledContent("Mode", value: s.name).accessibilityIdentifier("settings.realm")
+            if let origin = s.origin {
+                LabeledContent("Relay") { Text(verbatim: origin).font(OF.machine).textSelection(.enabled) }
+                    .accessibilityIdentifier("settings.realm.origin")
+            }
+            LabeledContent("Connection", value: s.connection)
+            if let last = s.lastChecked { LabeledContent("Last checked", value: Fmt.relative(last)) }
+            LabeledContent("Build", value: s.build)
+        }
+    }
+
+    private var liveSection: some View {
+        Section {
+            Button("Leave Live and try Demo", role: .destructive) { confirmLiveToDemo = true }
+                .accessibilityIdentifier("settings.liveToDemo")
+            Button("Leave Live", role: .destructive) { confirmLeaveLive = true }
+                .accessibilityIdentifier("settings.leaveLive")
+        } header: { Text("Live") } footer: {
+            Text("Leaving removes Live from this iPhone only. Finish removing this iPhone on your Mac.")
         }
     }
 

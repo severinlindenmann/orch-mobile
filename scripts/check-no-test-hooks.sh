@@ -6,8 +6,20 @@ cd "$(dirname "$0")/.."
 dirs=()
 for d in App NotificationService ShareExtension; do [ -d "$d" ] && dirs+=("$d"); done
 [ ${#dirs[@]} -gt 0 ] || { echo "error: no shipped target directories found" >&2; exit 2; }
+# The one allowed exception: the DEBUG UI-test storage, which must be compiled into the DEBUG app (UI tests drive the app process). It may
+# only name `unreachableForUITests`, and only as a file whose entire body is one `#if DEBUG ... #endif` (no #else, no nesting), so a
+# Release compile contains none of it.
+allowed="App/Live/LiveUITestSupport.swift"
+if [ -f "$allowed" ]; then
+  first=$(grep -v '^[[:space:]]*$' "$allowed" | head -1)
+  last=$(grep -v '^[[:space:]]*$' "$allowed" | tail -1)
+  directives=$(grep -cE '^[[:space:]]*#(if|else|elseif|endif)' "$allowed" || true)
+  if [ "$first" != "#if DEBUG" ] || [ "$last" != "#endif" ] || [ "$directives" != "2" ]; then
+    echo "error: $allowed must be wrapped entirely in a single '#if DEBUG ... #endif'" >&2; exit 1
+  fi
+fi
 set +e
-hits=$(grep -rnE "liveLoopbackForTesting|loopbackOrigin|isLoopbackHTTP|testingTransport" "${dirs[@]}")
+hits=$(grep -rnE "liveLoopbackForTesting|loopbackOrigin|isLoopbackHTTP|testingTransport|unreachableForUITests" --exclude=LiveUITestSupport.swift "${dirs[@]}")
 rc=$?
 set -e
 # grep: 0 = matches (bad), 1 = no match (clean), anything else = grep itself failed (never treated as clean)

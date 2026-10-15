@@ -24,6 +24,10 @@ struct LaunchOptions: Equatable, Sendable {
     /// DEBUG-only `--hold-reconcile`: no timed background reconcile of stored decisions, so a UI test drives "Check again" itself
     /// instead of racing the 20 s UI-test timer.
     let holdReconcile: Bool
+    /// DEBUG-only `--live-test-relay`: Live runs on a temporary disk and an in-memory keychain behind a relay that never answers.
+    let liveTestRelay: Bool
+    /// DEBUG-only `--open-url <orch:// or https:// link>`: delivered to the same intake as `onOpenURL`, once the realm has booted.
+    let openURL: String?
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         #if DEBUG
@@ -35,8 +39,11 @@ struct LaunchOptions: Equatable, Sendable {
 
     private init(uiTesting: Bool, demo: Bool, initialRoute: String?, appearance: String?, pushHarness: Bool = false, pushMaterial: String? = nil,
                  seedShareQuarantine: Bool = false, holdShareImport: Bool = false, shareDemoTargets: Bool = false,
-                 uiPreview: Bool = false, demoSeed: Bool = false, holdReconcile: Bool = false) {
+                 uiPreview: Bool = false, demoSeed: Bool = false, holdReconcile: Bool = false,
+                 liveTestRelay: Bool = false, openURL: String? = nil) {
         self.holdReconcile = holdReconcile
+        self.liveTestRelay = liveTestRelay
+        self.openURL = openURL
         self.uiPreview = uiPreview
         self.demoSeed = demoSeed
         self.pushHarness = pushHarness
@@ -61,6 +68,8 @@ struct LaunchOptions: Equatable, Sendable {
         }
         var material: String?
         if let i = arguments.firstIndex(of: "--push-material"), arguments.indices.contains(i + 1) { material = arguments[i + 1] }
+        var openURL: String?
+        if let i = arguments.firstIndex(of: "--open-url"), arguments.indices.contains(i + 1) { openURL = arguments[i + 1] }
         return LaunchOptions(uiTesting: arguments.contains("--ui-testing"),
                              demo: arguments.contains("--demo"), initialRoute: route, appearance: appearance,
                              pushHarness: arguments.contains("--push-harness"), pushMaterial: material,
@@ -68,6 +77,7 @@ struct LaunchOptions: Equatable, Sendable {
                              holdShareImport: arguments.contains("--hold-share-import"),
                              shareDemoTargets: arguments.contains("--share-demo-targets"),
                              uiPreview: arguments.contains("--ui-preview"), demoSeed: arguments.contains("--demo-seed"),
-                             holdReconcile: arguments.contains("--hold-reconcile"))
+                             holdReconcile: arguments.contains("--hold-reconcile"),
+                             liveTestRelay: arguments.contains("--live-test-relay"), openURL: openURL)
     }
 }

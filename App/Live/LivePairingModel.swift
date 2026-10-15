@@ -5,7 +5,8 @@ import OrchFakeHost
 import OrchProtocol
 import OrchUI
 
-/// The pairing flow over the real `PairingCoordinator`. The coordinator owns every state, code and deadline; this model maps them to the
+/// The pairing flow over the real `PairingCoordinator`, in Demo (against the in-process fakes) and in Live (a coordinator from
+/// `LiveRuntime.makeCoordinator()`, started by an explicit "Connect" on a reviewed invitation). The coordinator owns every state, code and deadline; this model maps them to the
 /// screens and forwards explicit human actions. The Demo host and Demo primary panels drive the fakes' explicit approvals
 /// (`approvePairing(confirmedComparison:)`, `FakePrimary.approve`); codes shown there come from the fakes' own derivations, not from the phone.
 @MainActor @Observable
@@ -18,8 +19,13 @@ final class LivePairingModel: PairingFlowModel {
     private(set) var demoPrimaryCertCode = ""
     private(set) var demoPrimaryHasChallenge = false
     private(set) var demoOfferLink = ""
-    var isDemo: Bool { services.isDemo }
-    var hostLabel: String { "Demo Mac" }
+    var isDemo: Bool { liveLink == nil && services.isDemo }
+    var hostLabel: String { isDemo ? "Demo Mac" : "your Mac" }
+    /// Background or inactive: comparison codes are hidden by the screen and polling is paused until the app is active again.
+    private(set) var obscured = false
+    private(set) var joinedScopes: [String] = []
+    /// The reviewed invitation of a Live pairing (nil for the Demo pairing and the Demo entry).
+    @ObservationIgnored private let liveLink: PairingLink?
 
     @ObservationIgnored private var coordinator: PairingCoordinator?
     @ObservationIgnored private var entry: DemoRuntime.Entry?
@@ -42,13 +48,25 @@ final class LivePairingModel: PairingFlowModel {
     init(services: LiveServices, start: PairingState?) {
         self.services = services
         self.lifetime = services.lifetime
+        self.liveLink = nil
         if let start, case .entry = start { state = .entry }
+    }
+
+    /// A Live pairing for a reviewed invitation. Starts at once: the person already pressed "Connect".
+    init(services: LiveServices, link: PairingLink) {
+        self.services = services
+        self.lifetime = services.lifetime
+        self.liveLink = link
+        state = .connecting
+        services.livePairing = self
+        beginLive(link: link)
     }
 
     // MARK: Entry
 
     func submitLink(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Live invitations go through the review screen (LiveIntake), never straight from a text field into a connection.
         guard isDemo else { state = .refused(.relayNotConnected); return }
         guard let link = try? PairingLink.parse(trimmed) else { state = .refused(.invalidLink); return }
         begin(link: link)
@@ -124,6 +142,75 @@ final class LivePairingModel: PairingFlowModel {
         }
     }
 
+    // MARK: Live
+
+    private func beginLive(link: PairingLink) {
+        generation += 1
+        let mine = generation
+        joinedReported = false
+        rejectedBy = .refused
+        beginTask?.cancel()
+        beginTask = Task {
+            let runtime: LiveRuntime
+            do { runtime = try await services.liveRuntimeForPairing(origin: link.reviewedOrigin) }
+            catch {
+                guard mine == generation else { return }
+                state = Self.refusal(forEntry: error)
+                return
+            }
+            guard mine == generation, lifetime.isActive else { return }
+            guard let coordinator = try? runtime.makeCoordinator() else { state = .refused(.keysUnavailable); return }
+            self.coordinator = coordinator
+            let stream = await coordinator.states()
+            guard mine == generation, !Task.isCancelled else { return }
+            stateTask?.cancel()
+            stateTask = Task { [weak self] in
+                for await s in stream {
+                    guard let self, !Task.isCancelled, self.generation == mine else { return }
+                    self.streamSeq += 1
+                    self.apply(s, runtime: runtime)
+                }
+            }
+            let first = await coordinator.start(link: link)
+            guard mine == generation else { return }
+            apply(first, runtime: runtime)
+            runTask?.cancel()
+            runStarts += 1
+            if active { runTask = Task { await coordinator.run() } }
+        }
+    }
+
+    @ObservationIgnored private var active = true
+
+    /// The scene changed. Background/inactive: comparison codes are hidden and the pairing's polling stops (nothing keeps running for a
+    /// screen nobody sees). Active again: the state is re-read (a code that expired meanwhile is already gone) and polling resumes; the
+    /// coordinator keeps its original deadlines, so a pause never extends them.
+    func setActive(_ value: Bool) {
+        guard liveLink != nil, active != value else { return }
+        active = value
+        obscured = !value
+        if !value { runTask?.cancel(); runTask = nil } else { resumeRun() }
+    }
+
+    private func resumeRun() {
+        guard let coordinator, !isTerminalState, runTask == nil else { return }
+        let mine = generation
+        runTask = Task { [weak self] in
+            let current = await coordinator.state
+            guard let self, self.generation == mine, !Task.isCancelled, let runtime = self.services.runtime as? LiveRuntime else { return }
+            self.apply(current, runtime: runtime)
+            await coordinator.run()
+        }
+    }
+
+    /// An entry that failed before any pairing: nothing was added.
+    static func refusal(forEntry error: Error) -> PairingState {
+        switch error as? LiveError {
+        case .differentOrigin?, .unsupportedOrigin?: .refused(.originRefused)
+        default: .refused(.liveNotPrepared)
+        }
+    }
+
     /// The pairing screen disappeared. An unfinished pairing is cancelled (nothing keeps running for a screen nobody sees); after a
     /// join only this model's own observers stop, never the coordinator or the joined workspace.
     func screenClosed() {
@@ -176,6 +263,7 @@ final class LivePairingModel: PairingFlowModel {
                 services.workspaceJoined(handle, lifetime: lifetime)
             }
             panelTask?.cancel()
+            joinedScopes = handle.joined.scopes
             state = .ready(workspaceName: handle.joined.name)
         case .alarm(let alarm):
             switch alarm.kind {

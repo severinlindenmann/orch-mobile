@@ -8,8 +8,8 @@ import OrchShareStaging
 /// switch). The view layer keys on `epoch`, so navigation stacks, sheets and pairing presentations of the outgoing realm are dropped
 /// with it; the outgoing services are retired first, which ends their lifetime and makes every late completion inert.
 ///
-/// Demo is entered from Welcome. `.live` is entered at launch only: a persisted Live install (written by the Live invitation flow, B2b)
-/// restores on every relaunch. There is no Welcome entry or link intake for Live yet.
+/// Demo is entered from Welcome. `.live` is entered from Welcome by the Live invitation flow (`realmEnteredLive`, after the install
+/// record was persisted) and at launch, where a persisted Live install restores on every relaunch.
 @MainActor @Observable
 final class RealmController: RealmTransitions {
     enum State: Equatable {
@@ -97,6 +97,40 @@ final class RealmController: RealmTransitions {
         transitionTask = Task { [weak self] in await self?.bootDemo(next) }
     }
 
+    /// The Live entry attached its runtime to this graph (Welcome -> Live). The graph is not replaced: the pairing on screen keeps its model.
+    func realmEnteredLive() {
+        guard state == .welcome else { return }
+        state = .live
+    }
+
+    /// The stuck-wipe escape. The outgoing graph erases the Live files without the keychain or the index; Welcome follows. A failure
+    /// returns to the recovery state with the escape still available.
+    func realmForceEraseLive() {
+        guard state == .recoveryRequired || state == .live, state != .leaving, state != .starting else { return }
+        let outgoing = services
+        notice = nil
+        state = .leaving
+        epoch += 1
+        transitionTask = Task { [weak self] in
+            var failed = false
+            do { try await outgoing.forceEraseLive() } catch { failed = true }
+            guard let self, self.services === outgoing else { self?.transitionTask = nil; return }
+            if failed {
+                self.transitionTask = nil
+                self.state = .recoveryRequired
+                self.epoch += 1
+                return
+            }
+            self.retryThenDemo = nil
+            let next = self.makeServices(self.options, self.defaults)
+            self.replaceServices(with: next)
+            await next.boot(launch: false)
+            self.transitionTask = nil
+            self.notice = "Live data was erased from this iPhone. Keys that could not be reached are removed the next time you pair."
+            self.publish()
+        }
+    }
+
     /// Boots `next` into Demo. A Demo that cannot start leaves a visible notice instead of silently landing on Welcome.
     private func bootDemo(_ next: LiveServices) async {
         await next.boot(enterDemo: true, launch: false)
@@ -118,6 +152,7 @@ final class RealmController: RealmTransitions {
         retryThenDemo = thenDemo
         let outgoing = services
         let label = outgoing.deviceLabel
+        let wasLive = outgoing.isLive || outgoing.hasLiveInstall
         notice = nil
         if let realm = outgoing.shareRealm { retireShareTargets(realms: [realm]) }
         else if outgoing.hasLiveInstall { retireShareTargets(realms: [Realm.live.rawValue]) }     // a Live that never started
@@ -141,10 +176,13 @@ final class RealmController: RealmTransitions {
             if thenDemo {
                 self.state = .starting
                 await self.bootDemo(next)       // the one boot of the target realm; waitForTransition covers it
+                if wasLive, self.notice == nil { self.notice = "Removed from this iPhone; finish removing it on your Mac." }
             } else {
                 await next.boot(launch: false)
                 self.transitionTask = nil
                 self.publish()
+                // Truthful: the phone's data is gone; nothing was acknowledged by the Mac or the relay.
+                if wasLive { self.notice = "Removed from this iPhone; finish removing it on your Mac." }
             }
         }
     }
