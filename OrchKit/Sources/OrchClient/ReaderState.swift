@@ -37,19 +37,25 @@ public struct ReaderStateRecord: Equatable, Sendable {
     public var build: String
     /// The host accepted `decl` (the pairing gate, or an answered `reader.declare`).
     public var acked: Bool
+    /// The `digest` of the host's answer to `reader.declare` (`{device, reader, level, digest}`). The host matches `rd` against its STORED
+    /// record only, and keeps the stored bytes when it already held the same body under another signature, so once an answer exists this is
+    /// the digest `rd` carries; sha256 of a re-signed declaration never is. nil until the first answer (the pair declaration's own digest
+    /// is right until then: it is persisted byte for byte).
+    public var hostDigest: String?
 
-    public init(decl: ReaderDeclaration?, highest: Int, build: String, acked: Bool) {
-        self.decl = decl; self.highest = highest; self.build = build; self.acked = acked
+    public init(decl: ReaderDeclaration?, highest: Int, build: String, acked: Bool, hostDigest: String? = nil) {
+        self.decl = decl; self.highest = highest; self.build = build; self.acked = acked; self.hostDigest = hostDigest
     }
 
     /// The state after this build made `decl` (the marker only ever rises).
     public func recording(_ decl: ReaderDeclaration, build: String, acked: Bool) -> ReaderStateRecord {
-        ReaderStateRecord(decl: decl, highest: max(highest, decl.level), build: build, acked: acked)
+        ReaderStateRecord(decl: decl, highest: max(highest, decl.level), build: build, acked: acked)     // a new declaration: no host digest yet
     }
 
     func encode() throws -> Data {
         var o: [String: JSONValue] = ["v": 1, "highest": .int(Int64(highest)), "build": .string(build), "acked": .bool(acked)]
         if let decl { o["decl"] = decl.json }
+        if let hostDigest { o["host_digest"] = .string(hostDigest) }
         return try canonicalJSON(.object(o))
     }
 
@@ -62,7 +68,12 @@ public struct ReaderStateRecord: Equatable, Sendable {
             guard let parsed = try? ReaderDeclaration(signed: d), parsed.level <= Int(highest) else { return nil }
             decl = parsed
         }
-        return ReaderStateRecord(decl: decl, highest: Int(highest), build: build, acked: acked)
+        var hostDigest: String?
+        if let h = o["host_digest"] {
+            guard let s = h.string, R2.isDigest(s), decl != nil else { return nil }
+            hostDigest = s
+        }
+        return ReaderStateRecord(decl: decl, highest: Int(highest), build: build, acked: acked, hostDigest: hostDigest)
     }
 }
 
@@ -114,7 +125,7 @@ public enum ReaderGate {
     }
 
     /// `rd` (protocol 8.6): the digest of the device's current declaration; nil before any (a pre-H12d state, or a level-0 build).
-    public static func rd(_ record: ReaderStateRecord?) -> String? { record?.decl?.digest }
+    public static func rd(_ record: ReaderStateRecord?) -> String? { record?.hostDigest ?? record?.decl?.digest }
 }
 
 /// The single injection point of `rd` into a column-R request (protocol v2 8.6: a field of the sealed request meta, never read by the

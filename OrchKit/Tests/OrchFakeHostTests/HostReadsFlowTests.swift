@@ -171,6 +171,49 @@ import OrchProtocol
         await #expect(throws: SessionError.readerStateUnreadable) { _ = try await w.serve(q) { try await q.session.workspaceShow() } }
     }
 
+    @Test func rdSwitchesToTheDigestOfTheDeclareAnswer() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone(sendsReaderDigest: true)
+        guard let cap = ReaderKAT.current else { return }
+        let keys = w.env.device.publicKeys
+        let decl = try ReaderDeclaration.make(workspace: w.ws, dkSig: keys.sig, dkKx: keys.kx, who: .person(w.primary.personID), level: cap.level, kat: cap.kat,
+                                              bind: .declare, createdMs: w.clock.nowMs, signer: w.env.device.sig)
+        let vault = w.vault.scoped(to: .demo)
+        try ReaderStore.save(vault, ws: w.ws, ReaderStateRecord(decl: decl, highest: decl.level, build: p.session.configuration.reader.build, acked: true))
+        // until the first declare answer: the pair declaration's own digest
+        #expect(try await p.session.readerDigestForRequest() == decl.digest)
+        // the host kept the bytes it already held for this body under another signature: its digest is the one `rd` carries from then on
+        let hostDigest = "sha256:" + String(repeating: "cd", count: 32)
+        #expect(try await p.session.readerDeclareAcknowledged(digest: hostDigest, level: decl.level))
+        #expect(try await p.session.readerDigestForRequest() == hostDigest)
+        let resigned = try decl.resigned(createdMs: decl.createdMs + 1, dkSig: keys.sig, dkKx: keys.kx, signer: w.env.device.sig)
+        #expect(resigned.digest != decl.digest && resigned.digest != hostDigest)         // a re-sign differs; it is never what `rd` carries
+        #expect(try await p.session.readerDigestForRequest() == hostDigest)
+        // an answer for another level (an older declaration) changes nothing
+        #expect(try await p.session.readerDeclareAcknowledged(digest: "sha256:" + String(repeating: "ef", count: 32), level: decl.level + 1) == false)
+        #expect(try await p.session.readerDigestForRequest() == hostDigest)
+        // and the request really carries it, as a meta field
+        let seen = Seen()
+        await w.host.setHandler { req in await seen.set(req.meta.object?["rd"]?.string); return await w.host.handleView(req) }
+        _ = try await w.serve(p) { try await p.session.workspaceShow() }
+        #expect(await seen.value == hostDigest)
+    }
+
+    @Test func declarationUnknownIsSurfacedAndFailsClosedUntilReDeclareIsWired() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone(reader: ReaderRuntime(capability: nil, build: "t"), sendsReaderDigest: true)
+        let seen = Seen()
+        let refusal = HostRefusal.reader(code: "sign.convenience_readers", reason: "declaration_unknown", required: nil, declared: nil)
+        await w.host.setHandler { _ in _ = await seen.bump(); return .refuse(refusal) }
+        await #expect(throws: ClientError.host(refusal)) { _ = try await w.serve(p) { try await p.session.needs() } }
+        let calls = await seen.count
+        #expect(calls == 1)                                       // no new rid, no silent retry, until `reader.declare` can be sent
+        let pending = try await p.session.pendingRequests()
+        #expect(pending.isEmpty)
+        let state = await p.session.identityCacheState()
+        #expect(state.tickets == 0 && state.cursor == nil)
+    }
+
     @Test func theDowngradeMarkerIsCheckedBeforeEveryRequest() async throws {
         let w = try await World.make()
         let p = try await w.makePhone(reader: ReaderRuntime(capability: nil, build: "t"), sendsReaderDigest: true)

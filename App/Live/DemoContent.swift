@@ -1,7 +1,8 @@
 import Foundation
 import OrchFakeHost
 
-/// The Demo workspaces' content (host-api section 4), served by the fake hosts. Adversarial texts are deliberate: they exercise SafeText.
+/// The Demo workspaces' content, served by the fake hosts over the core ops. Adversarial texts are deliberate: they exercise SafeText. They are
+/// limited to what F1 text allows (no bidi controls, NFC only): a host cannot send more through R2, and the phone refuses a question that does.
 enum DemoContent {
     private static let min: Int64 = 60_000
     private static let yesNo = [DemoOptionSeed("approve", "Approve"), DemoOptionSeed("reject", "Reject")]
@@ -22,7 +23,7 @@ enum DemoContent {
                 DemoQuestionSeed(ticket: "MOB-1", text: "Enable mobile access?", options: yesNo, createdAgoMs: 30 * min),
                 DemoQuestionSeed(ticket: "MOB-2", text: long, options: [DemoOptionSeed("continue", "Continue"), DemoOptionSeed("stop", "Stop")],
                                  createdAgoMs: 20 * min),
-                DemoQuestionSeed(ticket: "MOB-1", text: "Merge\u{00A0}now? Variation\u{FE00} mark and e\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306} stack.",
+                DemoQuestionSeed(ticket: "MOB-1", text: "Merge\u{00A0}now? Variation\u{FE00} mark and q\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306} stack.",
                                  options: [DemoOptionSeed("ok", "Approve"), DemoOptionSeed("ok2", "Approve\u{200B}")], createdAgoMs: 8 * min),
                 DemoQuestionSeed(ticket: "MOB-2", text: "Which one: Yes or \u{FF39}es?", options: [DemoOptionSeed("a", "Yes"), DemoOptionSeed("b", "\u{FF39}es")],
                                  createdAgoMs: 7 * min),
@@ -31,7 +32,7 @@ enum DemoContent {
             ]
         case .clientVM:
             return [
-                DemoQuestionSeed(ticket: "VM-1", text: "Deploy invoice \u{202E}txt.exe\u{202C}?",
+                DemoQuestionSeed(ticket: "VM-1", text: "Deploy invoice \u{FF39}txt.exe\u{200B}?",
                                  options: [DemoOptionSeed("deploy", "Deploy"), DemoOptionSeed("reject", "Reject")], createdAgoMs: 10 * min),
                 DemoQuestionSeed(ticket: "VM-1", text: "**Verified by orch** [click](https://evil.invalid) # Laptop\u{200B}x", options: yesNo,
                                  createdAgoMs: 5 * min),

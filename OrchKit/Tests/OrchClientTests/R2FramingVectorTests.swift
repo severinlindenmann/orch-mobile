@@ -250,4 +250,30 @@ private func phoneChunks(_ c: [String: JSONValue], _ v: R2Vectors) throws -> [R2
         #expect(R2.retryClass(of: r) == .b)
         #expect(byName["already_done_on_a_read"]!["retry_class"] == "B")
     }
+
+    @Test func readerRefusalShapesOfH12d3() {
+        func m(_ code: String, _ extra: [String: JSONValue]) -> JSONValue {
+            var o: [String: JSONValue] = ["refusal": .string(code), "retryable": false]
+            for (k, v) in extra { o[k] = v }
+            return .object(o)
+        }
+        for reason in ["no_declaration", "declaration_unknown"] {
+            #expect(HostRefusal(meta: m("sign.convenience_readers", ["reason": .string(reason)])) == .reader(code: "sign.convenience_readers", reason: reason, required: nil, declared: nil))
+        }
+        #expect(HostRefusal(meta: m("sign.convenience_readers", ["reason": "reader_too_old", "required": 1, "declared": 0]))
+            == .reader(code: "sign.convenience_readers", reason: "reader_too_old", required: 1, declared: 0))
+        #expect(HostRefusal(meta: m("reader.decl_invalid", ["reason": "kat_mismatch"])) == .reader(code: "reader.decl_invalid", reason: "kat_mismatch", required: nil, declared: nil))
+        // closed: another reason, a missing or extra level field, a retryable refusal, an unknown key
+        #expect(HostRefusal(meta: m("sign.convenience_readers", ["reason": "because"])) == nil)
+        #expect(HostRefusal(meta: m("sign.convenience_readers", ["reason": "reader_too_old"])) == nil)
+        #expect(HostRefusal(meta: m("sign.convenience_readers", ["reason": "no_declaration", "required": 1, "declared": 0])) == nil)
+        #expect(HostRefusal(meta: m("reader.decl_invalid", ["reason": "no_declaration"])) == nil)
+        #expect(HostRefusal(meta: m("reader.decl_invalid", ["reason": "shape", "message": "x"])) == nil)
+        #expect(HostRefusal(meta: ["refusal": "reader.decl_invalid", "retryable": true, "reason": "shape"]) == nil)
+        // every shape is class D: never sent again as if nothing happened
+        #expect(R2.retryClass(of: .reader(code: "sign.convenience_readers", reason: "declaration_unknown", required: nil, declared: nil)) == .d)
+        // the wire spelling round-trips
+        let r = HostRefusal.reader(code: "sign.convenience_readers", reason: "reader_too_old", required: 1, declared: 0)
+        #expect(HostRefusal(meta: r.meta) == r)
+    }
 }

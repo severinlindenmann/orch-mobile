@@ -1610,7 +1610,7 @@ extension WorkspaceSession {
         guard let o = decl.json.object?["o"]?.object, o["workspace_id"]?.string == cfg.workspace.hex,
               o["device_id"]?.string == cfg.deviceID.hex else { throw SessionError.readerStateUnreadable }
         guard decl.level <= cfg.reader.level else { throw SessionError.readerDowngrade }
-        return decl.digest
+        return ReaderGate.rd(state)       // the host's digest once a declare answer exists, else the pair declaration's own
     }
 
     /// Tests: the session's configuration.
@@ -1650,8 +1650,11 @@ extension WorkspaceSession {
     /// The host answered the `reader.declare` with `digest`: acknowledged only if that is the stored declaration's digest (an answer for
     /// an older declaration, or another device's, changes nothing). Returns whether it was.
     @discardableResult
-    package func readerDeclareAcknowledged(digest: String) throws -> Bool {
-        guard var s = try readerState(), let d = s.decl, d.digest.utf8.elementsEqual(digest.utf8) else { return false }
+    package func readerDeclareAcknowledged(digest: String, level: Int? = nil) throws -> Bool {
+        guard var s = try readerState(), let d = s.decl, R2.isDigest(digest) else { return false }
+        if d.digest.utf8.elementsEqual(digest.utf8) { s.hostDigest = nil }
+        else if let level, level == d.level { s.hostDigest = digest }      // the host kept the bytes it already held for this body: its digest is the one `rd` carries
+        else { return false }                                              // an answer for another (older) declaration changes nothing
         s.acked = true
         try ReaderStore.save(cfg.vault, ws: cfg.workspace, s)
         return true

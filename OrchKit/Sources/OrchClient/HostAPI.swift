@@ -342,6 +342,9 @@ public enum HostRefusal: Error, Equatable, Sendable {
     /// retry class; `seqs` only for a write whose events landed; `nextKey` only for `ticket.key_not_next` (advisory). No message,
     /// no request text.
     case host(code: String, retryable: Bool, seqs: [Int64]?, nextKey: String?)
+    /// A sealed reader refusal (H12d-3, class D): `sign.convenience_readers` with its `reason` (`reader_too_old` also names `required` and
+    /// `declared`), or `reader.decl_invalid` with its `reason`. Never retried, never read as a plain refusal.
+    case reader(code: String, reason: String, required: Int64?, declared: Int64?)
 }
 
 /// What a client call throws once a reply has been understood. Relay and host refusals are never conflated.

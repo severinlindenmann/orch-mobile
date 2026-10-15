@@ -58,8 +58,8 @@ final class SignSheetTests: XCTestCase {
         XCTAssertTrue(app.el("sign.unsafeWarning").waitForExistence(timeout: 60))
         XCTAssertFalse(app.el("sign.unsafeNotice").exists, "one warning only while signing is possible")
         let text = app.el("sign.text")
-        XCTAssertTrue(text.label.contains("⟨U+202E⟩"), "label: \(text.label)")
-        XCTAssertTrue(text.label.contains("⟨U+202C⟩"))
+        XCTAssertTrue(text.label.contains("⟨U+200B⟩"), "label: \(text.label)")
+        XCTAssertTrue(text.label.contains("⟨U+200B⟩"))
     }
 
     @MainActor
@@ -67,7 +67,7 @@ final class SignSheetTests: XCTestCase {
         let app = launch("question/q3")
         let text = app.el("question.text")
         XCTAssertTrue(text.waitForExistence(timeout: 60))
-        XCTAssertTrue(text.label.contains("⟨U+202E⟩"))
+        XCTAssertTrue(text.label.contains("⟨U+200B⟩"))
         app.buttons["question.option.deploy"].tap()
         XCTAssertTrue(app.buttons["sign.confirm"].waitForExistence(timeout: 30))
     }
