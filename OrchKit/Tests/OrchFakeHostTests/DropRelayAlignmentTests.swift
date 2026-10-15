@@ -473,6 +473,37 @@ struct DropAlignmentWorld {
         #expect(try await db.query("SELECT body FROM drop_uploads WHERE object=?", [.text(id.hex)]).first?.blob("body") == frame)
     }
 
+    @Test func quotaNamesAreClassifiedAgainstTheDocumentedList() throws {
+        let stored = ["drop_ws", "drop_head_ws", "drop_account", "drop_versions", "drop_documents", "drop_device", "drop_device_head",
+                      "drop_device_versions", "drop_device_documents", "drop_doc_versions"]
+        for q in stored {
+            let r = RelayRefusal(status: 429, code: .quotaExceeded, retryAfter: 600, quota: q)
+            #expect(DropService.mapped(.relay(r)) as? DropError == .storageFull(quota: q, retryAfterSeconds: 600))
+        }
+        for q in ["slot", "drop_future_cap", nil] as [String?] {
+            let r = RelayRefusal(status: 429, code: .quotaExceeded, retryAfter: 9, quota: q)
+            #expect(DropService.mapped(.relay(r)) as? DropError == .retryLater(afterSeconds: 9))
+        }
+        let overloaded = RelayRefusal(status: 503, code: .overloaded, retryAfter: 4)
+        #expect(DropService.mapped(.relay(overloaded)) as? DropError == .retryLater(afterSeconds: 4))
+        let rotation = RelayRefusal(status: 409, code: .rotationRequired, epoch: 3)
+        #expect(DropService.mapped(.relay(rotation)) as? DropError == .rotationPending)
+    }
+
+    @Test func aPageOfMoreThan64RowsIsRefused() async throws {
+        let a = try await DropAlignmentWorld.make()
+        var rows: [JSONValue] = []
+        for i in 1...65 {
+            rows.append(.object(["object_id": .string(String(format: "%032x", i)), "version": 1, "state": "retired", "descriptor": .null, "wraps": []]))
+        }
+        let page = rows
+        await a.sender.intercept { r in
+            guard r.target.hasSuffix("/drop/list") else { return nil }
+            return try dropJSONReply(200, ["objects": .array(page), "next": .null])
+        }
+        await #expect(throws: DropError.tooLarge) { _ = try await a.service.listVerifiedRows(.sending) }
+    }
+
     // MARK: a lying relay (its state is a hint)
 
     @Test func aRelayThatCallsALiveObjectRetiredOnlyHidesItAndPurgesNothing() async throws {

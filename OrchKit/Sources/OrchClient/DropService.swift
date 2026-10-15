@@ -285,14 +285,18 @@ public actor DropService {
         return reply.body
     }
 
+    static let storedBytesQuotas: Set<String> = ["drop_ws", "drop_head_ws", "drop_account", "drop_versions", "drop_documents", "drop_device",
+        "drop_device_head", "drop_device_versions", "drop_device_documents", "drop_doc_versions"]
+
     static func mapped(_ error: ClientError) -> Error {
         guard case .relay(let r) = error else { return error }
         switch (r.status, r.code) {
         case (410, _): return DropError.expired
         case (413, .tooLarge): return DropError.uploadRejected(status: 413)
         case (429, .quotaExceeded):
-            if r.quota == "slot" { return DropError.retryLater(afterSeconds: r.retryAfter ?? 5) }
-            return DropError.storageFull(quota: r.quota, retryAfterSeconds: r.retryAfter ?? 600)
+            // Only the stored-bytes caps of protocol 19.9 are "storage full"; `slot` and any name this client does not know are transient.
+            guard let q = r.quota, Self.storedBytesQuotas.contains(q) else { return DropError.retryLater(afterSeconds: r.retryAfter ?? 5) }
+            return DropError.storageFull(quota: q, retryAfterSeconds: r.retryAfter ?? 600)
         case (429, _), (503, _): return DropError.retryLater(afterSeconds: r.retryAfter ?? 5)
         case (409, .rotationRequired): return DropError.rotationPending
         default: return error
@@ -434,7 +438,7 @@ public actor DropService {
 
     /// Bounds of one list walk. Live objects (at most 4 096 live versions per workspace) are capped apart from tombstones, which need no
     /// verification and stay listed 30 days: at the relay's 1 000 new objects per workspace per day that is up to 30 000 of them. The
-    /// page cap holds both at the relay's 64 per page (640 pages = 40 960 entries); a relay that never ends the walk is `tooLarge`.
+    /// page cap holds both at the relay's 64 per page (640 pages × 64 = 40 960 entries; a page of more than 64 rows is refused); a relay that never ends the walk is `tooLarge`.
     static let maxListPages = 640
     static let maxListObjects = 4096
     static let maxListTombstones = 32768
@@ -462,9 +466,13 @@ public actor DropService {
             let s = try await auth()
             try requireAvailable()
             let page = try parse(await session.cfg.transport.dropList(canonicalJSON(.object(query)), session: s), fields: ["objects", "next"])
-            guard let rows = page["objects"]?.array, rows.count <= 1024 else { throw DropError.tooLarge }
+            guard let rows = page["objects"]?.array, rows.count <= 64 else { throw DropError.tooLarge }
             for row in rows {
-                guard let entry = try? ListEntry(row) else { blockedCount += 1; continue }
+                guard let entry = try? ListEntry(row) else {
+                    blockedCount += 1
+                    guard blockedCount <= Self.maxListObjects else { throw DropError.tooLarge }
+                    continue
+                }
                 if let known = entries[entry.object] { if entry.version >= known.version { entries[entry.object] = entry } }
                 else { entries[entry.object] = entry; order.append(entry.object) }
             }
@@ -752,6 +760,7 @@ public actor DropService {
                 terminal = (head.parts.descriptor.object?["o"]?.object?["expires_ms"]?.int).map { $0 <= session.cfg.wall.nowMs } ?? false
                 if !terminal {
                     e = .possiblyRemoved
+                    try await check()
                     try? await db.execute("UPDATE drop_uploads SET failure='possibly_removed' WHERE object=? AND version=? AND revision=? AND done=0",
                                           [.text(object.hex), .int(Int64(version)), .int(head.revision)])
                 }
@@ -880,8 +889,8 @@ public actor DropService {
     static let stagePrefix = "orch-drop-"
     /// Staged frames live in their own directory, so the sweep never walks the shared temp directory.
     static var stageDirectory: URL { FileManager.default.temporaryDirectory.appendingPathComponent("orch-drop-staging", isDirectory: true) }
-    /// Staging files older than this are leftovers of a crashed run (an upload lasts at most 11 minutes).
-    static let stageMaxAge: TimeInterval = 15 * 60
+    /// Staging files older than this are leftovers of a crashed run (an upload lasts at most the Drop deadline cap, 660 s).
+    static let stageMaxAge: TimeInterval = RoutedRelayTransport<NWRequestSender>.dropDeadline(bytes: DropFrame.maxBlobBytes) + 5 * 60
 
     /// Removes leftover staged frames at service start. Only files older than `stageMaxAge`, so a second service in the process keeps its
     /// in-flight upload.
