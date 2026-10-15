@@ -137,8 +137,12 @@ final class DemoRuntime: DemoControls {
     /// Demo device keys and Demo vault items removed). Only the Demo realm.
     func shutdown() async throws { try await reset() }
 
+    func invalidate() { env.context.invalidate() }
+
     func reset() async throws {
         ticker?.cancel(); ticker = nil
+        invalidate()                                          // idempotent: teardown already did it before its first await
+        await env.context.shutdownParticipants()              // every coordinator and session built on this realm: cancelled, awaited (bounded)
         await notifications.purge()
         try await DemoSetup.reset(env, custody: custody, vaults: [keysVault, pushVault])
     }

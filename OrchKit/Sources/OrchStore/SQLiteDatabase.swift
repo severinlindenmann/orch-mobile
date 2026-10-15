@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import OrchProtocol
 
 /// A3/A7 safety contract: tiny wrapper over the sqlite3 C API.
 /// - one serialized connection per database (this actor owns the only handle),
@@ -197,9 +198,19 @@ public struct SQLiteTransaction {
 public actor SQLiteDatabase {
     public let url: URL
     private var handle: SQLiteHandle?
+    /// When set, every write (`execute`, `transaction`) runs inside the fence: the check and the whole statement or transaction,
+    /// COMMIT included, are one step against the realm's invalidation. Reads are not fenced.
+    private var fence: (any WriteFence)?
+
+    /// Binds the realm fence (once; a different fence than the one bound is refused).
+    public func bind(fence f: any WriteFence) throws {
+        if let fence, fence !== f { throw StoreError.fenceMismatch }
+        fence = f
+    }
 
     /// - Parameter fileProtection: request `SQLITE_OPEN_FILEPROTECTION_COMPLETE` (honoured on iOS only).
-    public init(url: URL, fileProtection: Bool = true) throws {
+    public init(url: URL, fileProtection: Bool = true, fence: (any WriteFence)? = nil) throws {
+        self.fence = fence
         // SECURITY: realpath resolves symlinks in the PARENT path and NOFOLLOW guards only the last
         // component, so this must be used for app-private container paths only, never under an App Group
         // root another process can write (StoreLayout enforces disjoint roots).
@@ -261,17 +272,21 @@ public actor SQLiteDatabase {
     }
 
     @discardableResult
-    public func execute(_ sql: String, _ params: [SQLValue] = []) throws -> Int {
-        try h().run(sql, params).changes
+    public func execute(_ sql: String, _ params: [SQLValue] = [], fence override: (any WriteFence)? = nil) throws -> Int {
+        let handle = try h()
+        return try (override ?? fence).map { try $0.performFenced { try handle.run(sql, params).changes } } ?? handle.run(sql, params).changes
     }
 
     public func query(_ sql: String, _ params: [SQLValue] = []) throws -> [SQLRow] {
         try h().run(sql, params).rows
     }
 
-    /// The body is synchronous: no suspension point can occur while the transaction is open.
-    public func transaction<T: Sendable>(_ body: @Sendable (SQLiteTransaction) throws -> T) throws -> T {
-        try h().transaction(body)
+    /// The body is synchronous: no suspension point can occur while the transaction is open. With a fence, BEGIN, the body and COMMIT
+    /// all run inside it, so nothing the body signed or wrote can commit after the realm was invalidated.
+    public func transaction<T: Sendable>(fence override: (any WriteFence)? = nil, _ body: @Sendable (SQLiteTransaction) throws -> T) throws -> T {
+        let handle = try h()
+        guard let f = override ?? fence else { return try handle.transaction(body) }
+        return try f.performFenced { try handle.transaction(body) }
     }
 
     public func userVersion() throws -> Int {

@@ -37,7 +37,7 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
 
     private func send(_ r: WireRequest) async throws -> WireReply {
         do {
-            try context.generation?.check()
+            try context.generation.check()
             try context.admit(origin: origin)
             try context.admit(origin: sender.origin)
         } catch let v as RealmViolation { throw TransportError.realm(v) }

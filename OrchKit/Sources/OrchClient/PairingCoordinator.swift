@@ -16,7 +16,7 @@ package struct PairingCrash: Error, Equatable { package init() {} }
 /// finish, alarm) and checked after every await, `installing` marks the one installer that may touch the container and the vault, and
 /// `commitJoin` is the single linearization point of a join (conditional on the pairing row still being owned). Persistence and erasure
 /// are serialized by `gate`, so an erase never interleaves with a save.
-public actor PairingCoordinator {
+public actor PairingCoordinator: RealmParticipant {
     let cfg: PairingConfig
     private var record: PairingRecord?
     private var identity: DeviceIdentity?
@@ -105,7 +105,12 @@ public actor PairingCoordinator {
         cfg = config
         wallAnchorMs = config.wall.nowMs
         elapsedMs = Self.elapsed(config.clock)
+        config.context.generation.register(self)
     }
+
+    /// Realm shutdown: cancels the pairing and returns when its installer has finished (a late join commit is already refused by the
+    /// realm fence; this additionally makes sure nothing of it is still running when the wipe starts).
+    public nonisolated func realmShutdown() async { await cancel() }
 
     // Monotonic elapsed time bounds every active deadline, even if wall time moves backwards.
     // Persisted absolute deadlines retain their original bounds on resume; monotonic instants cannot cross a reboot.
@@ -126,13 +131,11 @@ public actor PairingCoordinator {
             throw RealmViolation.wrongTransport
         }
         guard cfg.vault.group == .keys, cfg.index.layout.realm == cfg.context.realm.rawValue else { throw RealmViolation.wrongStore }
-        try cfg.context.generation?.check()
+        try cfg.context.generation.check()
     }
 
-    /// Custody and vault access of a Demo context are one step against `DemoGeneration.invalidate`.
-    private func perform<T>(_ body: () throws -> T) throws -> T {
-        try cfg.context.generation.map { try $0.perform(body) } ?? body()
-    }
+    /// Custody and vault access of a context are one step against `RealmGeneration.invalidate`.
+    private func perform<T>(_ body: () throws -> T) throws -> T { try cfg.context.generation.perform(body) }
 
     private func violation(_ error: Error) -> PairingFailure {
         if let v = error as? RealmViolation { return .realm(v) }
@@ -885,7 +888,7 @@ public actor PairingCoordinator {
 
     // MARK: persistence and erasure
 
-    private func vault() -> RealmVault { cfg.vault.scoped(to: cfg.context.realm) }
+    private func vault() -> RealmVault { cfg.vault.scoped(to: cfg.context.realm).fenced(by: cfg.context.generation) }
 
     private enum SaveResult { case saved, superseded, failed }
 
@@ -896,7 +899,8 @@ public actor PairingCoordinator {
         do {
             try perform { try vault().put(try r.encode(), ws: r.ws.hex, purpose: "pairing") }
             try await cfg.index.savePairing(PairingRow(ws: r.ws.hex, offer: r.offer.hex, generation: r.generation, origin: r.origin,
-                                                       phase: r.phase.rawValue, startedMs: r.startedMs, updatedMs: nowMs, createdKeys: r.createdKeys))
+                                                       phase: r.phase.rawValue, startedMs: r.startedMs, updatedMs: nowMs, createdKeys: r.createdKeys),
+                                                fence: cfg.context.generation)
             return .saved
         } catch { return .failed }
     }
@@ -1284,7 +1288,7 @@ extension PairingCoordinator {
             for c in w { c.resume() }
         }
         let wsHex = r.ws.hex
-        let vault = cfg.vault.scoped(to: cfg.context.realm)
+        let vault = self.vault()
         let priorCert: Data? = try? vault.get(purpose: "device.cert")
         var wroteCert = false
         var container: WorkspaceContainer?
@@ -1308,7 +1312,7 @@ extension PairingCoordinator {
             guard mine == token else { return }
             try storeCertificate(approved.cert, owner: pk)
             wroteCert = true
-            let c = try await WorkspaceContainer(index: cfg.index, ws: wsHex, generation: r.generation)
+            let c = try await WorkspaceContainer(index: cfg.index, ws: wsHex, generation: r.generation, fence: cfg.context.generation)
             container = c
             try await crashPoint("install.container")
             guard mine == token else { await rollback(); return }
@@ -1331,7 +1335,7 @@ extension PairingCoordinator {
                                            card: String(decoding: try canonicalJSON(v.cardJSON), as: UTF8.self), joinedMs: nowMs)
             // the linearization point: the ownership check and the commit are one transaction
             try checkJoinDeadline(r)
-            try await cfg.index.commitJoin(generation: r.generation, profile: profile)
+            try await cfg.index.commitJoin(generation: r.generation, profile: profile, fence: cfg.context.generation)
             committed = true
             try await crashPoint("install.committed")
             if mine != token {

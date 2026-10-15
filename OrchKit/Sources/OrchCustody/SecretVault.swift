@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import OrchProtocol
 
 public struct VaultAddress: Hashable, Sendable {
     public let group: KeychainGroup
@@ -78,15 +79,22 @@ public struct SecretVault: Sendable {
     }
 
     /// A view that can only address one realm: what Demo code receives, so it cannot name a live item.
-    public func scoped(to realm: Realm) -> RealmVault { RealmVault(realm: realm, vault: self) }
+    public func scoped(to realm: Realm) -> RealmVault { RealmVault(realm: realm, vault: self, fence: nil) }
 }
 
 public struct RealmVault: Sendable {
     public let realm: Realm
     let vault: SecretVault
+    let fence: (any WriteFence)?
+
+    /// The same view with every `put` running inside the realm fence (check and keychain write are one step against invalidation).
+    /// Reads, deletes and wipes stay open: removing secrets is never refused.
+    public func fenced(by fence: any WriteFence) -> RealmVault { RealmVault(realm: realm, vault: vault, fence: fence) }
 
     public func put(_ data: Data, ws: String? = nil, purpose: String) throws {
-        try vault.put(data, for: SecretID(realm: realm, ws: ws, purpose: purpose))
+        let id = try SecretID(realm: realm, ws: ws, purpose: purpose)
+        guard let fence else { try vault.put(data, for: id); return }
+        try fence.performFenced { try vault.put(data, for: id) }
     }
     public func get(ws: String? = nil, purpose: String) throws -> Data {
         try vault.get(SecretID(realm: realm, ws: ws, purpose: purpose))

@@ -29,7 +29,7 @@ public struct RelayClient: Sendable {
 
     package func openSession(kind: RelayAuth.Kind, id: ID16, signer: some Signer) async throws -> Opened {
         let context = transport.context
-        do { try context.generation?.check(); try context.admit(origin: context.origin) }
+        do { try context.generation.check(); try context.admit(origin: context.origin) }
         catch let v as RealmViolation { throw TransportError.realm(v) }
         let ch = try HostAPI.challenge(try HostAPI.expect(try await transport.challenge()))
         let sig = try RelayAuth.sign(signer, origin: context.origin, challenge: ch.challenge, kind: kind, id: id)

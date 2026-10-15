@@ -1,4 +1,5 @@
 import Foundation
+import OrchProtocol
 
 public struct WorkspaceEntry: Sendable, Equatable {
     public let ws: String
@@ -20,6 +21,8 @@ public enum StoreError: Error, Equatable, Sendable {
     case suspended
     /// A join tried to commit but its pairing row is gone (cancelled, erased or recovered away).
     case pairingNotOwned(ws: String, generation: Int64)
+    /// A store already bound to one realm fence was asked to bind another.
+    case fenceMismatch
 }
 
 /// Realm-scoped index: workspace ids, order, tombstones with generation. One file per realm,
@@ -241,7 +244,7 @@ public struct WorkspaceProfile: Sendable, Equatable {
 }
 
 extension WorkspaceIndex {
-    public func savePairing(_ r: PairingRow) async throws {
+    public func savePairing(_ r: PairingRow, fence: (any WriteFence)? = nil) async throws {
         try StoreLayout.validate(ws: r.ws)
         try await db.execute("""
             INSERT INTO pairings(ws, offer, generation, origin, phase, terminal, detail, started_ms, updated_ms, created_keys) VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -250,7 +253,7 @@ extension WorkspaceIndex {
               created_keys=excluded.created_keys
             """, [.text(r.ws), .text(r.offer), .int(r.generation), .text(r.origin), .text(r.phase),
                   r.terminal.map { .text($0) } ?? .null, r.detail.map { .text($0) } ?? .null, .int(r.startedMs), .int(r.updatedMs),
-                  .int(r.createdKeys ? 1 : 0)])
+                  .int(r.createdKeys ? 1 : 0)], fence: fence)
     }
 
     private static func pairing(_ x: SQLRow) -> PairingRow? {
@@ -285,10 +288,10 @@ extension WorkspaceIndex {
     /// (the live pairing row of this workspace and generation must still exist: a cancel, an erase or a recovery that removed it wins),
     /// the workspace row, its profile and the removal of the pairing row happen in one transaction, so a crash leaves either a pending
     /// pairing or a complete workspace, never a half-installed one.
-    public func commitJoin(generation: Int64, profile p: WorkspaceProfile) async throws {
+    public func commitJoin(generation: Int64, profile p: WorkspaceProfile, fence: (any WriteFence)? = nil) async throws {
         try StoreLayout.validate(ws: p.ws)
         try await requireNotRemoved(ws: p.ws, generation: generation)
-        try await db.transaction { tx in
+        try await db.transaction(fence: fence) { tx in
             let t = try tx.query("SELECT 1 FROM tombstones WHERE ws=? AND generation>=?", [.text(p.ws), .int(generation)])
             if !t.isEmpty { throw StoreError.workspaceRemoved(ws: p.ws, generation: generation) }
             let owned = try tx.query("SELECT 1 FROM pairings WHERE ws=? AND generation=? AND terminal IS NULL", [.text(p.ws), .int(generation)])

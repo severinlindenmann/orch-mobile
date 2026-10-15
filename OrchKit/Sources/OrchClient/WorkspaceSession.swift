@@ -98,7 +98,7 @@ public struct WorkspaceSessionConfig: Sendable {
 /// One workspace's bridge client (host-api section 1). It owns seq allocation, pending rid records with their exact
 /// envelopes, epochs, clock offset and polling. Screens never see it: sending and signing are `package`, and the request
 /// is durable before it is sent (a single synchronous transaction allocates the seq and stores the sealed envelope).
-public actor WorkspaceSession {
+public actor WorkspaceSession: RealmParticipant {
     private var reviews: [UUID: QuestionReview] = [:]
     private var reviewLifecycle: UInt64 = 0
     private var preparingDecisions: Set<ID16> = []
@@ -150,14 +150,40 @@ public actor WorkspaceSession {
     static let maxResponseBytes = 8 << 20
 
     public init(_ config: WorkspaceSessionConfig) async throws {
-        let c = config
+        var c = config
         let storeRealm = await c.container.index.layout.realm
         guard c.vault.realm == c.context.realm, storeRealm == c.context.realm.rawValue else {
             throw RealmViolation.wrongStore
         }
         try c.context.admit(identity: c.identity)
+        // The session's resources are fenced here, once, whoever built the config: the identity signs only while the realm is current,
+        // the vault writes and the container's database writes (and their COMMIT) run inside the realm's check-and-act gate.
+        let fence = c.context.generation
+        c.identity = c.context.leased(c.identity)
+        c.vault = c.vault.fenced(by: fence)
+        try await c.container.bind(fence: fence)
         cfg = c
         sessionAge = Self.marker(c.clock)
+        fence.register(self)
+    }
+
+    /// Realm shutdown: ends every in-flight driver, the poller and the subscribers, and returns once they have finished.
+    public nonisolated func realmShutdown() async { await closeForShutdown() }
+
+    private func closeForShutdown() async {
+        reviewLifecycle &+= 1; reviews.removeAll()
+        let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
+        poller?.cancel(); poller = nil; hintRefresh?.cancel(); hintRefresh = nil; recovery?.cancel(); recovery = nil
+        snapshotTask?.cancel()
+        let drivers = Array(inflight.values), decisions = Array(decisionDrivers.values)
+        cancelAll()
+        for t in decisions { t.cancel() }
+        for c in subscribers.values { c.yield(.removed); c.finish() }
+        subscribers.removeAll()
+        for t in tasks { await t.value }
+        for t in drivers { _ = try? await t.value }
+        for t in decisions { _ = try? await t.value }
+        _ = try? await snapshotTask?.value
     }
 
     public nonisolated var workspace: ID16 { cfg.workspace }
@@ -167,7 +193,7 @@ public actor WorkspaceSession {
 
     func ensureCurrent() async throws {
         do {
-            try cfg.context.generation?.check()          // a Demo reset ends every session built from the old capability
+            try cfg.context.generation.check()          // a Demo reset ends every session built from the old capability
             try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
             _ = try await cfg.container.database()
         } catch {

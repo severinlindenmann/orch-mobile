@@ -152,7 +152,7 @@ public actor DropService {
 
     package func requireDemo() throws {
         guard session.cfg.context.realm == .demo else { throw RealmViolation.wrongStore }
-        try session.cfg.context.generation?.check()
+        try session.cfg.context.generation.check()
     }
 
     private func auth() async throws -> RelaySession {

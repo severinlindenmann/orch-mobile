@@ -787,6 +787,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// The in-place realm exit (also what `RealmController` drives). The lifetime is invalidated first, before any await.
     func teardown() {
+        runtime?.invalidate()          // FIRST, before any await: the realm's generation fences OrchClient itself (signing, send, commits)
         guard !retired else { return }
         lifetime.invalidate()
         resetRevision += 1
