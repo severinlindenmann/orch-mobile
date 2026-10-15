@@ -691,6 +691,7 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire()
     }
 
+    #if DEBUG
     func testPushMaterialAndTheDraftFileGoThroughTheRealmFence() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
@@ -726,6 +727,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: draftDir.appendingPathComponent("ticket-draft.json").path))
         XCTAssertThrowsError(try sink.put(Data("m".utf8), realm: "live", ws: String(repeating: "c", count: 32), purpose: "push-material"))
     }
+    #endif
 
     func testAStaleRealmEndsAPairingAsCancelledNotAsABadLink() {
         XCTAssertEqual(LivePairingModel.state(forRealm: .staleGeneration), .entry)

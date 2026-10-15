@@ -488,6 +488,7 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertNil(review.review)
     }
 
+    #if DEBUG
     func testDraftWriteFailureAndLostResponseRetry() async throws {
         let services = LiveServices(options: options)
         services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
@@ -516,6 +517,7 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(Set(ids).count, 1)
     }
+    #endif
 
     func testCloseDuringDemoNewLinkDoesNotStartPanel() async throws {
         let runtime = try await DemoRuntime.boot(temporaryStorage: true)

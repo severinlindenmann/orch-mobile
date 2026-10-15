@@ -83,6 +83,7 @@ final class KeyAlarmTests: XCTestCase {
         }
     }
 
+    #if DEBUG
     func testNewTicketShowsTheAlarmNotTryAgain() async throws {
         let services = LiveServices(options: options)
         services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
@@ -95,6 +96,7 @@ final class KeyAlarmTests: XCTestCase {
         XCTAssertEqual(result, .failed(LiveWorkspace.keyAlarmMessage))
         XCTAssertEqual(ws.info.keyAlarm, LiveWorkspace.keyAlarmMessage)
     }
+    #endif
 
     /// The way out: the alarm never takes the workspace out of the settings list or its lifecycle, so "Remove from this iPhone"
     /// (settings.leave, never disabled) stays reachable.
