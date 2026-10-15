@@ -31,7 +31,8 @@ extension World {
         let key = try #require(await host.wks[1])
         return try DropUpload.seal(data, metadata: DropMetadata(name: "hello.txt", mime: "text/plain", size: Int64(data.count), transcript: nil),
             object: id, workspace: ws, author: phoneID, authorKind: "device", signer: env.device.sig, wxk: card.wxk, wxkVersion: card.wxkVersion,
-            sender: env.device.publicKeys.kx, wk: key, epoch: 1, now: clock.nowMs, expiry: clock.nowMs + 60000, parent: parent, kind: kind)
+            sender: env.device.publicKeys.kx, wk: key, epoch: 1, now: clock.nowMs, expiry: kind == "document" || parent != nil ? nil : clock.nowMs + 60000,
+            parent: parent, kind: kind)
     }
 }
 
@@ -43,7 +44,7 @@ extension World {
         #expect(r.status == 201)
         let got = try await w.transport.dropGet(objectID: id, version: 1, part: .blob, session: w.phoneSession)
         #expect(got.status == 200 && got.body.prefix(4) == Drop.magic)
-        let wrong = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions/1", headers: ["authorization": "Bearer \(w.phoneSession.token)"], body: body, clientAddress: "test"))
+        let wrong = try await w.relay.send(WireRequest(method: "PUT", target: "/v2/drop/\(id.hex)/versions/1", headers: ["authorization": "Bearer \(w.phoneSession.token)"], body: body, clientAddress: "test"))
         #expect(wrong.status != 201)
     }
     @Test func testDropPutRequiresIfMatch428() async throws {
@@ -52,7 +53,7 @@ extension World {
         for value in [nil, "", "01", "-1", "1.0", "18446744073709551616"] as [String?] {
             var headers = ["authorization": "Bearer \(w.phoneSession.token)"]
             headers["if-match"] = value
-            let r = try await w.relay.send(WireRequest(method: "PUT", target: "/drop/\(id.hex)/versions", headers: headers, body: body, clientAddress: "test"))
+            let r = try await w.relay.send(WireRequest(method: "PUT", target: "/v2/drop/\(id.hex)/versions", headers: headers, body: body, clientAddress: "test"))
             #expect(r.status == 428 && errorCode(r) == "precondition_required")
         }
     }
@@ -61,12 +62,18 @@ extension World {
         let body = try await w.dropBody(id: id)
         #expect(try await w.transport.dropPut(objectID: id, ifMatch: 1, body: body, session: w.phoneSession).status == 409)
         #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: w.phoneSession).status == 201)
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: w.phoneSession).status == 409)
+        // the very same descriptor again is an exact retry: 200 before the CAS (protocol 19.9), and not stored twice
+        let again = try await w.transport.dropPut(objectID: id, ifMatch: 0, body: body, session: w.phoneSession)
+        #expect(again.status == 200 && again.header("etag") == "\"1\"")
+        // another descriptor for the taken slot is the CAS conflict
+        let other = try await w.dropBody(id: id)
+        let conflict = try await w.transport.dropPut(objectID: id, ifMatch: 0, body: other, session: w.phoneSession)
+        #expect(conflict.status == 409 && errorCode(conflict) == "version_conflict")
     }
     @Test func testDropCASConflict409AndLostResponse() async throws {
         let faults = ScriptedFaults(), w = try await World.drop(faults: faults)
         let phone = try await w.makePhone(), service = try await w.dropService(phone)
-        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "PUT /drop/")
+        faults.enqueue(.disconnect, at: .afterCommitBeforeResponse, routePrefix: "PUT /v2/drop/")
         let object = try await service.send(Data("durable".utf8), name: "note", kind: .document)
         #expect(object.descriptor.version == 1)
         let version2 = try await service.send(Data("second".utf8), name: "note", document: object)
@@ -84,14 +91,14 @@ extension World {
         _ = try await service.send(Data("second".utf8), name: "note", document: first)
         await #expect(throws: (any Error).self) { _ = try await service.download(first) }
         let id = ID16.fresh(0x74)
-        var body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        var body = try DropTestFrame.json(await w.dropBody(id: id))
         var blob = B64U.decode(body["blob"]!.string!)!; blob[blob.count - 1] ^= 1
         body["blob"] = .string(B64U.encode(blob))
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 400)
-        body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: DropTestFrame.frame(body), session: w.phoneSession).status == 400)
+        body = try DropTestFrame.json(await w.dropBody(id: id))
         var signed = body["descriptor"]!.object!, raw = signed["o"]!.object!
         raw["created_ms"] = 0; signed["o"] = .object(raw); body["descriptor"] = .object(signed)
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 401)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: DropTestFrame.frame(body), session: w.phoneSession).status == 401)
     }
     @Test func testNewMemberRewrapWithoutHistoricalGrant() async throws {
         let w = try await World.drop(lateMember: true)
@@ -166,40 +173,37 @@ extension DropServiceTests {
         let other = try DemoSetup.makeHost(w.env, primary: w.primary, name: "Other")
         let otherSession = try await other.publishInitial(relay: w.relay, transport: w.transport, devices: [(w.phone, w.phoneCert, World.all)])
         let id = ID16.fresh(0x79)
-        var body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        var body = try DropTestFrame.json(await w.dropBody(id: id))
         var raw = body["descriptor"]!.object!["o"]!.object!
         raw["recipients"] = "inbox"
         body["descriptor"] = try SignedObject.sign(raw, kind: .dropObject, signer: w.env.device.sig).json
-        var wraps = body["wraps"]!.array!
-        wraps.append(DropWrapRecord(object: id, version: 1, targetKind: .wxk, target: other.workspace, keyVersion: 1, wrap: Data(repeating: 1, count: 128)).json)
-        body["wraps"] = .array(wraps)
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 201)
+        // an inbox object carries one `wxk` wrap to its own space and no `wk` wrap (protocol 19.9)
+        body["wraps"] = .array(body["wraps"]!.array!.filter { $0.object?["target_kind"] == "wxk" })
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: DropTestFrame.frame(body), session: w.phoneSession).status == 201)
         func claim(_ host: FakeHost, _ session: RelaySession) async throws -> WireReply {
             let record = DropWrapRecord(object: id, version: 1, targetKind: .wk, target: host.workspace, keyVersion: 1, wrap: Data(repeating: 1, count: 64))
             let signed = try DropClaim.make(wsk: host.wsk, object: id, workspace: host.workspace, wrap: record)
-            return try await w.relay.send(WireRequest(method: "POST", target: "/drop/\(id.hex)/claim",
+            return try await w.relay.send(WireRequest(method: "POST", target: "/v2/drop/\(id.hex)/claim",
                 headers: ["authorization": "Bearer \(session.token)"], body: canonicalJSON(signed.json), clientAddress: "test"))
         }
+        // another workspace cannot claim it (cross-workspace addressing is P6); the addressed workspace's claims are idempotent
+        #expect(try await claim(other, otherSession).status == 403)
         async let a = claim(w.host, w.hostSession)
-        async let b = claim(other, otherSession)
+        async let b = claim(w.host, w.hostSession)
         let replies = try await [a, b]
-        #expect(replies.map(\.status).sorted() == [200, 409])
-        let winner = replies[0].status == 200 ? w.host : other
-        let token = replies[0].status == 200 ? w.hostSession : otherSession
-        #expect(try await claim(winner, token).status == 200)
-        let fetched = try await w.transport.dropGet(objectID: id, version: 1, part: .wraps, session: token)
+        #expect(replies.map(\.status) == [200, 200])
+        let fetched = try await w.transport.dropGet(objectID: id, version: 1, part: .wraps, session: w.hostSession)
         #expect(fetched.status == 200)
         #expect(try json(fetched)["wraps"]?.array?.count == 1)
-        let loser = replies[0].status == 200 ? otherSession : w.hostSession
-        #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .blob, session: loser).status == 403)
+        #expect(try await w.transport.dropGet(objectID: id, version: 1, part: .blob, session: otherSession).status == 403)
     }
 
     @Test func testDropExpiryQuotaAndReadScope() async throws {
         var limits = RelayLimits(); limits.maxDropVersions = 1
         let w = try await World.drop(limits: limits), phone = try await w.makePhone(), service = try await w.dropService(phone)
-        let first = try await service.send(Data(), name: "empty", expiresMs: phone.clock.nowMs + 1000)
-        await #expect(throws: (any Error).self) { _ = try await service.send(Data(), name: "over quota") }
-        phone.clock.advance(by: .seconds(2)); w.clock.advance(by: .seconds(2))
+        let first = try await service.send(Data(), name: "empty", expiresMs: phone.clock.nowMs + 61_000)
+        await #expect(throws: DropError.storageFull(quota: "drop_versions", retryAfterSeconds: 600)) { _ = try await service.send(Data(), name: "over quota") }
+        phone.clock.advance(by: .seconds(62)); w.clock.advance(by: .seconds(62))
         #expect(try await service.list(.sending).isEmpty)
         await #expect(throws: (any Error).self) { _ = try await service.download(first) }
         let readonly = try await World.make(), id = ID16.fresh(0x7a)
@@ -316,14 +320,13 @@ extension DropServiceTests {
         _ = try await other.publishInitial(relay: w.relay, transport: w.transport, devices: [(w.phone, w.phoneCert, World.all)])
         let first = try await w.dropBody(id: id, kind: "document")
         #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: first, session: w.phoneSession).status == 201)
-        let parent = try DropDescriptor(object: StrictJSON.parse(first).object!["descriptor"]!.object!["o"]!.object!)
-        var body = try StrictJSON.parse(await w.dropBody(id: id, parent: parent)).object!
+        let parent = try DropDescriptor(object: DropTestFrame.json(first)["descriptor"]!.object!["o"]!.object!)
+        var body = try DropTestFrame.json(await w.dropBody(id: id, parent: parent))
         var raw = body["descriptor"]!.object!["o"]!.object!
         raw["space_id"] = .string(other.workspace.hex)
         body["descriptor"] = try SignedObject.sign(raw, kind: .dropObject, signer: w.env.device.sig).json
-        let reply = try await w.transport.dropPut(objectID: id, ifMatch: 1, body: canonicalJSON(.object(body)), session: w.phoneSession)
-        #expect(reply.status == 409 && errorCode(reply) == "version_conflict")
-        #expect(try json(reply)["current"] == 1)
+        let reply = try await w.transport.dropPut(objectID: id, ifMatch: 1, body: DropTestFrame.frame(body), session: w.phoneSession)
+        #expect(reply.status == 403 && errorCode(reply) == "not_eligible")
     }
 }
 
@@ -361,12 +364,12 @@ extension DropServiceTests {
     @Test func claimThenRotationRewrapForNewMember() async throws {
         let w = try await World.drop(), phone = try await w.makePhone(), service = try await w.dropService(phone)
         let id = ID16.fresh(0x63)
-        var body = try StrictJSON.parse(await w.dropBody(id: id)).object!
+        var body = try DropTestFrame.json(await w.dropBody(id: id))
         var raw = body["descriptor"]!.object!["o"]!.object!
         raw["recipients"] = "inbox"
         body["descriptor"] = try SignedObject.sign(raw, kind: .dropObject, signer: w.env.device.sig).json
         body["wraps"] = .array(body["wraps"]!.array!.filter { $0.object?["target_kind"] == "wxk" })
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(body)), session: w.phoneSession).status == 201)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: DropTestFrame.frame(body), session: w.phoneSession).status == 201)
         let object = try #require(await service.list(.sending).first)
         try await w.serve(phone) { try await service.claim(object) }
         let receiver = try await w.independentDropWriter(clock: phone.clock) // epoch 2; no historical grant
@@ -395,7 +398,9 @@ extension DropServiceTests {
         let success = try #require(results.first { $0.object == pending }).result.get()
         #expect(success.wraps.filter { $0.targetKind == .wk }.map(\.keyVersion) == [2])
         let new = try #require(await db.query("SELECT body FROM drop_uploads WHERE object=?", [.text(pending.hex)]).first?.blob("body"))
-        #expect(try StrictJSON.parse(old).object?["blob"] != StrictJSON.parse(new).object?["blob"])
+        // the same DEK is re-wrapped under epoch 2: descriptor and blob are the sealed ones, only the `wk` wrap changed
+        let (before, after) = try (DropTestFrame.json(old), DropTestFrame.json(new))
+        #expect(before["blob"] == after["blob"] && before["descriptor"] == after["descriptor"] && before["wraps"] != after["wraps"])
         #expect(try await db.query("SELECT done FROM drop_uploads WHERE object=?", [.text(expired.hex)]).first?.int("done") == 2)
         #expect(try await service.resumeUploads().isEmpty)
         let restarted = try await w.dropService(phone)

@@ -230,10 +230,13 @@ public struct RelayRefusal: Error, Equatable, Sendable {
     public let serverMs: Int64?
     /// `already_claimed`: the claiming workspace, nil when the relay sent null.
     public let claimedBy: ID16?
+    /// `quota_exceeded` (Drop, protocol 19.9): which cap (`drop_ws`, `slot`, ...); nil when the relay named none. A `slot` is transient.
+    public let quota: String?
 
-    public init(status: Int, code: Code, retryAfter: Int? = nil, epoch: UInt32? = nil, current: UInt32? = nil, serverMs: Int64? = nil, claimedBy: ID16? = nil) {
+    public init(status: Int, code: Code, retryAfter: Int? = nil, epoch: UInt32? = nil, current: UInt32? = nil, serverMs: Int64? = nil,
+                claimedBy: ID16? = nil, quota: String? = nil) {
         self.status = status; self.code = code; self.retryAfter = retryAfter; self.epoch = epoch
-        self.current = current; self.serverMs = serverMs; self.claimedBy = claimedBy
+        self.current = current; self.serverMs = serverMs; self.claimedBy = claimedBy; self.quota = quota
     }
 
     /// The protocol section 14 / 19.6 table: the HTTP statuses each code may carry. Most have one; `cert_expired` is 400 for
@@ -269,12 +272,25 @@ public struct RelayRefusal: Error, Equatable, Sendable {
         }
     }
 
+    /// Fields a code MAY carry (Drop, protocol 19.9): `quota` on `quota_exceeded`, `epoch` on `rotation_required`, the stored `wrap` and
+    /// `dek_commit` on `wrap_conflict`, `state` on a retire's `version_conflict`.
+    static func optionalFields(of code: Code) -> Set<String> {
+        switch code {
+        case .quotaExceeded: ["quota"]
+        case .rotationRequired: ["epoch"]
+        case .wrapConflict: ["wrap", "dek_commit"]
+        case .versionConflict: ["state"]
+        default: []
+        }
+    }
+
     /// Strict: a known code with a status it may carry and exactly its documented fields: those section 14 lists for the code are
     /// required and type-checked, anything else is refused.
     init?(status: Int, code: String, fields: [String: JSONValue], retryAfter: Int? = nil) {
-        guard let c = Code(rawValue: code), Self.statuses(of: c).contains(status),
-              Set(fields.keys) == Set(["error"]).union(Self.extraFields(of: c)) else { return nil }
-        var epoch: UInt32?, current: UInt32?, serverMs: Int64?, claimedBy: ID16?
+        guard let c = Code(rawValue: code), Self.statuses(of: c).contains(status) else { return nil }
+        let required = Set(["error"]).union(Self.extraFields(of: c)), keys = Set(fields.keys)
+        guard keys.isSuperset(of: required), keys.isSubset(of: required.union(Self.optionalFields(of: c))) else { return nil }
+        var epoch: UInt32?, current: UInt32?, serverMs: Int64?, claimedBy: ID16?, quota: String?
         switch c {
         case .staleEpoch:
             guard let e = fields["epoch"]?.int, e >= 1, e <= Int64(UInt32.max) else { return nil }
@@ -291,10 +307,20 @@ public struct RelayRefusal: Error, Equatable, Sendable {
             case .some(.string(let h)): guard let id = ID16(hex: h) else { return nil }; claimedBy = id
             default: return nil
             }
+        case .quotaExceeded:
+            if let q = fields["quota"] {
+                guard let t = q.string, !t.isEmpty, t.utf8.count <= 32, t.utf8.allSatisfy({ ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F }) else { return nil }
+                quota = t
+            }
+        case .rotationRequired:
+            if let e = fields["epoch"] { guard let n = e.int, n >= 1, n <= Int64(UInt32.max) else { return nil }; epoch = UInt32(n) }
+        case .wrapConflict:
+            guard (fields["wrap"] == nil) == (fields["dek_commit"] == nil), fields["wrap"].map({ $0.string != nil }) ?? true,
+                  fields["dek_commit"].map({ $0.string != nil }) ?? true else { return nil }
         default: break
         }
         self.init(status: status, code: c, retryAfter: (status == 429 || status == 503) ? retryAfter : nil, epoch: epoch,
-                  current: current, serverMs: serverMs, claimedBy: claimedBy)
+                  current: current, serverMs: serverMs, claimedBy: claimedBy, quota: quota)
     }
 }
 

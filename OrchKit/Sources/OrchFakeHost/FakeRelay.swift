@@ -27,8 +27,21 @@ public struct RelayLimits: Sendable {
     public var maxConcurrentPollsPerPrincipal = 6
     /// Concurrent polls of everyone (section 19.4: 4 096): above it 503 `overloaded`.
     public var maxConcurrentPollsGlobal = 4_096
-    public var maxDropVersions = 1024
-    public var maxDropBytes = 100 << 20
+    /// Drop (P3-D39, protocol 19.9): live versions per workspace, blob bytes per workspace, and the other caps of the quota table.
+    public var maxDropVersions = 4096
+    public var maxDropBytes = 512 << 20
+    public var maxDropBlobBytes = 26 << 20
+    public var maxDropDocVersions = 1024
+    public var dropDeviceBytes = 256 << 20
+    public var dropDeviceVersions = 1024
+    public var dropWorkspaceDocuments = 256
+    public var dropDeviceDocuments = 64
+    public var dropWorkspaceHeadBytes = 32 << 20
+    public var dropDeviceHeadBytes = 8 << 20
+    /// 429 `rate_limited` after this many Drop uploads per device per minute (0: off; the real relay's bucket is 32 per minute).
+    public var dropUploadsPerMinute = 0
+    /// Open owner question 6 of the relay design: refuse a device's `wk` wraps with 409 `rotation_required` while a rotation is due.
+    public var dropRefusesWKWhileRotationDue = false
     /// Global queued bridge bodies (live request copies and response chunks): a post past it is 503 `overloaded` (P3-D17, 256 MiB).
     public var maxQueuedBodyBytes = 256 << 20
     /// Undelivered response bytes per device and per workspace: a host chunk past either is 429 `quota_exceeded` (P3-D17).
@@ -55,7 +68,7 @@ public struct RelayLimits: Sendable {
 struct WireReplyBox: Error { let reply: WireReply; init(_ r: WireReply) { reply = r } }
 
 public actor FakeRelay: RequestSender {
-    private var demoDropRejections = 0
+    var demoDropRejections = 0
     public nonisolated let context: RealmContext
     public nonisolated let origin: String
     let clock: any Clock<Duration>
@@ -70,7 +83,7 @@ public actor FakeRelay: RequestSender {
     struct Stored { let idx: UInt64; let flags: UInt8; let envelope: Data; let receivedMs: Int64; let digest: Data; var arrival: UInt64 = 0 }
     struct Box { var requests: [Stored] = []; var responses: [Stored] = [] }
     struct BoxKey: Hashable { let ws: ID16; let device: ID16?; let offer: ID16?; let rid: ID16 }
-    private struct Window {
+    struct Window {
         var stamps: [Int64] = []
         func isActive(_ now: Int64) -> Bool { stamps.contains { $0 > now - 60_000 } }
         mutating func hit(now: Int64, limit: Int, spanMs: Int64 = 60_000) -> Bool {
@@ -80,9 +93,17 @@ public actor FakeRelay: RequestSender {
         }
     }
 
-    private struct DropVersion { let descriptor: JSONValue; let parsed: DropDescriptor; var wraps: [DropWrapRecord]; let blob: Data }
-    private var drops: [ID16: [DropVersion]] = [:]
-    private var claims: [ID16: ID16] = [:]
+    struct DropVersion { let descriptor: JSONValue; let parsed: DropDescriptor; var wraps: [DropWrapRecord]; var blob: Data }
+    var drops: [ID16: [DropVersion]] = [:]
+    var claims: [ID16: ID16] = [:]
+    /// Drop change positions (protocol 19.9): per workspace counter, per object `n`, and the retire time of a retired object.
+    var dropCounters: [ID16: UInt64] = [:]
+    var dropN: [ID16: UInt64] = [:]
+    var dropRetiredMs: [ID16: Int64] = [:]
+    /// Tests: the next Drop PUTs are answered early with this refusal (nothing stored), once each.
+    var dropScript: [WireReply] = []
+    var dropExpirySettled: Set<ID16> = []
+    var dropUploadWindows: [ID16: Window] = [:]
     private var challenges: [Data: Int64] = [:]
     package var sessions: [String: Session] = [:]
     /// Directory accounts: person id -> account `PK`.
@@ -163,7 +184,7 @@ public actor FakeRelay: RequestSender {
     public func retire() {
         challenges = [:]; sessions = [:]; owners = [:]; devices = [:]; revocationRows = [:]; recoveryReceipts = [:]
         rateWindows = [:]
-        drops = [:]; claims = [:]; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
+        drops = [:]; claims = [:]; dropCounters = [:]; dropN = [:]; dropRetiredMs = [:]; dropScript = []; workspaces = [:]; boxes = [:]; pairPostsByWS = [:]; pairPostsByAddress = [:]; pairPollsByAddress = [:]
         pairAnswers = [:]
         certRecords = [:]; accounts = [:]; invites = [:]; pairPostsGlobal = Window(); livePolls = [:]; livePollsGlobal = 0
         seededCards = [:]; seededDevices = [:]
@@ -394,9 +415,10 @@ public actor FakeRelay: RequestSender {
 
     // MARK: HTTP
 
-    public func send(_ r: WireRequest) async throws -> WireReply {
+    public func send(_ request: WireRequest) async throws -> WireReply {
         requestsReceived += 1
         do {
+            let r = try request.materialized()
             try checkLive()
             prune()
             let reply = try await dispatch(r)
@@ -454,7 +476,7 @@ public actor FakeRelay: RequestSender {
     private func retryAfter(untilMs: Int64, now: Int64) -> [String: String] {
         ["retry-after": String(max(1, (max(untilMs - now, 0) + 999) / 1000))]
     }
-    private func limited(_ now: Int64) -> WireReply {
+    func limited(_ now: Int64) -> WireReply {
         rateLimited += 1
         return refuse(429, .rateLimited, headers: ["retry-after": String(max(1, limits.retryAfterSeconds))])
     }
@@ -465,9 +487,6 @@ public actor FakeRelay: RequestSender {
         guard parts.first == "" else { return refuse(400, .malformed) }
         let seg = Array(parts.dropFirst())
         if seg.first == String(HostAPI.base.dropFirst()) { return try await route(r, Array(seg.dropFirst()), query) }
-        // TODO(orch-4e): the Drop PUT/claim routes keep their protocol section 10.6 spelling here and the Drop GET/list routes now sit under
-        // /v2; protocol-v2 section 19 does not list Drop (or push registration) yet. Open question for orch-4e: final Drop paths.
-        if seg.first == "drop" { return try dropRoute(r, seg, query, protocolRoute: true) }
         return refuse(404, .notFound)
     }
 
@@ -493,7 +512,6 @@ public actor FakeRelay: RequestSender {
         case ("POST", 2) where s[0] == "session" && s[1] == "challenge": return try challenge(r, query)
         case ("POST", 2) where s[0] == "session" && s[1] == "login": return try login(r, query)
         case ("POST", 2) where s[0] == "session" && s[1] == "logout": return logout(r, query)
-        case ("POST", 2) where s[0] == "drop" && s[1] == "list": return try dropRoute(r, s, query)
         case ("POST", 1) where s[0] == "accounts": return account(r, query)
         case (_, 3) where s[0] == "persons" && s[2] == "cert-requests": return r.method == "POST" ? postCertRequest(r, person: s[1], query) : (r.method == "GET" ? pollCertRequests(r, person: s[1], query) : refuse(404, .notFound))
         case ("GET", 2) where s[0] == "cert-requests": return certRequestReply(r, id: s[1], query)
@@ -503,8 +521,8 @@ public actor FakeRelay: RequestSender {
         case (_, _) where Self.directoryRoute(r.method, s) != nil:
             let d = Self.directoryRoute(r.method, s)!
             return try await directory(r, route: d.route, ident: d.ident, query)
-        // /v2/drop/...: GET and list are the read routes; PUT and claim are the protocol routes (spelled under /v2 like the rest).
-        case (_, _) where s.first == "drop": return try dropRoute(r, s, query, protocolRoute: r.method == "PUT" || (r.method == "POST" && s.last == "claim"))
+        // /v2/drop/...: every Drop route is under /v2 (P3-D1, protocol 19.9); the unprefixed section 10.5/10.6 spellings are gone.
+        case (_, _) where s.first == "drop": return try dropRoute(r, s, query)
         default: return refuse(404, .notFound)
         }
     }
@@ -651,14 +669,14 @@ public actor FakeRelay: RequestSender {
     package var liveSessionTokens: Set<String> { Set(sessions.keys) }
     package var outstandingChallenges: Set<Data> { Set(challenges.keys) }
 
-    private func authenticate(_ r: WireRequest) -> Session? {
+    func authenticate(_ r: WireRequest) -> Session? {
         guard let h = r.header("authorization"), h.hasPrefix("Bearer "), let s = sessions[String(h.dropFirst(7))], wall.nowMs < s.expiresMs else { return nil }
         return s
     }
 
     /// Current membership and non-revocation (section 8.9 and host-api section 3), and the D session's certificate, re-checked at
     /// request time (section 19.4: an expired certificate is 400 `cert_expired`).
-    private func memberGate(_ s: Session, ws: ID16) -> WireReply? {
+    func memberGate(_ s: Session, ws: ID16) -> WireReply? {
         guard s.kind == .device else { return refuse(403, .notEligible) }
         if revoked.contains(s.id) { return refuse(403, .revoked) }
         if let exp = directoryEntry(s.id)?.expiresMs, wall.nowMs >= exp { return refuse(400, .certExpired) }
@@ -1158,130 +1176,5 @@ public actor FakeRelay: RequestSender {
             return try await chunkReply(box.responses, rid: ridID, after: after, route: "GET pair")
         default: return refuse(404, .notFound)
         }
-    }
-}
-
-
-
-extension FakeRelay {
-    private func dropAllowed(_ s: Session, workspace ws: ID16, write: Bool) -> Bool {
-        if s.kind == .workspace { return s.id == ws }
-        guard memberGate(s, ws: ws) == nil, let card = workspaces[ws]?.card, deviceUsable(s.id, card: card),
-              let scopes = workspaces[ws]?.members[s.id]?.scopeStrings else { return false }
-        return scopes.contains(write ? "operate" : "look")
-    }
-
-    private func dropVisible(_ v: DropVersion, _ s: Session) -> Bool {
-        guard drops[v.parsed.object]?.last?.parsed.expiresMs.map({ $0 > wall.nowMs }) ?? true,
-              dropAllowed(s, workspace: claims[v.parsed.object] ?? v.parsed.space, write: false) else { return false }
-        if claims[v.parsed.object] != nil { return true }
-        switch v.parsed.recipients {
-        case .inbox: return v.wraps.contains { $0.target == v.parsed.space && $0.targetKind == .wxk }
-        case .ids(let ids): return ids.contains(v.parsed.space) || ids.contains(s.id) || v.parsed.authorID == s.id
-        }
-    }
-
-    /// Deterministic Demo control; applies only to the next encrypted Drop PUT.
-    public func demoRejectNextDrop() throws {
-        try checkLive()
-        demoDropRejections += 1
-    }
-
-    private func dropRoute(_ r: WireRequest, _ path: [String], _ query: String?, protocolRoute: Bool = false) throws -> WireReply {
-        if r.method == "PUT", demoDropRejections > 0 {
-            demoDropRejections -= 1
-            return refuse(403, .notEligible)      // the Demo control "reject next upload": a refusal in section 14 form
-        }
-        guard protocolRoute ? (r.method == "PUT" || r.method == "POST" && path.last == "claim") : (r.method == "GET" || path == ["drop", "list"]) else { return refuse(404, .notFound) }
-        guard let session = authenticate(r) else { return refuse(401, .unauthenticated) }
-        guard query == nil else { return refuse(400, .malformed) }
-        drops = drops.filter { $0.value.last?.parsed.expiresMs.map { $0 > wall.nowMs } ?? true }
-        claims = claims.filter { drops[$0.key] != nil }
-        if path == ["drop", "list"], r.method == "POST" {
-            guard let o = try? StrictJSON.parse(r.body, maxBytes: 1024).object,
-                  Set(o.keys) == ["workspace_id", "direction"],
-                  let ws = o["workspace_id"]?.string.flatMap(ID16.init(hex:)),
-                  let direction = o["direction"]?.string, ["received", "sending"].contains(direction) else { return refuse(400, .malformed) }
-            guard dropAllowed(session, workspace: ws, write: false) else { return refuse(403, .notEligible) }
-            let entries = drops.values.compactMap(\.last).filter {
-                (claims[$0.parsed.object] ?? $0.parsed.space) == ws && dropVisible($0, session) && (direction == "sending" ? $0.parsed.authorID == session.id : $0.parsed.authorID != session.id)
-            }.sorted { $0.parsed.object.hex < $1.parsed.object.hex }.map { v -> JSONValue in
-                ["descriptor": v.descriptor, "wraps": .array(v.wraps.map(\.json))]
-            }
-            return json(200, ["objects": .array(entries)])
-        }
-        guard path.count >= 3, let id = ID16(hex: path[1]) else { return refuse(400, .malformed) }
-        if path.count == 3, path[2] == "versions", r.method == "PUT" {
-            var state = DropDocument.State(current: drops[id]?.last?.parsed.version ?? 0, head: drops[id]?.last?.parsed.raw)
-            if DropDocument.checkPut(state: &state, ifMatch: r.header("if-match"), descriptor: [:]).status == 428 {
-                return refuse(428, .preconditionRequired)
-            }
-            guard let o = try? StrictJSON.parse(r.body, maxBytes: 36 << 20).object,
-                  Set(o.keys) == ["descriptor", "wraps", "blob"],
-                  let signed = o["descriptor"], let raw = signed.object?["o"]?.object,
-                  let d = try? DropDescriptor(object: raw), d.object == id, d.spaceKind == "workspace",
-                  let wr = o["wraps"]?.array, !wr.isEmpty, wr.count <= 1024,
-                  let blob = o["blob"]?.string.flatMap({ B64U.decode($0) }), blob.count <= 26 << 20 else { return refuse(400, .malformed) }
-            guard d.authorID == session.id, (d.authorKind == "device") == (session.kind == .device),
-                  dropAllowed(session, workspace: d.space, write: true) else { return refuse(403, .notEligible) }
-            let key = session.kind == .device ? devices[session.id]?.info?.signingKey : workspaces[session.id]?.card?.wsk
-            guard let key, (try? DropDescriptor.verify(signed, authorKey: key)) != nil else { return refuse(401, .badSignature) }
-            guard d.matches(blob: blob), d.contentLen == Int64(blob.count), d.expiresMs.map({ $0 > wall.nowMs && $0 <= DropUpload.addMs(wall.nowMs, 604800000) }) ?? (d.objectKind == "document") else { return refuse(400, .malformed) }
-            guard let wraps = try? wr.map(DropWrapRecord.init(json:)) else { return refuse(400, .malformed) }
-            guard wraps.allSatisfy({ $0.object == id && $0.version == d.version }) else { return refuse(400, .malformed) }
-            let reply = DropDocument.checkPut(state: &state, ifMatch: r.header("if-match"), descriptor: d.raw)
-            guard reply.status == 201 else { return try WireReply(status: reply.status, body: canonicalJSON(["error": "version_conflict", "current": .int(Int64(reply.current ?? 0))])) }
-            let all = drops.values.flatMap { $0 }
-            guard all.count < limits.maxDropVersions, all.reduce(0, { $0 + $1.blob.count }) + blob.count <= limits.maxDropBytes else { return refuse(429, .quotaExceeded, headers: ["retry-after": String(limits.retryAfterSeconds)]) }
-            drops[id, default: []].append(DropVersion(descriptor: signed, parsed: d, wraps: wraps, blob: blob))
-            return json(201, ["version": .int(Int64(d.version))])
-        }
-        if path.count == 3, path[2] == "claim", r.method == "POST" {
-            guard session.kind == .workspace, var versions = drops[id], var v = versions.last else { return refuse(403, .notEligible) }
-            guard v.parsed.recipients == .inbox else { return refuse(403, .notEligible) }
-            guard let claim = try? StrictJSON.parse(r.body, maxBytes: 64 << 10) else { return refuse(400, .malformed) }
-            guard claim.object?["o"]?.object?["workspace_id"] == .string(session.id.hex) else { return refuse(403, .notEligible) }
-            var stored = DropClaim.Stored(object: id, version: v.parsed.version, state: claims[id].map { .claimed(by: $0) } ?? .inbox, wraps: v.wraps)
-            let result = DropClaim.check(stored: &stored, claim: claim, cards: workspaces.compactMapValues { $0.card?.wsk }, epochs: workspaces.compactMapValues { $0.currentEpoch })
-            if result.status == 200 {
-                claims[id] = result.claimedBy
-                for i in versions.indices { versions[i].wraps = [] }
-                v.wraps = stored.wraps; versions[versions.count - 1] = v; drops[id] = versions
-            }
-            var fields: [String: JSONValue] = [:]
-            if let e = result.error { fields["error"] = .string(e) }
-            if let by = result.claimedBy { fields["claimed_by"] = .string(by.hex) }
-            else if result.error == "already_claimed" { fields["claimed_by"] = .null }      // section 14: `claimed_by` is always present
-            return result.status == 200 ? json(200, fields) : try WireReply(status: result.status, body: canonicalJSON(.object(fields)))
-        }
-        guard path.count == 5, path[2] == "versions", r.method == "GET", let n = HostAPI.parseDecimal(path[3]), n > 0,
-              let versions = drops[id], n <= versions.count else { return refuse(404, .notFound) }
-        let v = versions[Int(n) - 1]
-        guard dropVisible(v, session) else { return refuse(403, .notEligible) }
-        switch path[4] {
-        case "descriptor": return json(200, ["descriptor": v.descriptor])
-        case "wraps": return json(200, ["wraps": .array(v.wraps.map(\.json)), "claimed_by": claims[id].map { .string($0.hex) } ?? .null])
-        case "blob": return try WireReply(status: 200, headers: [:], body: v.blob)
-        default: return refuse(404, .notFound)
-        }
-    }
-
-    func rewrapSource(object: ID16, version: UInt32, workspace: ID16, token: String) throws -> (DropDescriptor, [DropWrapRecord]) {
-        guard try workspaceSession(token) == workspace, let versions = drops[object], version > 0, version <= versions.count else { throw DropError.unauthorized }
-        let v = versions[Int(version) - 1]
-        let addressed = v.parsed.space == workspace || (v.parsed.recipients == .inbox && v.wraps.contains { $0.targetKind == .wxk && $0.target == workspace })
-        guard (claims[object].map { $0 == workspace } ?? addressed), v.parsed.expiresMs.map({ $0 > wall.nowMs }) ?? true else { throw DropError.unauthorized }
-        if case .ids(let ids) = v.parsed.recipients, !ids.contains(workspace) { throw DropError.unauthorized }
-        return (v.parsed, v.wraps)
-    }
-
-    func putRewrap(_ wrap: DropWrapRecord, token: String) throws {
-        let ws = try workspaceSession(token)
-        let (descriptor, _) = try rewrapSource(object: wrap.object, version: wrap.version, workspace: ws, token: token)
-        guard descriptor.recipients != .inbox || claims[wrap.object] == ws else { throw DropError.unavailableKey }
-        guard wrap.targetKind == .wk, wrap.target == ws, wrap.keyVersion == workspaces[ws]?.currentEpoch else { throw Refusal.malformed }
-        let i = Int(wrap.version) - 1
-        drops[wrap.object]?[i].wraps.removeAll { $0.targetKind == .wk && $0.target == ws && $0.keyVersion == wrap.keyVersion }
-        drops[wrap.object]?[i].wraps.append(wrap)
     }
 }
