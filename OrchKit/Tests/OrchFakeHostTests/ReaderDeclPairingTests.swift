@@ -98,3 +98,119 @@ import OrchProtocol
         #expect(ReaderGate.rd(st) == nil)
     }
 }
+
+/// H12d persistence rules after the join: the downgrade refusal (O3), the re-declaration on a new build (O5) and `rd` (protocol 8.6).
+@Suite struct ReaderStateRulesTests {
+    private func joined(build: String = ReaderDeclPairingTests.build) async throws -> PairHarness {
+        let h = try await ReaderDeclPairingTests.harness()
+        try await h.completeFirstTime()
+        await h.env.context.shutdownParticipants()
+        return h
+    }
+
+    private func restoreConfig(_ h: PairHarness, _ reader: ReaderRuntime) -> RestoreConfig {
+        RestoreConfig(context: h.env.context, transport: h.env.transport, index: h.env.index, vault: h.vault, custody: h.custody, clock: h.clock,
+                      wall: h.clock, reader: reader)
+    }
+
+    private func level(_ l: Int, build: String = ReaderDeclPairingTests.build) -> ReaderRuntime {
+        ReaderRuntime(capability: l == 0 ? nil : ReaderKAT.current, build: build)
+    }
+
+    @Test func aBuildBelowTheMarkerRefusesToOpenTheWorkspace() async throws {
+        let h = try await joined()
+        let out = try await WorkspaceRestoration.restore(restoreConfig(h, level(0)))
+        #expect(out.handles.isEmpty && out.skipped.map(\.reason) == [ReaderGate.skipReason])
+        #expect(ReaderGate.updateMessage == "Update orch to open this workspace")
+        // the workspace is kept (nothing erased), and a build at the marker's level opens it
+        #expect(try await h.env.index.workspaces().count == 1)
+        let ok = try await WorkspaceRestoration.restore(restoreConfig(h, level(1)))
+        #expect(ok.handles.count == 1 && ok.skipped.isEmpty)
+        await h.env.context.shutdownParticipants()
+    }
+
+    @Test func aSessionBuiltDirectlyBelowTheMarkerIsRefused() async throws {
+        let h = try await joined()
+        let ok = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, level(1))).handles.first)
+        var cfg = ok.joined.session.configuration
+        cfg.reader = level(0)
+        await #expect(throws: SessionError.readerDowngrade) { _ = try await WorkspaceSession(cfg) }
+        await h.env.context.shutdownParticipants()
+    }
+
+    @Test func theMarkerNeverFallsAndAnUnreadableOneFailsClosed() async throws {
+        let h = try await joined()
+        let vault = h.vault.scoped(to: .demo)
+        let st = try #require(try ReaderStore.load(vault, ws: h.host.workspace))
+        // a later lower-level state (a level-0 declaration after a failed KAT) does not lower the highest level
+        let id = try h.env.context.deviceIdentity(custody: h.custody, createIfMissing: false)
+        let zero = try ReaderDeclaration.make(workspace: h.host.workspace, dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx,
+                                              who: .person(Identifiers.personID(await h.primary.publicKey)), level: 0, kat: [:], bind: .declare,
+                                              createdMs: 1, signer: id.sig)
+        let lowered = st.recording(zero, build: "0.9 (1)", acked: false)
+        #expect(lowered.highest == 1)
+        try vault.put(Data("not json".utf8), ws: h.host.workspace.hex, purpose: "reader.state")
+        let out = try await WorkspaceRestoration.restore(restoreConfig(h, level(1)))
+        #expect(out.handles.isEmpty && out.skipped.map(\.reason) == ["reader_state"])
+    }
+
+    @Test func aNewBuildDeclaresAgainBeforeAnyOtherOp() async throws {
+        let h = try await joined()
+        let first = try #require(try ReaderStore.load(h.vault.scoped(to: .demo), ws: h.host.workspace)?.decl)
+        // same build, acknowledged: nothing to declare
+        let same = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, level(1))).handles.first).joined.session
+        #expect(try await same.readerDeclareRequest() == nil)
+        await h.env.context.shutdownParticipants()
+        // a new build: a fresh `via:"declare"` declaration, persisted unacknowledged, the marker kept
+        let newBuild = level(1, build: "1.1 (8)")
+        let handle = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, newBuild)).handles.first)
+        let session = handle.joined.session
+        let req = try #require(try await session.readerDeclareRequest())
+        #expect(req.declaration.via == "declare" && req.declaration.digest != first.digest && req.declaration.level == 1)
+        #expect(req.meta == ["op": "reader.declare", "reader_decl": req.declaration.json])
+        let idk = try h.env.context.deviceIdentity(custody: h.custody, createIfMissing: false)
+        var ctx = ReaderDecl.Context(workspace: h.host.workspace, dkSig: idk.publicKeys.sig, dkKx: idk.publicKeys.kx,
+                                     who: .person(Identifiers.personID(await h.primary.publicKey)), bind: .declare)
+        ctx.expectedKAT = [1: ["view": ReaderKAT.expectedView1]]
+        #expect(ReaderDecl.check(req.declaration.json, ctx) == .success(1))
+        let st = try #require(try await session.readerState())
+        #expect(!st.acked && st.build == "1.1 (8)" && st.highest == 1 && st.decl == req.declaration)
+        // a retry re-sends the stored bytes; once acknowledged nothing is due
+        #expect(try await session.readerDeclareRequest()?.declaration.bytes == req.declaration.bytes)
+        try await session.readerDeclareAcknowledged()
+        #expect(try await session.readerDeclareRequest() == nil)
+        #expect(try await session.currentReaderDigest() == req.declaration.digest)
+        await h.env.context.shutdownParticipants()
+    }
+
+    @Test func requestsWaitForTheDeclarationOnceRdIsSwitchedOn() async throws {
+        let h = try await joined()
+        let handle = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, level(1, build: "2.0 (1)"))).handles.first)
+        var cfg = handle.joined.session.configuration
+        cfg.sendsReaderDigest = true
+        await h.env.context.shutdownParticipants()
+        let s = try await WorkspaceSession(cfg)
+        await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.readerDigestForRequest() }
+        _ = try await s.readerDeclareRequest()
+        try await s.readerDeclareAcknowledged()
+        #expect(try await s.readerDigestForRequest() == (try await s.currentReaderDigest()))
+        // with the switch off (today) no request carries `rd` and nothing waits
+        var off = cfg; off.sendsReaderDigest = false
+        await h.env.context.shutdownParticipants()
+        let t = try await WorkspaceSession(off)
+        #expect(try await t.readerDigestForRequest() == nil)
+        await h.env.context.shutdownParticipants()
+    }
+
+    @Test func rdIsInjectedOnceIntoTheSealedMetaAndIsStable() throws {
+        let rd = "sha256:" + String(repeating: "a", count: 64)
+        let plain = try Bridge.frame(meta: ["op": "http", "method": "GET", "path": "/api/status"], data: Data("x".utf8))
+        let with = try ReaderRD.inject(into: plain, rd: rd)
+        let (meta, data) = try Bridge.unframe(with)
+        #expect(meta.object?["rd"] == .string(rd) && meta.object?["op"] == "http" && data == Data("x".utf8))
+        // idempotent and first-wins (a re-seal of a request keeps its first rd); nil rd leaves the bytes alone
+        #expect(try ReaderRD.inject(into: with, rd: "sha256:" + String(repeating: "b", count: 64)) == with)
+        #expect(try ReaderRD.inject(into: plain, rd: nil) == plain)
+        #expect(try ReaderRD.inject(into: plain, rd: rd) == with)
+    }
+}

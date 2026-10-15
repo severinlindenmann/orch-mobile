@@ -1391,12 +1391,15 @@ extension WorkspaceSession {
 extension WorkspaceSession {
     /// `rd` for the next column-R request: the digest of this device's current declaration. nil while R2 has not switched
     /// `sendsReaderDigest` on, or before any declaration. With the switch on, a new build must have declared first (O5).
-    func readerDigestForRequest() throws -> String? {
+    package func readerDigestForRequest() throws -> String? {
         guard cfg.sendsReaderDigest else { return nil }
         let state = try ReaderStore.load(cfg.vault, ws: cfg.workspace)
         if ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
         return ReaderGate.rd(state)
     }
+
+    /// Tests: the session's configuration.
+    package nonisolated var configuration: WorkspaceSessionConfig { cfg }
 
     /// The stored reader state of this workspace (nil: none).
     package func readerState() throws -> ReaderStateRecord? { try ReaderStore.load(cfg.vault, ws: cfg.workspace) }
