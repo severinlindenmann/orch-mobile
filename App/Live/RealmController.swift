@@ -75,7 +75,7 @@ final class RealmController: RealmTransitions {
         let next = makeServices(options, defaults)
         replaceServices(with: next)
         transitionTask = Task { [weak self] in
-            await next.boot(enterDemo: true)
+            await next.boot(enterDemo: true, launch: false)
             guard let self else { return }
             self.transitionTask = nil
             guard self.services === next else { return }
@@ -103,7 +103,7 @@ final class RealmController: RealmTransitions {
             }
             let next = self.makeServices(self.options, self.defaults)
             self.replaceServices(with: next)
-            await next.boot()
+            await next.boot(launch: false)
             self.state = .welcome
             if thenDemo { self.realmEnterDemo() }
         }

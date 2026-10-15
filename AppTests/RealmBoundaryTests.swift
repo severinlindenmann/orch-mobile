@@ -192,4 +192,15 @@ final class RealmBoundaryTests: XCTestCase {
         XCTAssertFalse(controller.services === demo)
         XCTAssertEqual(attempts, 2)
     }
+
+    func testLeavingDemoLaunchedWithTheDemoFlagDoesNotReenterDemo() async {
+        let flagged = LaunchOptions.parse(arguments: ["--ui-testing", "--demo"], debug: true)
+        let controller = RealmController(options: flagged)
+        await controller.boot()
+        XCTAssertEqual(controller.state, .demo)
+        controller.realmLeave(thenDemo: false)
+        await controller.waitForTransition()
+        XCTAssertEqual(controller.state, .welcome)
+        XCTAssertFalse(controller.services.isDemo)
+    }
 }

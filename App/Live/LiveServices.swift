@@ -107,7 +107,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     // MARK: Boot
 
     /// `enterDemo`: the Welcome choice "Try Demo" (the controller boots a fresh realm for it) instead of a launch flag or persisted entry.
-    func boot(enterDemo: Bool = false) async {
+    /// `launch`: this is the app's first realm, so launch flags and the persisted Demo entry apply; a realm created by a later transition starts exactly as asked.
+    func boot(enterDemo: Bool = false, launch: Bool = true) async {
         guard !ready else { return }
         let defaults = UserDefaults.standard
         // Ticket drafts now live in the workspace directory; remove any older copy that outlived a Leave.
@@ -123,10 +124,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 PresentationGate.requireRebuild()
             }
         }
-        let persisted = !options.uiTesting && defaults.bool(forKey: Keys.demo)
-        if options.demo || persisted || enterDemo { _ = await startDemo() }
-        if options.demoSeed, isDemo { await seedDemoWorkspaces() }
-        await ensurePresentationGate(intendedDemo: options.demo || persisted)
+        let persisted = launch && !options.uiTesting && defaults.bool(forKey: Keys.demo)
+        let wantsDemo = (launch && options.demo) || persisted || enterDemo
+        if wantsDemo { _ = await startDemo() }
+        if launch, options.demoSeed, isDemo { await seedDemoWorkspaces() }
+        await ensurePresentationGate(intendedDemo: wantsDemo)
         // Demo boot retries owed purges itself, ordered after its stale purge; only a live start needs it here.
         if !isDemo { Task.detached { await SystemDemoNotifications().retryOwedPurges() } }
         ready = true
