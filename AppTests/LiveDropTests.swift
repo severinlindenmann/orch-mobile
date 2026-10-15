@@ -32,6 +32,9 @@ final class LiveDropTests: XCTestCase {
         let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while drop.loading && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         guard !drop.loading else { throw Deadline() }
+        // Boot's foreground resumes the seeded uploads and only then refreshes, so `loading` can be false while an upload is still
+        // confirming. Settle them first: a test that counts confirmed uploads needs a quiet baseline (this raced on slow runners).
+        _ = try await drop.service.resumeUploads()
         await drop.refresh()
         XCTAssertFalse(drop.rows.isEmpty)
         return (services, drop)
