@@ -425,14 +425,16 @@ extension WorkspaceSession {
         reviews[s.token] = nil
         let reviewID = cfg.entropy.id16().hex
         // the tap's checks end here: its ticket (with the review's eligibility token) is what the signing transaction re-validates
-        guard let ticket = lifecycleFence.issue(review: reviewID) else { throw ViewError.invalidReview }
+        // a lock the custody reported is surfaced as the lock it is ("Unlock to continue"), not as an expired review
+        guard let ticket = lifecycleFence.issue(review: reviewID) else { throw lifecycleFence.isLocked ? CustodyError.locked : ViewError.invalidReview }
         do { try await beginAnswer(s, chosen: chosen.key, reviewID: reviewID, policy: policy, ticket: ticket) }
         catch {
             // nothing durable: no attempt was committed
             lifecycleFence.revoke(review: reviewID)
             noteIfLocked(error)
             switch error {
-            case WriteGateError.notCurrent, WriteGateError.lifecycleEnded: throw ViewError.invalidReview
+            case WriteGateError.notCurrent, WriteGateError.lifecycleEnded:
+                throw lifecycleFence.isLocked ? CustodyError.locked : ViewError.invalidReview
             default: throw error
             }
         }

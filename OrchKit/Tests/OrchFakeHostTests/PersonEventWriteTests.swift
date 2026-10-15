@@ -677,7 +677,11 @@ extension FakeHost {
     func aTapInvalidatedBeforeTheSignatureSignsNothing(_ how: String) async throws {
         let r = try await rig()
         await trip(r, at: "pe.presign") { Self.invalidate($0, how) }
-        await #expect(throws: ViewError.invalidReview) { _ = try await answer(r) }
+        do { _ = try await answer(r); Issue.record("signed") }
+        catch {
+            // a lock is surfaced as the lock it is; any other invalidation as an expired review
+            if how == "locked" { #expect(error as? CustodyError == .locked) } else { #expect(error as? ViewError == .invalidReview) }
+        }
         #expect(r.hooks.count("pe.sign") == 0)
         #expect(try await rows(r.p, "SELECT * FROM pe_attempts").isEmpty)
         #expect(r.ops.value("answer") == 0)
@@ -723,6 +727,21 @@ extension FakeHost {
         #expect(r.ops.value("answer") == 1)                     // the tap's only
         let auto = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts WHERE origin='auto'").first)
         #expect(auto.int("dispatched") == 1 && auto.text("state") == "sent")
+    }
+
+    /// A custody lock reported before the tap is surfaced as `CustodyError.locked` ("Unlock to continue"), signs nothing, and a new
+    /// review is the way back.
+    @Test func aLockIsSurfacedAndANewReviewIsTheWayBack() async throws {
+        let r = try await rig()
+        r.p.session.noteCustodyLocked()
+        await #expect(throws: CustodyError.locked) { _ = try await answer(r) }
+        #expect(r.hooks.count("pe.sign") == 0)
+        let fresh = try await r.w.serve(r.p) { try await r.api.review(questionID: r.snapshot.question.questionID) }
+        let s = try #require(fresh.snapshot)
+        let api = r.api
+        let out = try await r.w.serve(r.p, steps: 400) { try await api.answer(s, option: "approve") }
+        guard case .landed = out else { Issue.record("\(out)"); return }
+        #expect(r.hooks.count("pe.sign") == 1)
     }
 
     /// SH1: a lock inside the automatic re-sign (the signer refuses) ends the eligibility in the session itself; a later foreground

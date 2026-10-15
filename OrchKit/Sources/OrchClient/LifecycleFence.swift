@@ -92,6 +92,9 @@ package final class LifecycleFence: Sendable {
         }
     }
 
+    /// The custody reported a lock that no foreground or new review has cleared yet.
+    package var isLocked: Bool { state.withLock { !$0.unlocked } }
+
     package func revoke(review: String) { state.withLock { _ = $0.eligibility.removeValue(forKey: review) } }
     package func hasEligibility(review: String) -> Bool { state.withLock { $0.eligibility[review] != nil } }
 }
