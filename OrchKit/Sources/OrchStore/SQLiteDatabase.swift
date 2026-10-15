@@ -96,9 +96,17 @@ final class SQLiteHandle: @unchecked Sendable {
             // and finally the statement must report itself read-only.
             let head = sql.drop(while: \.isWhitespace).prefix(6).uppercased()
             guard head.hasPrefix("SELECT") || head.hasPrefix("WITH") else { throw SQLiteError.misuse("query is not read-only") }
-            sqlite3_set_authorizer(db, { _, action, _, _, _, _ in
+            sqlite3_set_authorizer(db, { _, action, a1, _, _, _ in
                 switch action {
-                case SQLITE_TRANSACTION, SQLITE_SAVEPOINT, SQLITE_ATTACH, SQLITE_DETACH: return SQLITE_DENY
+                case SQLITE_TRANSACTION, SQLITE_SAVEPOINT, SQLITE_ATTACH, SQLITE_DETACH, SQLITE_ANALYZE: return SQLITE_DENY
+                case SQLITE_PRAGMA:
+                    // arg1 is the pragma name: only read-only ones (pragma_optimize(0x10002) would ANALYZE and write)
+                    let allowed: Set<String> = ["table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "journal_mode", "page_count",
+                                                "page_size", "user_version", "schema_version", "foreign_key_list", "foreign_key_check",
+                                                "integrity_check", "quick_check", "freelist_count"]
+                    guard let name = a1.map({ String(cString: $0).lowercased() }), allowed.contains(name) else { return SQLITE_DENY }
+                    // an assignment form carries a value (arg2); the table-valued function form of a read-only pragma may carry an argument
+                    return SQLITE_OK
                 default: return SQLITE_OK
                 }
             }, nil)

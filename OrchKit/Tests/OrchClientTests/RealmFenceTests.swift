@@ -159,9 +159,10 @@ import OrchStore
         await #expect(throws: (any Error).self) { _ = try await db.query("INSERT INTO t(a) VALUES(1)") }
         #expect(try await db.query("SELECT a FROM t").isEmpty)
         for bad in ["BEGIN", "PRAGMA user_version=1", "PRAGMA user_version", "ATTACH DATABASE ':memory:' AS x", "SAVEPOINT s", "DELETE FROM t",
-                    "WITH x AS (SELECT 1) INSERT INTO t(a) SELECT * FROM x"] {
+                    "WITH x AS (SELECT 1) INSERT INTO t(a) SELECT * FROM x", "SELECT * FROM pragma_optimize(0x10002)"] {
             await #expect(throws: (any Error).self, "\(bad)") { _ = try await db.query(bad) }
         }
+        #expect(try await db.query("SELECT name FROM sqlite_master WHERE name='sqlite_stat1'").isEmpty)
         #expect(try await db.query("WITH x(a) AS (SELECT 1) SELECT a FROM x").count == 1)
         #expect(try await db.query("SELECT * FROM pragma_journal_mode").count == 1)
         try await db.execute("INSERT INTO t(a) VALUES(2)")          // the connection is not left in a denied state
