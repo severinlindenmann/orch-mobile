@@ -35,30 +35,39 @@ struct OrchApp: App {
     }
 }
 
-/// Starts the real service layer, then shows Home. Nothing is drawn from it before it is ready, so a debug route resolves against real data.
+/// Starts the real service layer through the `RealmController`, then shows Home. Nothing is drawn from it before it is ready, so a debug
+/// route resolves against real data. A realm transition replaces the whole Home view graph (`epoch`), including navigation and sheets.
 struct AppRoot: View {
     let options: LaunchOptions
-    @State private var services: LiveServices
+    @State private var realm: RealmController
     /// Parsed exactly once, after boot: a route's side effects (e.g. the Demo sign outcome) must not repeat on every body pass.
     @State private var initial: InitialRoute?
 
     init(options: LaunchOptions) {
         self.options = options
-        _services = State(initialValue: LiveServices(options: options))
+        _realm = State(initialValue: RealmController(options: options))
     }
 
     var body: some View {
         Group {
-            if services.ready, let initial {
-                HomeScreen(services: services, options: options, initial: initial)
+            if realm.booted, let initial, realm.state != .leaving, realm.state != .starting {
+                // Only the first realm gets the launch route; a realm entered later starts at its own Home.
+                HomeScreen(services: realm.services, options: options, initial: realm.epoch == 0 ? initial : InitialRoute())
+                    .id(realm.epoch)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(OC.bg)
                     .accessibilityIdentifier("app.starting")
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let notice = realm.notice {
+                Text(notice).font(.footnote).padding(8).frame(maxWidth: .infinity).background(OC.bg)
+                    .accessibilityIdentifier("realm.notice")
+            }
+        }
         .task {
-            await services.boot()
-            if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: services) }
+            await realm.boot()
+            if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: realm.services) }
         }
     }
 }

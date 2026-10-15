@@ -344,3 +344,7 @@ phone keeps polling the same rid after 202/429, treats the relay's `stale_epoch`
   fake answers long polls at once (only the limit knobs refuse); holder generations are seeded (the FakeHost does not
   `hold`) and acknowledge via `pendingRequests(after:)`. The FakeHost tolerates (and counts) only a re-sealed REFUSAL chunk
   that the relay refuses as `chunk_conflict`; any other refused chunk fails the pass.
+
+## Share fence: stale mark can fail (PR #69, residual)
+
+If a fence step fails at leave and `recordPublishSkipped` then cannot write the stale mark (data protection before first unlock, an io error), the index keeps unmarked entries with no tombstone until the next successful publish or boot replay. The status file records "mark failed". At leave time the phone is unlocked, so the realistic case is a boot before first unlock. Accepted residual risk; revisit if the share extension ever runs before first unlock.

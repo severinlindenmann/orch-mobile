@@ -11,6 +11,8 @@ import OrchUI
 @MainActor @Observable
 final class LivePairingModel: PairingFlowModel {
     private let services: LiveServices
+    /// The realm this pairing started in. A join completing after that realm was left is dropped by the services.
+    private let lifetime: RealmLifetime
     private(set) var state: PairingState = .entry
     private(set) var demoHostCode = ""
     private(set) var demoPrimaryCertCode = ""
@@ -39,6 +41,7 @@ final class LivePairingModel: PairingFlowModel {
 
     init(services: LiveServices, start: PairingState?) {
         self.services = services
+        self.lifetime = services.lifetime
         if let start, case .entry = start { state = .entry }
     }
 
@@ -154,7 +157,7 @@ final class LivePairingModel: PairingFlowModel {
 
     // MARK: State mapping
 
-    private func apply(_ s: OrchClient.PairingState, runtime: DemoRuntime) {
+    private func apply(_ s: OrchClient.PairingState, runtime: any RealmRuntime) {
         switch s {
         case .idle, .parsing: break
         case .connecting: state = .connecting
@@ -170,7 +173,7 @@ final class LivePairingModel: PairingFlowModel {
         case .ready(let handle):
             if !joinedReported {
                 joinedReported = true
-                services.workspaceJoined(handle)
+                services.workspaceJoined(handle, lifetime: lifetime)
             }
             panelTask?.cancel()
             state = .ready(workspaceName: handle.joined.name)

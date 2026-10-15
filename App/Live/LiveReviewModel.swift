@@ -11,6 +11,8 @@ import OrchProtocol
 final class LiveReviewModel: QuestionReviewModel {
     private let services: LiveServices
     private let workspace: LiveWorkspace
+    /// The realm this review was issued in: a completion after the realm was left signs, stores and applies nothing.
+    private let lifetime: RealmLifetime
     private let questionID: String
     private var optionID: String
     @ObservationIgnored private var issued: QuestionReview?
@@ -22,7 +24,7 @@ final class LiveReviewModel: QuestionReviewModel {
     private(set) var phase: SignPhase = .ready
 
     init(services: LiveServices, workspace: LiveWorkspace, questionID: String, optionID: String) {
-        self.services = services; self.workspace = workspace; self.questionID = questionID; self.optionID = optionID
+        self.services = services; self.lifetime = services.lifetime; self.workspace = workspace; self.questionID = questionID; self.optionID = optionID
         // U8: reopening an unresolved submission shows exactly what was signed, never re-derived, and never offers to sign again.
         if let pending = services.pendingDecisions.first(where: { $0.questionID == questionID && $0.outcome != .resolved }) {
             self.optionID = pending.optionID
@@ -65,16 +67,18 @@ final class LiveReviewModel: QuestionReviewModel {
     }
 
     func sign() async {
-        guard workspace.usable, phase == .ready, let issued, let review, review.optionsRefusal == nil else { return }
+        guard lifetime.isActive, workspace.usable, phase == .ready, let issued, let review, review.optionsRefusal == nil else { return }
         phase = .sending
         self.issued = nil              // one review, one signature: it is consumed by this call
         services.recordSubmission(review)
         await services.applyDemoSignControl(workspace: workspace, questionID: questionID, optionID: optionID)
-        guard workspace.usable else { phase = .invalidated; return }
+        guard workspace.usable, lifetime.isActive else { phase = .invalidated; return }
         do {
             let outcome = try await workspace.api.decide(issued, optionID: optionID)
+            guard lifetime.isActive else { phase = .invalidated; return }
             await apply(outcome)
         } catch let e as CustodyError {
+            guard lifetime.isActive else { phase = .invalidated; return }
             switch e {
             case .locked: phase = .unlockToContinue
             default: phase = .custodyUnavailable
@@ -82,6 +86,7 @@ final class LiveReviewModel: QuestionReviewModel {
         } catch ViewError.invalidReview {
             phase = .invalidated
         } catch {
+            guard lifetime.isActive else { phase = .invalidated; return }
             workspace.noteKeyAlarm(error)
             // Post-persist failures leave a stored submission that must be reconciled; pre-persist ones signed nothing.
             if let status = await services.storedDecision(workspace: workspace, questionID: questionID) {

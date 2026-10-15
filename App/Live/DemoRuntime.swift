@@ -10,7 +10,7 @@ import OrchStore
 /// talks to them through the real `PairingCoordinator` and `WorkspaceSession`. One shared Demo clock (a `TestClock` driven by a real-time
 /// ticker) lets the Demo panels fast-forward expiry; nothing here approves anything: every human decision is an explicit call.
 @MainActor
-final class DemoRuntime {
+final class DemoRuntime: DemoControls {
     enum Kind: Int, CaseIterable {
         case laptop, clientVM, lab
         var name: String { switch self { case .laptop: "Laptop"; case .clientVM: "Client VM"; case .lab: "Demo Lab" } }
@@ -40,6 +40,9 @@ final class DemoRuntime {
         let entry: Entry
     }
 
+    var realm: Realm { .demo }
+    var capabilities: RealmCapabilities = .demo
+    var nowMs: Int64 { clock.nowMs }
     let notifications: DemoNotifications
     let clock: TestClock
     let faults: ScriptedFaults
@@ -132,6 +135,8 @@ final class DemoRuntime {
 
     /// "Leave Demo" / "Reset this iPhone": the real reset path (generation invalidated, relay dropped, workspaces wiped, realm directory,
     /// Demo device keys and Demo vault items removed). Only the Demo realm.
+    func shutdown() async throws { try await reset() }
+
     func reset() async throws {
         ticker?.cancel(); ticker = nil
         await notifications.purge()
@@ -219,6 +224,20 @@ final class DemoRuntime {
     }
 
     func entry(for workspace: ID16) -> Entry? { entries[workspace] }
+
+    func markJoined(_ workspace: ID16) { entries[workspace]?.joined = true }
+
+    /// Demo boot wipes the previous realm (the fakes' authority keys live only in memory), so there is never anything to restore.
+    func restoreWorkspaces() async throws -> [JoinedHandle] { [] }
+
+    func seedDropFixture(into drop: LiveDrop, workspace: ID16) async {
+        guard entries[workspace]?.kind == .laptop else { return }
+        do {
+            let object = try await DemoSetup.seedDropSending(drop.service)
+            guard drop.usable else { return }
+            drop.aliases[object.descriptor.object.hex] = "d-sending"
+        } catch { if drop.usable { drop.report(error) } }
+    }
 
     func forget(_ workspace: ID16) { entries[workspace] = nil }
 
