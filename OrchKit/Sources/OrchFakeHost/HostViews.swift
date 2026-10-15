@@ -285,7 +285,6 @@ extension FakeHost {
             .response(status: status, headers: ["content-type": "application/json"], data: (try? canonicalJSON(v)) ?? Data())
         }
         switch op {
-        case "decision": return legacyDecision(req, m)          // removed with the v0 session path (this increment, last step)
         case "new_ticket" where m["creation_id"] != nil: return legacyNewTicket(req, m)
         case "http":
             guard req.data.isEmpty else { return .refuse(.malformed) }
@@ -309,37 +308,6 @@ extension FakeHost {
             }
             return read(checked.op, args: checked.args, device: req.device, scopes: req.scopes)
         }
-    }
-
-    /// INTERIM (until C2b's `relay.submit`): the v0 detached `decision` still answers a question in Demo. The answer is recorded the way R2
-    /// records it: by this device, as the person's counting `question.answered`.
-    private func legacyDecision(_ req: HostRequest, _ m: [String: JSONValue]) -> HostReply {
-        // `rd` is a sibling of `op` in the sealed meta and outside what the detached signature covers
-        var stripped = m; stripped["rd"] = nil
-        guard let key = core.devicePubs[req.device] else { return .refuse(.badSignature) }
-        do { try Decisions.verifyOp(.object(stripped), workspace: workspace, deviceKey: key) }
-        catch Refusal.malformed { return .refuse(.malformed) }
-        catch { return .refuse(.badSignature) }
-        guard let qid = m.idField("question_id"), let i = questionIndex(qid) else { return .refuse(.malformed) }
-        var q = viewState!.questions[i]
-        if let a = q.answer {
-            return .refuse(.alreadyAnswered(byDeviceLabel: label(ofSigner: a.signerDevice), atMs: a.atMs))
-        }
-        let current = String(hash(q).dropFirst("sha256:".count))
-        guard let want = m["content_hash"]?.string.flatMap({ B64U.decode($0, length: 32) }), Hex.encode(want) == current else {
-            return .refuse(.questionChanged(contentHash: Hex.decode(current, length: 32) ?? Data(count: 32)))
-        }
-        guard let answer = m["answer"]?.object, answer.exactly(["option_id"]), let option = answer["option_id"]?.string,
-              q.options.contains(where: { $0.key.utf8Equal(option) }) else { return .refuse(.malformed) }
-        let now = wall.nowMs
-        let key2 = ticketKey(q)
-        viewState!.touch(key2, type: "question.answered", at: now)
-        let seq = viewState!.tickets.first { $0.key == key2 }!.headSeq
-        q.answer = FakeAnswer(atMs: now, seq: seq, option: option, text: nil, id: HostViewState.newULID(entropy, now), signerDevice: "d_" + req.device.hex,
-                              auth: "secure-enclave-unlocked")
-        viewState!.questions[i] = q
-        return .response(status: 200, headers: ["content-type": "application/json"],
-                         data: (try? canonicalJSON(["host_api": 0, "decision_id": m["decision_id"]!])) ?? Data())
     }
 
     func label(ofSigner device: String) -> String {

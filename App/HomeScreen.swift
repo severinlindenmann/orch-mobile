@@ -384,7 +384,7 @@ struct HomeContent: View {
             VStack(alignment: .leading, spacing: OS.s3) {
                 header
                 if home.needsYouCount > 0, let oldest = home.oldestWaiting { needsYouStrip(oldest) }
-                ForEach(home.pendingDecisions) { d in pendingRow(d) }
+                ForEach(home.pendingWrites) { d in pendingRow(d) }
                 SkippedWorkspacesRow(count: home.skippedWorkspaceCount, onSettings: { path.append(.settings) })
                 if let notice = home.liveNotice { Text(verbatim: notice).font(OF.meta).foregroundStyle(OC.textMuted) }
                 Text(verbatim: "Last checked \(Fmt.relative(home.lastChecked))")
@@ -488,15 +488,14 @@ struct HomeContent: View {
         .accessibilityHint("Opens the list of waiting questions")
     }
 
-    private func pendingRow(_ d: DecisionStatus) -> some View {
+    private func pendingRow(_ d: PendingWrite) -> some View {
         NavigationLink(value: Route.question(workspace: d.workspaceID, id: d.questionID, autoSign: false)) {
             cardLayout {
-                let retry = d.outcome == .needsRetry
-                Image(systemName: retry ? "exclamationmark.arrow.circlepath" : "clock.arrow.circlepath").foregroundStyle(retry ? OC.warn : OC.info)
+                Image(systemName: "clock.arrow.circlepath").foregroundStyle(OC.info)
                 VStack(alignment: .leading, spacing: OS.s1) {
-                    Text(retry ? "Your answer was not delivered" : "Checking whether your answer was received")
-                        .font(OF.section).foregroundStyle(retry ? OC.warn : OC.info)
-                    Text(retry ? "Tap to send it again" : "Tap to see where it stands").font(OF.meta).foregroundStyle(OC.textMuted)
+                    Text(d.state == .sending ? "Sending your answer" : "Checking whether your answer was received")
+                        .font(OF.section).foregroundStyle(OC.info)
+                    Text("Tap to see where it stands").font(OF.meta).foregroundStyle(OC.textMuted)
                 }
                 if !typeSize.isAccessibilitySize {
                     Spacer(minLength: 0)

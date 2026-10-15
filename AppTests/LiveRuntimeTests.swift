@@ -38,12 +38,11 @@ private actor DraftStub: WorkspaceAPI {
     func setForeground(_ value: Bool) {}
     func refreshViews() async {}
     func invalidateReviews() {}
-    func reconcile(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
-    func retry(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
+    func settle(reviewID: String) throws -> WriteOutcome { throw ViewError.offline }
     func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
     func review(questionID: ID16) throws -> QuestionReview { throw ViewError.offline }
-    func decide(_ review: QuestionReview, optionID: String) throws -> DecisionOutcome { throw ViewError.offline }
-    func pendingDecisions() -> [OrchClient.DecisionStatus] { [] }
+    func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
+    func pendingWrites() -> [WriteStatus] { [] }
     func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket { submissions += 1; throw ViewError.offline }
     func events() async -> AsyncStream<WorkspaceEvent> { AsyncStream { $0.finish() } }
 }
@@ -598,7 +597,7 @@ final class LiveRuntimeTests: XCTestCase {
     func testBeginLeaveCancelsReconcileTasks() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, ws, _) = try pushServices(rig)
-        services.startReconcile(workspace: ws, decisionID: SystemEntropy().id16())
+        services.startReconcile(workspace: ws, reviewID: SystemEntropy().id16().hex)
         XCTAssertEqual(services.reconcileTaskCount, 1)
         XCTAssertTrue(services.beginLeave())
         // ordering: everything below holds right after the synchronous call, before any await

@@ -312,7 +312,6 @@ extension FakeHost {
     private func requiredScope(_ op: String, meta: JSONValue) -> String?? {
         switch op {
         case "http", "drop_rewrap": return .some("look")
-        case "decision": return .some("decide")
         case "new_ticket", "member_remove", "drop_claim": return .some("operate")
         case "revocation": return .some(nil)           // authority is PK's signature, not a scope
         default: return R2.allOps[op] != nil ? .some(nil) : nil     // an R2 op checks its own scope in `handleView`; anything else is unknown

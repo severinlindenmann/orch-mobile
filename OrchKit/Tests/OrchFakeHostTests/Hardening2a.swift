@@ -144,7 +144,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let phone = try await w.makePhone()
         let s = phone.session
         faults.enqueue(.disconnect, at: .pollDelivery)
-        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: ["op": "decision", "x": 1]) }
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: ["op": "http", "x": 1]) }
         let p = try await s.pendingRequests()[0]
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         #expect(counter.value == 1)
@@ -158,7 +158,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(try await s.pendingRequests().isEmpty)
         let u = try await s.uncertainRequests()
         #expect(u.count == 1 && u[0].logical == p.logical && u[0].rid == p.rid && u[0].seq == p.seq)
-        #expect(try Bridge.unframe(u[0].plaintext).0 == ["op": "decision", "x": 1])
+        #expect(try Bridge.unframe(u[0].plaintext).0 == ["op": "http", "x": 1])
         let again = try await w.makePhone(install: false)
         #expect(try await again.session.uncertainRequests() == u)
         await #expect(throws: SessionError.unknownRequest) { _ = try await again.session.resend(rid: ID16.fresh(9)) }

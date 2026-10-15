@@ -139,17 +139,4 @@ extension FakeHost {
             return .refuse(.malformed)
         }
     }
-
-    /// The host applies the next decision it receives but the response is lost on its way back (the phone's outcome is `uncertain`).
-    public func demoLoseNextDecisionResponse(faults: ScriptedFaults) {
-        handler = { [weak self] req in
-            guard let self else { return .refuse(.malformed) }
-            let reply = await self.handleView(req)
-            if req.meta.object?["op"] == "decision" {
-                faults.enqueue(.disconnect, at: .pollDelivery)
-                await self.clearHandler()
-            }
-            return reply
-        }
-    }
 }

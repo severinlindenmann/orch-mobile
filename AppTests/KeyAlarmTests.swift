@@ -14,12 +14,11 @@ private actor AlarmedWorkspace: WorkspaceAPI {
     func setForeground(_ value: Bool) {}
     func refreshViews() {}
     func invalidateReviews() {}
-    func reconcile(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
-    func retry(decisionID: ID16) throws -> DecisionOutcome { throw Refusal.wkCommitConflict }
+    func settle(reviewID: String) throws -> WriteOutcome { throw Refusal.wkCommitConflict }
     func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
     func review(questionID: ID16) throws -> QuestionReview { throw Refusal.wkCommitConflict }
-    func decide(_ review: QuestionReview, optionID: String) throws -> DecisionOutcome { throw Refusal.wkCommitConflict }
-    func pendingDecisions() -> [OrchClient.DecisionStatus] { [] }
+    func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw Refusal.wkCommitConflict }
+    func pendingWrites() -> [WriteStatus] { [] }
     func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket { throw SessionError.wkCommitMismatch(2) }
     func events() async -> AsyncStream<WorkspaceEvent> { AsyncStream { $0.finish() } }
     func keyAlarm() -> WorkspaceKeyAlarm? { alarm }

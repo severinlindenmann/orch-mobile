@@ -26,6 +26,7 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func writesAvailable() async -> Bool { await session.writesAvailable() }
     public func noteInactive() async { await session.noteInactive() }
     public func noteProtectedDataUnavailable() async { await session.noteProtectedDataUnavailable() }
+    public func noteCustodyLocked() async { await session.noteCustodyLocked() }
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     public func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket { try await session.createTicket(draft) }

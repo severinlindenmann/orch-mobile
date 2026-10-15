@@ -27,6 +27,7 @@ public protocol WorkspaceAPI: Sendable {
     /// Lifecycle signals that end the eligibility for an automatic re-sign (scenePhase inactive, protected data going away, custody lock).
     func noteInactive() async
     func noteProtectedDataUnavailable() async
+    func noteCustodyLocked() async
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket
@@ -40,6 +41,7 @@ extension WorkspaceAPI {
     public func writesAvailable() async -> Bool { false }
     public func noteInactive() async {}
     public func noteProtectedDataUnavailable() async {}
+    public func noteCustodyLocked() async {}
 }
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String)
     /// Writes from this phone are not offered (Live until C2b): nothing was signed, sealed or sent.

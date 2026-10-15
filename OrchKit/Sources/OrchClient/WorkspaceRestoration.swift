@@ -17,11 +17,14 @@ public struct RestoreConfig: Sendable {
     public var entropy: any Entropy
     /// H12d: the running build's runtime KAT result and identity.
     public var reader: ReaderRuntime
+    /// C2b: the Demo environment's write grant, handed to every restored session (nil in Live).
+    public var processLocalWriteGrant: ProcessLocalWriteGrant?
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
-                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), reader: ReaderRuntime = .production) {
+                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), reader: ReaderRuntime = .production,
+                processLocalWriteGrant: ProcessLocalWriteGrant? = nil) {
         self.context = context; self.transport = transport; self.index = index; self.vault = vault; self.custody = custody
-        self.clock = clock; self.wall = wall; self.entropy = entropy; self.reader = reader
+        self.clock = clock; self.wall = wall; self.entropy = entropy; self.reader = reader; self.processLocalWriteGrant = processLocalWriteGrant
     }
 }
 
@@ -99,7 +102,7 @@ public enum WorkspaceRestoration {
         let cfg = WorkspaceSessionConfig(context: c.context, workspace: ws, generation: row.generation, identity: identity, wsk: wsk,
                                          container: container, vault: c.vault.scoped(to: c.context.realm), transport: c.transport,
                                          clock: c.clock, wall: c.wall, entropy: c.entropy, reader: c.reader, sendsReaderDigest: true, blocksUntilDeclared: false,
-                                         enforcesOpTable: c.context.realm == .live)
+                                         enforcesOpTable: c.context.realm == .live, processLocalWriteGrant: c.processLocalWriteGrant)
         let session: WorkspaceSession
         do { session = try await WorkspaceSession(cfg) }
         catch { await container.close(); throw error }
