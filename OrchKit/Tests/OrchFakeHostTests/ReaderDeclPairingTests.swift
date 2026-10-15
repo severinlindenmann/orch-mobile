@@ -196,15 +196,36 @@ import OrchProtocol
     }
 
     @Test func aFastPhoneClockDoesNotMakeTheDeclarationFutureDated() async throws {
-        // 10 minutes fast: the first pair request is refused as stale and the offset adopted; the declaration is signed again with host time
+        // 10 minutes fast: the first pair request is refused as stale (proving nothing is stored), the offset is adopted and the
+        // declaration is signed again with host time
         let h = try await PairHarness.make(.firstTime, phoneSkewMs: 600_000, reader: ReaderRuntime(capability: ReaderKAT.current, build: ReaderDeclPairingTests.build))
-        _ = try await h.startToHostCode()
+        _ = await h.coordinator.start(link: try h.link(try await h.rig.newOffer()))
+        let initial = try #require(h.pairingRecord?.readerDecl)
+        #expect(initial.createdMs > h.clock.nowMs + 300_000)                  // as first built: future-dated for the host
+        _ = try await h.drive(until: isComparingHost)
         let rec = try #require(h.pairingRecord)
         let d = try #require(rec.readerDecl)
+        #expect(d.bytes != initial.bytes)
         let (stored, verdict) = try #require(await h.host.pairingReaderDecl(of: rec.deviceID))
-        #expect(verdict == .success(1) && stored == d.json)
+        #expect(verdict == .success(1) && stored == d.json)                     // the next request carried the corrected declaration
         #expect(d.createdMs <= h.clock.nowMs + 300_000 && abs(d.createdMs - h.clock.nowMs) < 120_000, "created \(d.createdMs) host \(h.clock.nowMs)")
         #expect(rec.offsetMs != 0)
+    }
+
+    @Test func aRestartWithTheClockMovedBackButNoStaleTimestampDoesNotSignAgain() async throws {
+        // 100 s fast: inside the host window, so no stale_timestamp. The phone clock then steps back (NTP) across a restart.
+        let h = try await PairHarness.make(.firstTime, phoneSkewMs: 100_000, reader: ReaderRuntime(capability: ReaderKAT.current, build: ReaderDeclPairingTests.build))
+        _ = await h.coordinator.start(link: try h.link(try await h.rig.newOffer()))
+        let d1 = try #require(h.pairingRecord?.readerDecl)
+        var cfg = h.config
+        cfg.wall = SkewedWall(base: h.clock, skewMs: 0)
+        let restarted = PairingCoordinator(cfg)
+        _ = await restarted.resume(ws: h.host.workspace)
+        await restarted.poll()
+        h.clock.advance(milliseconds: 20_000)
+        await restarted.poll()
+        let after = try #require(PairingRecord.decode(try h.vault.scoped(to: .demo).get(ws: h.host.workspace.hex, purpose: "pairing")))
+        #expect(after.readerDecl?.bytes == d1.bytes)
     }
 
     @Test func aNewBuildDeclaresAgainBeforeAnyOtherOp() async throws {

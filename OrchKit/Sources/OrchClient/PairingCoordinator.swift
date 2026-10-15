@@ -90,8 +90,6 @@ public actor PairingCoordinator: RealmParticipant {
     static let joinRetryWindowMs: Int64 = 600_000
     static let pairResendMs: Int64 = 15_000
     static let statusResendMs: Int64 = 30_000
-    /// A pair declaration is rebuilt when its `created_ms` is more than this far ahead of the corrected host time (the host refuses > 300 s).
-    static let readerClockSlackMs: Int64 = 60_000
 
     private let elapsedMs: @Sendable () -> Int64
     private var wallAnchorMs: Int64
@@ -574,15 +572,6 @@ public actor PairingCoordinator: RealmParticipant {
         // `pair` until a `pending` was accepted (that is what pins the host's nonce); a clock correction, which also teaches the
         // host's key, must be answered with another `pair`, not a `pair_status` for a pairing the host never saw
         let isPair = r.sasNonce == nil
-        // H12d: `created_ms` is ordered and bounded by the HOST clock (never more than 300 s ahead, for every `via`; core's verify_decl). A
-        // phone clock that runs fast is corrected by the first `stale_timestamp` (offset adopted). While no host has stored a declaration
-        // (no `pending` answer yet, `sasNonce == nil`), a declaration that is now ahead of the corrected host time is signed again with it.
-        // After a host stored one, the first stored declaration wins and nothing is rebuilt.
-        if isPair, let d = r.readerDecl, d.createdMs > saturatingAdd(now, r.offsetMs) + Self.readerClockSlackMs {
-            do {
-                r.readerDecl = try d.resigned(createdMs: max(saturatingAdd(now, r.offsetMs), 0), dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx, signer: id.sig)
-            } catch { _ = await finish(.failed(violation(error)), mine); return false }
-        }
         let op: PairingWire.Op = isPair ? .pair(label: r.label, cert: r.existingCert, readerDecl: r.readerDecl) : .status
         let rid = cfg.entropy.id16()
         do {
@@ -694,7 +683,16 @@ public actor PairingCoordinator: RealmParticipant {
         case .refusal(let code, _):
             if code == "stale_timestamp" {
                 if a.clockWrong { _ = await finish(.failed(.clockWrong), mine); return }
-                if let off = a.offsetMs, (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(off) { r.offsetMs = off; record = r; pinDeadlines(); nextPostMs = now; _ = await persist(mine); return }
+                if let off = a.offsetMs, (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(off) { r.offsetMs = off
+                    // H12d: a `stale_timestamp` refusal is checked before the host stores anything (protocol 8.3 step 3), so it PROVES no host
+                    // holds a declaration for this attempt. Only then is the pair declaration signed again with host time: `created_ms` is
+                    // ordered by the host clock and never accepted more than 300 s ahead. No clock heuristic decides this anywhere else,
+                    // because once a host stored one the first stored declaration wins and a different one would never match its `rd`.
+                    if r.sasNonce == nil, let d = r.readerDecl, let id = identity {
+                        do { r.readerDecl = try d.resigned(createdMs: max(saturatingAdd(now, off), 0), dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx, signer: id.sig) }
+                        catch { _ = await finish(.failed(violation(error)), mine); return }
+                    }
+                    record = r; pinDeadlines(); nextPostMs = now; _ = await persist(mine); return }
                 _ = await finish(.failed(.clockWrong), mine); return
             }
             switch code {
