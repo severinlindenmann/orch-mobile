@@ -266,10 +266,15 @@ import OrchProtocol
         let h = try await joined()
         let handle = try #require(try await WorkspaceRestoration.restore(restoreConfig(h, level(1, build: "2.0 (1)"))).handles.first)
         var cfg = handle.joined.session.configuration
-        cfg.sendsReaderDigest = true
+        // a restored session sends `rd` and does not wait for a declaration (H12d-3 is not built); the O5 gate stays available
+        #expect(cfg.sendsReaderDigest && !cfg.blocksUntilDeclared)
+        cfg.blocksUntilDeclared = true
         await h.env.context.shutdownParticipants()
         let s = try await WorkspaceSession(cfg)
         await #expect(throws: SessionError.readerDeclarationRequired) { _ = try await s.readerDigestForRequest() }
+        var relaxed = cfg; relaxed.blocksUntilDeclared = false
+        let r2 = try await WorkspaceSession(relaxed)
+        _ = try await r2.readerDigestForRequest()            // does not throw: reads are not blocked while no declaration can be sent
         _ = try await s.readerDeclareRequest()
         let r = try #require(try await s.readerDeclareRequest())
         #expect(try await s.readerDeclareAcknowledged(digest: r.declaration.digest))

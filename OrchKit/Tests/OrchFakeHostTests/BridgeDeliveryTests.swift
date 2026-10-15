@@ -429,7 +429,7 @@ import OrchStore
         #expect(stillPending.isEmpty)
         #expect(try await !p.session.isExhausted(id))
         let after = try await w.serve(p) { try await api.snapshot() }
-        #expect(after.revision == 2 && after.questions.filter { $0.resolution?.decisionID == id }.count == 1)
+        #expect(after.revision == 2 && after.questions.filter { $0.resolution?.byDeviceID == "d_" + w.phoneID.hex }.count == 1)
     }
 
     /// Security review F1 PoC: a crash between the attempt's `uncertain` and the decision's `exhausted` state used to let automatic

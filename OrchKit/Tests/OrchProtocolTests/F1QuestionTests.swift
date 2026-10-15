@@ -66,6 +66,18 @@ import Testing
         #expect(q.answer == nil)
     }
 
+    @Test func collidingOptionLabelsAreRefused() {
+        func with(_ a: String, _ b: String) -> JSONValue {
+            ticketGetQuestion(["options": [["key": "a", "label": .string(a)], ["key": "b", "label": .string(b)]], "recommended": "a"])
+        }
+        #expect((try? F1Question(with("Approve", "approve"))) == nil)               // case
+        #expect((try? F1Question(with("Caf\u{E9}", "Cafe\u{301}"))) == nil)          // NFC-equivalent
+        #expect((try? F1Question(with("Approve", "Reject"))) != nil)
+        // keys are byte-unique and an empty list stays allowed (a free-text question)
+        #expect((try? F1Question(ticketGetQuestion(["options": [["key": "a", "label": "A"], ["key": "a", "label": "B"]], "recommended": "a"]))) == nil)
+        #expect((try? F1Question(ticketGetQuestion(["options": []], drop: ["recommended"]))) != nil)
+    }
+
     @Test func optionsAbsentMeansEmpty() throws {
         let q = try F1Question(ticketGetQuestion(drop: ["options", "recommended"]))
         #expect(q.options.isEmpty)

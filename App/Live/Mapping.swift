@@ -39,7 +39,7 @@ enum Mapping {
         let r = q.resolution
         return question(id: q.questionID.hex, workspaceID: workspaceID, ticket: q.ticket, text: q.text,
                         options: q.options.map { QuestionOption(id: $0.id, label: $0.label) }, contentHash: hex(q.contentHash),
-                        createdMs: q.createdMs, state: q.state, decisionID: r?.decisionID.hex, optionID: answerOptionID(r?.answer),
+                        createdMs: q.createdMs, state: q.state, decisionID: r?.decisionID, optionID: answerOptionID(r?.answer),
                         byLabel: r?.byDeviceLabel, atMs: r?.atMs)
     }
 

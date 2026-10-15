@@ -98,7 +98,7 @@ public enum WorkspaceRestoration {
         let container = try await WorkspaceContainer(index: c.index, ws: row.ws, generation: row.generation, fence: c.context.generation)
         let cfg = WorkspaceSessionConfig(context: c.context, workspace: ws, generation: row.generation, identity: identity, wsk: wsk,
                                          container: container, vault: c.vault.scoped(to: c.context.realm), transport: c.transport,
-                                         clock: c.clock, wall: c.wall, entropy: c.entropy, reader: c.reader)
+                                         clock: c.clock, wall: c.wall, entropy: c.entropy, reader: c.reader, sendsReaderDigest: true, blocksUntilDeclared: false)
         let session: WorkspaceSession
         do { session = try await WorkspaceSession(cfg) }
         catch { await container.close(); throw error }

@@ -91,9 +91,13 @@ public struct WorkspaceSessionConfig: Sendable {
     public var longPollSeconds: Int?
     /// H12d: the running build's runtime KAT result and identity.
     public var reader: ReaderRuntime
-    /// TODO(R2, orch-core #467): the R2 framing wiring turns this on. While false no request carries `rd` and no op waits for a
-    /// `reader.declare` (the injection point is `prepare`, via `ReaderRD.inject`).
+    /// R2 (11A.5): the request meta's `rd` field. On for paired sessions (Live and Demo). While false no request carries `rd` (the injection
+    /// point is `prepare`, via `ReaderRD.inject`).
     public var sendsReaderDigest: Bool
+    /// O5: with `rd` on, a new build must have declared before any op. `reader.declare` is not in the R2 closed op table (H12d-3 is not built),
+    /// so a paired session sends `rd` when it holds a declaration and does not wait for one: a host that does not require readers
+    /// (`required_reader` 0) serves it, and one that does answers a sealed reader refusal, which is surfaced as it is.
+    public var blocksUntilDeclared: Bool
     /// Where `rd` goes in the request meta (protocol 8.6: `metaField`). See `ReaderRD`.
     public var readerDigestPlacement: ReaderRD.Placement
 
@@ -101,14 +105,14 @@ public struct WorkspaceSessionConfig: Sendable {
                 container: WorkspaceContainer, vault: RealmVault, transport: any RelayTransport, clock: any Clock<Duration>,
                 wall: any WallClock, entropy: any Entropy = SystemEntropy(), pollInterval: Duration = .milliseconds(500),
                 responseTimeout: Duration = .seconds(30), longPollSeconds: Int? = nil,
-                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false,
+                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false, blocksUntilDeclared: Bool = true,
                 readerDigestPlacement: ReaderRD.Placement = .metaField) {
         self.context = context; self.workspace = workspace; self.generation = generation
         self.deviceID = Identifiers.deviceID(identity.publicKeys.sig); self.identity = identity; self.wsk = wsk
         self.container = container; self.vault = vault; self.transport = transport; self.clock = clock; self.wall = wall
         self.entropy = entropy; self.pollInterval = pollInterval; self.responseTimeout = responseTimeout
         self.longPollSeconds = longPollSeconds.map { min(max($0, 1), 25) }
-        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest; self.readerDigestPlacement = readerDigestPlacement
+        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest; self.blocksUntilDeclared = blocksUntilDeclared; self.readerDigestPlacement = readerDigestPlacement
     }
 }
 
@@ -130,8 +134,13 @@ public actor WorkspaceSession: RealmParticipant {
     private var poller: Task<Void, Never>?
     private var hintRefresh: Task<Void, Never>?
     private var foreground = true
-    private var lastRevision: Int64?
+    private var lastCursor: String?
+    private var snapshotRevision: Int64 = 0
     private var cachedSnapshot: WorkspaceSnapshot?
+    private var questionIndex: [ID16: QuestionLocator] = [:]
+    private var ticketCache: [String: (headSeq: Int64, get: TicketGet)] = [:]
+    private var deviceLabels: [String: String] = [:]
+    private var personNames: [String: String] = [:]
     private var connectionState: ConnectionState = .offline
     private var hintIdentity: UUID?
     private var recovery: Task<Void, Never>?
@@ -1032,16 +1041,103 @@ extension WorkspaceSession {
         }
         return v
     }
-    private func getView(_ path: String) async throws -> JSONValue {
-        try viewJSON(await exchange(meta: ["op": "http", "method": "GET", "path": .string(path), "headers": [:]]))
+    // MARK: reads over column R (host 11A.5): needs + ticket.query + member.list + workspace.show + ticket.get + activity.list
+
+    /// Where a question lives on the host: its ticket (key for display and as the `ticket.get` ref, uid for what is bound) and its id
+    /// on that ticket (`Q1`).
+    package struct QuestionLocator: Equatable, Sendable { package let key: String, uid: String, number: String }
+
+    private func label(forDevice device: String?, person: String) -> String {
+        if let device, let l = deviceLabels[device] { return l }
+        if let n = personNames[person] { return n }
+        return "Unknown device"
     }
+
+    private func absorb(_ m: MemberListResult) {
+        var devices: [String: String] = [:], people: [String: String] = [:]
+        for member in m.members {
+            people[member.person] = member.name
+            for d in member.devices { devices[d.id] = d.label ?? member.name }
+        }
+        deviceLabels = devices; personNames = people
+    }
+
+    /// The questions of one ticket that this phone may show: the F1 values are recomputed from the ticket uid and the paired workspace
+    /// (a question whose `qid` or `hash` does not reproduce fails the read). A `stale` or unreadable entry is not shown.
+    private func questions(of t: TicketGet, askedByNeeds since: [String: Int64], openIn needs: Set<String>, now: Int64) throws -> [Question] {
+        var out: [Question] = []
+        for entry in t.questions {
+            guard case .question(let q) = entry, q.state != .stale else { continue }
+            if q.state == .open, !needs.contains(q.id) { continue }       // open for someone else: not this person's to answer
+            let created = since[q.id] ?? q.askedAt.flatMap(HostTime.ms) ?? q.answer.flatMap { HostTime.ms($0.at) } ?? now
+            out.append(try Question(q, ticketKey: t.key, ticketUID: t.uid, workspace: workspace, createdMs: created,
+                                    deviceLabel: { self.label(forDevice: $0, person: $1) }))
+        }
+        return out
+    }
+
+    private func assembleSnapshot() async throws -> WorkspaceSnapshot {
+        // The activity feed first: its cursor is what the poller compares, and an answer seen here is fetched below.
+        let answered = try await activityList(limit: 50, types: ["question.answered"])
+        let show = try await workspaceShow()
+        let members = try await memberList()
+        absorb(members)
+        let needs = try await needs()
+        var rows: [TicketRow] = [], page: String?, pages = 0
+        repeat {
+            let p = try await ticketQuery(page: page)
+            rows += p.rows; page = p.nextPage; pages += 1
+        } while page != nil && pages < 5
+        guard Set(rows.map(\.key)).count == rows.count else { throw ViewError.malformed }
+        let now = cfg.wall.nowMs
+        var openByTicket: [String: Set<String>] = [:], since: [String: [String: Int64]] = [:]
+        for n in needs.items where n.kind == .question {
+            guard let key = n.key, let ref = n.ref else { continue }
+            openByTicket[key, default: []].insert(ref)
+            if let s = n.sinceMs { since[key, default: [:]][ref] = s }
+        }
+        var keys: [String] = []
+        for k in openByTicket.keys.sorted() + answered.items.compactMap(\.key).prefix(20) where !keys.contains(k) { keys.append(k) }
+        var questions: [Question] = [], index: [ID16: QuestionLocator] = [:]
+        for key in keys {
+            let row = rows.first { $0.key == key }
+            let get: TicketGet
+            if let c = ticketCache[key], let row, c.headSeq == row.headSeq, c.get.uid == row.uid { get = c.get }
+            else {
+                get = try await ticketGet(key)
+                if let row { ticketCache[key] = (row.headSeq, get) }
+            }
+            for q in try self.questions(of: get, askedByNeeds: since[key] ?? [:], openIn: openByTicket[key] ?? [], now: now) {
+                questions.append(q); index[q.questionID] = QuestionLocator(key: key, uid: get.uid, number: q.number)
+            }
+        }
+        ticketCache = ticketCache.filter { c in rows.contains { $0.key == c.key } }
+        questionIndex = index
+        let tickets = rows.map { Ticket(row: $0) }
+        let people: [WorkspaceMember] = members.members.flatMap { m in
+            m.devices.filter(\.valid).compactMap { d in
+                ID16(hex: String(d.id.dropFirst(2))).map { WorkspaceMember(deviceID: $0, label: d.label ?? m.name) }
+            }
+        }
+        var snapshot = try WorkspaceSnapshot(workspace: workspace, revision: max(snapshotRevision, 1), checkedMs: now, questions: questions.sorted { $0.createdMs < $1.createdMs },
+                                             tickets: tickets, members: people, name: show.name, nextKey: show.nextKey)
+        if let previous = cachedSnapshot {
+            let same = previous.questions == snapshot.questions && previous.tickets == snapshot.tickets && previous.members == snapshot.members
+                && previous.name == snapshot.name && previous.nextKey == snapshot.nextKey
+            snapshotRevision = same ? previous.revision : previous.revision + 1
+            snapshot = try WorkspaceSnapshot(workspace: workspace, revision: snapshotRevision, checkedMs: now, questions: snapshot.questions, tickets: tickets,
+                                             members: people, name: show.name, nextKey: show.nextKey)
+        } else { snapshotRevision = 1 }
+        lastCursor = answered.subCursor
+        return snapshot
+    }
+
     package func snapshotView() async throws -> WorkspaceSnapshot {
         try await ensureCurrent()
         if let snapshotTask { return try await snapshotTask.value }
         let task = Task { () throws -> WorkspaceSnapshot in
             guard try await self.readBudgetAvailable() else { throw ViewError.readDeferred }
-            let v = try await self.getView("/v2/snapshot")
-            let snapshot = try WorkspaceSnapshot(v, workspace: self.workspace)
+            let snapshot = try await self.assembleSnapshot()
             try await self.ensureCurrent()
             self.verifiedReceiptMs = self.cfg.wall.nowMs
             self.cachedSnapshot = snapshot
@@ -1052,22 +1148,36 @@ extension WorkspaceSession {
         defer { snapshotTask = nil }
         return try await task.value
     }
-    private func readQuestion(_ id: ID16) async throws -> Question {
-        let m = try fields(await getView("/v2/questions/" + id.hex), ["host_api", "workspace_id", "question"])
-        guard m["host_api"] == 0, m.idField("workspace_id") == workspace else { throw ViewError.malformed }
-        let q = try Question(m["question"]!)
+
+    /// One question read afresh from its ticket (`ticket.get`), the F1 gate included: an OPEN question comes back with `reviewed`, the
+    /// recomputed `qid` and `hash` bound to the `doc.head` and `members_v` of the same read (what a person event will sign, C2b).
+    private func readQuestion(_ id: ID16, hint: QuestionLocator? = nil) async throws -> (question: Question, reviewed: F1Question.Reviewed?) {
+        var locator = hint ?? questionIndex[id]
+        if locator == nil {
+            _ = try await snapshotView()                     // a fresh process knows no question yet: one snapshot fills the index
+            locator = questionIndex[id]
+        }
+        guard let locator else { throw ViewError.malformed }
+        let get = try await ticketGet(locator.key)
+        guard get.uid.utf8Equal(locator.uid), let entry = get.questions.first(where: { $0.question?.id.utf8Equal(locator.number) == true }),
+              let f1 = entry.question, f1.state != .stale else { throw ViewError.malformed }
+        if let signer = f1.answer?.signerDevice ?? f1.answer.map({ _ in "" }), deviceLabels[signer] == nil { absorb(try await memberList()) }   // a device that joined since the last snapshot
+        let created = f1.askedAt.flatMap(HostTime.ms) ?? cfg.wall.nowMs
+        let q = try Question(f1, ticketKey: get.key, ticketUID: get.uid, workspace: workspace, createdMs: created,
+                             deviceLabel: { self.label(forDevice: $0, person: $1) })
         guard q.questionID == id else { throw ViewError.malformed }
-        return q
+        let reviewed = f1.state == .open ? try f1.reviewed(ticketUID: get.uid, workspace: workspace, basedOn: get.headHash, rosterV: get.membersV) : nil
+        return (q, reviewed)
     }
     package func reviewQuestion(_ id: ID16) async throws -> QuestionReview {
         try await ensureCurrent()
         let lifecycle = reviewLifecycle
-        let q = try await readQuestion(id)
+        let (q, reviewed) = try await readQuestion(id)
         try await ensureCurrent()
         guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
         reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
         if reviews.count >= 128 { reviews.removeAll() }
-        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID())
+        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
         reviews[review.token] = review
         return review
     }
@@ -1105,7 +1215,7 @@ extension WorkspaceSession {
         // Offline work remains unsigned. Reconfirm reachability/open state before entering custody;
         // the host still performs CAS because it can change again after this read.
         let current: Question
-        do { current = try await readQuestion(review.question.questionID) }
+        do { current = try await readQuestion(review.question.questionID, hint: locator(of: review.question)).question }
         catch { try await ensureCurrent(); throw ViewError.offline }
         try await ensureCurrent()
         guard foreground, reviews[review.token] == review else { throw ViewError.invalidReview }
@@ -1197,7 +1307,8 @@ extension WorkspaceSession {
         // Derived from the marker written atomically with the attempt's state, not from `decisions.state` alone (written with it).
         let exhausted = try await isExhausted(id) || record.text("state") == "exhausted"
         do {
-            result = try await decisionNetwork(id, qid: qid, op: op, old: old, first: first, reissue: explicit || !exhausted)
+            let stored = try record.blob("review").map { try Question(wire: StrictJSON.parse($0), workspace: workspace) }
+            result = try await decisionNetwork(id, qid: qid, locator: stored.map(locator(of:)), op: op, old: old, first: first, reissue: explicit || !exhausted)
         } catch {
             try await ensureCurrent()
             let db = try await cfg.container.database()
@@ -1215,7 +1326,13 @@ extension WorkspaceSession {
         }
         return try await finishDecision(id, result)
     }
-    private func decisionNetwork(_ id: ID16, qid: ID16, op: JSONValue, old: Row?, first: Row?, reissue: Bool) async throws -> DecisionOutcome {
+    private func locator(of q: Question) -> QuestionLocator { QuestionLocator(key: q.ticket, uid: q.ticketUID, number: q.number) }
+    /// INTERIM (v0 decision op until C2b's `relay.submit`): a closed question is OURS when the device that signed the counting answer is this
+    /// device and the answer is the one in the operation. (Under R2 the answer's `id` is the id of the event this phone signed.)
+    private func isOurs(_ r: QuestionResolution, op: JSONValue) -> Bool {
+        r.byDeviceID?.utf8Equal("d_" + cfg.deviceID.hex) == true && r.answer == op.object?["answer"]
+    }
+    private func decisionNetwork(_ id: ID16, qid: ID16, locator: QuestionLocator?, op: JSONValue, old: Row?, first: Row?, reissue: Bool) async throws -> DecisionOutcome {
         var response: BridgeResponse?
         do {
             if let first { response = try await runDriver(first, isResend: false) }
@@ -1226,10 +1343,9 @@ extension WorkspaceSession {
             if response == nil {
                 // Only previously dispatched decisions can reach authoritative reconciliation.
                 emit(.connection(.reconciling))
-                let q = try await readQuestion(qid)
+                let q = try await readQuestion(qid, hint: locator).question
                 if let r = q.resolution {
-                    let result: DecisionOutcome = r.decisionID == id && r.answer == op.object?["answer"]
-                        ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
+                    let result: DecisionOutcome = isOurs(r, op: op) ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
                     return result
                 }
                 guard q.contentHash == op.object?["content_hash"]?.string.flatMap({ B64U.decode($0) }) else {
@@ -1243,16 +1359,16 @@ extension WorkspaceSession {
                                              clearExhausted: true)
                 response = try await runDriver(next, isResend: false)
             }
-            let m = try fields(viewJSON(response!), ["host_api", "decision_id", "question"])
+            let m = try fields(viewJSON(response!), ["host_api", "decision_id"])
             guard m["host_api"] == 0, m.idField("decision_id") == id else { throw ViewError.malformed }
-            let closed = try Question(m["question"]!)
-            guard closed.questionID == qid, let r = closed.resolution, r.decisionID == id, r.answer == op.object?["answer"] else { throw ViewError.malformed }
+            // the host's word is confirmed by reading the question: closed, by this device, with this answer
+            let closed = try await readQuestion(qid, hint: locator).question
+            guard let r = closed.resolution, isOurs(r, op: op) else { throw ViewError.malformed }
             return .accepted
         } catch ClientError.host(.alreadyAnswered) {
-            let q = try await readQuestion(qid)
+            let q = try await readQuestion(qid, hint: locator).question
             guard let r = q.resolution else { throw ViewError.malformed }
-            return r.decisionID == id && r.answer == op.object?["answer"]
-                ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
+            return isOurs(r, op: op) ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
         } catch ClientError.host(.questionChanged(let hash)) {
             return .questionChanged(hash: hash)
         } catch ClientError.host(.notVisible) {
@@ -1350,18 +1466,24 @@ extension WorkspaceSession {
         let charged = try await cfg.container.database().query("SELECT COUNT(*) AS n FROM bridge_charges WHERE created_ms > ?", [.int(cfg.wall.nowMs - Self.hostWindowMs)]).first?.int("n") ?? 0
         return charged < 960
     }
+    /// Change detection by polling (`wait` is not served on the relay): one `activity.list {limit: 1}` per interval; its `sub_cursor` is the
+    /// journal position. The snapshot is read again only when that cursor moved (or no snapshot is held), and the interval backs off while
+    /// nothing changes (15 s doubling to 60 s).
     private func pollViews() async {
         var delay: Int64 = 15
         while !Task.isCancelled && foreground && !subscribers.isEmpty {
-
             // Imported host v1 defaults: 1024 per device, 16384 global. Reserve 64 slots for mutations.
             if (try? await readBudgetAvailable()) == true {
                 do {
-                    let s = try await snapshotView()
+                    let cursor = try await activityList(limit: 1).subCursor
                     if Task.isCancelled { return }
-                    delay = lastRevision == s.revision ? min(delay * 2, 60) : 15
-                    lastRevision = s.revision
-                    emit(.snapshot(s)); emit(.connection(.online))
+                    if cachedSnapshot == nil || lastCursor != cursor {
+                        let s = try await snapshotView()
+                        if Task.isCancelled { return }
+                        delay = 15
+                        emit(.snapshot(s))
+                    } else { delay = min(delay * 2, 60) }
+                    emit(.connection(.online))
                 } catch ClientError.relay(let r) where r.status == 429 || r.status == 503 {
                     delay = max(min(delay * 2, 60), Int64(r.retryAfter ?? 0)); emit(.connection(.offline))
                 } catch { if Task.isCancelled { return }; delay = min(delay * 2, 60); emit(.connection(.offline)) }
@@ -1454,7 +1576,7 @@ extension WorkspaceSession {
     package func readerDigestForRequest() throws -> String? {
         guard cfg.sendsReaderDigest else { return nil }
         let state = try ReaderStore.load(cfg.vault, ws: cfg.workspace)
-        if ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
+        if cfg.blocksUntilDeclared, ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
         return ReaderGate.rd(state)
     }
 

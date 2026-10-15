@@ -14,6 +14,8 @@ public struct HostRequest: Sendable {
 
 public enum HostReply: Sendable {
     case response(status: Int, headers: [String: String], data: Data)
+    /// An R2 success answer: `cj(Result)`, sealed with first-chunk meta exactly `{"status":"ok"}` (11A.5).
+    case r2(Data)
     case refuse(HostRefusal)
 }
 
@@ -281,6 +283,10 @@ extension FakeHost {
                 let chunks = (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
                 core.complete(rid: h.rid, with: .refusal(r))
                 return chunks
+            case .r2(let data):
+                guard let chunks = try? respond(to: h, meta: R2.okMeta, data: data, refusal: false) else { return [] }
+                core.complete(rid: h.rid, with: .stored(chunks))
+                return chunks
             case .response(let status, let headers, let data):
                 let meta: JSONValue = ["status": .int(Int64(status)), "headers": .object(headers.mapValues { .string($0) })]
                 if isRevocation && core.epoch != h.epoch {
@@ -304,12 +310,12 @@ extension FakeHost {
         case "decision": return .some("decide")
         case "new_ticket", "member_remove", "drop_claim": return .some("operate")
         case "revocation": return .some(nil)           // authority is PK's signature, not a scope
-        default: return nil                            // unknown op
+        default: return R2.ops[op] != nil ? .some(nil) : nil     // an R2 op checks its own scope in `handleView`; anything else is unknown
         }
     }
 
     private func run(_ a: HostAccepted) async -> HostReply {
-        guard let op = a.meta.object?["op"]?.string, let need = requiredScope(op, meta: a.meta) else { return .refuse(.malformed) }
+        guard let op = a.meta.object?["op"]?.string, let need = requiredScope(op, meta: a.meta) else { return .refuse(.forbiddenScope) }
         if let need, !a.scopes.contains(need) { return .refuse(.forbiddenScope) }
         if op == "revocation" { return await applyRevocation(a) }
         let request = HostRequest(device: a.header.device, scopes: a.scopes, meta: a.meta, data: a.data, epoch: a.header.epoch)

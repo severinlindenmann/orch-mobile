@@ -280,8 +280,8 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         // scope: this phone holds look and decide, not operate
         let nt: JSONValue = ["op": "new_ticket", "creation_id": .string(ID16.fresh(5).hex), "title": "t", "body": "", "epic_key": .null]
         await #expect(throws: ClientError.host(.forbiddenScope)) { _ = try await w.serve(phone) { try await s.exchange(meta: nt) } }
-        // unknown op is malformed, not forbidden
-        await #expect(throws: ClientError.host(.malformed)) { _ = try await w.serve(phone) { try await s.exchange(meta: ["op": "nope"]) } }
+        // an op outside the closed table is forbidden_scope (R2, 11A.5)
+        await #expect(throws: ClientError.host(.forbiddenScope)) { _ = try await w.serve(phone) { try await s.exchange(meta: ["op": "nope"]) } }
         // removed from the host roster (bad state on the host): not_member, sealed and host-signed
         await w.host.setRoster([(w.primary.deviceKeys, World.all)])
         await #expect(throws: ClientError.host(.notMember)) { _ = try await w.serve(phone) { try await s.exchange(meta: httpGet) } }
