@@ -6,6 +6,7 @@ import OrchFakeHost
 import OrchProtocol
 import OrchShareStaging
 import OrchStore
+#if DEBUG // uses DEBUG-only seams (LiveTransport.testingTransport, liveBootGate); the Release flag check compiles all tests
 @testable import Orch
 
 /// A relay that is never reachable: restored sessions exist and stay offline, which is all these tests need.
@@ -489,3 +490,4 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertEqual(LivePairingModel.state(forRealm: .externalOrigin), .refused(.invalidLink))
     }
 }
+#endif
