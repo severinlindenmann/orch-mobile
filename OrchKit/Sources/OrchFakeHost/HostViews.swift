@@ -58,6 +58,15 @@ struct HostViewState: Sendable {
     /// Devices named only by an answer's signer (Demo seeds), with the label `member.list` gives them.
     var extraDevices: [String: String] = [:]
     var creations: [String: (request: Data, ticket: FakeTicket)] = [:]
+    /// R2 writes (`relay.submit`, SubmitAdmission.swift): the outcome store keyed `(device, idem)`, the logged phone events by id, and the
+    /// Demo/test controls of the write path.
+    var outcomes: [String: FakeOutcome] = [:]
+    var logged: [String: FakeLogged] = [:]
+    var writeControls = FakeWriteControls()
+    /// Devices removed at the host (L2 standing): `not_member` for their writes.
+    var removedDevices: Set<String> = []
+    /// Request ids whose answer the host computed and kept but did not post (a lost response).
+    var lostRids: Set<ID16> = []
     var jpos: Int64 { events.last?.jpos ?? 0 }
     var revision: Int64 { jpos }
 
@@ -260,9 +269,6 @@ extension FakeHost {
                  "type": .string(e.type), "at": .string(Self.time(e.atMs)), "actor": ["kind": "agent", "id": .null], "summary": "", "data": [:]]
             }
             return result(["items": .array(json), "next_page": .null, "sub_cursor": cursor, "as_of": asOf])
-        case "outcome.get":
-            guard let idem = args["idem"]?.string, ULID.isValid(idem) else { return hostRefusal("invalid.input") }
-            return hostRefusal("outcome.unknown_idem")
         case "reader.declare":
             // H12d-3 (a read on column R): the host stores the declaration and answers `{device, reader, level, digest}`
             guard let v = args["reader_decl"], let d = try? ReaderDeclaration(signed: v) else { return hostRefusal("reader.decl_invalid") }
@@ -279,7 +285,7 @@ extension FakeHost {
             .response(status: status, headers: ["content-type": "application/json"], data: (try? canonicalJSON(v)) ?? Data())
         }
         switch op {
-        case "decision": return legacyDecision(req, m)
+        case "decision": return legacyDecision(req, m)          // removed with the v0 session path (this increment, last step)
         case "new_ticket" where m["creation_id"] != nil: return legacyNewTicket(req, m)
         case "http":
             guard req.data.isEmpty else { return .refuse(.malformed) }
@@ -292,7 +298,15 @@ extension FakeHost {
             catch let e as R2.MetaError { return e == .forbiddenScope ? .refuse(.forbiddenScope) : hostRefusal(e.code) }
             catch { return .refuse(.malformed) }
             guard req.scopes.contains(checked.spec.scope) else { return .refuse(.forbiddenScope) }
-            guard checked.spec.kind == .read else { return hostRefusal("op.not_allowed") }      // writes are C2b
+            if checked.spec.kind == .write {
+                // `answer` is served (SubmitAdmission.swift); R2 `new_ticket` waits for increment 3 (Demo creation is still the v0 op)
+                guard checked.op == "answer" else { return hostRefusal("op.not_allowed") }
+                return submitAnswer(req, args: checked.args, idem: checked.idem)
+            }
+            if checked.op == "outcome.get" {
+                guard let idem = checked.args["idem"]?.string, ULID.isValid(idem) else { return hostRefusal("invalid.input") }
+                return outcomeGet(req, idem: idem)
+            }
             return read(checked.op, args: checked.args, device: req.device, scopes: req.scopes)
         }
     }
