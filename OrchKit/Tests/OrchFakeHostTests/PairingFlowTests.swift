@@ -159,7 +159,7 @@ extension PairHarness {
                 // the revoked device gets no session; its record is public and PK-signed
                 let login = try? await RelayClient(transport: h.env.transport).openDeviceSession(identity: h.env.device, deviceID: h.phoneID)
                 #expect(login == nil)
-                let fetched = try await RelayClient(transport: h.env.transport).revocation(device: h.phoneID)
+                let fetched = try await RelayClient(transport: h.env.transport).revocation(device: h.phoneID, person: Identifiers.personID(h.primary.publicKey))
                 #expect(fetched == record)
                 let cert = try DeviceCertificate.verify(try #require(await h.relay.certificate(device: h.phoneID)), personKey: h.primary.publicKey, nowMs: h.clock.nowMs)
                 _ = try Revocation.verify(fetched, personKey: h.primary.publicKey, cert: cert.identity)

@@ -91,8 +91,30 @@ public struct RelayClient: Sendable {
         return person
     }
 
-    /// The device's PK-signed revocation record, fetched without a session (a revoked device has none; the record is public).
-    public func revocation(device: ID16) async throws -> JSONValue {
-        try HostAPI.revocation(try HostAPI.expect(try await transport.revocation(deviceID: device)))
+    /// The page walk is bounded: a relay that keeps returning `next` cannot make the client loop.
+    public static let maxRevocationPages = 8
+
+    /// Every PK-signed revocation record of `device` made by `person` (the pinned owner), fetched without a session (a revoked
+    /// device has none; the record is public). Walks `?after=<next>` for at most `maxRevocationPages` pages and collects every pair
+    /// whose `person_id` is `person` (a relay can hold several records for one pair; the caller verifies each under the pinned
+    /// person key and acts on any that verifies). The relay's `provenance` labels are ignored. The records are unverified. No such
+    /// pair on the walk is a relay `not_found`.
+    public func revocations(device: ID16, person: ID16) async throws -> [JSONValue] {
+        var after: String?
+        var found: [JSONValue] = []
+        for _ in 0..<Self.maxRevocationPages {
+            let page = try HostAPI.revocationPage(try HostAPI.expect(try await transport.revocation(deviceID: device, after: after, limit: nil)))
+            found += page.pairs.filter { $0.personID == person }.map(\.revocation)
+            guard let next = page.next, next != after else { break }
+            after = next
+        }
+        if found.isEmpty { throw ClientError.relay(RelayRefusal(status: 404, code: .notFound)) }
+        return found
+    }
+
+    /// The first record of `revocations(device:person:)` (tests only: production callers use `revocations` and verify each, so a forged first record
+    /// cannot hide a genuine later one).
+    package func revocation(device: ID16, person: ID16) async throws -> JSONValue {
+        try await revocations(device: device, person: person)[0]
     }
 }

@@ -23,9 +23,9 @@ final class ReplayingTransport: RelayTransport, @unchecked Sendable {
     func challenge() async throws -> WireReply { try await inner.challenge() }
     func login(_ body: Data) async throws -> WireReply { try await inner.login(body) }
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try await inner.pairingPost(envelope, route: route) }
-    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after) }
+    func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after, wait: wait) }
     func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try await inner.bridgePost(envelope, route: route, session: session) }
-    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply { try await inner.bridgePoll(route: route, after: after, session: session) }
+    func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try await inner.bridgePoll(route: route, after: after, wait: wait, session: session) }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply {
         if let g = lock.withLock({ grantsOverride }) { return try reply(["grants": .array(g)]) }
         return try await inner.grants(workspaceID: workspaceID, epoch: epoch, session: session)
@@ -40,7 +40,7 @@ final class ReplayingTransport: RelayTransport, @unchecked Sendable {
     }
     func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await inner.registerPush(body, session: session) }
     func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await inner.unregisterPush(body, session: session) }
-    func revocation(deviceID: ID16) async throws -> WireReply { try await inner.revocation(deviceID: deviceID) }
+    func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply { try await inner.revocation(deviceID: deviceID, after: after, limit: limit) }
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
         try await inner.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session)
     }

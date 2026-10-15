@@ -625,7 +625,8 @@ public actor DropService {
                 if reply.status != 409 { _ = try parse(reply, fields: ["version"], status: 201) }
             }
         } catch let error as TransportError {
-            if error != .disconnected { throw error }
+            // A body cut off past the response cap is as unknown as a lost connection: the commit may have happened, so read back.
+            if error != .disconnected && error != .responseTooLarge { throw error }
         }
         // Always read back: a lost 201 or a stale retry is successful only for these exact committed bytes.
         let readBack = try await get(object, version, .descriptor)

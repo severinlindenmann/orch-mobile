@@ -72,20 +72,26 @@ public struct WorkspaceSessionConfig: Sendable {
     public var container: WorkspaceContainer
     public var vault: RealmVault
     public var transport: any RelayTransport
+    /// A monotonic clock: poll accounting measures real elapsed time with it. Live wiring must pass `ContinuousClock()` (never a wall-clock
+    /// derived one); `TestClock` is for tests.
     public var clock: any Clock<Duration>
     public var wall: any WallClock
     public var entropy: any Entropy
     public var pollInterval: Duration
     public var responseTimeout: Duration
+    /// Seconds (1...25, section 19) a bridge poll asks the relay to hold the request open. nil (the default, and what the in-process
+    /// Demo relay gets) sends no `wait` and polls every `pollInterval`; a real relay should get a long poll instead of 2 requests/s.
+    public var longPollSeconds: Int?
 
     public init(context: RealmContext, workspace: ID16, generation: Int64, identity: DeviceIdentity, wsk: SigningPublicKey,
                 container: WorkspaceContainer, vault: RealmVault, transport: any RelayTransport, clock: any Clock<Duration>,
                 wall: any WallClock, entropy: any Entropy = SystemEntropy(), pollInterval: Duration = .milliseconds(500),
-                responseTimeout: Duration = .seconds(30)) {
+                responseTimeout: Duration = .seconds(30), longPollSeconds: Int? = nil) {
         self.context = context; self.workspace = workspace; self.generation = generation
         self.deviceID = Identifiers.deviceID(identity.publicKeys.sig); self.identity = identity; self.wsk = wsk
         self.container = container; self.vault = vault; self.transport = transport; self.clock = clock; self.wall = wall
         self.entropy = entropy; self.pollInterval = pollInterval; self.responseTimeout = responseTimeout
+        self.longPollSeconds = longPollSeconds.map { min(max($0, 1), 25) }
     }
 }
 
@@ -843,7 +849,32 @@ public actor WorkspaceSession {
         var counted = Set<UInt64>()       // one pin failure per chunk, however often a poll shows it again
         while true {
             let after: UInt64? = progress.next == 0 ? nil : progress.next - 1
-            let reply = try await withRelay { s in try await cfg.transport.bridgePoll(route: route, after: after, session: s) }
+            // A long poll never outlasts the response deadline: ask for no more than what is left (whole seconds, at least 1).
+            var wait: Int?
+            if let w = cfg.longPollSeconds {
+                let left = max(cfg.responseTimeout - waited, .seconds(1)).components.seconds
+                wait = Int(min(Int64(w), max(left, 1)))
+            }
+            // Charge what the poll really took (monotonic session clock), unconditionally and right away: a relay that holds a poll
+            // far past the `wait` it was given (or past a 429/503) cannot stretch the response deadline.
+            var polled: WireReply?
+            let pollElapsed = try await cfg.clock.measure {
+                polled = try await withRelay { s in try await cfg.transport.bridgePoll(route: route, after: after, wait: wait, session: s) }
+            }
+            guard let reply = polled else { throw SessionError.badResponse }
+            waited += pollElapsed
+            // Section 19.6: 429 and 503 on a poll do not end the request. Keep polling the same rid after Retry-After (at least 1 s),
+            // within the same response deadline; any other failure is thrown as before.
+            if reply.status == 429 || reply.status == 503 {
+                guard case .relay(let r) = HostAPI.failure(of: reply), [.rateLimited, .quotaExceeded, .overloaded].contains(r.code) else {
+                    throw HostAPI.failure(of: reply)
+                }
+                if waited >= cfg.responseTimeout { return .timeout }
+                let pause = min(Duration.seconds(r.retryAfter ?? 1), max(cfg.responseTimeout - waited, .seconds(1)))
+                try await cfg.clock.sleep(for: pause)
+                waited += pause
+                continue
+            }
             let chunks = try HostAPI.chunks(try HostAPI.expect(reply)).sorted { $0.idx < $1.idx }
             var advanced = false
             for c in chunks {
@@ -886,7 +917,10 @@ public actor WorkspaceSession {
                 progress = table[row.rid] ?? progress
             }
             if advanced { continue }
+            // An early answer costs little, so a relay that answers an empty long poll at once would be hammered: a poll that
+            // returned in under a second also sleeps `pollInterval`.
             if waited >= cfg.responseTimeout { return .timeout }
+            if wait != nil, pollElapsed >= .seconds(1) { continue }
             try await cfg.clock.sleep(for: cfg.pollInterval)
             waited += cfg.pollInterval
         }

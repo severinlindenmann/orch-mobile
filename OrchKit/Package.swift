@@ -53,6 +53,9 @@ let package = Package(
                     dependencies: ["OrchFakeHost", "OrchClient", "OrchProtocol", "OrchCustody", "OrchStore", "OrchTestVectors"]),
         // Public API only (host-api section 7): ordinary imports, no @testable, no package-level signers, no vector keys.
         .testTarget(name: "OrchC1PublicAPITests", dependencies: ["OrchFakeHost", "OrchClient", "OrchProtocol", "OrchCustody", "OrchStore"]),
+        // Real-network tests. Stub-server suites (redirect refusal, body cap, timeouts) always run; the suites against a locally started
+        // orch-relay skip cleanly unless ORCH_RELAY_INTEGRATION=1 and the relay checkout and `uv` exist (see RealRelayHarness.swift).
+        .testTarget(name: "OrchRelayIntegrationTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore"]),
         .target(name: "OrchUI", dependencies: [],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchUITests", dependencies: ["OrchUI"]),

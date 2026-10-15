@@ -192,14 +192,14 @@ struct Phone {
 extension World {
     /// A phone-side session bound to (demo, ws, generation 1) with real storage. `skewMs` makes the phone's wall clock differ.
     func makePhone(skewMs: Int64 = 0, faultsFree: Bool = true, timeout: Duration = .seconds(30), install: Bool = true,
-                   transport: (any RelayTransport)? = nil) async throws -> Phone {
+                   transport: (any RelayTransport)? = nil, longPollSeconds: Int? = nil) async throws -> Phone {
         let index = env.index
         try await index.addWorkspace(ws: ws.hex, generation: 1)
         let container = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1)
         let pclock = TestClock(wallStartMs: clock.nowMs + skewMs)
         let cfg = WorkspaceSessionConfig(context: env.context, workspace: ws, generation: 1, identity: env.device, wsk: host.wskPublic,
                                          container: container, vault: vault.scoped(to: .demo), transport: transport ?? env.transport, clock: pclock,
-                                         wall: pclock, entropy: SystemEntropy(), pollInterval: .milliseconds(500), responseTimeout: timeout)
+                                         wall: pclock, entropy: SystemEntropy(), pollInterval: .milliseconds(500), responseTimeout: timeout, longPollSeconds: longPollSeconds)
         let session = try await WorkspaceSession(cfg)
         if install { try await session.refreshGrants() }
         return Phone(session: session, container: container, clock: pclock)

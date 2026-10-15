@@ -64,19 +64,28 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/pair/\(route.offerID.hex)/\(route.requestID.hex)", envelope)
     }
 
-    public func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply {
-        try await get("\(R)/workspaces/\(route.workspaceID.hex)/pair/\(route.offerID.hex)/\(route.requestID.hex)" + Self.after(after))
+    public func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply {
+        try await get("\(R)/workspaces/\(route.workspaceID.hex)/pair/\(route.offerID.hex)/\(route.requestID.hex)" + (try Self.pollQuery(after: after, wait: wait)))
     }
 
     public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
         try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
     }
 
-    public func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply {
-        try await get("\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)" + Self.after(after), session: session)
+    public func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
+        try await get("\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)" + (try Self.pollQuery(after: after, wait: wait)), session: session)
     }
 
-    static func after(_ cursor: UInt64?) -> String { cursor.map { "?after=" + HostAPI.decimal($0) } ?? "" }
+    /// `?after=<decimal>&wait=<0...25>` (section 19.6); each part only when given. A `wait` outside 0...25 is refused before any I/O.
+    static func pollQuery(after cursor: UInt64?, wait: Int?) throws -> String {
+        var items: [String] = []
+        if let c = cursor { items.append("after=" + HostAPI.decimal(c)) }
+        if let w = wait {
+            guard (0...25).contains(w) else { throw TransportError.invalidArgument }
+            items.append("wait=\(w)")
+        }
+        return items.isEmpty ? "" : "?" + items.joined(separator: "&")
+    }
 
     public func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply {
         // Epoch 0 is reserved for pairing envelopes: refuse before any I/O, before even looking at the session.
@@ -102,14 +111,24 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     public func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/register", body, session: session) }
     public func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/push/unregister", body, session: session) }
 
-    public func revocation(deviceID: ID16) async throws -> WireReply {
-        try await get("\(R)/devices/\(deviceID.hex)/revocation")
+    public func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply {
+        var items: [String] = []
+        if let a = after {
+            // the relay's cursor is unpadded base64url; nothing else may ride in the query
+            guard !a.isEmpty, a.utf8.count <= 512, a.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F }) else { throw TransportError.invalidArgument }
+            items.append("after=" + a)
+        }
+        if let l = limit {
+            guard (1...32).contains(l) else { throw TransportError.invalidArgument }
+            items.append("limit=\(l)")
+        }
+        return try await get("\(R)/devices/\(deviceID.hex)/revocation" + (items.isEmpty ? "" : "?" + items.joined(separator: "&")))
     }
 
     public func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
-        // TODO(orch-4e): Drop routes are not in protocol-v2 section 19 yet; the open question is whether they stay under /v2 or keep
-        // their section 10.6 spelling. Until that is decided this one keeps its un-prefixed path and the others sit under /v2.
-        try await send(request("PUT", "/drop/\(objectID.hex)/versions", body: body, contentType: "application/json", session: session,
+        // TODO(orch-4e): Drop routes are not in protocol-v2 section 19 yet (the relay serves none). All of them sit under /v2 so the
+        // spelling is at least consistent; the final paths are still orch-4e's call.
+        try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", body: body, contentType: "application/json", session: session,
                                extra: ["if-match": String(ifMatch)]))
     }
 
