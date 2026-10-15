@@ -1,3 +1,5 @@
+> **Superseded (15 Oct 2026) by [host-api-v1.md](host-api-v1.md).** The phone no longer calls `/v2/snapshot`, `/v2/questions/{id}`, `/v2/tickets/{key}` or the bridge `http`, `decision` and `new_ticket` ops: it reads through the core ops over column R (host section 11A.5, orch-52's decision). The `decision` and `new_ticket` paths below still run in Demo until C2b replaces them with `relay.submit`. Kept for the history of the prototype and for the bridge-level tests that still use it as a vehicle.
+
 # orch mobile host API v0
 
 Status: provisional, 10 October 2026. This is an implementation contract for OrchClient and
