@@ -36,7 +36,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var capabilities: RealmCapabilities { runtime?.capabilities ?? .none }
     /// The realm of the attached runtime; nil while no realm is attached.
     var realm: Realm? { runtime?.realm }
-    var shareRealm: String { realm?.rawValue ?? "live" }
+    /// nil without an attached realm: such a graph has no share bridge.
+    var shareRealm: String? { realm?.rawValue }
     /// Invalidated when the realm is left or retired: late completions check it before they write, sign or register anything.
     @ObservationIgnored private(set) var lifetime = RealmLifetime()
     /// Set by `RealmController`: realm transitions go through it. Without one (unit tests) leaving only tears this graph down.
@@ -766,13 +767,18 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func resetDemoData() { leaveRealm(thenDemo: true) }
 
     private func leaveRealm(thenDemo: Bool) {
+        guard !retired else { return }
         if let transitions { transitions.realmLeave(thenDemo: thenDemo) }
         else if !thenDemo { teardown() }
     }
 
+    /// True once a transition replaced this graph: a stray call into it must not touch the active realm's storage.
+    @ObservationIgnored private(set) var retired = false
+
     /// Ends this realm's lifetime without wiping anything: every late completion that still holds this instance becomes inert.
     /// Used when a transition replaces the whole service graph.
     func retire() {
+        retired = true
         lifetime.invalidate()
         reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
@@ -781,6 +787,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// The in-place realm exit (also what `RealmController` drives). The lifetime is invalidated first, before any await.
     func teardown() {
+        guard !retired else { return }
         lifetime.invalidate()
         resetRevision += 1
         let pendingBoot = bootTask

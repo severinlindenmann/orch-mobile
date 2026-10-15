@@ -8,7 +8,7 @@ protocol ShareWorld: AnyObject {
     /// `capabilities.share` off: no destinations are published and nothing is imported or uploaded for this realm.
     var capabilities: RealmCapabilities { get }
     /// The realm of this graph ("demo" or "live"), taken from its attached runtime, not from `isDemo`.
-    var shareRealm: String { get }
+    var shareRealm: String? { get }
     var workspaces: [WorkspaceInfo] { get }
     var beforeWorkspaceRemoval: ((String) -> Bool)? { get set }
     var onRedirectQuarantined: ((_ jobID: String, _ workspaceID: String) -> Void)? { get set }
@@ -61,11 +61,11 @@ final class ShareBridge {
 
     /// nil when the App Group container is unavailable (unit tests, unsigned builds): sharing is simply off.
     static func make(world: any ShareWorld, override root: URL? = nil, publishDemo: Bool = true) -> ShareBridge? {
-        guard let root = root ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return nil }
+        guard world.shareRealm != nil, let root = root ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) else { return nil }
         return ShareBridge(area: ShareArea(shareGroupRoot: root), world: world, publishDemo: publishDemo)
     }
 
-    var realm: String { world.shareRealm }
+    var realm: String { world.shareRealm ?? "live" }
 
     /// Removals whose tombstone is not yet durable (retried on every publish).
     var unfinishedRemovals: Int { (try? inbox.pendingRemovals().count) ?? 0 }

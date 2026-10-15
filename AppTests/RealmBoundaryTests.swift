@@ -221,12 +221,40 @@ final class RealmBoundaryTests: XCTestCase {
         await controller.boot()
         controller.realmEnterDemo()
         await controller.waitForTransition()
-        try ShareTargetIndex.publish([ShareTarget(realm: "demo", ws: String(repeating: "a", count: 32), name: "Laptop", hue: 0, generation: 1)], to: area)
+        let target = ShareTarget(realm: "demo", ws: String(repeating: "a", count: 32), name: "Laptop", hue: 0, generation: 1)
+        try ShareTargetIndex.publish([target], to: area)
         XCTAssertEqual(try ShareTargetIndex.load(from: area).count, 1)
+        // A job staged before the leave, and a share sheet that is still open.
+        let staged = try StagingSession(area: area, target: target)
+        try staged.add(.text("secret")); try staged.commit(note: nil)
+        let open = try StagingSession(area: area, target: target)
+        XCTAssertEqual(ShareInbox(area: area).peekReady().count, 1)
         controller.realmLeave(thenDemo: false)
-        // No await has happened since the leave began: the extension already has no destination of the outgoing realm.
+        // No await has happened since the leave began: the extension already has no destination of the outgoing realm,
+        // the staged plaintext is gone, and the open sheet cannot finish staging.
         XCTAssertThrowsError(try ShareTargetIndex.load(from: area))
+        XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
+        XCTAssertTrue(ShareInbox(area: area).quarantined().isEmpty)
+        XCTAssertThrowsError(try open.add(.text("late")))
+        XCTAssertThrowsError(try StagingSession(area: area, target: target).add(.text("later")))
         await controller.waitForTransition()
+        // The next graph replays the journal: still nothing, nothing to redirect after "Reset Demo data" either.
+        XCTAssertTrue(ShareInbox(area: area).peekReady().isEmpty)
+        XCTAssertTrue(ShareInbox(area: area).quarantined().isEmpty)
+    }
+
+    func testStrayLeaveIntoARetiredGraphDoesNothing() async throws {
+        let suite = "orch.retired.\(UUID().uuidString)"
+        let flags = UserDefaults(suiteName: suite)!
+        defer { flags.removePersistentDomain(forName: suite) }
+        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
+        let services = LiveServices(options: options, runtime: runtime, resetFlags: flags)
+        services.retire()
+        services.exitDemo(); services.resetThisiPhone(); services.teardown()
+        await services.waitForReset()
+        XCTAssertFalse(flags.bool(forKey: "orch.demo.resetPending"))
+        XCTAssertNotNil(services.runtime)
+        try await runtime.shutdown()
     }
 
     func testCapabilitiesAndRealmFollowTheAttachedRuntime() async throws {

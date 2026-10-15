@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OrchCoordination
 import OrchShareStaging
 
 /// Owns the active realm and replaces its entire service graph on every transition (decision: one active realm, explicit destructive
@@ -105,7 +106,7 @@ final class RealmController: RealmTransitions {
         let outgoing = services
         let label = outgoing.deviceLabel
         notice = nil
-        retireShareTargets()
+        retireShareTargets(realm: outgoing.shareRealm)
         state = .leaving
         epoch += 1
         outgoing.teardown()
@@ -133,10 +134,20 @@ final class RealmController: RealmTransitions {
         }
     }
 
-    /// Publishes an empty share index so the extension offers no destination of the outgoing realm. Synchronous and independent of any view.
-    private func retireShareTargets() {
-        guard let area = shareArea else { return }
-        try? ShareTargetIndex.publish([], to: area)
+    /// The share fence: tombstones every persisted destination of the outgoing realm (durable journal, coordination record, staged and
+    /// quarantined plaintext purged), then republishes what remains (other realms' entries, in practice none). Synchronous and
+    /// independent of any view. A share sheet already open can no longer finish staging (`destinationRemoved`), and the next graph
+    /// replays the same journal, so nothing of the outgoing realm survives the leave.
+    private func retireShareTargets(realm: String?) {
+        guard let area = shareArea, let realm else { return }
+        let inbox = ShareInbox(area: area)
+        let persisted = (try? ShareTargetIndex.persisted(from: area)) ?? []
+        for t in persisted where t.realm == realm {
+            try? inbox.recordRemoval(TombstoneRecord(realm: t.realm, ws: t.ws, generation: t.generation))
+        }
+        try? inbox.replayRemovals()
+        try? ShareTargetIndex.publish(persisted.filter { $0.realm != realm }, to: area)
+        inbox.purgeTombstoned()
     }
 
     func waitForTransition() async { await transitionTask?.value }

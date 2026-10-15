@@ -20,8 +20,8 @@ Origin: a Codex design proposal, edited to the owner's decisions.
 the whole realm's service graph (a new `LiveServices`) and view graph (the root view is keyed on the controller's `epoch`), so
 navigation stacks, sheets and pairing presentations of the outgoing realm go with it.
 
-Ordering on a leave, all synchronous before the first await: the share index is published empty (the extension offers no destination of
-the outgoing realm, independent of any view), the view graph is dropped (`epoch`), and the outgoing `RealmLifetime` is invalidated.
+Ordering on a leave, all synchronous before the first await: the outgoing realm's share destinations are tombstoned (journal, coordination record,
+staged and quarantined plaintext purged) and the index republished without them, the view graph is dropped (`epoch`), and the outgoing `RealmLifetime` is invalidated.
 Then the wipe runs. While the state is `.leaving` or `.starting` the root shows only the `app.starting` spinner: Home is blank by
 design, so no stale handle is reachable from a view. After a successful wipe the target realm is booted once: Welcome, or Demo for
 "Reset Demo data" (`thenDemo`), which keeps the device label and ends the transition only after the Demo boot completes. A Demo that
@@ -85,7 +85,8 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
 3. **`retire()` (L1)** must not be used on a realm with live sessions, or must be completed to stop and drain them.
 4. **Pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
 5. **Failed reset retry (N1):** after a failed reset, Retry must remember the destination (Welcome or Demo), including `thenDemo`.
-6. Done in PR A, listed for completeness: stale share destinations are retired synchronously at leave.
+6. Done in PR A, listed for completeness: the outgoing realm's share destinations are retired by tombstoning at leave (the share fence).
+7. **Runtime-less share realm (L-a).** A graph with no runtime has no share realm: `shareRealm` is nil and no `ShareBridge` is created for it. Keep it that way when Live is added.
 
 ## Priorities and risks
 
