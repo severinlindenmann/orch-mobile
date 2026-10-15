@@ -124,4 +124,70 @@ import OrchStore
         ctx.invalidate()
         #expect(!t.context.isCurrent)
     }
+
+    private struct DownSender: RequestSender {
+        let origin: String
+        func send(_ request: WireRequest) async throws -> WireReply { throw TransportError.disconnected }
+    }
+
+    /// A committed row for a second workspace of the same owner, from a second host in the same Demo environment.
+    private func commitSecondWorkspace(_ h: PairHarness, template: WorkspaceProfile) async throws -> String {
+        let host2 = try DemoSetup.makeHost(h.env, primary: h.primary, name: "Second")
+        let card = try await host2.card()
+        var p = template
+        p.ws = host2.workspace.hex; p.name = "Second"
+        p.wskPub = B64U.encode(host2.wskPublic.x963)
+        p.card = String(decoding: try canonicalJSON(card), as: UTF8.self)
+        let gen: Int64 = 1
+        try await h.env.index.savePairing(PairingRow(ws: p.ws, offer: String(repeating: "1", count: 32), generation: gen, origin: p.origin, phase: "x", startedMs: 0, updatedMs: 0))
+        try await h.env.index.commitJoin(generation: gen, profile: p)
+        return p.ws
+    }
+
+    @Test func aFailedRestoreReleasesWhatEarlierRowsBuiltAndARetryHasNoDuplicates() async throws {
+        let h = try await joined()
+        let template = try #require(try await h.env.index.profile(ws: h.host.workspace.hex))
+        await h.env.context.shutdownParticipants()
+        let baseline = h.env.context.generation.participantCount        // the pairing coordinator still holds the joining session
+        let ws2 = try await commitSecondWorkspace(h, template: template)
+        // Row 2 cannot be rebuilt (its directory is blocked by a file): a failure for the whole restore, not a skip.
+        let blocked = try h.env.layout.wsDir(ws2)
+        try FileManager.default.createDirectory(at: blocked.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: blocked)
+        await #expect(throws: (any Error).self) { _ = try await WorkspaceRestoration.restore(restoreConfig(h)) }
+        #expect(h.env.context.generation.participantCount == baseline)   // row 1's session did not survive the failed restore
+        try FileManager.default.removeItem(at: blocked)
+        let out = try await WorkspaceRestoration.restore(restoreConfig(h))
+        #expect(out.handles.count == 2 && out.skipped.isEmpty)
+        #expect(h.env.context.generation.participantCount == baseline + 2)   // exactly one session per workspace
+        await WorkspaceRestoration.release(out.handles)
+    }
+
+    @Test func aProfileWhoseOwnerDisagreesWithThePinnedOwnerIsSkipped() async throws {
+        let h = try await joined()
+        let template = try #require(try await h.env.index.profile(ws: h.host.workspace.hex))
+        let gen = try #require(try await h.env.index.workspaces().first).generation
+        let liveOrigin = "https://relay.example.org"
+        let layout = try tempLayout(realm: "live")
+        let backend = InMemoryVaultBackend()
+        let keys = SecretVault(group: .keys, backend: backend)
+        let custody = DefaultCustody.make(vault: keys)
+        _ = try custody.create(realm: .live)
+        let index = try await WorkspaceIndex(layout: layout)
+        var p = template; p.origin = liveOrigin
+        try await index.savePairing(PairingRow(ws: p.ws, offer: String(repeating: "0", count: 32), generation: gen, origin: liveOrigin, phase: "x", startedMs: 0, updatedMs: 0))
+        try await index.commitJoin(generation: gen, profile: p)
+        func attempt(pin: SigningPublicKey?) async throws -> RestoreOutcome {
+            let ctx = try RealmContext.live(origin: liveOrigin, pinnedOwner: pin)
+            let transport = try LiveTransport.testingTransport(context: ctx, sender: DownSender(origin: liveOrigin))
+            let out = try await WorkspaceRestoration.restore(RestoreConfig(context: ctx, transport: transport, index: index, vault: keys, custody: custody, clock: ContinuousClock(), wall: SystemWallClock()))
+            await WorkspaceRestoration.release(out.handles)
+            return out
+        }
+        let other = try await attempt(pin: SoftwareSigner().publicKey)
+        #expect(other.handles.isEmpty && other.skipped.map(\.reason) == ["owner"])
+        let right = try await attempt(pin: h.primary.publicKey)
+        #expect(right.handles.count == 1)
+        #expect(try await attempt(pin: nil).handles.count == 1)
+    }
 }

@@ -147,7 +147,7 @@ final class LiveRuntime: RealmRuntime {
     /// Committed workspaces that could not be rebuilt (stable reason tags). They stay in the index untouched.
     private(set) var skipped: [(ws: String, reason: String)] = []
     private var restored: [JoinedHandle] = []
-    private var wipe: RealmWipe?
+    private var realmWipe: RealmWipe?
     #if DEBUG
     /// Tests: awaited at named boot steps ("index", "recover", "restore") so a teardown can be raced against a boot in progress.
     var bootGate: (@Sendable (String) async -> Void)?
@@ -193,13 +193,16 @@ final class LiveRuntime: RealmRuntime {
         try await LocalWipe(index: idx, hooks: storage.wipeHooks()).resumePendingWipes()
         try await step("wipes")
         // Pairing recovery: finishes what a crashed pairing left (secrets, directories, new keys). Best effort; "not clean" retries next launch.
-        let recovery = try makeCoordinator()
+        let recovery = makeBootCoordinator(idx)
         _ = await recovery.recover()
+        await recovery.realmShutdown()                 // the recovery coordinator is not kept: a retried boot builds a fresh one
         try await step("recover")
         let outcome = try await WorkspaceRestoration.restore(RestoreConfig(
             context: context, transport: transport, index: idx, vault: keys, custody: custody, clock: storage.clock, wall: storage.wall,
             entropy: storage.entropy))
-        try await step("restore")
+        do { try await step("restore") }
+        catch { await WorkspaceRestoration.release(outcome.handles); throw error }
+        await WorkspaceRestoration.release(restored)   // handles of an earlier, unadopted boot (none normally)
         restored = outcome.handles
         skipped = outcome.skipped
         booted = true
@@ -212,9 +215,13 @@ final class LiveRuntime: RealmRuntime {
     func date(forMs ms: Int64) -> Date { Date(timeIntervalSince1970: Double(ms) / 1000) }
 
     func makeCoordinator() throws -> PairingCoordinator {
-        guard let index else { throw LiveError.notBooted }
-        return PairingCoordinator(PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
-                                                clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel))
+        guard booted, let index else { throw LiveError.notBooted }
+        return makeBootCoordinator(index)
+    }
+
+    private func makeBootCoordinator(_ index: WorkspaceIndex) -> PairingCoordinator {
+        PairingCoordinator(PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
+                                         clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel))
     }
 
     /// The workspaces `boot` rebuilt (handed over once).
@@ -239,7 +246,14 @@ final class LiveRuntime: RealmRuntime {
 
     func invalidate() { context.invalidate() }
 
-    func drain() async { await context.shutdownParticipants() }
+    /// Sessions and coordinators are cancelled and awaited, then the containers of unadopted restored workspaces and the index are closed.
+    /// The runtime is unusable afterwards (a later `shutdown` opens the persisted index itself for the wipe).
+    func drain() async {
+        await context.shutdownParticipants()
+        await WorkspaceRestoration.release(restored); restored = []
+        await index?.close()
+        index = nil; booted = false
+    }
 
     var writeFence: (any WriteFence)? { context.writeFence }
 
@@ -248,9 +262,9 @@ final class LiveRuntime: RealmRuntime {
     func shutdown() async throws {
         invalidate()
         await context.shutdownParticipants()
-        restored = []
-        let run = wipe ?? storage.realmWipe(hooks: storage.wipeHooks())
-        wipe = run
+        await WorkspaceRestoration.release(restored); restored = []
+        let run = realmWipe ?? storage.realmWipe(hooks: storage.wipeHooks())
+        realmWipe = run
         try await run.run(index: index)
         index = nil; booted = false
     }

@@ -188,8 +188,8 @@ final class ShareBridge {
             let identity = world.shareIdentity(of: ws.id)
             return LiveDestination(realm: realm, ws: identity?.ws ?? Self.wsHex(ws.id), generation: identity?.generation ?? 1)
         })
-        let (inbox, realm) = (self.inbox, self.realm)
-        let claim = { () -> ClaimResult in inbox.sweep(); return inbox.claim(live: live, realm: realm, includeClaimed: true, deferred: deferred) }
+        let claimInbox = self.inbox, claimRealm = self.realm
+        let claim = { () -> ClaimResult in claimInbox.sweep(); return claimInbox.claim(live: live, realm: claimRealm, includeClaimed: true, deferred: deferred) }
         let result: ClaimResult
         if let fence { guard let r = try? fence.performFenced(claim) else { return }; result = r } else { result = claim() }
         for job in result.claimed where !attempted.contains(key(job)) {

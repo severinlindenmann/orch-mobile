@@ -210,6 +210,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// synchronously, BEFORE the boot task starts, so `teardown` can invalidate a boot in progress (M3). A start that fails keeps the
     /// runtime attached and Live data untouched; the failure is visible as `liveBootError` and foregrounding retries.
     private func startLive() async {
+        guard runtime == nil else { return }
         guard let install = installStore.load() else { liveBootError = "The Live record on this iPhone is unreadable."; PresentationGate.requireRebuild(); return }
         let runtime: LiveRuntime
         do { runtime = try LiveRuntime(install: install, storage: try liveStorage()) }
@@ -238,7 +239,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         guard revision == resetRevision, self.runtime === runtime else { return }     // a teardown replaced this boot
         bootTask = nil
         guard result != nil else {
-            liveBootError = "Live could not start. It will try again when orch is opened."
+            liveBootError = "Live could not start. It will try again when you return to orch."
             PresentationGate.requireRebuild()
             return
         }
@@ -436,8 +437,11 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
         self.active = active
-        if active, ready, liveBootError != nil, let live = runtime as? LiveRuntime, !live.booted { Task { await bootLive(live) } }
-        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: wantsDemo) } }
+        if active, ready, liveBootError != nil {
+            if let live = runtime as? LiveRuntime { if !live.booted { Task { await bootLive(live) } } }
+            else if runtime == nil, hasLiveInstall { Task { await startLive() } }      // the runtime could not even be built: try again
+        }
+        if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: wantsDemo || hasLiveInstall) } }
         if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
         refreshTasks = [:]
@@ -894,7 +898,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             await previous?.value
             _ = await pendingBoot?.value
             await runtime?.drain()
-            for ws in workspaces { await ws.drop?.service.invalidate(); await ws.stop() }
+            for ws in workspaces { await ws.drop?.service.invalidate(); await ws.stop(); await ws.downloadContainer?.close() }
         }
     }
 

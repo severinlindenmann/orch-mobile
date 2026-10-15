@@ -67,7 +67,7 @@ final class LiveRuntimeTests: XCTestCase {
         func cleanup() { flags.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: storage.layout.appRoot.deletingLastPathComponent()) }
     }
 
-    private func rig(installed: Bool = true) throws -> Rig {
+    private func makeRig(installed: Bool = true) throws -> Rig {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-liveruntime-" + UUID().uuidString)
         let layout = try StoreLayout(appRoot: base.appendingPathComponent("app"), pushGroupRoot: base.appendingPathComponent("push"),
                                      shareGroupRoot: base.appendingPathComponent("share"), realm: "live")
@@ -81,46 +81,33 @@ final class LiveRuntimeTests: XCTestCase {
         return rig
     }
 
-    private func services(_ rig: Rig) -> LiveServices {
+    private func makeServices(_ rig: Rig) -> LiveServices {
         let services = LiveServices(options: options, resetFlags: rig.flags)
         services.liveStorage = { rig.storage }
         return services
     }
 
     private struct Joined { let profile: WorkspaceProfile; let generation: Int64 }
-    private static var joinedCache: Joined?
-
-    /// A real join, done once against the Demo stack (the same card, pins and profile a Live join commits).
+    /// A committed join built directly (no Demo pairing run): a Demo host's real signed card, its pins and the owner's key, as the profile a
+    /// verified join commits. Deterministic and fast.
     private func demoJoin() async throws -> Joined {
-        if let cached = Self.joinedCache { return cached }
-        let runtime = try await DemoRuntime.boot(temporaryStorage: true)
-        let demo = LiveServices(options: options, runtime: runtime)
-        demo.demo?.speed = 10
-        let model = LivePairingModel(services: demo, start: nil)
-        model.useDemoInvitation()
-        let deadline = Date().addingTimeInterval(90)
-        var done = false
-        while !done, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(100))
-            switch model.state {
-            case .comparingHost where !model.demoHostCode.isEmpty: model.hostApprove()
-            case .waitingPrimary: model.primaryOpenRequest()
-            case .comparingPrimary where model.demoPrimaryHasChallenge: model.primaryApprove()
-            case .ready, .refused, .alarm, .expired, .denied: done = true
-            default: break
-            }
-        }
-        guard case .ready = model.state else { throw XCTSkip("demo pairing did not finish: \(model.state)") }
-        let index = try XCTUnwrap(demo.demo).env.index
-        let rows = try await index.workspaces()
-        let row = try XCTUnwrap(rows.first)
-        let found = try await index.profile(ws: row.ws)
-        let profile = try XCTUnwrap(found)
-        model.cancel()
-        demo.exitDemo(); await demo.waitForReset()
-        let joined = Joined(profile: profile, generation: row.generation)
-        Self.joinedCache = joined
-        return joined
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("orch-fixture-" + UUID().uuidString)
+        let layout = try StoreLayout(appRoot: base.appendingPathComponent("app"), pushGroupRoot: base.appendingPathComponent("push"),
+                                     shareGroupRoot: base.appendingPathComponent("share"), realm: "demo")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let clock = TestClock(wallStartMs: SystemWallClock().nowMs)
+        let custody = DefaultCustody.make(vault: SecretVault(group: .keys, backend: InMemoryVaultBackend()))
+        let env = try await DemoSetup.setup(layout: layout, custody: custody, clock: clock, wall: clock)
+        let primary = DemoSetup.makeAuthority(env)
+        let host = try DemoSetup.makeHost(env, primary: primary, name: "Laptop")
+        let card = try await host.card()
+        let profile = WorkspaceProfile(
+            ws: host.workspace.hex, name: "Laptop", description: "Demo workspace", origin: origin, clientHosted: false, hostedMarker: false,
+            hostedBy: nil, wskPub: B64U.encode(host.wskPublic.x963), pkPub: B64U.encode(primary.publicKey.x963),
+            ownerPerson: Identifiers.personID(primary.publicKey).hex, cardSeq: 1, listSeq: 1, epoch: 1, scopes: ["look", "decide", "operate", "type"],
+            card: String(decoding: try canonicalJSON(card), as: UTF8.self), joinedMs: SystemWallClock().nowMs)
+        env.context.invalidate()
+        return Joined(profile: profile, generation: 1)
     }
 
     /// Commits `joined` into the rig's Live realm exactly as a Live join leaves it: index row and profile, and the device keys.
@@ -143,9 +130,9 @@ final class LiveRuntimeTests: XCTestCase {
 
     func testLiveBootRestoresAJoinedWorkspaceOnTheSingleContextAndDoesNotWipe() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
-        let services = services(rig)
+        let services = makeServices(rig)
         await services.boot()
         let runtime = try XCTUnwrap(services.runtime as? LiveRuntime)
         XCTAssertTrue(services.isLive && !services.isDemo)
@@ -166,7 +153,7 @@ final class LiveRuntimeTests: XCTestCase {
         // Another launch restores the same workspace again: a Live boot never wipes.
         services.retire(); await services.waitForRetire()
         XCTAssertFalse(runtime.context.isCurrent)
-        let second = self.services(rig)
+        let second = makeServices(rig)
         await second.boot()
         XCTAssertEqual(second.live.map(\.info.id), [joined.profile.ws])
         second.resetThisiPhone(); await second.waitForReset()
@@ -174,9 +161,9 @@ final class LiveRuntimeTests: XCTestCase {
 
     func testRetireOfAGraphWithLiveSessionsStopsThemAndWipesNothing() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
-        let services = services(rig)
+        let services = makeServices(rig)
         await services.boot()
         let runtime = try XCTUnwrap(services.runtime as? LiveRuntime)
         let ws = try XCTUnwrap(services.live.first)
@@ -186,13 +173,13 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertNil(ws.eventTask)
         XCTAssertTrue(FileManager.default.fileExists(atPath: rig.storage.layout.indexURL.path))
         XCTAssertGreaterThan(try liveVaultItems(rig), 0)             // retire is not a wipe
-        let again = self.services(rig)
+        let again = makeServices(rig)
         await again.boot()
         again.resetThisiPhone(); await again.waitForReset()
     }
 
     func testMissingKeychainFailsClosedWithoutAnyFallbackAndKeepsLiveData() async throws {
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         let services = LiveServices(options: options, resetFlags: rig.flags)
         services.liveStorage = { throw LiveError.keychainUnavailable }
         await services.boot()
@@ -203,8 +190,27 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertFalse(services.wantsDemo)
     }
 
+    func testForegroundRetriesALiveStartThatCouldNotEvenBuildItsRuntime() async throws {
+        let joined = try await demoJoin()
+        let rig = try makeRig(); defer { rig.cleanup() }
+        try await commit(joined, into: rig)
+        let services = LiveServices(options: options, resetFlags: rig.flags)
+        var available = false
+        services.liveStorage = { if available { return rig.storage }; throw LiveError.keychainUnavailable }
+        await services.boot()
+        XCTAssertNil(services.runtime)
+        XCTAssertNotNil(services.liveBootError)
+        available = true
+        services.setActive(true)
+        for _ in 0..<2000 where services.live.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(services.isLive)
+        XCTAssertNil(services.liveBootError)
+        XCTAssertEqual(services.live.count, 1)
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
     func testRuntimeRefusesAForeignTransportAndABadInstall() throws {
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         var other = rig.storage
         other.makeTransport = { _ in
             let foreign = try RealmContext.live(origin: "https://relay.example.org")
@@ -220,10 +226,10 @@ final class LiveRuntimeTests: XCTestCase {
 
     func testTeardownDuringABootInvalidatesItAndTheLeaveWipesTheRealm() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
         let gate = BootGate("recover")
-        let services = services(rig)
+        let services = makeServices(rig)
         services.liveBootGate = { await gate.hit($0) }
         let boot = Task { await services.boot() }
         await gate.waitEntered()
@@ -249,9 +255,12 @@ final class LiveRuntimeTests: XCTestCase {
 
     func testLeaveWipesTheWholeRealmIncludingStagedItemsNoIndexRowNames() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
-        // What an invalidated join left behind: staged secrets and files for a workspace that never committed.
+        let services = makeServices(rig)
+        await services.boot()
+        XCTAssertEqual(services.live.count, 1)
+        // What an invalidated join leaves behind AFTER the boot (boot recovery would sweep strays of an earlier launch):
         let staged = ID16.random().hex
         try rig.keys.put(Data("pairing".utf8), for: SecretID(realm: .live, ws: staged, purpose: "pairing"))
         try rig.push.put(Data("push".utf8), for: SecretID(realm: .live, ws: staged, purpose: "push"))
@@ -260,9 +269,10 @@ final class LiveRuntimeTests: XCTestCase {
         let layout = rig.storage.layout
         let stateDir = try layout.pushStateDir(staged), stagedDir = try layout.stagedJobsDir(staged), quarantine = try layout.quarantineDir(staged)
         for dir in [stateDir, stagedDir, quarantine] { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
-        let services = services(rig)
-        await services.boot()
-        XCTAssertEqual(services.live.count, 1)
+        // Before the reset the staged items exist.
+        XCTAssertTrue(try rig.keys.contains(SecretID(realm: .live, ws: staged, purpose: "pairing")))
+        XCTAssertTrue(try rig.push.contains(SecretID(realm: .live, ws: staged, purpose: "push")))
+        for dir in [stateDir, stagedDir, quarantine] { XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path), dir.path) }
         services.resetThisiPhone()                                            // Leave Live
         XCTAssertFalse(services.lifetime.isActive)
         await services.waitForReset()
@@ -276,12 +286,13 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertEqual(services.capabilities, .none)
     }
 
-    func testKilledDuringTheWipeTheNextBootCompletesItBeforeLiveStarts() async throws {
+    func testALaunchWithTheGateSetCompletesTheWipeBeforeLiveStarts() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
-        rig.flags.set(true, forKey: "orch.live.resetPending")                 // the persisted gate the interrupted Leave left
-        let services = services(rig)
+        rig.flags.set(true, forKey: "orch.live.resetPending")                 // the persisted gate an interrupted Leave leaves
+        XCTAssertGreaterThan(try liveVaultItems(rig), 0)                       // there is Live data for the wipe to find
+        let services = makeServices(rig)
         await services.boot()
         XCTAssertNil(services.runtime)                                         // no Live successor started
         XCTAssertTrue(services.live.isEmpty)
@@ -294,10 +305,10 @@ final class LiveRuntimeTests: XCTestCase {
 
     func testAWipeThatFailsAtLaunchBlocksLiveAndKeepsEverythingForTheRetry() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
         rig.flags.set(true, forKey: "orch.live.resetPending")
-        let services = services(rig)
+        let services = makeServices(rig)
         var attempts = 0
         services.finishInterruptedLiveReset = { storage in
             attempts += 1
@@ -318,7 +329,7 @@ final class LiveRuntimeTests: XCTestCase {
     }
 
     func testPendingServerCleanupsAreClearedOnlyAfterTheWipeSucceeded() async throws {
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
         let store = ServerCleanupStore(defaults: rig.flags, realm: .live)
         store.add(PendingServerCleanup(ws: String(repeating: "a", count: 32), generation: 1, since: Date()))
@@ -371,7 +382,7 @@ final class LiveRuntimeTests: XCTestCase {
 
     func testControllerRestoresLiveOnRelaunchAndLeavingLiveReturnsToWelcome() async throws {
         let joined = try await demoJoin()
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
         let controller = RealmController(options: options, resetFlags: rig.flags)
         controller.services.liveStorage = { rig.storage }
@@ -409,7 +420,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertEqual(controller.state, .welcome)
         XCTAssertEqual(try ShareTargetIndex.persisted(from: area), [live])
         // A Live that failed to start is a no-realm boot too: its destinations stay.
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         let failing = RealmController(options: options, resetFlags: rig.flags)
         failing.shareArea = area
         failing.services.liveStorage = { throw LiveError.keychainUnavailable }
@@ -422,7 +433,7 @@ final class LiveRuntimeTests: XCTestCase {
     // MARK: Capabilities and the fence on Live writes
 
     func testLiveHasNoApnsNoLiveDropAndNoShareBridge() async throws {
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
         var reads = 0, registrations = 0
@@ -439,7 +450,7 @@ final class LiveRuntimeTests: XCTestCase {
     }
 
     func testPushMaterialAndTheDraftFileGoThroughTheRealmFence() async throws {
-        let rig = try rig(); defer { rig.cleanup() }
+        let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
         let sink = runtime.makePushSink()
         try sink.put(Data("m".utf8), realm: "live", ws: String(repeating: "c", count: 32), purpose: "push-material")

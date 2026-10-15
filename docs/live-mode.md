@@ -131,7 +131,7 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
      `resetPending` boot gating, so a Live successor never starts before that wipe succeeds. `SecretID`s are not generation-tagged.
    - **Done (B2a): M3.** A boot in progress must be invalidated at teardown. Create the realm context synchronously and make it reachable
      (for example on the controller) before the boot task starts, so `teardown` can invalidate it before the runtime exists.
-   - **Done (B2a): L6.** Push material goes through `VaultPushSink(vault:)`, which wraps a fenced `RealmVault` (`LiveRuntime.makePushSink()`; the unfenced backend initializer is DEBUG-only), the ticket draft is written inside `RealmRuntime.writeFence` (a Live workspace without a fence cannot save one), and a Live `ShareBridge` exists only with the share capability and a fence (it runs its App Group writes inside it). Original text: Live writes outside OrchClient (push material `VaultPushSink`, share staging, the draft file) must go through
+   - **Done (B2a): L6.** Push material has a fenced path: `VaultPushSink(vault:)` wraps a fenced `RealmVault` and `LiveRuntime.makePushSink()` exists (nothing calls it while push is off; the unfenced backend initializer is DEBUG-only), the ticket draft is written inside `RealmRuntime.writeFence` (a Live workspace without a fence cannot save one), and a Live `ShareBridge` exists only with the share capability and a fence (it runs its App Group writes inside it). Original text: Live writes outside OrchClient (push material `VaultPushSink`, share staging, the draft file) must go through
      the runtime's fence. Consider making the fence a required init parameter for Live-layout stores.
 3. **Done (B2a): `retire()` (L1).** It now drains: the realm is invalidated, then `RealmRuntime.drain()` and the workspace consumers are awaited in `retireDrain` (`waitForRetire`). Original text: **`retire()`** must not be used on a realm with live sessions, or must be completed to stop and drain them.
 4. **Done (B2a): pending server cleanups (L4)** are cleared only after the wipe succeeds, not at teardown start.
@@ -144,6 +144,25 @@ PR A is a boundary for Demo; the following are blockers for making Live reachabl
    boot completes the removal.
 
 9. **Done (B2a): a no-realm boot does not retire Live destinations** (`completeShareRemovals` retires only Demo's). Original text: **A no-realm boot must not retire Live destinations.** Today `completeShareRemovals()` retires every persisted entry when the boot ends with no realm. That is safe while only Demo exists, because Demo is wiped at every boot anyway. Once Live exists, a failed or absent runtime (a boot error, `resetIncomplete`, a Live restore that fails offline or before first unlock) must not tombstone `"live"` destinations, because that burns their generation for good. A no-realm boot retires only realms whose storage is wiped at boot (Demo). Live destinations are retired only by an explicit Leave Live or Reset.
+
+## Before Live entry (B2b) can ship
+
+Findings of the B2a review that belong to the entry flow (nothing writes a `LiveInstall` before B2b, so none is reachable yet):
+
+1. **Owner pin (Opus M1).** Write the owner pin before, or atomically with, `commitJoin`; or derive it at boot from the committed profiles and refuse
+   a boot where they disagree. Restore already skips a workspace whose owner differs from the pinned one (tested); the pin itself must be written
+   reliably.
+2. **Install before secrets (Opus M2).** Persist `LiveInstall` BEFORE any Live keychain item or index row exists. Before writing a fresh install
+   record, run `wipe(realm: .live)` on both vault groups plus `custody.delete(realm: .live)`: keychain items survive an uninstall, and orphaned device
+   keys would otherwise be reused.
+3. **`LiveInstallStore.save` must throw** and fail the join (Sonnet LOW 7). No silent `try?`.
+4. **Skipped workspaces (Opus L2)** (`LiveRuntime.skipped`) must be surfaced in the UI.
+5. **Install record location (Opus L3).** Consider moving `LiveInstall` into the `.keys` keychain group (ThisDeviceOnly, no backups), and bind the
+   epoch so an old card cannot be rolled back.
+6. **Stuck-wipe escape (Opus L4).** A force reset for when the index cannot open or the keychain is unavailable.
+7. **Fence by construction (Opus L6).** Make a Live `RealmVault` carry a non-optional fence.
+8. **Known limit (Sonnet LOW 10).** A Live install whose keychain is unavailable cannot be left (the wipe fails closed); it shows as a failed start
+   until the keychain is back.
 
 ## Priorities and risks
 

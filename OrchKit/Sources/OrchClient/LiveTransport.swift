@@ -4,6 +4,11 @@ import Foundation
 /// ONE https origin of a live `RealmContext`. This is the only public way to obtain a Live transport; the routed initializer itself is
 /// `package`, so an app cannot pair a live context with a sender of its own choosing.
 ///
+/// An app that supplies its own `RelayTransport` instead is not prevented from doing so by this type: `LiveRuntime` checks that such a
+/// transport reports the runtime's own context (same lifetime, origin and realm), and `WorkspaceSession.init` re-checks the lifetime.
+/// A transport that merely returns the right context from its `context` property would pass those checks; nothing here can prove it
+/// actually refuses to send after invalidation.
+///
 /// The transport shares the context's `RealmGeneration`: invalidating the context stops every send on it (checked immediately before the
 /// sender is touched), which is what lets a runtime that owns exactly one context cut off all of its sessions at once.
 public enum LiveTransport {

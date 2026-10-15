@@ -48,20 +48,34 @@ public enum WorkspaceRestoration {
         if rows.isEmpty { return out }
         // The device keys are realm-level: one lookup for every workspace. Never created here (a restore must not invent an identity).
         let identity = try c.context.deviceIdentity(custody: c.custody, createIfMissing: false)
-        for row in rows {
-            try c.context.generation.check()
-            switch await c.index.removalStatus(ws: row.ws, generation: row.generation) {
-            case .removed: out.skipped.append((row.ws, "removed")); continue
-            case .unknown: throw StoreError.removalStateUnknown(ws: row.ws, generation: row.generation)
-            case .notRemoved: break
+        do {
+            for row in rows {
+                try c.context.generation.check()
+                switch await c.index.removalStatus(ws: row.ws, generation: row.generation) {
+                case .removed: out.skipped.append((row.ws, "removed")); continue
+                case .unknown: throw StoreError.removalStateUnknown(ws: row.ws, generation: row.generation)
+                case .notRemoved: break
+                }
+                do { out.handles.append(try await rebuild(row, identity: identity, c)) }
+                catch let e as RestoreSkip { out.skipped.append((row.ws, e.reason)) }
             }
-            do { out.handles.append(try await rebuild(row, identity: identity, c)) }
-            catch let e as RestoreSkip { out.skipped.append((row.ws, e.reason)) }
+        } catch {
+            // All or nothing for the caller: what rows 1..N-1 built is released, so a retry never finds duplicate sessions or containers.
+            await release(out.handles)
+            throw error
         }
         return out
     }
 
     private struct RestoreSkip: Error { let reason: String }
+
+    /// Ends the sessions of restored handles and closes their containers (a boot that failed after restoring, or a retired realm).
+    public static func release(_ handles: [JoinedHandle]) async {
+        for h in handles {
+            await h.joined.session.realmShutdown()
+            await h.joined.downloadContainer.close()
+        }
+    }
 
     private static func rebuild(_ row: WorkspaceEntry, identity: DeviceIdentity, _ c: RestoreConfig) async throws -> JoinedHandle {
         guard let ws = ID16(hex: row.ws) else { throw RestoreSkip(reason: "workspace_id") }
