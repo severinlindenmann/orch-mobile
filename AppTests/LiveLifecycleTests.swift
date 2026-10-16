@@ -32,7 +32,9 @@ private actor WorkspaceStub: WorkspaceAPI {
     func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
     func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
     func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
-    func pendingWrites() -> [WriteStatus] { [] }
+    var pending: [WriteStatus] = []
+    func setPending(_ p: [WriteStatus]) { pending = p }
+    func pendingWrites() -> [WriteStatus] { pending }
     func reviewCreation(type: String, title: String) throws -> CreationReview {
         // the workspace read for the review fails
         submissions += 1
@@ -558,6 +560,45 @@ final class LiveLifecycleTests: XCTestCase {
         let sent = await api.submissions
         XCTAssertEqual(sent, 0)
         XCTAssertEqual(try Data(contentsOf: ws.draftURL!), pending)
+    }
+
+    /// #86 (Opus M2): a kill between `api.create` and the draft write leaves a signed creation in the store and a draft without a marker.
+    /// The refusal follows the store: no new review, and the review id is adopted into the draft.
+    func testNoNewReviewWhileTheStoreHoldsAnUnsettledCreation() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        await api.setPending([WriteStatus(reviewID: "r9", questionID: nil, option: nil, state: .checking, review: nil,
+                                          creation: StoredCreationReview(ticketType: "bug", title: "Signed", owner: "o", uid: "u", key: "MOB-0002"))])
+        let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        try Data(#"{"type":"bug","title":"Signed","review":null}"#.utf8).write(to: ws.draftURL!)       // the marker never got written
+        let result = await ws.reviewCreation(type: "feature", title: "Another")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertEqual(sent, 0)
+        let draft = ws.loadCreationDraft()
+        XCTAssertEqual(draft?.pending, true)
+        XCTAssertEqual(draft?.title, "Signed")
+    }
+
+    /// #86 (Opus L4): a marker whose review the store no longer lists is cleared, not "checking" for good.
+    func testStaleCreationMarkerIsCleared() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let ws = workspace(services)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        try Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8).write(to: ws.draftURL!)
+        let phase = await ws.checkCreation()
+        XCTAssertEqual(phase, .notSent("Nothing is being checked."))
+        XCTAssertNil(ws.loadCreationDraft())
     }
 
     /// #86: "not usable" (a lock, the background) is transient: a pending signed creation stays checking, never "nothing".

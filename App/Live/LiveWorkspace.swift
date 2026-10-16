@@ -242,6 +242,15 @@ final class LiveWorkspace: WorkspaceModel {
         // #86: while a signed creation is unsettled there is no new review (its marker would be overwritten and a second signature could
         // create the ticket twice). The form shows it as being checked.
         if loadDraft()?.review != nil { return .failed("Your last ticket is still being checked. It is not signed again until that is settled.") }
+        // The store is the truth, not the draft marker: the draft gets its review id only after `api.create` returns, so a kill in between
+        // leaves a signed, unsettled creation with no marker. Refuse while `pe_reviews` has one, and adopt its id into the draft.
+        // If the store cannot be read, nothing is signed.
+        let stored: [WriteStatus]
+        do { stored = try await api.pendingWrites() } catch { return .failed("The workspace could not be read. Nothing was signed.") }
+        if let open = stored.first(where: { $0.creation != nil }) {
+            if let c = open.creation { try? saveDraft(CreationDraft(type: c.ticketType, title: c.title, review: open.reviewID)) }
+            return .failed("Your last ticket is still being checked. It is not signed again until that is settled.")
+        }
         if let problem = Self.titleProblem(title) { return .failed(problem) }
         do { try saveDraft(CreationDraft(type: type, title: title, review: nil)) }
         catch { return .failed("Could not save the ticket draft. Nothing was sent. Try again.") }
@@ -301,7 +310,14 @@ final class LiveWorkspace: WorkspaceModel {
         await services?.releaseDemoHeldCreation(workspace: self)
         #endif
         do { return await apply(try await api.settle(reviewID: id), uid: nil) }
-        catch { return .checking }
+        catch {
+            // the store no longer lists that review: nothing is pending, so the marker is stale (it would show "checking" for good)
+            if let stored = try? await api.pendingWrites(), !stored.contains(where: { $0.reviewID == id }) {
+                clearDraft()
+                return .notSent("Nothing is being checked.")
+            }
+            return .checking
+        }
     }
 
     private func apply(_ outcome: WriteOutcome, uid: String?) async -> CreationPhase {
