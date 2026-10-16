@@ -474,6 +474,20 @@ final class LiveRuntimeTests: XCTestCase {
         return (services, runtime, ws, fake)
     }
 
+    func testWithoutAnApnsEnvironmentTheCoordinatorSendsNothingAtAll() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, push) = try pushServices(rig)
+        services.pushEnvironment = { nil }                                    // the Simulator, or a build without the push entitlement
+        let c = try XCTUnwrap(services.pushCoordinatorForLive())
+        await c.register(push); await c.registerAll([push])
+        let removal = await c.unregister(workspace: ws.workspaceID)
+        XCTAssertEqual(removal, .done)
+        XCTAssertEqual(push.registerCalls.count, 0); XCTAssertEqual(push.unregisterCalls, 0)
+        _ = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertEqual(push.registerCalls.count, 0); XCTAssertEqual(push.unregisterCalls, 0, "Leave sends no unregister either")
+        services.retire()
+    }
+
     func testLiveLeaveRemovesTheRelayRegistrationBeforeTheWipeAndOwesNothingWhenItWorked() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let (services, _, ws, push) = try pushServices(rig)

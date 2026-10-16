@@ -55,6 +55,21 @@ private func tokenB64(_ n: UInt8, count: Int = 32) -> String { B64U.encode(Data(
         #expect(await w.relay.pushUnregisteredIDs == [first])
     }
 
+    @Test func aFailedRegisterAfterATokenChangeStillUnregistersTheOldIdNextTime() async throws {
+        let (w, phone, service) = try await setup()
+        guard case .registered(let first) = await service.register(token: tokenB64(3), env: .production) else { Issue.record("a"); return }
+        await w.relay.scriptPush([w.relay.refuse(429, .rateLimited)])
+        #expect(await service.register(token: tokenB64(4), env: .production) == .rateLimited(retryAfter: nil))
+        let owedRow = try #require(try await phone.container.pushRegistration(env: "production"))
+        #expect(owedRow.supersedes == first.hex && owedRow.confirmedMs == nil)
+        #expect(await w.relay.pushUnregisteredIDs.isEmpty)
+        // the next launch: same token, same new id, and now the old id is unregistered
+        guard case .registered(let second) = await service.register(token: tokenB64(4), env: .production) else { Issue.record("b"); return }
+        #expect(second.hex == owedRow.registrationID)
+        #expect(await w.relay.pushUnregisteredIDs == [first])
+        #expect(try await phone.container.pushRegistration(env: "production")?.supersedes == nil)
+    }
+
     @Test func registrationConflictMintsOneNewIdAndRetriesOnce() async throws {
         let (w, _, service) = try await setup()
         guard case .registered(let first) = await service.register(token: tokenB64(5), env: .sandbox) else { Issue.record("a"); return }

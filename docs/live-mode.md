@@ -296,7 +296,7 @@ The relay's own push fixtures (`push_register.json`, `push_unregister.json`, orc
 body `{workspace_id, registration_id, env, topic: "io.severin.orch", token}`, `token` b64u of 32..100 bytes. The registration id is 16 random
 bytes (hex), kept per (workspace, env) in the workspace store (`push_registrations`, migration 14) and saved BEFORE the request, so a lost
 reply retries the same body (200, free). A changed token mints a new id (a new id retires the old one at the relay; the same id with another
-body is 409) and, once the new one is confirmed, the old id is also unregistered explicitly (best effort; never the `null` form, which would remove the new one). 409 `registration_conflict`: mint a new id and register once more, a second 409 is reported. 404: `relayPushOff`, nothing is
+body is 409) and, once the new one is confirmed, the old id is also unregistered explicitly (the old id is stored with the new row before the request in `push_registrations.supersedes`, migration 17, so a failed register or a kill still owes it at the next launch;  never the `null` form, which would remove the new one). 409 `registration_conflict`: mint a new id and register once more, a second 409 is reported. 404: `relayPushOff`, nothing is
 asked again after 15 minutes (launch and foreground alike). 403 `not_eligible` / `revoked`: shown, not retried. 429: no retries for `Retry-After` (300 s without one).
 
 **When it runs** (`App/Push/PushRegistrationCoordinator`, owned by `LiveServices`, only when the realm has `capabilities.push`):
@@ -329,7 +329,7 @@ asked again after 15 minutes (launch and foreground alike). 403 `not_eligible` /
   from the member list, an APNs 410 / `BadDeviceToken`, the device's revocation, or 60 days without a refresh. A second tap with another
   intent while this runs is refused with a visible notice.
 * **Refusals.** 403 `not_eligible` / `revoked`, 400 `malformed` and an unusable reply are permanent: that workspace is not asked again in
-  this process (a re-pair starts fresh). 429 backs off, 404 stops everything until the next launch.
+  this process (a re-pair starts fresh). 429 backs off. 404 stops every workspace for 15 minutes, then the next launch or foreground asks again; the note is per install, so it survives the Leave of one workspace and is cleared only by Reset or by a later successful registration.
 * **Stale environment.** A registration made under one APNs environment (for example a development build later replaced by TestFlight) is not
   removed by the phone; it ends when APNs rejects its token (`BadDeviceToken` deletes it at the relay) or after 60 days. The stored token is
   used only if it was issued for the environment the build resolves now.
