@@ -89,6 +89,9 @@ final class LiveRuntimeTests: XCTestCase {
         // fake (no session work or network behind the test's back); push behaviour has its own tests below.
         services.makePushService = { FakePush($0.workspace, generation: $0.generation) }
         services.pushUnregister = { _ in .removed }
+        // The OS notification centre is never asked from these tests (a hosted CI simulator crashes in it): permission is a fixed answer.
+        services.currentPermission = { .denied }
+        services.registerForAPNs = {}
         return services
     }
 
