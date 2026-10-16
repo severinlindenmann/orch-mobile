@@ -95,7 +95,7 @@ owner key, in `UserDefaults` key `orch.live.install`). Nothing writes that recor
   deleted. Only after success are the gate, the install record and the realm's pending server cleanups cleared. A launch that finds the
   gate completes the wipe before any realm starts. Tombstone coordination files are kept; `WorkspaceIndex.nextGeneration` now also looks at them
   so a rejoin after Leave starts above a burnt generation.
-* **Capabilities** (`RealmCapabilities.live`): drop, share, push and demoControls all off until owner-approved relay routes exist.
+* **Capabilities** (`RealmCapabilities.live`): drop, share, push and demoControls all off until owner-approved relay routes exist. `writes` is ON since C2b increment 4 (answers and new tickets), but the capability is only the first of three conditions: a Live write also needs a Secure Enclave policy (software custody, e.g. the Simulator, has none) and the host's own signal, column-R `whoami.relay` with the op at version 1 and `r6_ready` true (see `host-api-v1.md`, "Live write signal"). The signal is kept in memory by the session, read at `startViews`, on foreground and on an epoch change, and cleared on background, on a failed or malformed read and on an epoch change: no signal, no new Live signature and no first dispatch.
 * Live `leave(workspaceID:)` never reports server success (`finishOnMac`): no acknowledged server operation exists yet.
 * Custody: Secure Enclave on device, software on Simulator. Passphrase custody (orch-core #465) is a later item.
 * Known limit: restored sessions use the same poll cadence as a fresh join (no long poll yet); real-relay tuning belongs with PR C.
