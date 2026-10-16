@@ -146,6 +146,8 @@ extension WorkspaceSession {
         guard hostWritesAllowed("approve"), hostWritesAllowed("changes"), policy != nil else { throw ViewError.writesUnavailable }
         let lifecycle = reviewLifecycle
         let get = try await ticketGet(ref)
+        // a ref that is a ticket uid must be the ticket the host answered with (a key is the host's word and is resolved by it)
+        if ULID.isValid(ref), !get.uid.bytesEqual(ref) { throw GateReviewError.doesNotMatch }
         let input: GateInputResult
         do { input = try await gateInput(ref: get.uid, gate: gate) }
         catch ClientError.host(let refusal) { throw GateReviewError.cannotSignNow(code: refusal.code) }
@@ -163,7 +165,9 @@ extension WorkspaceSession {
         } catch { throw GateReviewError.doesNotMatch }
         lifecycleFence.reviewedAgain()
         if gateReviews.count >= 32 { gateReviews.removeAll() }
-        let snap = GateReviewSnapshot(verified: verified, token: UUID(), content: GateReview.content(of: verified), ticketKey: get.key, ticketTitle: get.title,
+        var persons: [String: String] = [:]
+        for d in get.gates["requirements"]?.decisions ?? [] { persons[d.id] = d.person }
+        let snap = GateReviewSnapshot(verified: verified, token: UUID(), content: GateReview.content(of: verified, persons: persons), ticketKey: get.key, ticketTitle: get.title,
                                       policyWords: get.gates[gate]?.policyWords, realm: cfg.context.realm, workspaceID: workspace, generation: generation)
         gateReviews[snap.token] = snap
         return snap
@@ -293,8 +297,10 @@ extension WorkspaceSession {
         var previous = previousEvent.event; previous["sig"] = nil
         let shown = GateDisplay(gate: snap.verified.gate, gen: snap.verified.gen, hash: snap.verified.hash, policyHash: snap.verified.policyHash,
                                 approve: snap.approve, text: snap.text)
+        let freshShown = GateDisplay(gate: freshGate.gate, gen: freshGate.gen, hash: freshGate.hash, policyHash: freshGate.policyHash,
+                                     approve: snap.approve, text: snap.text)
         let input = AutoResignInput(lastClass: .cAuto, lastAnswerWasRefusedForExactIdem: true, earlierIdemUnresolved: earlierUnresolved,
-                                    reviewed: .gate(shown), fresh: .gate(shown), previous: previous, proposed: proposed.event, previousLog: previousEvent.log,
+                                    reviewed: .gate(shown), fresh: .gate(freshShown), previous: previous, proposed: proposed.event, previousLog: previousEvent.log,
                                     proposedLog: proposed.log, keyAssignedDisclosed: false, foregroundAndUnlockedSinceTap: lifecycleFence.valid(ticket),
                                     autoResignsSoFar: Int(rv.resigns))
         guard AutoResign.decide(input) == .allow else { return false }

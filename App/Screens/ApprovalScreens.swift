@@ -98,7 +98,7 @@ struct ApprovalReviewScreen: View {
     @ViewBuilder
     private func content(_ v: ApprovalReviewValue) -> some View {
         Section {
-            Text(verbatim: "\(v.gate == "plan" ? "Plan" : "Requirements") of \(v.ticketKey)").font(OF.wsName)
+            Text(verbatim: v.gate == "plan" ? "Plan" : "Requirements").font(OF.wsName)
             hostLine("Ticket", v.ticketKey)
             hostLine("Title", v.ticketTitle)
             hostLine("Generation", String(v.gateGen))
@@ -121,7 +121,7 @@ struct ApprovalReviewScreen: View {
         }
         if !v.content.acceptance.isEmpty {
             Section("Acceptance criteria") {
-                ForEach(v.content.acceptance, id: \.id) { a in SafeTextView("\(a.id)  \(a.text)") }
+                ForEach(Array(v.content.acceptance.enumerated()), id: \.offset) { _, a in SafeTextView("\(a.id)  \(a.text)") }
             }
         }
         if !v.content.tasks.isEmpty {
@@ -171,7 +171,8 @@ struct ApprovalReviewScreen: View {
                     Text(verbatim: phase.message).foregroundStyle(OC.warn).accessibilityIdentifier("approval.result")
                     if phase == .changed || phase == .invalidated { Button("Reopen") { Task { await open() } } }
                 }
-                Text("You are approving the text above. Face ID signs this approval.").font(OF.meta).foregroundStyle(OC.textMuted)
+                Text(asking ? "You are asking for changes to the text above. Face ID signs this request for changes."
+                            : "You are approving the text above. Face ID signs this approval.").font(OF.meta).foregroundStyle(OC.textMuted)
                 Button("Approve") { Task { await go(v, .approve) } }
                     .buttonStyle(.borderedProminent).disabled(busy)
                     .accessibilityIdentifier("approval.approve")

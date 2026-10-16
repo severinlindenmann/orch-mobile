@@ -154,8 +154,6 @@ import Testing
         // contract (b): links, add-ons, packages, files, results, source, earlier gates
         let c0 = GateReview.content(of: try verified(0))
         #expect(c0.fullReview && c0.fullReviewReasons.contains("files"))
-        let c1 = GateReview.content(of: try verified(1))
-        #expect(c1.fullReview && c1.fullReviewReasons.contains("earlier gates"))
         // an unknown key of a field, a criterion or a task
         #expect(GateReview.content(of: try plain(mutate: { g in var f = g["fields"]!.object!; f["flavour"] = "x"; g["fields"] = .object(f) })).fullReview)
         #expect(GateReview.content(of: try plain(mutate: { g in
@@ -165,6 +163,102 @@ import Testing
         #expect(GateReview.content(of: try plain(mutate: { g in
             var f = g["fields"]!.object!; f["links"] = ["repos": []]; g["fields"] = .object(f)
         })).fullReview)
+    }
+
+    // MARK: shape, duplicates and the earlier gate (Opus final review)
+
+    func fullReasons(_ mutate: @escaping (inout [String: JSONValue]) -> Void) throws -> [String] {
+        let c = GateReview.content(of: try plain(mutate: mutate))
+        return c.fullReview ? c.fullReviewReasons : []
+    }
+
+    @Test func aWrongTypeIsTheFullReviewNotAnEmptyPlainView() throws {
+        func fields(_ f: @escaping (inout [String: JSONValue]) -> Void) -> (inout [String: JSONValue]) -> Void {
+            { g in var o = g["fields"]!.object!; f(&o); g["fields"] = .object(o) }
+        }
+        let cases: [(String, (inout [String: JSONValue]) -> Void)] = [
+            ("fields not an object", { $0["fields"] = [] }),
+            ("acceptance not an array", fields { $0["acceptance"] = "AC1" }),
+            ("addons not an object", fields { $0["addons"] = [] }),
+            ("tasks not an array", { $0["tasks"] = "x" }),
+            ("artifacts not an object", { $0["artifacts"] = [] }),
+            ("receipts not an object", { $0["receipts"] = "x" }),
+            ("addon_packages not an object", { $0["addon_packages"] = [] }),
+            ("source_sha not an array", { $0["source_sha"] = [:] }),
+            ("prior not an object", { $0["prior"] = [] }),
+            ("proves item not a string", { $0["tasks"] = [["id": "T1", "text": "x", "proves": ["AC1", 3]]] }),
+            ("proves not an array", { $0["tasks"] = [["id": "T1", "text": "x", "proves": "AC1"]] }),
+            ("verify.cmd not a string", { $0["tasks"] = [["id": "T1", "text": "x", "verify": ["cmd": 5]]] }),
+        ]
+        for (name, m) in cases { #expect(try !fullReasons(m).isEmpty, "\(name)") }
+    }
+
+    @Test func repeatedCriterionIdsAreTheFullReview() throws {
+        let r = try fullReasons { g in
+            var f = g["fields"]!.object!
+            f["acceptance"] = [["id": "AC1", "text": "one"], ["id": "AC1", "text": "two"]]; g["fields"] = .object(f)
+        }
+        #expect(r == ["repeated criterion id"])
+    }
+
+    func plan(mutate: (inout [String: JSONValue]) -> Void = { _ in }) throws -> GateReview.Verified {
+        let c = kat["gate_hash"][1]
+        var g = c["G"].object!
+        // the vector's plan carries an estimate add-on (a full review of its own); the plain plan has none
+        var f = g["fields"]!.object!; f["addons"] = [:]; g["fields"] = .object(f); g["addon_packages"] = [:]
+        mutate(&g)
+        var t: [String: String] = [:]
+        for (k, v) in c["ticket"]["sections"].object! { t[k] = v.str }
+        return try GateReview.verify(ticketUID: g["uid"]!.string!, gate: "plan", workspace: ID16(hex: g["workspace_id"]!.string!)!,
+                                     claimedHash: try GateReview.gateHash(.object(g)), claimedPolicyHash: g["policy_hash"]!.string!, gen: 1, input: .object(g),
+                                     sectionTexts: t, basedOn: base, rosterV: 3)
+    }
+    let ulidA = "01J9ZP0000000000000000000A", ulidB = "01J9ZP0000000000000000000B"
+
+    @Test func aNormalPlanShowsTheEarlierGateAsAVerifiedRowWithoutTheFullReview() throws {
+        let c = GateReview.content(of: try plan())
+        #expect(!c.fullReview)
+        #expect(c.rows.contains(GateReview.Row(field: "Requirements, approved before", value: "generation 2, 1 approval")))
+        // not listed by the host: only the tail of the id, never a person
+        #expect(c.rows.contains(GateReview.Row(field: "Approval", value: "approval 00000A (not listed by the host)")))
+        #expect(!c.rows.contains { $0.value.contains("approved by") })
+        // listed by the host: the person, always with the per-host label
+        let named = GateReview.content(of: try plan(), persons: [ulidA: "p_abc"])
+        #expect(named.rows.contains(GateReview.Row(field: "Approval", value: "p_abc (per host, not signed)")))
+        #expect(named.rawLines.contains { $0.hasPrefix("prior: ") && $0.contains(ulidA) })   // ids stay in "Everything that is signed"
+        // no approvals counted
+        let none = GateReview.content(of: try plan { $0["prior"] = ["requirements": ["gen": 0, "approvals": []]] })
+        #expect(!none.fullReview && none.rows.contains(GateReview.Row(field: "Requirements, approved before", value: "generation 0, no approvals counted")))
+        let two = GateReview.content(of: try plan { $0["prior"] = ["requirements": ["gen": 3, "approvals": [.string(ulidA), .string(ulidB)]]] })
+        #expect(two.rows.first?.value == nil || two.rows.contains(GateReview.Row(field: "Requirements, approved before", value: "generation 3, 2 approvals")))
+    }
+
+    @Test func aPriorOutsideTheKnownShapeIsTheFullReview() throws {
+        let many = (0..<33).map { JSONValue.string(String(format: "01J9ZP00000000000000%06d", $0)) }
+        let bad: [(String, JSONValue)] = [
+            ("another gate", ["code": ["gen": 1, "approvals": []]]),
+            ("extra key in the entry", ["requirements": ["gen": 1, "approvals": [], "x": 1]]),
+            ("missing gen", ["requirements": ["approvals": []]]),
+            ("negative gen", ["requirements": ["gen": -1, "approvals": []]]),
+            ("gen not an integer", ["requirements": ["gen": "2", "approvals": []]]),
+            ("approvals not an array", ["requirements": ["gen": 1, "approvals": "x"]]),
+            ("not a ULID", ["requirements": ["gen": 1, "approvals": ["nope"]]]),
+            ("unsorted", ["requirements": ["gen": 1, "approvals": [.string(ulidB), .string(ulidA)]]]),
+            ("duplicate", ["requirements": ["gen": 1, "approvals": [.string(ulidA), .string(ulidA)]]]),
+            ("too many", ["requirements": ["gen": 1, "approvals": .array(many)]]),
+        ]
+        for (name, prior) in bad {
+            let c = GateReview.content(of: try plan { $0["prior"] = prior })
+            #expect(c.fullReview && c.fullReviewReasons.contains("earlier gates"), "\(name)")
+        }
+        // a requirements gate has no earlier gate at all
+        #expect(try fullReasons { $0["prior"] = ["requirements": ["gen": 1, "approvals": []]] } == ["earlier gates"])
+    }
+
+    @Test func aTamperedPriorIsAHashMismatch() {
+        #expect(throws: GateReview.Failure.mismatch("hash")) {
+            try verified(1, mutate: { g in g["prior"] = ["requirements": ["gen": 2, "approvals": [.string(self.ulidA), .string(self.ulidB)]]] })
+        }
     }
 
     // MARK: the events

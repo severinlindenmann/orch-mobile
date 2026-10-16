@@ -162,56 +162,98 @@ public enum GateReview {
         return "?"
     }
 
-    public static func content(of v: Verified) -> Content {
+    /// `persons`: approval id -> person, from `ticket.get` `gates.requirements.decisions` (the host's word; shown only with "per host, not signed").
+    static let maxPriorApprovals = 32
+
+    /// `prior` (ticket-format 5.7): a requirements gate has none; a plan gate may carry the requirements gate's generation and its counted approvals.
+    /// A shape outside that is the full review (reason "earlier gates"). When it holds, the verified row and one line per approval id; a person is
+    /// named only from the host's list and only with the per-host label.
+    static func priorRows(_ prior: JSONValue?, gate: String, persons: [String: String], reasons: inout [String]) -> [Row] {
+        guard let p = prior?.object else { reasons.append("earlier gates"); return [] }
+        func fallback() -> [Row] {
+            reasons.append("earlier gates")
+            return p.sorted(by: { $0.key < $1.key }).map { Row(field: "Earlier gate \(oneLine($0.key))", value: compact($0.value)) }
+        }
+        if p.isEmpty { return [] }
+        guard gate == "plan", Set(p.keys) == ["requirements"], let e = p["requirements"]?.object, Set(e.keys) == ["gen", "approvals"],
+              let gen = e["gen"]?.int, gen >= 0, gen <= maxSafeInt, let items = e["approvals"]?.array, items.count <= maxPriorApprovals else { return fallback() }
+        var ids: [String] = []
+        for it in items { guard let id = it.string, ULID.isValid(id) else { return fallback() }; ids.append(id) }
+        guard zip(ids, ids.dropFirst()).allSatisfy({ $0.utf8.lexicographicallyPrecedes($1.utf8) }) else { return fallback() }
+        var rows = [Row(field: "Requirements, approved before", value: "generation \(gen), " + (ids.isEmpty ? "no approvals counted" : (ids.count == 1 ? "1 approval" : "\(ids.count) approvals")))]
+        for id in ids {
+            rows.append(Row(field: "Approval", value: persons[id].map { "\(oneLine($0)) (per host, not signed)" } ?? "approval \(id.suffix(6)) (not listed by the host)"))
+        }
+        return rows
+    }
+
+    public static func content(of v: Verified, persons: [String: String] = [:]) -> Content {
         let g = v.input.object ?? [:]
         var reasons: [String] = []
         var rows: [Row] = []
-        let fields = g["fields"]?.object ?? [:]
+        /// A value that must be an object / array when present: a wrong type is a shape the plain view does not know (fail closed).
+        func obj(_ x: JSONValue?) -> [String: JSONValue] {
+            guard let x else { return [:] }
+            if let o = x.object { return o }
+            reasons.append("unknown shape"); return [:]
+        }
+        func arr(_ x: JSONValue?) -> [JSONValue] {
+            guard let x else { return [] }
+            if let a = x.array { return a }
+            reasons.append("unknown shape"); return []
+        }
+        let fields = obj(g["fields"])
+        if g["fields"] == nil { reasons.append("unknown shape") }
         if !Set(fields.keys).isSubset(of: fieldsShown) { reasons.append("unknown fields") }
         if let t = fields["ticket_type"] { rows.append(Row(field: "Type", value: compact(t))) }
         if let s = fields["size"], !s.isNull { rows.append(Row(field: "Size", value: compact(s))) }
         if let l = fields["links"], !l.isNull { rows.append(Row(field: "Links", value: compact(l))); reasons.append("links") }
-        for (name, val) in (fields["addons"]?.object ?? [:]).sorted(by: { $0.key < $1.key }) {
+        for (name, val) in obj(fields["addons"]).sorted(by: { $0.key < $1.key }) {
             rows.append(Row(field: "Add-on \(oneLine(name))", value: compact(val))); reasons.append("add-ons")
         }
-        // acceptance
         var acceptance: [Criterion] = []
-        for a in fields["acceptance"]?.array ?? [] {
+        for a in arr(fields["acceptance"]) {
             guard let o = a.object, Set(o.keys).isSubset(of: criterionShown), let id = o["id"]?.string, let text = o["text"]?.string else {
                 reasons.append("unknown acceptance"); continue
             }
             acceptance.append(Criterion(id: oneLine(id), text: oneLine(text)))
         }
-        // tasks
+        var seenIDs = Set<String>()
+        if !acceptance.allSatisfy({ seenIDs.insert($0.id).inserted }) { reasons.append("repeated criterion id") }
         var tasks: [TaskRow] = []
-        for (i, t) in (g["tasks"]?.array ?? []).enumerated() {
+        for (i, t) in arr(g["tasks"]).enumerated() {
             guard let o = t.object, Set(o.keys).isSubset(of: taskShown), let id = o["id"]?.string, let text = o["text"]?.string else {
                 reasons.append("unknown task"); continue
             }
             var line = oneLine(text)
-            if let p = o["proves"]?.array?.compactMap(\.string), !p.isEmpty { line += " (proves \(oneLine(p.joined(separator: ", "))))" }
+            if let pv = o["proves"] {
+                if let items = pv.array, items.allSatisfy({ $0.string != nil }) {
+                    let p = items.compactMap(\.string)
+                    if !p.isEmpty { line += " (proves \(oneLine(p.joined(separator: ", "))))" }
+                } else { reasons.append("unknown task") }
+            }
             var verify: [String] = []
             if let vv = o["verify"], !vv.isNull {
-                if let vo = vv.object, Set(vo.keys).isSubset(of: ["cmd"]) { if let c = vo["cmd"]?.string, !c.isEmpty { verify.append(oneLine(c)) } }
-                else { reasons.append("unknown task verify") }
+                if let vo = vv.object, Set(vo.keys).isSubset(of: ["cmd"]) {
+                    if let c = vo["cmd"] { if let cs = c.string { if !cs.isEmpty { verify.append(oneLine(cs)) } } else { reasons.append("unknown task") } }
+                } else { reasons.append("unknown task verify") }
             }
             tasks.append(TaskRow(n: i + 1, id: oneLine(id), title: line, verify: verify))
         }
         // the keys the contract sends to the full review when they are non-empty
         for (key, label) in [("artifacts", "files"), ("receipts", "results"), ("addon_packages", "add-on packages")] {
-            if let o = g[key]?.object, !o.isEmpty {
+            let o = obj(g[key])
+            if !o.isEmpty {
                 reasons.append(label)
                 for (name, val) in o.sorted(by: { $0.key < $1.key }) { rows.append(Row(field: "\(title(of: label)) \(oneLine(name))", value: compact(val))) }
             }
         }
-        if let s = g["source_sha"]?.array, !s.isEmpty {
+        let src = arr(g["source_sha"])
+        if !src.isEmpty {
             reasons.append("source")
-            for item in s { rows.append(Row(field: "Code", value: compact(item))) }
+            for item in src { rows.append(Row(field: "Code", value: compact(item))) }
         }
-        if let p = g["prior"]?.object, !p.isEmpty {
-            reasons.append("earlier gates")
-            for (name, val) in p.sorted(by: { $0.key < $1.key }) { rows.append(Row(field: "Earlier gate \(oneLine(name))", value: compact(val))) }
-        }
+        rows += priorRows(g["prior"], gate: v.gate, persons: persons, reasons: &reasons)
         let sections = (g["sections"]?.object ?? [:]).keys.sorted().map { Section(id: $0, title: title(of: $0), text: v.texts[$0] ?? "") }
         let raw = g.sorted { $0.key < $1.key }.map { "\($0.key): \(compact($0.value))" }
         var seen = Set<String>(); let unique = reasons.filter { seen.insert($0).inserted }
