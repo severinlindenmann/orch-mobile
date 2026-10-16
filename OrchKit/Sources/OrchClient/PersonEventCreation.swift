@@ -41,6 +41,9 @@ public struct CreationReview: Sendable, Equatable {
 /// A creation still being sent or settled (`pendingWrites`): what was reviewed, and the key its current attempt carries.
 public struct StoredCreationReview: Equatable, Sendable {
     public let ticketType: String, title: String, owner: String, uid: String, key: String
+    public init(ticketType: String, title: String, owner: String, uid: String, key: String) {
+        self.ticketType = ticketType; self.title = title; self.owner = owner; self.uid = uid; self.key = key
+    }
 }
 
 // MARK: internals
