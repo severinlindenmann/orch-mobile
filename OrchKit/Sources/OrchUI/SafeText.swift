@@ -187,6 +187,17 @@ public enum SafeText {
         return nil
     }
 
+    /// C2b (codex 13/14): everything a signature binds and the sheet renders fails closed together. Every option label (ambiguity and the
+    /// plain-label allowlist), EVERY cost, selected or not, and every key: a cost or key outside the allowlist, or with a hidden or
+    /// look-alike character, refuses the whole question (Sign stays disabled; "Answer on your Mac").
+    public static func boundRefusal(labels: [String], costs: [String?], keys: [String]) -> OptionRefusal? {
+        if let r = optionRefusal(labels) { return r }
+        func plain(_ s: String) -> Bool { !hasUnsafe(s, strictLabel: true) && s.unicodeScalars.allSatisfy { Confusables.isPlainLabelScalar($0) } }
+        if costs.contains(where: { $0.map { !plain($0) } ?? false }) { return .nonStandard }
+        if keys.contains(where: { $0.isEmpty || !plain($0) }) { return .nonStandard }
+        return nil
+    }
+
     /// `.signing` and `.prose` use readable proportional text; `.exact` is monospace for character-by-character comparison.
     public enum Style: Sendable { case signing, prose, exact }
 

@@ -19,7 +19,7 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
     var notificationStatus: NotificationStatus = .allowed
     var pairingScenario: PairingScenario = .firstTime
     var signOutcome: SignOutcome = .accepted
-    var pendingDecisions: [DecisionStatus] = []
+    var pendingWrites: [PendingWrite] = []
     @ObservationIgnored var reconcileTasks: [String: Task<Void, Never>] = [:]
     /// Seconds between background reconcile attempts.
     @ObservationIgnored var reconcileInterval = 5.0
@@ -52,11 +52,11 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
         workspaces = [
             WorkspaceInfo(id: "laptop", name: "Laptop", host: "Your MacBook", hue: 0, hostedBy: nil,
                           clientHosted: false, scopes: [.look, .decide, .operate, .type],
-                          connection: .online, primaryLabel: "Demo Mac", notificationsOn: true),
+                          connection: .online, primaryLabel: "Demo Mac", notificationsOn: true, writeSupport: true),
             WorkspaceInfo(id: "client-vm", name: "Client VM", host: "Development VM", hue: 1,
                           hostedBy: "Example Client", clientHosted: true, scopes: [.look, .decide],
                           connection: .online,
-                          primaryLabel: "Demo Mac", notificationsOn: true)
+                          primaryLabel: "Demo Mac", notificationsOn: true, writeSupport: true)
         ]
         let long = (1...80).map { "Review recovery step \($0): verify the stored decision before retrying.\n" }.joined()
         let yesNo = [QuestionOption(id: "approve", label: "Approve"), QuestionOption(id: "reject", label: "Reject")]
@@ -240,11 +240,11 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     // MARK: Pending decisions (U8)
 
-    func dropPending(_ id: String) { pendingDecisions.removeAll { $0.decisionID == id } }
+    func dropPending(_ id: String) { pendingWrites.removeAll { $0.reviewID == id } }
 
     /// Applies the stored decision exactly as signed (its own option), never anything re-derived.
     func applyAccepted(_ id: String) {
-        guard let d = pendingDecisions.first(where: { $0.decisionID == id }) else { return }
+        guard let d = pendingWrites.first(where: { $0.reviewID == id }) else { return }
         if let i = questions.firstIndex(where: { $0.id == d.questionID }), questions[i].isOpen {
             questions[i].resolution = Resolution(decisionID: id, optionID: d.optionID, byDeviceLabel: deviceLabel, at: Date())
         }
@@ -253,13 +253,13 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Background reconciliation: bounded retries while the app runs; state stays visible on Home.
     func markUncertain(_ id: String) {
-        if let i = pendingDecisions.firstIndex(where: { $0.decisionID == id }) { pendingDecisions[i].outcome = .uncertain }
+        if let i = pendingWrites.firstIndex(where: { $0.reviewID == id }) { pendingWrites[i].state = .checking }
         reconcileTasks[id]?.cancel()
         reconcileTasks[id] = Task { [weak self] in
             for attempt in 1...3 {
                 guard let interval = self?.reconcileInterval else { return }
                 do { try await Task.sleep(for: .seconds(interval)) } catch { return }
-                guard let self, self.pendingDecisions.contains(where: { $0.decisionID == id }) else { return }
+                guard let self, self.pendingWrites.contains(where: { $0.reviewID == id }) else { return }
                 // The fake host confirms receipt on the second attempt.
                 if attempt >= 2 { self.applyAccepted(id); return }
             }
@@ -295,14 +295,14 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
         questions.removeAll { $0.workspaceID == workspaceID }
         tickets.removeAll { $0.workspaceID == workspaceID }
         dropItems.removeAll { $0.workspaceID == workspaceID }
-        pendingDecisions.removeAll { $0.workspaceID == workspaceID }
+        pendingWrites.removeAll { $0.workspaceID == workspaceID }
         let canDeregister = ws?.scopes.contains(.operate) ?? false
         let server: LeaveServerStatus = !canDeregister ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
         return LeaveReport(workspaceName: ws?.name ?? "Workspace", server: server)
     }
 
     func resetThisiPhone() {
-        workspaces = []; questions = []; tickets = []; dropItems = []; pendingDecisions = []
+        workspaces = []; questions = []; tickets = []; dropItems = []; pendingWrites = []
         isDemo = false
         deviceLabel = "iPhone"
     }
@@ -310,7 +310,7 @@ final class PreviewWorld: AppServices, HomeModel, DropModel, SettingsModel, Shar
     func exitDemo() { resetThisiPhone() }
 
     /// Test hook for the empty-Demo state.
-    func removeAllWorkspaces() { workspaces = []; questions = []; tickets = []; dropItems = []; pendingDecisions = [] }
+    func removeAllWorkspaces() { workspaces = []; questions = []; tickets = []; dropItems = []; pendingWrites = [] }
 
     func resetDemoData() { seed() }
 }
@@ -362,11 +362,11 @@ final class PreviewReviewModel: QuestionReviewModel {
         self.questionID = questionID
         self.optionID = optionID
         // U8: reopening an unresolved submission shows exactly what was signed, never re-derived.
-        if let pending = world.pendingDecisions.first(where: { $0.questionID == questionID && $0.outcome != .resolved }) {
+        if let pending = world.pendingWrites.first(where: { $0.questionID == questionID }) {
             self.optionID = pending.optionID
             review = pending.review
             load = .loaded
-            phase = pending.outcome == .needsRetry ? .needsRetry : .checking
+            phase = .checking
         }
     }
 
@@ -407,9 +407,9 @@ final class PreviewReviewModel: QuestionReviewModel {
         let mine = token
         let decisionID = "d-\(session.question.id)"
         // Persist before send (U8), with the exact review and option.
-        world.pendingDecisions.append(DecisionStatus(
-            decisionID: decisionID, questionID: session.question.id, workspaceID: session.workspaceID,
-            optionID: optionID, optionLabel: review.optionLabel, review: review, outcome: .pending))
+        world.pendingWrites.append(PendingWrite(
+            reviewID: decisionID, questionID: session.question.id, workspaceID: session.workspaceID,
+            optionID: optionID, optionLabel: review.optionLabel, review: review, state: .sending))
         try? await Task.sleep(for: .milliseconds(500))
         // The send is already persisted and in flight; its result is always applied (never dropped as stale).
         _ = mine
@@ -425,13 +425,12 @@ final class PreviewReviewModel: QuestionReviewModel {
         case .questionChanged:
             world.dropPending(decisionID)
             phase = .questionChanged
-        case .uncertain:
+        case .uncertain, .held:
             world.markUncertain(decisionID)
             phase = .checking
-        case .notDelivered:
-            // The relay ended delivery (retry_exhausted): stored, not resent until the person asks.
-            if let i = world.pendingDecisions.firstIndex(where: { $0.decisionID == decisionID }) { world.pendingDecisions[i].outcome = .needsRetry }
-            phase = .needsRetry
+        case .workspaceChanged:
+            world.applyAccepted(decisionID)
+            phase = .resentAfterChange
         case .locked:
             world.dropPending(decisionID)
             phase = .unlockToContinue
@@ -456,16 +455,7 @@ final class PreviewReviewModel: QuestionReviewModel {
         guard phase == .checking else { return }
         try? await Task.sleep(for: .milliseconds(600))
         let id = "d-\(questionID)"
-        if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }
-        phase = .accepted
-    }
-
-    func sendAgain() async {
-        guard phase == .needsRetry else { return }
-        phase = .sending
-        try? await Task.sleep(for: .milliseconds(300))
-        let id = "d-\(questionID)"
-        if world.pendingDecisions.contains(where: { $0.decisionID == id }) { world.applyAccepted(id) }   // the same stored answer
+        if world.pendingWrites.contains(where: { $0.reviewID == id }) { world.applyAccepted(id) }
         phase = .accepted
     }
 

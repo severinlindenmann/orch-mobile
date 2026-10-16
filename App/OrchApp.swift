@@ -74,7 +74,14 @@ struct AppRoot: View {
         // Cold launch included: the intake holds an early URL until the realm has booted, then classifies it.
         .onOpenURL { intake.handle(url: $0) }
         // Scene and protected-data lifecycle ownership: workspaces and the pairing on screen pause in the background, codes hide.
-        .onChange(of: scenePhase) { _, phase in realm.services.setActive(phase == .active) }
+        .onChange(of: scenePhase) { _, phase in
+            // C2b: `.inactive` ends every answer's eligibility for an automatic re-sign before anything else runs
+            if phase == .inactive { realm.services.noteInactive() }
+            realm.services.setActive(phase == .active)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+            realm.services.noteProtectedDataUnavailable()
+        }
         .fullScreenCover(isPresented: Binding(get: { realm.booted && intake.isPresented }, set: { if !$0 { intake.dismiss() } })) {
             LiveEntryFlow(intake: intake)
         }

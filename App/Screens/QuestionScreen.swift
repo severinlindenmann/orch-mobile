@@ -33,7 +33,7 @@ struct QuestionScreen: View {
                         .padding(OS.s4).orchCard()
                         .accessibilityIdentifier("question.text")
                     // A submission still being checked is shown as such even if a snapshot already carries the resolution.
-                    if let r = q.resolution, !services.home.pendingDecisions.contains(where: { $0.questionID == q.id }) {
+                    if let r = q.resolution, !services.home.pendingWrites.contains(where: { $0.questionID == q.id }) {
                         resolved(q, r)
                     } else {
                         answers(q, info)
@@ -88,10 +88,10 @@ struct QuestionScreen: View {
 
     @ViewBuilder
     private func answers(_ q: Question, _ info: WorkspaceInfo) -> some View {
-        let pending = services.home.pendingDecisions.first { $0.questionID == q.id }
-        let labels = q.options.map(\.label)
-        let refusal = SafeText.optionRefusal(labels)
-        let block = info.answerBlock ?? (services.capabilities.writes ? nil : "Answering from this iPhone is not available yet. Answer on your Mac.")
+        let pending = services.home.pendingWrites.first { $0.questionID == q.id }
+        // the same fail-closed rule the sign sheet applies: every label, every cost (selected or not), every key
+        let refusal = SafeText.boundRefusal(labels: q.options.map(\.label), costs: q.options.map(\.cost), keys: q.options.map(\.id))
+        let block = info.answerBlock ?? writeBlock(info)
         if let notice { Label(notice, systemImage: "info.circle").font(OF.meta).foregroundStyle(OC.warn) }
         if pending != nil {
             VStack(alignment: .leading, spacing: OS.s2) {
@@ -128,6 +128,15 @@ struct QuestionScreen: View {
         }
     }
 
+    /// C2b: answering needs the realm's `writes` capability AND a workspace whose session may sign and whose host takes answers.
+    private func writeBlock(_ info: WorkspaceInfo) -> String? { Self.writeBlock(writes: services.capabilities.writes, writeSupport: info.writeSupport) }
+
+    static func writeBlock(writes: Bool, writeSupport: Bool) -> String? {
+        guard writes else { return "Answering from this iPhone is not available yet. Answer on your Mac." }
+        guard writeSupport else { return "Your Mac's orch doesn't accept answers from iPhone yet. Answer on your Mac." }
+        return nil
+    }
+
     private func startSigning(_ optionID: String) {
         notice = nil
         signing = SigningItem(model: services.review(workspaceID: workspaceID, questionID: questionID, optionID: optionID))
@@ -154,13 +163,19 @@ private struct ExactTextDisclosure: View {
                 Text("Question").font(OF.meta).foregroundStyle(OC.textMuted)
                 Text(SafeText.attributed(review.text, style: .exact)).frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel(SafeText.spoken(review.text))
-                Text("Your answer").font(OF.meta).foregroundStyle(OC.textMuted)
-                Text(SafeText.attributed(review.optionLabel, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel(SafeText.spoken(review.optionLabel, strictLabel: true))
-                if let cost = review.options.first(where: { $0.id == review.optionID })?.cost {
-                    Text("Cost").font(OF.meta).foregroundStyle(OC.textMuted)
-                    Text(SafeText.attributed(cost, style: .exact, strictLabel: true)).frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel(SafeText.spoken(cost, strictLabel: true))
+                Text("Options (all are signed)").font(OF.meta).foregroundStyle(OC.textMuted)
+                ForEach(Array(review.rows.enumerated()), id: \.offset) { _, row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(SafeText.attributed(row.key, style: .exact, strictLabel: true))
+                        Text(SafeText.attributed(row.label, style: .exact, strictLabel: true))
+                        if let cost = row.cost { Text(SafeText.attributed(cost, style: .exact, strictLabel: true)) }
+                        if row.selected { Text("Selected").font(OF.meta.weight(.semibold)).foregroundStyle(OC.brand) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(SafeText.spoken(row.key + ", " + row.label + (row.cost.map { ", " + $0 } ?? ""), strictLabel: true))
+                    .accessibilityAddTraits(row.selected ? .isSelected : [])
+                    .accessibilityIdentifier("sign.exact.option.\(row.key)")
                 }
             }
             .padding(.top, OS.s2)
@@ -223,18 +238,16 @@ struct SignSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(OS.s3)
                 .background(OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                VStack(alignment: .leading, spacing: OS.s1) {
-                    Text("Selected answer").font(.footnote.weight(.bold)).foregroundStyle(OC.brand)
-                    SafeTextView(review.optionLabel, strictLabel: true).accessibilityIdentifier("sign.answer")
-                    if let cost = review.options.first(where: { $0.id == review.optionID })?.cost {
-                        SafeTextView(cost, strictLabel: true).font(OF.meta).foregroundStyle(OC.textMuted)
-                            .accessibilityIdentifier("sign.answerCost")
-                    }
+                // C2b (codex 13): EVERY option is signed (the hash binds them all, in this order), so every one is rendered; the chosen
+                // one is marked by a border, a "Selected" chip and the `.isSelected` trait. Arming needs the end of the whole list.
+                VStack(alignment: .leading, spacing: OS.s2) {
+                    Text("Options (all are signed)").font(.footnote.weight(.bold)).foregroundStyle(OC.textMuted)
+                        .accessibilityAddTraits(.isHeader)
+                    ForEach(Array(review.rows.enumerated()), id: \.offset) { _, row in optionRow(row) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(OS.s3)
-                .background(OC.soft(OC.brand), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(OC.brand, lineWidth: 2))
+                .accessibilityIdentifier("sign.options")
+                notSigned(review)
                 if review.hasUnsafeContent, !footerShowsUnsafeWarning(review) || footerInScroll(review) {
                     Label("Some text contains characters that cannot be seen or that look like other characters. They are marked in orange so you can see exactly what is signed.",
                           systemImage: "exclamationmark.triangle.fill")
@@ -250,8 +263,9 @@ struct SignSheet: View {
                         .accessibilityLabel(SafeText.spoken(tail(review.text))).accessibilityIdentifier("sign.tail")
                 }
                 ExactTextDisclosure(review: review)
-                SignedDetails(workspaceID: review.workspaceID, questionID: review.questionID,
-                              optionID: review.optionID, contentHash: review.contentHash)
+                SignedDetails(workspaceID: review.workspaceID, questionID: review.qid.isEmpty ? review.questionID : review.qid,
+                              optionID: review.optionID, contentHash: review.hash.isEmpty ? review.contentHash : review.hash,
+                              ticketUID: review.ticketUID)
                 if footerInScroll(review) { footer(review) }
             }
             .padding(OS.s4)
@@ -283,6 +297,54 @@ struct SignSheet: View {
                 .background(OC.soft(OC.warn))
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("sign.unsafeStrip")
+        }
+    }
+
+    /// One option of the sheet: key, label and cost exactly as reviewed; the selected one carries a border and a chip.
+    private func optionRow(_ row: SignRow) -> some View {
+        VStack(alignment: .leading, spacing: OS.s1) {
+            HStack(alignment: .firstTextBaseline, spacing: OS.s2) {
+                // the FULL key, as signed (markers for anything unsafe, never truncated)
+                Text(SafeText.attributed(row.key, style: .exact, strictLabel: true)).font(OF.machine).foregroundStyle(OC.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("sign.key.\(row.key)")
+                if row.selected {
+                    Text("Selected").font(.footnote.weight(.bold)).foregroundStyle(OC.brand)
+                        .padding(.horizontal, OS.s2).padding(.vertical, 2)
+                        .background(OC.soft(OC.brand), in: Capsule())
+                        .accessibilityIdentifier("sign.selectedChip")
+                }
+            }
+            SafeTextView(row.label, strictLabel: true).accessibilityIdentifier(row.selected ? "sign.answer" : "sign.option.\(row.key)")
+            if let cost = row.cost {
+                SafeTextView(cost, strictLabel: true).font(OF.meta).foregroundStyle(OC.textMuted)
+                    .accessibilityIdentifier(row.selected ? "sign.answerCost" : "sign.option.cost.\(row.key)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(OS.s3)
+        .background(row.selected ? OC.soft(OC.brand) : OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(row.selected ? OC.brand : Color.clear, lineWidth: 2))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(row.selected ? .isSelected : [])
+    }
+
+    /// The unbound context: shown so the person sees it, labelled as not part of the signature.
+    @ViewBuilder
+    private func notSigned(_ review: ReviewValue) -> some View {
+        if review.why != nil || review.recommended != nil || !review.to.isEmpty || review.blocking {
+            VStack(alignment: .leading, spacing: OS.s1) {
+                Text("Not signed").font(.footnote.weight(.bold)).foregroundStyle(OC.textMuted).accessibilityAddTraits(.isHeader)
+                if let why = review.why { Text("Why").font(OF.meta).foregroundStyle(OC.textMuted); SafeTextView(why) }
+                if let rec = review.recommended { Text(verbatim: "Recommended: \(SafeText.inline(rec, limit: 40))").font(OF.meta) }
+                if !review.to.isEmpty { Text(verbatim: "Asked of: " + review.to.map { SafeText.inline($0, limit: 40) }.joined(separator: ", ")).font(OF.meta) }
+                if review.blocking { Text("Blocking").font(OF.meta) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(OS.s3)
+            .background(OC.surface2, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("sign.notSigned")
         }
     }
 
@@ -393,30 +455,45 @@ struct SignSheet: View {
                 Button { Task { await model.checkWhetherReceived() } } label: { Text("Check again").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
                     .buttonStyle(.bordered).accessibilityIdentifier("sign.recheck")
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("sign.closeChecking")
-            case .notApplied:
+            case .refused:
                 stateView("eye.slash", OC.warn, "Your answer wasn't applied",
-                          "The host refused it for good, so nothing was applied and nothing is sent again. Answer this question on your Mac.", id: "sign.notApplied")
+                          "The host refused it for good, so nothing was applied and nothing is sent again. Answer this question on your Mac.", id: "sign.refused.host")
                 doneButton
-            case .needsRetry:
-                stateView("exclamationmark.arrow.circlepath", OC.warn, "Your answer was not delivered",
-                          "The relay gave up delivering it and the question is still open. Nothing is sent again unless you tap Send again: it sends the same signed answer, after checking the question.", id: "sign.needsRetry")
-                Button { Task { await model.sendAgain() } } label: { Text("Send again").frame(maxWidth: .infinity).padding(.vertical, OS.s2) }
-                    .buttonStyle(.orchProminent).accessibilityIdentifier("question.sendAgain")
-                Button("Close", action: onClose).accessibilityIdentifier("sign.closeNeedsRetry")
+            case .resentAfterChange:
+                stateView("checkmark.seal.fill", OC.ok, "The workspace changed; sent again",
+                          "Nothing you saw had changed, so your answer was signed again and accepted.", id: "sign.resent")
+                doneButton
+            case .landedUnconfirmed:
+                stateView("checkmark.circle", OC.ok, "Sent and recorded",
+                          "Your answer was recorded. The question has since changed or can't be shown here.", id: "sign.landedUnconfirmed")
+                doneButton
+            case .workspaceChanged:
+                stateView("person.2.badge.gearshape", OC.warn, "Not applied; review again",
+                          "Your answer was sent, but the workspace changed and it could not be signed again safely. Read the question again before you answer.",
+                          id: "sign.workspaceChanged")
+                Button { Task { await model.reread() } } label: { Text("Read it again") }
+                    .buttonStyle(.orchProminent).accessibilityIdentifier("sign.reread")
+                Button("Cancel", role: .cancel, action: onClose)
+            case .needsReview:
+                stateView("arrow.triangle.2.circlepath", OC.warn, "Not sent; review again",
+                          "Your answer could not be sent as it was signed. Read the question again before you answer.", id: "sign.needsReview")
+                Button { Task { await model.reread() } } label: { Text("Read it again") }
+                    .buttonStyle(.orchProminent).accessibilityIdentifier("sign.reread")
+                Button("Cancel", role: .cancel, action: onClose)
             case .unlockToContinue:
                 stateView("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone to sign.", id: "sign.unlock")
                 Button("Read it again and continue") { model.retryAfterUnlock() }.buttonStyle(.bordered).accessibilityIdentifier("sign.unlockRetry")
                 Button("Cancel", role: .cancel, action: onClose)
             case .notSent:
                 stateView("wifi.exclamationmark", OC.warn, "Not sent",
-                          "Nothing was signed and nothing was stored. Check the connection, then choose your answer again.", id: "sign.notSent")
+                          "Nothing was sent or stored. Check the connection, then choose your answer again.", id: "sign.notSent")
                 doneButton
             case .custodyUnavailable:
                 stateView("key.slash", OC.danger, "Signing key not available",
                           "This iPhone can no longer sign for this workspace. Re-pair it to continue.", id: "sign.custody")
                 doneButton
             }
-            Text("This unlocked iPhone signs with its device key.")
+            Text(review.isDemo ? "Demo key (passphrase custody, this app only)." : "Signed by this iPhone's Secure Enclave key.")
                 .font(OF.meta).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 .accessibilityIdentifier("sign.footnote")
             if review.isDemo { SimulationNotice() }

@@ -228,7 +228,8 @@ final class DemoRuntime: DemoControls {
 
     func makeCoordinator() throws -> PairingCoordinator {
         PairingCoordinator(PairingConfig(context: env.context, transport: env.transport, index: env.index, vault: keysVault, custody: custody,
-                                         clock: clock, wall: clock, entropy: SystemEntropy(), deviceLabel: deviceLabel))
+                                         clock: clock, wall: clock, entropy: SystemEntropy(), deviceLabel: deviceLabel,
+                                         processLocalWriteGrant: env.processLocalWriteGrant))
     }
 
     func entry(for workspace: ID16) -> Entry? { entries[workspace] }

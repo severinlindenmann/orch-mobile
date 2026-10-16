@@ -88,6 +88,8 @@ final class LiveWorkspace: WorkspaceModel {
     /// and then it is cleared here.
     func checkKeyAlarm() async {
         info.keyAlarm = await api.keyAlarm() != nil ? Self.keyAlarmMessage : nil
+        // C2b: whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them)
+        info.writeSupport = await api.writesAvailable()
     }
 
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".

@@ -140,6 +140,8 @@ public protocol RelayTransport: Sendable {
     /// `permit` is non-nil exactly for a person-event write (C2b); a transport that carries it to a relay refuses one that is not a
     /// live Secure Enclave permit, and the in-process Demo transport refuses any that is not a Demo one. Reads pass nil.
     func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply
+    /// See the extension: nil unless the transport is the in-process Demo one.
+    var processLocalSender: ObjectIdentifier? { get }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply
@@ -185,6 +187,9 @@ extension RelayTransport {
 }
 
 public extension RelayTransport {
+    /// The identity of the in-process sender behind this transport (the FakeRelay object), nil for any transport that is not one. A
+    /// `ProcessLocalWriteGrant` admits only the transport whose sender it was minted with.
+    var processLocalSender: ObjectIdentifier? { nil }
     /// A post that is not a write (a read, a declaration).
     func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
         try await bridgePost(envelope, route: route, session: session, permit: nil)

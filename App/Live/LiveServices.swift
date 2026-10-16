@@ -53,7 +53,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private var installRevision = 0
     var liveInstalled: Bool { _ = installRevision; return hasLiveInstall }
     var liveProblem: String? { liveBootError }
-    private(set) var pendingDecisions: [DecisionStatus] = []
+    private(set) var pendingWrites: [PendingWrite] = []
     private(set) var lastChecked = Date()
     private var heldDropItems: [DropItem] = []
     var dropItems: [DropItem] { live.flatMap { $0.drop?.rows ?? [] } + heldDropItems }
@@ -602,6 +602,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
+        // C2b: the background ends every ticket synchronously, before the lifecycle task below reaches each session
+        if !active { for ws in live { ws.api.noteBackground() } }
         self.active = active
         livePairing?.setActive(active)
         if active, ready, liveBootError != nil {
@@ -673,50 +675,52 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let transitions { transitions.realmEnterDemo() } else { Task { await startDemo() } }
     }
 
-    // MARK: Pending decisions (U8)
+    // MARK: Pending answers (U8, C2b)
 
     func recordSubmission(_ review: ReviewValue) {
         guard lifetime.isActive else { return }
         submitted[review.questionID + "/" + review.optionID] = review
     }
 
-    func storedDecision(workspace: LiveWorkspace, questionID: String) async -> ID16? {
-        guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return nil }
-        return (try? await workspace.api.pendingDecisions())?.first { $0.questionID == qid }?.decisionID
+    /// The review id of this question's answer still being sent or settled, if any.
+    func storedWrite(workspace: LiveWorkspace, questionID: String) async -> String? {
+        if case .found(let id) = await storedWriteLookup(workspace: workspace, questionID: questionID) { return id }
+        return nil
+    }
+
+    /// Whether this question has an answer still being sent or settled: `unknown` when the store could not be read (never "none").
+    func storedWriteLookup(workspace: LiveWorkspace, questionID: String) async -> StoredWriteLookup {
+        guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return .unknown }
+        guard let all = try? await workspace.api.pendingWrites() else { return .unknown }
+        return all.first { $0.questionID == qid }.map { .found($0.reviewID) } ?? .none
     }
 
     func refreshPending(reconcile: Bool = false) async {
         guard lifetime.isActive else { return }
-        var out: [DecisionStatus] = []
+        var out: [PendingWrite] = []
         for ws in live where canUse(ws.info.id) {
             // A store error is not an empty list: keep what is shown until the next read succeeds.
-            guard let statuses = try? await ws.api.pendingDecisions(), canUse(ws.info.id), !Task.isCancelled else { return }
+            guard let statuses = try? await ws.api.pendingWrites(), canUse(ws.info.id), !Task.isCancelled else { return }
             for d in statuses {
-                let q = ws.question(id: d.questionID.hex)
-                let key = d.questionID.hex + "/" + d.optionID
-                let review = submitted[key] ?? ReviewValue(
-                    workspaceID: ws.info.id, workspaceName: ws.info.name, hue: ws.info.hue, clientHosted: ws.info.clientHosted,
-                    hostedBy: ws.info.hostedBy, questionID: d.questionID.hex, ticket: q?.ticket ?? "", text: q?.text ?? "",
-                    optionID: d.optionID, optionLabel: q?.options.first { $0.id == d.optionID }?.label ?? d.optionID,
-                    options: q?.options ?? [], contentHash: q?.contentHash ?? "", revision: 0, isDemo: isDemo)
-                let outcome: DecisionOutcomeState = switch d.state {
-                case .uncertain: .uncertain
-                case .needsRetry: .needsRetry
-                case .pending: .pending
-                }
-                out.append(DecisionStatus(decisionID: d.decisionID.hex, questionID: d.questionID.hex, workspaceID: ws.info.id,
-                                          optionID: d.optionID, optionLabel: review.optionLabel, review: review, outcome: outcome))
-                if reconcile { startReconcile(workspace: ws, decisionID: d.decisionID) }
+                guard let qid = d.questionID?.hex, let option = d.option else { continue }
+                // SH5: what was signed, from the stored snapshot (never the current cached question); this run's own review if the
+                // stored one no longer checks
+                guard let review = d.review.map({ Mapping.reviewValue($0, questionID: qid, info: ws.info, isDemo: isDemo) })
+                        ?? submitted[qid + "/" + option] else { continue }
+                out.append(PendingWrite(reviewID: d.reviewID, questionID: qid, workspaceID: ws.info.id, optionID: option,
+                                        optionLabel: review.optionLabel, review: review, state: d.state == .sending ? .sending : .checking))
+                if reconcile { startReconcile(workspace: ws, reviewID: d.reviewID) }
             }
         }
-        pendingDecisions = out.filter { $0.outcome != .resolved }
+        pendingWrites = out
     }
 
-    /// Bounded background reconciliation while the app runs; the state stays visible on Home. It reconciles the stored decision only.
-    func startReconcile(workspace: LiveWorkspace, decisionID: ID16) {
+    /// Bounded background settlement while the app runs; the state stays visible on Home. It settles the stored answer only (reads first,
+    /// never a new signature from here).
+    func startReconcile(workspace: LiveWorkspace, reviewID: String) {
         guard canUse(workspace.info.id) else { return }
         if options.holdReconcile { Task { await refreshPending() }; return }
-        let key = workspace.workspaceID.hex + "/" + decisionID.hex
+        let key = workspace.workspaceID.hex + "/" + reviewID
         reconcileTasks[key]?.cancel()
         reconcileSerial += 1
         let serial = reconcileSerial
@@ -727,8 +731,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             for _ in 0..<6 {
                 do { try await Task.sleep(for: .seconds(self?.options.uiTesting == true ? 20 : 4)) } catch { return }
                 guard let self, self.canUse(workspace.info.id) else { return }
-                if let outcome = try? await workspace.api.reconcile(decisionID: decisionID), outcome != .uncertain {
-                    await self.decisionSettled(workspace: workspace)
+                if let outcome = try? await workspace.api.settle(reviewID: reviewID), outcome != .checking {
+                    await self.answerSettled(workspace: workspace)
                     return
                 }
             }
@@ -742,10 +746,20 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         reconcileSerials[key] = nil
     }
 
-    func decisionSettled(workspace: LiveWorkspace) async {
+    func answerSettled(workspace: LiveWorkspace) async {
         guard lifetime.isActive else { return }
         await workspace.refresh()
         await refreshPending()
+    }
+
+    /// scenePhase `.inactive` and protected-data loss end every review's eligibility for an automatic re-sign (C2b codex 11).
+    /// Synchronous: each session's lifecycle fence is bumped before this returns (no Task hop).
+    func noteInactive() {
+        for ws in live { ws.api.noteInactive() }
+    }
+
+    func noteProtectedDataUnavailable() {
+        for ws in live { ws.api.noteProtectedDataUnavailable() }
     }
 
     // MARK: Demo controls (real host behaviour, one shot)
@@ -770,10 +784,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             let text = workspace.question(id: questionID)?.text ?? ""
             try? await host.demoEditQuestion(qid, text: text + "\nEdited at the Mac.")
         case .uncertain:
-            await host.demoLoseNextDecisionResponse(faults: runtime.faults)
+            await host.demoLoseNextWriteResponse()
+        case .workspaceChanged:
+            await host.demoBumpMembersV()
+        case .held:
+            await host.demoHoldNextWrite()
         case .locked:
             // The simulated phone is locked for this attempt; it unlocks by itself a few seconds later (the person unlocking it).
             runtime.lock.isLocked = true
+            workspace.api.noteCustodyLocked()
             demoLockRelease?.cancel()
             demoLockRelease = Task { [weak runtime] in
                 try? await Task.sleep(for: .seconds(2))
@@ -1154,7 +1173,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         transition(workspaceID, to: .removed)
         live.removeAll { $0.info.id == workspaceID }
         heldDropItems.removeAll { $0.workspaceID == workspaceID }
-        pendingDecisions.removeAll { $0.workspaceID == workspaceID }
+        pendingWrites.removeAll { $0.workspaceID == workspaceID }
         // Only Demo can acknowledge a server-side removal; Live has no implemented, acknowledged operation yet, so it never claims one.
         let server: LeaveServerStatus = (!canDeregister || runtime.realm == .live) ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
         if server == .pendingOffline || pushOwed { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
@@ -1287,7 +1306,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
         PresentationGate.blockAll(workspaces.map { $0.workspaceID.hex })
-        runtime = nil; live = []; heldDropItems = []; pendingDecisions = []; submitted = [:]
+        runtime = nil; live = []; heldDropItems = []; pendingWrites = []; submitted = [:]
         reconcileTasks.values.forEach { $0.cancel() }
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
@@ -1353,7 +1372,6 @@ final class UnavailableReviewModel: QuestionReviewModel {
     func sign() async {}
     func reread() async {}
     func checkWhetherReceived() async {}
-    func sendAgain() async {}
     func invalidate() {}
     func retryAfterUnlock() {}
 }

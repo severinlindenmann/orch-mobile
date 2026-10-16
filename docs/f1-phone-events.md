@@ -1,7 +1,7 @@
 # F1 phone person events (orch-core host section 11A.14)
 
-Protocol layer in `OrchKit/Sources/OrchProtocol` (`F1Question`, `F1Text`, `PhoneEvents`, `PhoneRetry`) plus `OrchClient/PhoneEventIDs`. No UI, no networking, not wired
-into `WorkspaceSession` / `BridgeWorkspaceAPI` (the host-api v1 switch waits for R2 #467 framing). Vectors: `OrchKit/Tests/OrchTestVectors/f1` (PROVENANCE.md).
+Protocol layer in `OrchKit/Sources/OrchProtocol` (`F1Question`, `F1Text`, `PhoneEvents`, `PhoneRetry`) plus `OrchClient/PhoneEventIDs`. Answers are wired
+into `WorkspaceSession` / `BridgeWorkspaceAPI` since C2b (see "Answer write path" below); creation follows in increment 3. Vectors: `OrchKit/Tests/OrchTestVectors/f1` (PROVENANCE.md).
 
 ## Gate for the sign-sheet PR (Opus MEDIUM-2)
 
@@ -27,3 +27,28 @@ A core-parity `suspicious()` (invisible and bidi marking as in orch-core `canon/
   replace the sets with that file and add the test that every code R2 can emit is in it.
 - Unknown keys: Question, answer and signer objects ignore unknown host keys (section 0.4); option entries are closed because they are hashed.
 - Never use Foundation `precomposedStringWithCanonicalMapping` on a signed or hashed path (`FieldRules.noFoundationNFCInOrchProtocol`).
+
+## Answer write path (C2b increment 2, PR #83)
+
+- **Entry.** `WorkspaceAPI.answer(snapshot, option:)` signs an `answer` person event to exactly the `ReviewedSnapshot` of one fresh
+  `ticket.get` (options only; a question without options is answered on the Mac). The op maps to `relay.submit` with scope `decide`;
+  `R2.writeMeta` is the only meta builder.
+- **Storage (migration 15).** `pe_reviews`: one row per review, pointing at its current attempt by compare-and-swap (`current_idem`,
+  `ver`); at most one `active` review per question (unique index). `pe_attempts`: one immutable row per idem with the exact signed event
+  bytes (the only bytes ever framed for it), the window clock facts, the monotonic `dispatched` marker and append-only evidence. Triggers
+  keep signed fields immutable, `landed` final, `dispatched` monotonic, a dispatched attempt undeletable until settled, and evidence
+  append-only. Every write row of `bridge_requests` names its attempt.
+- **Lifecycle invariant (`LifecycleFence`).** A signature, and the first dispatch of an attempt, happen only while the lifecycle is still
+  valid at the moment of the effect: checked synchronously inside the signing transaction right before `PhoneEvents.sign`, and in `post`
+  right before `bridgePost`. Background, `.inactive`, protected-data loss, a custody lock, `invalidateReviews`, a realm or generation
+  change all invalidate it. An automatic re-sign also needs the review's in-memory eligibility token (never persisted: a relaunch means
+  a new review).
+- **Window.** Sent only while age = max(host age, wall age, monotonic age) <= 840 s and the id is at most 300 s ahead. Past it nothing is
+  sent; settlement only reads.
+- **Settlement.** By reading: the direct `Result`, then `outcome.get` (`pending` stays "checking" at any age), then the log for
+  `idem.expired` / `outcome.unknown_idem` after the bound. A landing of ANY attempt of the review (an earlier, superseded one included)
+  wins and is final. C-auto (`members.stale`) is re-signed automatically at most 3 times, only if nothing displayed changed; C-review asks
+  for a new review; D is refused. A failed confirming read leaves the review `landed` and is retried; `landed_unconfirmed` means a
+  successful read that shows something else.
+- **Live.** Off until increment 4: no Live write is admitted until the host's column-R `whoami` signals `relay.ops.answer` and
+  `r6_ready`. The Live policy also requires a Secure Enclave identity; this is application enforcement, not cryptographic attestation.

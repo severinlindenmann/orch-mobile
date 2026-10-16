@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 // View-model protocols for the screens. They sit next to host-api-v0 §1 names
-// (snapshot, review, decide, pendingDecisions, events) so real wiring replaces only the implementations.
+// (snapshot, review, answer, pendingWrites, events) so real wiring replaces only the implementations.
 
 @MainActor
 protocol HomeModel: AnyObject, Observable {
@@ -14,8 +14,8 @@ protocol HomeModel: AnyObject, Observable {
     var oldestWaiting: (question: Question, workspace: WorkspaceInfo)? { get }
     func waitingCount(in workspaceID: String) -> Int
     var lastChecked: Date { get }
-    /// U8: submissions persisted before send and not yet resolved.
-    var pendingDecisions: [DecisionStatus] { get }
+    /// U8: answers persisted before send and not yet settled (C2b `pendingWrites`).
+    var pendingWrites: [PendingWrite] { get }
     var dropSummary: DropSummary { get }
     func enterDemo()
     /// A Live install is on record (running, or failed to start): the Home is Live's, never Welcome.
@@ -79,10 +79,8 @@ protocol QuestionReviewModel: AnyObject, Observable {
     func sign() async
     /// After `question_changed`: re-read and issue a fresh immutable review.
     func reread() async
-    /// After a lost response: reconcile first, never re-sign a changed answer.
+    /// After a lost response: settle first (reads), never re-sign a changed answer.
     func checkWhetherReceived() async
-    /// After delivery ended (`needsRetry`): the person's explicit "Send again" of the same signed answer.
-    func sendAgain() async
     /// Terminal: lock/background/content change. A fresh model (fresh review) is required afterwards.
     func invalidate()
     /// Issues a fresh review (new revision): the old one and its arming are never reused.

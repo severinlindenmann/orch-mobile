@@ -1,7 +1,7 @@
 import XCTest
 
-/// The sign sheet on the real stack: QuestionReview from the session, decide(review, optionID:) signed inside the session and accepted
-/// (or refused) by the Demo host. The "Next answer ends as" control acts on the fake host or the lock, not on the app.
+/// The sign sheet on the real stack: a ReviewedSnapshot of the whole question (every option, in hash order) from the session; the answer
+/// is signed as a person event and accepted (or refused) by the Demo host. The "Next answer ends as" control acts on the fake host or the lock, not on the app.
 final class SignSheetTests: XCTestCase {
     @MainActor
     func testConfirmDisabledUntilScrolledAndArmed() {
@@ -27,8 +27,7 @@ final class SignSheetTests: XCTestCase {
         let app = launch("sign/q1")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: confirm)
-        waitForExpectations(timeout: 5)
+        XCTAssertTrue(app.arm(confirm))
         app.el("sign.details").tap()
         confirm.tap()
         XCTAssertTrue(app.el("sign.accepted").waitForExistence(timeout: 30))
@@ -45,7 +44,7 @@ final class SignSheetTests: XCTestCase {
         let app = launch("sign/q1/alreadyAnswered")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         confirm.tap()
         let state = app.el("sign.alreadyAnswered")
         XCTAssertTrue(state.waitForExistence(timeout: 30))
@@ -78,7 +77,7 @@ final class SignSheetStateTests: XCTestCase {
         let app = launch("sign/q1")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         XCUIDevice.shared.press(.home)
         Thread.sleep(forTimeInterval: 1)
         app.activate()
@@ -88,7 +87,7 @@ final class SignSheetStateTests: XCTestCase {
         let fresh = app.buttons["sign.confirm"]
         XCTAssertTrue(fresh.waitForExistence(timeout: 30))
         // A fresh review arms again; it is never enabled instantly.
-        XCTAssertTrue(fresh.waitForEnabled())
+        XCTAssertTrue(app.arm(fresh))
     }
 
     @MainActor
@@ -96,7 +95,7 @@ final class SignSheetStateTests: XCTestCase {
         let app = launch("sign/q1/uncertain")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         confirm.tap()
         // "Checking" is transient: foreground reconcile may settle the lost response before it is rendered. Wait for either.
         let checking = app.el("sign.checking"), accepted = app.el("sign.accepted")
@@ -149,7 +148,7 @@ final class SignSheetStateTests: XCTestCase {
         let app = launch("sign/q1/questionChanged")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         confirm.tap()
         XCTAssertTrue(app.el("sign.questionChanged").waitForExistence(timeout: 30))
         app.buttons["sign.reread"].tap()
@@ -157,7 +156,7 @@ final class SignSheetStateTests: XCTestCase {
         XCTAssertTrue(again.waitForExistence(timeout: 30))
         // The re-read shows the new text and arms from scratch.
         XCTAssertTrue(app.el("sign.text").label.contains("Edited at the Mac."))
-        XCTAssertTrue(again.waitForEnabled())
+        XCTAssertTrue(app.arm(again))
     }
 
     @MainActor
@@ -168,7 +167,7 @@ final class SignSheetStateTests: XCTestCase {
         var tries = 0
         while !(confirm.exists && confirm.isHittable) && tries < 20 { app.swipeUp(); tries += 1 }
         for _ in 0..<3 { app.swipeUp() }
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
     }
 
     @MainActor
@@ -181,9 +180,20 @@ final class SignSheetStateTests: XCTestCase {
         reject.tap()
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 30))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         confirm.tap()
-        XCTAssertTrue(app.el("sign.checking").waitForExistence(timeout: 60))
+        // The reconcile on this path may settle the lost response before "checking" is ever rendered; the stored answer is applied exactly
+        // once either way and the question ends answered with the submitted option (never the other one).
+        let checking = app.el("sign.checking"), resolution = app.el("question.resolution")
+        let end = Date().addingTimeInterval(60)
+        while Date() < end && !checking.exists && !app.el("sign.accepted").exists { Thread.sleep(forTimeInterval: 0.25) }
+        if !checking.exists {
+            if app.buttons["sign.done"].waitForExistence(timeout: 5) { app.buttons["sign.done"].tap() }
+            XCTAssertTrue(resolution.waitForExistence(timeout: 30))
+            XCTAssertTrue(resolution.label.contains("Demo iPhone") && resolution.label.contains("Reject"), resolution.label)
+            XCTAssertFalse(resolution.label.contains("Approve"))
+            return
+        }
         app.buttons["sign.closeChecking"].tap()
         let pendingAnswer = app.el("question.pending.answer")
         XCTAssertTrue(pendingAnswer.waitForExistence(timeout: 10))
@@ -194,7 +204,6 @@ final class SignSheetStateTests: XCTestCase {
         app.buttons["sign.recheck"].tap()
         XCTAssertTrue(app.el("sign.accepted").waitForExistence(timeout: 30))
         app.buttons["sign.done"].tap()
-        let resolution = app.el("question.resolution")
         XCTAssertTrue(resolution.waitForExistence(timeout: 30))
         XCTAssertTrue(resolution.label.contains("Reject"), resolution.label)
         XCTAssertFalse(resolution.label.contains("Approve"))
@@ -205,7 +214,7 @@ final class SignSheetStateTests: XCTestCase {
         let app = launch("sign/q1/questionChanged")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         confirm.tap()
         XCTAssertTrue(app.el("sign.questionChanged").waitForExistence(timeout: 30))
         XCUIDevice.shared.press(.home)
@@ -220,7 +229,7 @@ final class SignSheetStateTests: XCTestCase {
         let app = launch("sign/q1/locked")
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60))
-        XCTAssertTrue(confirm.waitForEnabled())
+        XCTAssertTrue(app.arm(confirm))
         confirm.tap()
         XCTAssertTrue(app.el("sign.unlock").waitForExistence(timeout: 30))
         app.buttons["sign.unlockRetry"].tap()
@@ -228,7 +237,7 @@ final class SignSheetStateTests: XCTestCase {
         XCTAssertTrue(again.waitForExistence(timeout: 30))
         // Not-carried-over arming is asserted deterministically in ReviewModelTests (revision bump);
         // here the button must re-arm through the delay.
-        XCTAssertTrue(again.waitForEnabled())
+        XCTAssertTrue(app.arm(again))
     }
 
     /// An option's cost is bound into the question hash with its label, so it is shown on the option row and on the sign sheet.
@@ -242,5 +251,49 @@ final class SignSheetStateTests: XCTestCase {
         let cost = app.el("sign.answerCost")
         XCTAssertTrue(cost.waitForExistence(timeout: 30))
         XCTAssertTrue(cost.label.contains("1 day, no soak"), cost.label)
+    }
+
+    /// Every option is bound into the hash, so the armed sheet lists ALL of them in hash order (key, label, cost); the chosen one is marked.
+    @MainActor
+    func testArmedSheetListsAllOptionsInOrderWithSelectedMarked() {
+        let app = launch("question/q8")
+        let staged = app.buttons["question.option.safe"]
+        XCTAssertTrue(staged.waitForExistence(timeout: 60))
+        staged.tap()
+        let confirm = app.buttons["sign.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.arm(confirm))
+        let options = app.el("sign.options")
+        XCTAssertTrue(options.exists)
+        // Selected = "safe" (second in hash order): its label and cost carry the selected identifiers; the other is listed too.
+        let selected = app.el("sign.answer"), selectedCost = app.el("sign.answerCost")
+        let other = app.el("sign.option.fast"), otherCost = app.el("sign.option.cost.fast")
+        for e in [selected, selectedCost, other, otherCost] { XCTAssertTrue(e.exists) }
+        XCTAssertTrue(selected.label.contains("Staged rollout"), selected.label)
+        XCTAssertTrue(selectedCost.label.contains("1 week"), selectedCost.label)
+        XCTAssertTrue(other.label.contains("Fast rollout"), other.label)
+        XCTAssertTrue(otherCost.label.contains("1 day, no soak"), otherCost.label)
+        XCTAssertEqual(app.el("sign.selectedChip").label, "Selected")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "sign.selectedChip").count, 1)
+        // Hash order: "fast" is listed above "safe".
+        XCTAssertLessThan(other.frame.minY, selected.frame.minY, "options are listed in hash order")
+    }
+
+    /// An unsafe cost on an option that is NOT selected is still part of what would be signed, so the question screen fails closed:
+    /// every option is disabled (the sheet's own refusal is covered by the review model tests) and Sign is never offered.
+    @MainActor
+    func testUnsafeCostOnUnselectedOptionDisablesSign() {
+        let app = launch("question/q8", extra: ["--demo-unsafe-cost"])
+        let fast = app.buttons["question.option.fast"]
+        XCTAssertTrue(fast.waitForExistence(timeout: 60))
+        XCTAssertTrue(app.el("question.nonStandard").waitForExistence(timeout: 10))
+        let safeCost = app.el("question.option.cost.safe")
+        XCTAssertTrue(safeCost.exists)
+        XCTAssertTrue(safeCost.label.contains("⟨U+200B⟩"), safeCost.label)
+        XCTAssertFalse(fast.isEnabled, "the selectable option is disabled by the unsafe cost of the other one")
+        XCTAssertFalse(app.buttons["question.option.safe"].isEnabled)
+        fast.tap()
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertFalse(app.buttons["sign.confirm"].exists, "Sign is never offered")
     }
 }

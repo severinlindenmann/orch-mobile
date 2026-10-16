@@ -58,6 +58,15 @@ struct HostViewState: Sendable {
     /// Devices named only by an answer's signer (Demo seeds), with the label `member.list` gives them.
     var extraDevices: [String: String] = [:]
     var creations: [String: (request: Data, ticket: FakeTicket)] = [:]
+    /// R2 writes (`relay.submit`, SubmitAdmission.swift): the outcome store keyed `(device, idem)`, the logged phone events by id, and the
+    /// Demo/test controls of the write path.
+    var outcomes: [String: FakeOutcome] = [:]
+    var logged: [String: FakeLogged] = [:]
+    var writeControls = FakeWriteControls()
+    /// Devices removed at the host (L2 standing): `not_member` for their writes.
+    var removedDevices: Set<String> = []
+    /// Request ids whose answer the host computed and kept but did not post (a lost response).
+    var lostRids: Set<ID16> = []
     var jpos: Int64 { events.last?.jpos ?? 0 }
     var revision: Int64 { jpos }
 
@@ -260,9 +269,6 @@ extension FakeHost {
                  "type": .string(e.type), "at": .string(Self.time(e.atMs)), "actor": ["kind": "agent", "id": .null], "summary": "", "data": [:]]
             }
             return result(["items": .array(json), "next_page": .null, "sub_cursor": cursor, "as_of": asOf])
-        case "outcome.get":
-            guard let idem = args["idem"]?.string, ULID.isValid(idem) else { return hostRefusal("invalid.input") }
-            return hostRefusal("outcome.unknown_idem")
         case "reader.declare":
             // H12d-3 (a read on column R): the host stores the declaration and answers `{device, reader, level, digest}`
             guard let v = args["reader_decl"], let d = try? ReaderDeclaration(signed: v) else { return hostRefusal("reader.decl_invalid") }
@@ -279,12 +285,16 @@ extension FakeHost {
             .response(status: status, headers: ["content-type": "application/json"], data: (try? canonicalJSON(v)) ?? Data())
         }
         switch op {
-        case "decision": return legacyDecision(req, m)
         case "new_ticket" where m["creation_id"] != nil: return legacyNewTicket(req, m)
         case "http":
             guard req.data.isEmpty else { return .refuse(.malformed) }
             // not an R2 op: the closed table has no `http`; kept only as the bridge tests' vehicle (a plain 404)
             return reply(["host_api": 0, "error": "not_found"], 404)
+        case "answer":
+            // the FakeHost's OWN shape check of a write's meta (never only the client's): {op, args{...}, idem, rd?}, no data
+            guard Set(m.keys).isSubset(of: ["op", "args", "idem", "rd"]), m["args"]?.object != nil, m["idem"]?.string != nil, req.data.isEmpty
+            else { return hostRefusal("invalid.input") }
+            fallthrough
         default:
             // an R2 request: the host's own meta checks first, then the closed table's scope, then the op
             let checked: (op: String, spec: R2.OpSpec, args: [String: JSONValue], idem: String?, rd: String?)
@@ -292,40 +302,17 @@ extension FakeHost {
             catch let e as R2.MetaError { return e == .forbiddenScope ? .refuse(.forbiddenScope) : hostRefusal(e.code) }
             catch { return .refuse(.malformed) }
             guard req.scopes.contains(checked.spec.scope) else { return .refuse(.forbiddenScope) }
-            guard checked.spec.kind == .read else { return hostRefusal("op.not_allowed") }      // writes are C2b
+            if checked.spec.kind == .write {
+                // `answer` is served (SubmitAdmission.swift); R2 `new_ticket` waits for increment 3 (Demo creation is still the v0 op)
+                guard checked.op == "answer" else { return hostRefusal("op.not_allowed") }
+                return submitAnswer(req, args: checked.args, idem: checked.idem)
+            }
+            if checked.op == "outcome.get" {
+                guard let idem = checked.args["idem"]?.string, ULID.isValid(idem) else { return hostRefusal("invalid.input") }
+                return outcomeGet(req, idem: idem)
+            }
             return read(checked.op, args: checked.args, device: req.device, scopes: req.scopes)
         }
-    }
-
-    /// INTERIM (until C2b's `relay.submit`): the v0 detached `decision` still answers a question in Demo. The answer is recorded the way R2
-    /// records it: by this device, as the person's counting `question.answered`.
-    private func legacyDecision(_ req: HostRequest, _ m: [String: JSONValue]) -> HostReply {
-        // `rd` is a sibling of `op` in the sealed meta and outside what the detached signature covers
-        var stripped = m; stripped["rd"] = nil
-        guard let key = core.devicePubs[req.device] else { return .refuse(.badSignature) }
-        do { try Decisions.verifyOp(.object(stripped), workspace: workspace, deviceKey: key) }
-        catch Refusal.malformed { return .refuse(.malformed) }
-        catch { return .refuse(.badSignature) }
-        guard let qid = m.idField("question_id"), let i = questionIndex(qid) else { return .refuse(.malformed) }
-        var q = viewState!.questions[i]
-        if let a = q.answer {
-            return .refuse(.alreadyAnswered(byDeviceLabel: label(ofSigner: a.signerDevice), atMs: a.atMs))
-        }
-        let current = String(hash(q).dropFirst("sha256:".count))
-        guard let want = m["content_hash"]?.string.flatMap({ B64U.decode($0, length: 32) }), Hex.encode(want) == current else {
-            return .refuse(.questionChanged(contentHash: Hex.decode(current, length: 32) ?? Data(count: 32)))
-        }
-        guard let answer = m["answer"]?.object, answer.exactly(["option_id"]), let option = answer["option_id"]?.string,
-              q.options.contains(where: { $0.key.utf8Equal(option) }) else { return .refuse(.malformed) }
-        let now = wall.nowMs
-        let key2 = ticketKey(q)
-        viewState!.touch(key2, type: "question.answered", at: now)
-        let seq = viewState!.tickets.first { $0.key == key2 }!.headSeq
-        q.answer = FakeAnswer(atMs: now, seq: seq, option: option, text: nil, id: HostViewState.newULID(entropy, now), signerDevice: "d_" + req.device.hex,
-                              auth: "secure-enclave-unlocked")
-        viewState!.questions[i] = q
-        return .response(status: 200, headers: ["content-type": "application/json"],
-                         data: (try? canonicalJSON(["host_api": 0, "decision_id": m["decision_id"]!])) ?? Data())
     }
 
     func label(ofSigner device: String) -> String {

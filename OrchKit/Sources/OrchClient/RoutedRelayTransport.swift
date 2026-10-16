@@ -90,6 +90,12 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         return try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
     }
 
+    /// The sender object's identity when it is an in-process Demo sender of a class type (the FakeRelay actor); otherwise nil.
+    public var processLocalSender: ObjectIdentifier? {
+        guard sender is any InProcessDemoSender, Sender.self is AnyObject.Type else { return nil }
+        return ObjectIdentifier(sender as AnyObject)
+    }
+
     public func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
         try await get("\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)" + (try Self.pollQuery(after: after, wait: wait)), session: session)
     }

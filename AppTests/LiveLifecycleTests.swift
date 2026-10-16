@@ -28,12 +28,11 @@ private actor WorkspaceStub: WorkspaceAPI {
     func setForeground(_ value: Bool) { foreground.append(value) }
     func refreshViews() async { await suspension.wait() }
     func invalidateReviews() {}
-    func reconcile(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
-    func retry(decisionID: ID16) throws -> DecisionOutcome { throw ViewError.offline }
+    func settle(reviewID: String) throws -> WriteOutcome { throw ViewError.offline }
     func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
     func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
-    func decide(_ review: QuestionReview, optionID: String) throws -> DecisionOutcome { throw ViewError.offline }
-    func pendingDecisions() -> [OrchClient.DecisionStatus] { [] }
+    func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
+    func pendingWrites() -> [WriteStatus] { [] }
     func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket {
         // Host accepted this ID; the reply was lost.
         submissions.append(draft.creationID)
@@ -618,7 +617,7 @@ final class LiveLifecycleTests: XCTestCase {
 // MARK: Realm lifetime fence
 
 extension LiveLifecycleTests {
-    func testDecisionCompletingAfterTheRealmWasRetiredIsDropped() async {
+    func testAnswerCompletingAfterTheRealmWasRetiredIsDropped() async {
         let services = LiveServices(options: LaunchOptions.parse(arguments: ["--ui-testing"], debug: true))
         let api = WorkspaceStub()
         let ws = workspaceForRealmTests(services, api: api)
@@ -626,11 +625,11 @@ extension LiveLifecycleTests {
         services.retire()
         XCTAssertFalse(services.canUse(ws.info.id))
         // A decision settling late would refresh the workspace and the pending list: neither happens once the lifetime ended.
-        await services.decisionSettled(workspace: ws)
+        await services.answerSettled(workspace: ws)
         await services.refreshPending()
         let entered = await api.suspension.entered
         XCTAssertFalse(entered)
-        XCTAssertTrue(services.pendingDecisions.isEmpty)
+        XCTAssertTrue(services.pendingWrites.isEmpty)
         XCTAssertTrue(services.review(workspaceID: ws.info.id, questionID: "q", optionID: "a") is UnavailableReviewModel)
     }
 

@@ -266,6 +266,11 @@ extension FakeHost {
             running.insert(h.rid)
             let reply = await run(a)
             running.remove(h.rid)
+            // Demo/test control: the write ran and its answer is kept (a same-rid resend replays it), but this copy is not posted
+            if a.meta.object?["op"]?.string == "answer", viewState?.writeControls.loseNextResponse == true {
+                viewState!.writeControls.loseNextResponse = false
+                viewState!.lostRids.insert(h.rid)
+            }
             // A non-stream handler may finish while grants are suspended, with epoch and membership still unchanged.
             // Refuse immediately; streams wait for their terminal stale_epoch chunk and revocation waits for its own rotation.
             if rotationRequired && !isRevocation && !h.flagSet.contains(.stream) {
@@ -307,7 +312,6 @@ extension FakeHost {
     private func requiredScope(_ op: String, meta: JSONValue) -> String?? {
         switch op {
         case "http", "drop_rewrap": return .some("look")
-        case "decision": return .some("decide")
         case "new_ticket", "member_remove", "drop_claim": return .some("operate")
         case "revocation": return .some(nil)           // authority is PK's signature, not a scope
         default: return R2.allOps[op] != nil ? .some(nil) : nil     // an R2 op checks its own scope in `handleView`; anything else is unknown
@@ -417,7 +421,8 @@ extension FakeHost {
             // `process` substitutes them only when it answers a known request again, after the §8.6 device checks.
             let answerKey = SentKey(rid: item.rid, request: RidStore.digest(item.envelope))
             if sentAnswers[answerKey] == nil, !chunks.isEmpty { sentAnswers[answerKey] = (chunks, now) }
-            for c in chunks {
+            let lost = viewState?.lostRids.remove(item.rid) != nil
+            for c in chunks where !lost {
                 let r = try await postBridgeChunk(c, rid: item.rid, relay: relay, session: session)
                 guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
                 let flags = (try? Bridge.Parts(envelope: c).header.flags) ?? 0

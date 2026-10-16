@@ -15,6 +15,15 @@ enum DemoContent {
         }
     }
 
+    /// The unselected "Staged rollout" cost of q8; DEBUG `--demo-unsafe-cost` adds an invisible character so a UI test can check that
+    /// an unsafe cost on an option that is not selected still blocks Sign (every option is signed).
+    private static var safeRolloutCost: String {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--demo-unsafe-cost") { return "1 week\u{200B}" }
+        #endif
+        return "1 week"
+    }
+
     static func questions(_ kind: DemoRuntime.Kind) -> [DemoQuestionSeed] {
         switch kind {
         case .laptop:
@@ -30,7 +39,7 @@ enum DemoContent {
                 DemoQuestionSeed(ticket: "MOB-0001", text: "Use the Demo Mac as primary?", options: [DemoOptionSeed("yes", "Yes"), DemoOptionSeed("no", "No")],
                                  createdAgoMs: 180 * min, answer: .init(optionID: "yes", byLabel: "Demo Mac", agoMs: 120 * min)),
                 DemoQuestionSeed(ticket: "MOB-0002", text: "Which rollout for the pairing fix?",
-                                 options: [DemoOptionSeed("fast", "Fast rollout", cost: "1 day, no soak"), DemoOptionSeed("safe", "Staged rollout", cost: "1 week")],
+                                 options: [DemoOptionSeed("fast", "Fast rollout", cost: "1 day, no soak"), DemoOptionSeed("safe", "Staged rollout", cost: safeRolloutCost)],
                                  createdAgoMs: 4 * min),
             ]
         case .clientVM:

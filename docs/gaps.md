@@ -176,12 +176,10 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
 - The host-view adapter remains provisional host API 0. Question hashes and detached
   decisions use the unchanged protocol §13 bytes; identity names/hosted markers are
   absent from snapshot types. Unknown projection fields fail the entire read.
-- Durable decision rows retain the authoritative question projection and exact signed
-  operation separately from bridge attempts. A crash between those writes is recovered
-  by reading the question before making any new envelope. Resolution requires both
-  decision ID and answer; open-state reconciliation may reseal the existing operation,
-  never make a new detached signature. The existing conservative 300-second byte-replay
-  window remains (900-second retention less the Slice 2 clock-skew safety margin).
+- (Superseded by C2b, PR #83.) The Slice 3 decision rows, `retry(decisionID:)` and "Send again" are gone. Answers are
+  `answer` person events over column R (`relay.submit`), stored as `pe_reviews` / `pe_attempts` (migration 15): one
+  immutable attempt per idem, its exact signed bytes the only bytes ever framed, settled by `outcome.get` and the log,
+  never re-signed by hand. See docs/f1-phone-events.md "Answer write path".
 - ReviewArming is a value-only model contract: full scroll completion and 800 ms of
   monotonic arming after selection gate UI confirmation. Selection changes and lifecycle
   invalidation reset it. WorkspaceSession validates the opaque session-issued review;
@@ -198,10 +196,9 @@ Found while building the pairing coordinator, FakeHost/FakePrimary pairing and t
   HTTP-style 409 creation_conflict, never rid_conflict.
 - Demo Drop fixtures now carry real encrypted bytes through DropService; they remain outside host-view snapshots.
   Visible rows use bounded verified downloads for metadata (F4/F6 remain open). No interoperability claim is added.
-- A decision submission rechecks connectivity and current question state before custody
-  signs. A failed preflight leaves no signed decision row. The host still performs CAS
-  after the last read to handle a concurrent answer or content edit. Both preflight
-  and resealing preserve the reviewed bytes; neither updates an answer silently.
+- (C2b.) An answer is signed only from the immutable `ReviewedSnapshot` of a fresh read, inside the transaction that
+  stores it, and only while the lifecycle still holds (`LifecycleFence`). A failed preflight leaves no attempt. The host
+  still checks base, roster, hash, open and option (spec L6) against its own state; a re-seal keeps the signed bytes.
 
 - Before live/relay push ships, the notification service extension must check the workspace tombstone file before presenting anything. Push material for a `removalIncomplete` workspace survives until wipe phase 3 (`purgeSecrets`); possession of that material alone must not permit notification presentation.
 
@@ -299,16 +296,15 @@ The FakeRelay implements P3-D8/D9/D22 as the reference `relay_bridge_request` / 
 all 60 `p3.cases` request_replay/chunk vectors; ordering re-checked against orch-relay 813b0fe: post rates charged after
 the replay checks, host chunks per (workspace, target device)) and the three bridge fixture files replay byte-exact. The
 phone keeps polling the same rid after 202/429, treats the relay's `stale_epoch` as an unsigned hint and surfaces
-`retry_exhausted` for an explicit "Send again" (host API §1). orch-29's answers (2026-10-11) as implemented:
+`retry_exhausted` (host API §1; the v0 "Send again" for decisions is gone since C2b). orch-29's answers (2026-10-11) as implemented:
 
 - **No new rid (Q13, decided):** applies to relay-level outcomes only (202, 429, `retry_exhausted`, transport). A new rid is
   allowed after host-signed "not run" refusals (`stale_epoch`, first `stale_timestamp`, `stale_sequence`), for ops idempotent
-  by logical id, and for side-effect-free reads. Slice-3 decision reconciliation (an `uncertain` decision whose question is
-  verifiably still open re-sends the SAME stored signed decision op in a new envelope; the host dedups by `decision_id`)
-  stays as is, pending orch-29's Q3 confirmation (security F3).
-- **`retry_exhausted`:** the attempt's `uncertain` state and the `exhausted:<logical>` marker commit in ONE transaction;
-  automatic reconciliation and restart recovery only read the question (security F1 regression test). The App shows "Your
-  answer was not delivered" with "Send again" (`question.sendAgain`), which calls `retry(decisionID:)`.
+  by logical id, and for side-effect-free reads. An answer (C2b) re-sends the SAME stored signed event under a new rid
+  only inside its send window, through the write gate; the host dedups by `idem` (orch-52 Q5).
+- **`retry_exhausted`:** for reads, the attempt's `uncertain` state and the `exhausted:<logical>` marker commit in ONE
+  transaction (security F1 regression test). For an answer it is not a write outcome: it is treated as unknown and settled
+  by `outcome.get` (orch-52 Q5). There is no "Send again" any more.
 - **Relay `stale_epoch` hint (Q14, bounded after orch-29's challenge):** the phone refetches the signed list and grants
   (bounded) and re-seals under the SAME rid only when the signed list confirms a newer epoch (otherwise `awaitingSignedEpoch`,
   still pending) and only within 240 s of the first copy (`resealWindowMs`); later it ends `uncertain` and reconciles. If the
@@ -338,8 +334,6 @@ phone keeps polling the same rid after 202/429, treats the relay's `stale_epoch`
   stored replay (202) and other bytes are 409 `chunk_conflict`. The FakeHost substitutes its kept bytes only when it answers
   a known request again, after the §8.6 device checks (a revoked device gets the refusal, never the old answer).
 - **Relay `rid_conflict` after a same-rid re-seal:** handled like the host's: the original attempt is restored, `uncertain`.
-- **No UI test for "Send again":** the Demo cannot produce a relay `retry_exhausted`, so the button is covered by the model
-  test (`ReviewModelTests`) and the session tests only.
 - **Fake-only modelling.** `Retry-After` for storage caps and 503 is the fake's configurable value (the fixtures show 20); the
   fake answers long polls at once (only the limit knobs refuse); holder generations are seeded (the FakeHost does not
   `hold`) and acknowledge via `pendingRequests(after:)`. The FakeHost tolerates (and counts) only a re-sealed REFUSAL chunk

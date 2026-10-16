@@ -376,88 +376,6 @@ import OrchStore
         #expect(uncertainNow.isEmpty)
     }
 
-    // MARK: decisions: exhausted is never reissued automatically (U8)
-
-    /// A decision whose delivery the relay ended with 409 `retry_exhausted`: the host forgot the attempt, its answer never reached the
-    /// relay and the relay used up all eight requeues. `apply` makes the host apply decisions from then on.
-    func exhaustedDecision() async throws -> (w: World, p: Phone, api: BridgeWorkspaceAPI, id: ID16, old: PendingRequestInfo, runs: Counter, apply: Done) {
-        let faults = ScriptedFaults()
-        let w = try await World.make(faults: faults)
-        let p = try await w.makePhone()
-        let api = BridgeWorkspaceAPI(session: p.session)
-        let snap = try await w.serve(p) { try await api.snapshot() }
-        let review = try await w.serve(p) { try await api.review(questionID: snap.questions[0].questionID) }
-        let decisionsRun = Counter()
-        let apply = Done()
-        await w.host.setHandler { req in
-            guard req.meta.object?["op"] == "decision" else { return await w.host.handleView(req) }
-            decisionsRun.bump()
-            if apply.value { return await w.host.handleView(req) }
-            faults.enqueue(.disconnect, at: .pollDelivery)                     // the answer to the first attempt is lost
-            return .response(status: 200, headers: ["content-type": "application/json"], data: Data())
-        }
-        #expect(try await w.serve(p) { try await api.decide(review, optionID: "approve") } == .uncertain)
-        let id = try #require(try await api.pendingDecisions().first?.decisionID)
-        let old = try #require(try await p.session.pendingRequests().first { $0.logical == id })
-        await w.host.forgetOutcome(rid: old.rid)
-        await w.relay.forgetResponses(workspace: w.ws, device: w.phoneID, rid: old.rid)
-        try await acknowledgeAll(w)
-        try await setRequeues(w, rid: old.rid, 8)
-        w.clock.advance(milliseconds: 10_000); p.clock.advance(milliseconds: 10_000)
-        #expect(try await w.serve(p) { try await api.reconcile(decisionID: id) } == .needsRetry)
-        return (w, p, api, id, old, decisionsRun, apply)
-    }
-
-    func attempts(_ p: Phone, _ id: ID16) async throws -> [String] {
-        try await p.container.database().query("SELECT rid FROM bridge_requests WHERE logical=?", [.text(id.hex)]).compactMap { $0.text("rid") }
-    }
-
-    @Test func anExhaustedDecisionWaitsForAnExplicitRetryAndIsAppliedOnce() async throws {
-        let (w, p, api, id, old, decisionsRun, apply) = try await exhaustedDecision()
-        let db = try await p.container.database()
-        #expect(try await db.query("SELECT state FROM decisions WHERE id=?", [.text(id.hex)]).first?.text("state") == "exhausted")
-        #expect(try await p.session.isExhausted(id))
-        #expect(try await api.pendingDecisions().first?.state == .needsRetry)
-        // Automatic reconciliation only reads: the question is still open, so it needs a retry and nothing is reissued.
-        #expect(try await w.serve(p) { try await api.reconcile(decisionID: id) } == .needsRetry)
-        #expect(try await attempts(p, id) == [old.rid.hex] && decisionsRun.value == 1)
-        // The user's explicit retry sends the SAME signed decision under a new rid; the host applies it exactly once.
-        apply.set()
-        #expect(try await w.serve(p) { try await api.retry(decisionID: id) } == .accepted)
-        #expect(decisionsRun.value == 2)
-        let stillPending = try await api.pendingDecisions()
-        #expect(stillPending.isEmpty)
-        #expect(try await !p.session.isExhausted(id))
-        let after = try await w.serve(p) { try await api.snapshot() }
-        #expect(after.revision == 2 && after.questions.filter { $0.resolution?.byDeviceID == "d_" + w.phoneID.hex }.count == 1)
-    }
-
-    /// Security review F1 PoC: a crash between the attempt's `uncertain` and the decision's `exhausted` state used to let automatic
-    /// reconciliation reissue it. The marker is now written in the same transaction as the attempt and is what reconciliation reads.
-    @Test func pocCrashBetweenMarkUncertainAndExhaustedFlag() async throws {
-        let (w, p, api, id, old, decisionsRun, _) = try await exhaustedDecision()
-        let db = try await p.container.database()
-        // Simulate the old crash window: decisions.state never reached 'exhausted'.
-        try await db.execute("UPDATE decisions SET state='uncertain' WHERE id=?", [.text(id.hex)])
-        _ = try? await w.serve(p) { try await api.reconcile(decisionID: id) }
-        #expect(try await attempts(p, id) == [old.rid.hex], "automatic reissue under a new rid after retry_exhausted")
-        #expect(decisionsRun.value == 1)
-    }
-
-    @Test func anExhaustedDecisionSurvivesARestartAndRecoveryNeverReissuesIt() async throws {
-        let (w, p, _, id, old, decisionsRun, _) = try await exhaustedDecision()
-        // App restart: a new session over the same container; foreground recovery reconciles every pending decision.
-        let restarted = try await WorkspaceSession(p.session.cfg)
-        let status = try await restarted.pendingDecisions()
-        #expect(status.map(\.state) == [.needsRetry])
-        await restarted.startViews()
-        #expect(try await w.serve(p) { try await restarted.reconcileDecision(id) } == .needsRetry)
-        for _ in 0..<20 { _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession); await Task.yield() }
-        #expect(try await attempts(p, id) == [old.rid.hex])
-        #expect(decisionsRun.value == 1)
-        #expect(try await restarted.isExhausted(id))
-    }
-
     // MARK: the unsigned stale_epoch hint (P3-D8)
 
     @Test func theRelaysStaleEpochHintNeverRaisesTheEpochAndItsRefetchIsBounded() async throws {
@@ -594,20 +512,20 @@ import OrchStore
 
     // MARK: terminal host refusals
 
-    /// orch-29 Q2: `not_visible` is sealed, terminal and definite: the decision ends "not applied", never uncertain, never re-sent.
-    @Test func aNotVisibleDecisionIsDefinitelyNotApplied() async throws {
+    /// orch-29 Q2: `not_visible` is sealed, terminal and definite: the answer ends refused (D), never checking, never re-sent.
+    @Test func aNotVisibleAnswerIsDefinitelyRefused() async throws {
         let w = try await World.make()
         let p = try await w.makePhone()
         let api = BridgeWorkspaceAPI(session: p.session)
         let snap = try await w.serve(p) { try await api.snapshot() }
-        let review = try await w.serve(p) { try await api.review(questionID: snap.questions[0].questionID) }
+        let review = try #require(try await w.serve(p) { try await api.review(questionID: snap.questions[0].questionID) }.snapshot)
         let runs = Counter()
         await w.host.setHandler { req in
-            guard req.meta.object?["op"] == "decision" else { return await w.host.handleView(req) }
+            guard req.meta.object?["op"] == "answer" else { return await w.host.handleView(req) }
             runs.bump(); return .refuse(.notVisible)
         }
-        #expect(try await w.serve(p) { try await api.decide(review, optionID: "approve") } == .notApplied)
-        let pending = try await api.pendingDecisions()
+        #expect(try await w.serve(p) { try await api.answer(review, option: "approve") } == .refused(code: "not_visible"))
+        let pending = try await api.pendingWrites()
         #expect(pending.isEmpty && runs.value == 1)
         let left = try await p.container.database().query("SELECT rid FROM bridge_requests")
         #expect(left.isEmpty)

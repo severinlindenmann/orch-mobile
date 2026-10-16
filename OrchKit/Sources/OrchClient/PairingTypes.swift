@@ -136,11 +136,14 @@ public struct PairingConfig: Sendable {
     public var deviceLabel: String
     /// H12d: the running build's runtime KAT result and identity (`.production` in the app).
     public var reader: ReaderRuntime
+    /// C2b: the Demo environment's write grant, handed to every session this coordinator builds (nil in Live).
+    public var processLocalWriteGrant: ProcessLocalWriteGrant?
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
                 clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), deviceLabel: String,
-                reader: ReaderRuntime = .production) {
+                reader: ReaderRuntime = .production, processLocalWriteGrant: ProcessLocalWriteGrant? = nil) {
         self.context = context; self.transport = transport; self.index = index; self.vault = vault; self.custody = custody
         self.clock = clock; self.wall = wall; self.entropy = entropy; self.deviceLabel = deviceLabel; self.reader = reader
+        self.processLocalWriteGrant = processLocalWriteGrant
     }
 }

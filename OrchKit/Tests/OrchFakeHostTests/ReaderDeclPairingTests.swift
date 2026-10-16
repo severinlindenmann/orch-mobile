@@ -325,10 +325,10 @@ import OrchProtocol
         return (w, p, decl)
     }
 
-    @Test func aPlainRequestAndADecisionCarryRdInTheSealedMeta() async throws {
+    @Test func aPlainRequestAndAnAnswerCarryRdInTheSealedMeta() async throws {
         let (w, p, decl) = try await world()
         let seen = Seen()
-        // the fake host's views and detached decision demand exact field sets, so it is handed the request WITHOUT `rd` (recorded first)
+        // the fake host's views demand exact field sets, so it is handed the request WITHOUT `rd` (recorded first)
         await w.host.setHandler { req in
             seen.add(req.meta)
             var m = req.meta.object ?? [:]; m["rd"] = nil
@@ -337,15 +337,16 @@ import OrchProtocol
         let api = BridgeWorkspaceAPI(session: p.session)
         let snap = try await w.serve(p) { try await api.snapshot() }
         let review = try await w.serve(p) { try await api.review(questionID: snap.questions[0].questionID) }
-        _ = try? await w.serve(p) { try await api.decide(review, optionID: "approve") }
+        let snapshot = try #require(review.snapshot)
+        _ = try? await w.serve(p) { try await api.answer(snapshot, option: "approve") }
         let metas = seen.all
         #expect(metas.count >= 3)
         for m in metas { #expect(m.object?["rd"] == .string(decl.digest), "\(m.object?["op"]?.string ?? "?")") }
-        #expect(metas.contains { $0.object?["op"] == "decision" })
-        // the detached decision signature covers only its body, so `rd` beside `op` does not touch it
-        let dec = try #require(metas.first { $0.object?["op"] == "decision" })
-        var bare = dec.object!; bare["rd"] = nil
-        try Decisions.verifyOp(.object(bare), workspace: w.ws, deviceKey: w.env.device.publicKeys.sig)
+        // `rd` sits beside `op`, outside the signed event: the event in `args` is exactly the one signed
+        let answer = try #require(metas.first { $0.object?["op"] == "answer" })
+        var bare = answer.object!; bare["rd"] = nil
+        #expect(Set(bare.keys) == ["op", "args", "idem"])
+        #expect(bare["args"]?.object?["events"]?.array?.first?.object?["rd"] == nil)
     }
 
     @Test func withTheSwitchOffNothingCarriesRd() async throws {

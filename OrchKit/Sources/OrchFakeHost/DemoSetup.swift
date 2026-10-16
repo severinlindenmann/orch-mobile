@@ -86,7 +86,7 @@ public enum DemoSetup {
         let index = try await WorkspaceIndex(layout: layout, fence: context.generation)   // commit-type index writes are fenced from construction
         let relay = try FakeRelay(capability: capability, context: context, clock: clock, wall: wall, entropy: entropy, faults: faults, limits: limits)
         let transport = try InProcessRelayTransport(context: context, relay: relay)
-        let grant = ProcessLocalWriteGrant(generation: context.generation)       // the only place a grant is minted
+        let grant = ProcessLocalWriteGrant(generation: context.generation, sender: relay)       // the only place a grant is minted
         return DemoEnvironment(context: context, capability: capability, layout: layout, index: index, relay: relay, transport: transport,
                                grant: grant, device: device, custody: custody, clock: clock, wall: wall, entropy: entropy)
     }

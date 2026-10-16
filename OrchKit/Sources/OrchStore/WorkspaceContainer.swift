@@ -98,6 +98,84 @@ public actor WorkspaceContainer {
         Migration(version: 14, statements: [
             "CREATE TABLE push_registrations (env TEXT PRIMARY KEY, registration_id TEXT NOT NULL, token TEXT NOT NULL, confirmed_ms INTEGER)",
         ]),
+        // C2b (orch-mobile c2b-plan-rev2 3.1): person-event writes. One `pe_reviews` row per signed review (an answer, later a creation)
+        // pointing at its current attempt by compare-and-swap (`current_idem`, `ver`); `pe_attempts` holds every attempt immutably: the
+        // exact signed event bytes (the only bytes ever framed for that idem), the clock facts of the window check, the dispatch marker and
+        // the append-only settlement evidence. Every write row of `bridge_requests` names its attempt. The v0 `decisions` table and its
+        // bridge rows (Demo only) are retired in the same migration.
+        Migration(version: 15, statements: [
+            """
+            CREATE TABLE pe_reviews (review TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('answer','new_ticket')), log TEXT NOT NULL,
+              question TEXT, snapshot BLOB NOT NULL, key_disclosed TEXT, current_idem TEXT NOT NULL, ver INTEGER NOT NULL,
+              resigns INTEGER NOT NULL DEFAULT 0,
+              state TEXT NOT NULL CHECK (state IN ('active','landed','landed_unconfirmed','needs_review','refused','discarded')),
+              landed_idem TEXT, outcome TEXT, created_ms INTEGER NOT NULL)
+            """,
+            """
+            CREATE TABLE pe_attempts (idem TEXT PRIMARY KEY, review TEXT NOT NULL REFERENCES pe_reviews(review), n INTEGER NOT NULL,
+              origin TEXT NOT NULL CHECK (origin IN ('tap','auto')), event BLOB NOT NULL, digest TEXT NOT NULL, key TEXT, auth TEXT NOT NULL,
+              ulid_ms INTEGER NOT NULL, signed_wall_ms INTEGER NOT NULL, signed_offset_ms INTEGER NOT NULL,
+              dispatched INTEGER NOT NULL DEFAULT 0,
+              state TEXT NOT NULL CHECK (state IN ('signed','sent','landed','c_auto','c_review','d','superseded','discarded')),
+              evidence TEXT NOT NULL DEFAULT '[]', UNIQUE (review, n))
+            """,
+            "ALTER TABLE bridge_requests ADD COLUMN attempt TEXT REFERENCES pe_attempts(idem)",
+            "CREATE INDEX bridge_requests_attempt ON bridge_requests(attempt)",
+            // one active review per question, in SQL: a double tap or a second sheet can never hold two signed reviews of one question
+            "CREATE UNIQUE INDEX pe_reviews_one_active ON pe_reviews(question) WHERE state = 'active'",
+            // NOTE: `INSERT OR REPLACE` / `REPLACE INTO` is never used on pe_reviews or pe_attempts (a REPLACE deletes the old row WITHOUT
+            // firing the delete triggers below, recursive_triggers being off). Pinned by `PersonEventTriggerTests.noReplaceOnTheWriteTables`.
+            // immutability: what was signed, and when, never changes
+            """
+            CREATE TRIGGER pe_attempts_immutable BEFORE UPDATE ON pe_attempts
+            WHEN NEW.idem IS NOT OLD.idem OR NEW.review IS NOT OLD.review OR NEW.n IS NOT OLD.n OR NEW.origin IS NOT OLD.origin
+              OR NEW.event IS NOT OLD.event OR NEW.digest IS NOT OLD.digest OR NEW.key IS NOT OLD.key OR NEW.auth IS NOT OLD.auth
+              OR NEW.ulid_ms IS NOT OLD.ulid_ms OR NEW.signed_wall_ms IS NOT OLD.signed_wall_ms OR NEW.signed_offset_ms IS NOT OLD.signed_offset_ms
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: signed fields are immutable'); END
+            """,
+            // the dispatch marker is monotonic: a possibly sent attempt is never declared unsent
+            """
+            CREATE TRIGGER pe_attempts_dispatched BEFORE UPDATE OF dispatched ON pe_attempts WHEN OLD.dispatched = 1 AND NEW.dispatched <> 1
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: dispatched never falls'); END
+            """,
+            // landed is final
+            """
+            CREATE TRIGGER pe_attempts_landed BEFORE UPDATE OF state ON pe_attempts WHEN OLD.state = 'landed' AND NEW.state <> 'landed'
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: landed is final'); END
+            """,
+            "CREATE TRIGGER pe_attempts_keep_landed BEFORE DELETE ON pe_attempts WHEN OLD.state = 'landed' BEGIN SELECT RAISE(ABORT, 'pe_attempts: landed is final'); END",
+            // a possibly sent attempt is kept until it is settled: only a definite refusal (c_review, d) may go
+            """
+            CREATE TRIGGER pe_attempts_keep_dispatched BEFORE DELETE ON pe_attempts WHEN OLD.dispatched = 1 AND OLD.state NOT IN ('landed','c_review','d')
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: a dispatched attempt is kept until settled'); END
+            """,
+            // a possibly sent attempt is never declared unsigned or unsent again
+            """
+            CREATE TRIGGER pe_attempts_sent_stays_sent BEFORE UPDATE ON pe_attempts
+            WHEN NEW.state IN ('signed','discarded') AND NEW.state IS NOT OLD.state AND (OLD.dispatched = 1 OR NEW.dispatched = 1)
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: a dispatched attempt is never signed or discarded again'); END
+            """,
+            // evidence is truly append-only: longer, the old array minus its `]` is a prefix, the first appended character is `,` (or the
+            // first element's `{` after an empty `[]`), and the result is still a valid JSON array
+            """
+            CREATE TRIGGER pe_attempts_evidence BEFORE UPDATE OF evidence ON pe_attempts
+            WHEN NEW.evidence IS NOT OLD.evidence AND NOT (
+              json_valid(NEW.evidence) AND length(NEW.evidence) > length(OLD.evidence) AND substr(OLD.evidence, -1) = ']' AND substr(NEW.evidence, -1) = ']'
+              AND substr(NEW.evidence, 1, length(OLD.evidence) - 1) = substr(OLD.evidence, 1, length(OLD.evidence) - 1)
+              AND substr(NEW.evidence, length(OLD.evidence), 1) = CASE WHEN OLD.evidence = '[]' THEN '{' ELSE ',' END)
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: evidence is append-only'); END
+            """,
+            // a review that landed stays landed (confirmed or not), with the same landed attempt
+            """
+            CREATE TRIGGER pe_reviews_landed BEFORE UPDATE ON pe_reviews
+            WHEN OLD.state IN ('landed','landed_unconfirmed') AND (NEW.state NOT IN ('landed','landed_unconfirmed') OR NEW.landed_idem IS NOT OLD.landed_idem)
+            BEGIN SELECT RAISE(ABORT, 'pe_reviews: a landing is final'); END
+            """,
+            // retire the Demo v0 decision rows together with their table
+            "DELETE FROM bridge_requests WHERE logical IN (SELECT id FROM decisions)",
+            "DELETE FROM meta WHERE key LIKE 'exhausted:%' AND substr(key, 11) IN (SELECT id FROM decisions)",
+            "DROP TABLE decisions",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {

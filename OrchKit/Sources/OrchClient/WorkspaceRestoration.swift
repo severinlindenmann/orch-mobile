@@ -17,11 +17,14 @@ public struct RestoreConfig: Sendable {
     public var entropy: any Entropy
     /// H12d: the running build's runtime KAT result and identity.
     public var reader: ReaderRuntime
+    /// C2b: the Demo environment's write grant, handed to every restored session (nil in Live).
+    public var processLocalWriteGrant: ProcessLocalWriteGrant?
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
-                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), reader: ReaderRuntime = .production) {
+                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), reader: ReaderRuntime = .production,
+                processLocalWriteGrant: ProcessLocalWriteGrant? = nil) {
         self.context = context; self.transport = transport; self.index = index; self.vault = vault; self.custody = custody
-        self.clock = clock; self.wall = wall; self.entropy = entropy; self.reader = reader
+        self.clock = clock; self.wall = wall; self.entropy = entropy; self.reader = reader; self.processLocalWriteGrant = processLocalWriteGrant
     }
 }
 
@@ -34,7 +37,8 @@ public struct RestoreOutcome: Sendable {
 
 /// Rebuilds the `WorkspaceSession`s of workspaces a verified join committed in an earlier launch: from the index row (workspace and
 /// generation), the committed `WorkspaceProfile` (pins: `WSK`, owner key, the last accepted card) and the workspace's own durable store, so
-/// decisions of unknown outcome and ticket-submission identities are preserved, because they live in that store, not in the session.
+/// answers still being settled (`pe_reviews` / `pe_attempts`, C2b) and ticket-submission identities are preserved, because they live in
+/// that store, not in the session. A rebuilt session settles them (reads first); it never re-signs one (no eligibility survives a relaunch).
 ///
 /// Every session is built on `config.context` and `config.transport` (a runtime owns exactly one realm context; `WorkspaceSession.init`
 /// enforces the shared generation). Restoring is read-only with respect to the network: it contacts the relay only when a session later
@@ -99,7 +103,7 @@ public enum WorkspaceRestoration {
         let cfg = WorkspaceSessionConfig(context: c.context, workspace: ws, generation: row.generation, identity: identity, wsk: wsk,
                                          container: container, vault: c.vault.scoped(to: c.context.realm), transport: c.transport,
                                          clock: c.clock, wall: c.wall, entropy: c.entropy, reader: c.reader, sendsReaderDigest: true, blocksUntilDeclared: false,
-                                         enforcesOpTable: c.context.realm == .live)
+                                         enforcesOpTable: c.context.realm == .live, processLocalWriteGrant: c.processLocalWriteGrant)
         let session: WorkspaceSession
         do { session = try await WorkspaceSession(cfg) }
         catch { await container.close(); throw error }

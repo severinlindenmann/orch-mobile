@@ -166,6 +166,23 @@ public struct F1Question: Equatable, Sendable {
         guard (state == .answered) == (answer != nil) else { throw Refusal.malformed }
     }
 
+    /// The stored form of an OPEN question as reviewed (C2b `pe_reviews.snapshot`): exactly the fields this parser reads back, with every
+    /// display string as received (no normalisation). `F1Question(wire)` reproduces an equal question, byte for byte.
+    public var openWire: JSONValue {
+        var o: [String: JSONValue] = ["id": .string(id), "state": "open", "to": .array(to.map(JSONValue.string)), "blocking": .bool(blocking),
+                                      "answered_by": .null, "answered_seq": .null,
+                                      "options": .array(options.map(\.json))]
+        if let text { o["text"] = .string(text) }
+        if let why { o["why"] = .string(why) }
+        if let toRef { o["to_ref"] = .string(toRef) }
+        if let recommended { o["recommended"] = .string(recommended) }
+        if let askedAt { o["asked_at"] = .string(askedAt) }
+        if let askedSeq { o["asked_seq"] = .int(askedSeq) }
+        if let qid { o["qid"] = .string(qid) }
+        if let hash { o["hash"] = .string(hash) }
+        return .object(o)
+    }
+
     // MARK: parsing helpers
 
     /// Display safety of a signing surface: two options whose labels are the same after the phone's own NFC port (`F1Text.nfc`, never
