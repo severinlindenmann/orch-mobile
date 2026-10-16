@@ -89,7 +89,7 @@ final class LiveReviewModel: QuestionReviewModel {
         } catch let e as CustodyError {
             guard lifetime.isActive else { phase = .invalidated; return }
             switch e {
-            case .locked: phase = .unlockToContinue; await workspace.api.noteCustodyLocked()
+            case .locked: phase = .unlockToContinue; workspace.api.noteCustodyLocked()
             default: phase = .custodyUnavailable
             }
         } catch let committed as AnswerCommitted {
@@ -174,6 +174,7 @@ final class LiveReviewModel: QuestionReviewModel {
             issued = nil
             phase = .invalidated
             let api = workspace.api
+            api.noteReviewsInvalidated()                 // the fence first, synchronously
             Task { await api.invalidateReviews() }
         default: break
         }

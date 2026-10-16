@@ -602,6 +602,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
+        // C2b: the background ends every ticket synchronously, before the lifecycle task below reaches each session
+        if !active { for ws in live { ws.api.noteBackground() } }
         self.active = active
         livePairing?.setActive(active)
         if active, ready, liveBootError != nil {
@@ -751,12 +753,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     /// scenePhase `.inactive` and protected-data loss end every review's eligibility for an automatic re-sign (C2b codex 11).
+    /// Synchronous: each session's lifecycle fence is bumped before this returns (no Task hop).
     func noteInactive() {
-        for ws in live { let api = ws.api; Task { await api.noteInactive() } }
+        for ws in live { ws.api.noteInactive() }
     }
 
     func noteProtectedDataUnavailable() {
-        for ws in live { let api = ws.api; Task { await api.noteProtectedDataUnavailable() } }
+        for ws in live { ws.api.noteProtectedDataUnavailable() }
     }
 
     // MARK: Demo controls (real host behaviour, one shot)
@@ -789,7 +792,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         case .locked:
             // The simulated phone is locked for this attempt; it unlocks by itself a few seconds later (the person unlocking it).
             runtime.lock.isLocked = true
-            await workspace.api.noteCustodyLocked()
+            workspace.api.noteCustodyLocked()
             demoLockRelease?.cancel()
             demoLockRelease = Task { [weak runtime] in
                 try? await Task.sleep(for: .seconds(2))

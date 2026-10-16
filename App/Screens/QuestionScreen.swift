@@ -486,7 +486,7 @@ struct SignSheet: View {
                 Button("Cancel", role: .cancel, action: onClose)
             case .notSent:
                 stateView("wifi.exclamationmark", OC.warn, "Not sent",
-                          "Nothing was signed and nothing was stored. Check the connection, then choose your answer again.", id: "sign.notSent")
+                          "Nothing was sent or stored. Check the connection, then choose your answer again.", id: "sign.notSent")
                 doneButton
             case .custodyUnavailable:
                 stateView("key.slash", OC.danger, "Signing key not available",
