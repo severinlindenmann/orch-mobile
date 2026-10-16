@@ -267,7 +267,7 @@ extension FakeHost {
             let reply = await run(a)
             running.remove(h.rid)
             // Demo/test control: the write ran and its answer is kept (a same-rid resend replays it), but this copy is not posted
-            if a.meta.object?["op"]?.string == "answer", viewState?.writeControls.loseNextResponse == true {
+            if ["answer", "new_ticket"].contains(a.meta.object?["op"]?.string ?? ""), viewState?.writeControls.loseNextResponse == true {
                 viewState!.writeControls.loseNextResponse = false
                 viewState!.lostRids.insert(h.rid)
             }
@@ -312,7 +312,7 @@ extension FakeHost {
     private func requiredScope(_ op: String, meta: JSONValue) -> String?? {
         switch op {
         case "http", "drop_rewrap": return .some("look")
-        case "new_ticket", "member_remove", "drop_claim": return .some("operate")
+        case "member_remove", "drop_claim": return .some("operate")
         case "revocation": return .some(nil)           // authority is PK's signature, not a scope
         default: return R2.allOps[op] != nil ? .some(nil) : nil     // an R2 op checks its own scope in `handleView`; anything else is unknown
         }

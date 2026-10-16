@@ -130,6 +130,8 @@ public struct WorkspaceSessionConfig: Sendable {
 /// is durable before it is sent (a single synchronous transaction allocates the seq and stores the sealed envelope).
 public actor WorkspaceSession: RealmParticipant {
     var reviews: [UUID: QuestionReview] = [:]
+    /// Issued creation reviews (C2b increment 3), consumed by `create`; dropped with the question reviews.
+    var creationReviews: [UUID: CreationReview] = [:]
     var reviewLifecycle: UInt64 = 0
     private var viewsStarted = false
     /// Set by realm shutdown: nothing is restarted afterwards (no poller, no recovery).
@@ -1370,37 +1372,8 @@ extension WorkspaceSession {
     public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
     /// Every held review goes, and a review read in flight is refused (`reviewQuestion` compares the counter). The fence is separate: it
     /// also ends on `.inactive` and a lock, which must not refuse the new review that is the way back from them.
-    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll() }
+    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll(); creationReviews.removeAll() }
 
-    package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
-        guard !cfg.enforcesOpTable else { throw ViewError.writesUnavailable }       // Live: no write path until C2b
-        try draft.validate()
-        try await ensureCurrent()
-        guard foreground else { throw ViewError.offline }
-        let plaintext = try Bridge.frame(meta: draft.meta, data: Data())
-        let db = try await cfg.container.database()
-        let old = try await db.query("SELECT * FROM bridge_requests WHERE logical=? ORDER BY seq DESC", [.text(draft.creationID.hex)]).first.flatMap(row(from:))
-        if let old, old.plaintext != plaintext { throw ViewError.invalidDraft }
-        let response: BridgeResponse
-        if let old {
-            do { response = try await resend(rid: old.rid) }
-            catch SessionError.uncertain {
-                // new_ticket is idempotent by (device, creationID); preserve exact draft bytes.
-                let next = try await prepare(logical: draft.creationID, plaintext: plaintext, replacing: old.rid, reconciled: true, clearExhausted: true)
-                response = try await runDriver(next, isResend: false)
-            }
-        } else {
-            let first = try await prepare(logical: draft.creationID, plaintext: plaintext)
-            response = try await runDriver(first, isResend: false)
-        }
-        let m = try fields(viewJSON(response, status: 201), ["host_api", "creation_id", "ticket"])
-        guard m["host_api"] == 0, m.idField("creation_id") == draft.creationID else { throw ViewError.malformed }
-        let ticket = try Ticket(m["ticket"]!)
-        guard ticket.title.utf8Equal(draft.title), ticket.body.utf8Equal(draft.body),
-              ticket.epicKey.map({ Data($0.utf8) }) == draft.epicKey.map({ Data($0.utf8) }) else { throw ViewError.malformed }
-        emit(.invalidated)
-        return ticket
-    }
     func emit(_ event: WorkspaceEvent) {
         if case .connection(let state) = event { connectionState = state }
         if case .snapshot = event, !subscribers.isEmpty { snapshotsEmitted += 1 }

@@ -108,6 +108,12 @@ public struct WriteStatus: Equatable, Sendable {
     /// What was reviewed and signed, read back from `pe_reviews.snapshot` (qid and hash recomputed): a sheet reopened after a relaunch
     /// shows exactly this, never the current cached question. Nil if the stored snapshot no longer checks.
     public let review: StoredReview?
+    /// A creation still being sent or settled: what was reviewed and the key its current attempt carries (nil for answers).
+    public let creation: StoredCreationReview?
+
+    public init(reviewID: String, questionID: ID16?, option: String?, state: WriteState, review: StoredReview?, creation: StoredCreationReview? = nil) {
+        self.reviewID = reviewID; self.questionID = questionID; self.option = option; self.state = state; self.review = review; self.creation = creation
+    }
 }
 
 /// The reviewed content of a stored answer (SH5): exactly the strings that were signed.
@@ -203,13 +209,15 @@ struct AttemptRec: Sendable {
     let ulidMs: Int64, signedWallMs: Int64
     let dispatched: Bool
     let evidence: String
+    /// A creation's key (NULL for an answer).
+    let key: String?
 
     init?(_ r: SQLRow) {
         guard let idem = r.text("idem"), let review = r.text("review"), let origin = r.text("origin"), let state = r.text("state"),
               let auth = r.text("auth"), let n = r.int("n"), let event = r.blob("event"), let u = r.int("ulid_ms"), let w = r.int("signed_wall_ms"),
               let d = r.int("dispatched") else { return nil }
         self.idem = idem; self.review = review; self.origin = origin; self.state = state; self.auth = auth; self.n = n; self.event = event
-        ulidMs = u; signedWallMs = w; dispatched = d != 0; evidence = r.text("evidence") ?? "[]"
+        ulidMs = u; signedWallMs = w; dispatched = d != 0; evidence = r.text("evidence") ?? "[]"; key = r.text("key")
     }
 
     /// The landed seq the evidence names, if any.
@@ -226,12 +234,17 @@ struct ReviewRec: Sendable {
     let ver: Int64, resigns: Int64
     let landedIdem: String?
     let outcome: String?
+    /// The next key the creation sheet disclosed when it armed ("The key is assigned when sent (next: KEY)"); NULL for answers.
+    let keyDisclosed: String?
+    var isCreation: Bool { kind == "new_ticket" }
+    var eventKind: SignedPhoneEvent.Kind { isCreation ? .ticketCreated : .questionAnswered }
 
     init?(_ r: SQLRow) {
         guard let review = r.text("review"), let kind = r.text("kind"), let log = r.text("log"), let state = r.text("state"),
               let cur = r.text("current_idem"), let snap = r.blob("snapshot"), let ver = r.int("ver"), let resigns = r.int("resigns") else { return nil }
         self.review = review; self.kind = kind; self.log = log; self.state = state; currentIdem = cur; question = r.text("question")
         snapshot = snap; self.ver = ver; self.resigns = resigns; landedIdem = r.text("landed_idem"); outcome = r.text("outcome")
+        keyDisclosed = r.text("key_disclosed")
     }
 }
 
@@ -247,6 +260,8 @@ enum Evidence: Sendable {
 
 enum AttemptKind {
     case insert(review: String, log: String, question: String, snapshot: Data, nowMs: Int64)
+    /// A creation's first attempt: the review keyed by its phone-made uid (`log`), with the disclosed key.
+    case insertCreation(review: String, log: String, snapshot: Data, keyDisclosed: String?, nowMs: Int64)
     case resign(review: String, expectIdem: String, expectVer: Int64)
 }
 
@@ -257,11 +272,13 @@ extension WorkspaceSession {
     /// Live write is admitted (fail closed).
     func hostWritesAllowed(_ kind: String) -> Bool {
         guard let policy else { return false }
-        return policy.realm == .demo && kind == "answer"
+        return policy.realm == .demo && (kind == "answer" || kind == "new_ticket")
     }
 
     /// The UI may offer answers here: a policy, and a host that takes them.
     public func writesAvailable() -> Bool { hostWritesAllowed("answer") }
+    /// The same for one write op (`answer`, `new_ticket`).
+    public func writesAvailable(op: String) -> Bool { hostWritesAllowed(op) }
 
     // MARK: eligibility (codex 11)
 
@@ -295,24 +312,24 @@ extension WorkspaceSession {
 
     // MARK: the write gate (plan 3.3)
 
-    /// A row without an attempt never carries a write meta (the interim v0 creation, Demo only, is the one exception until increment 3).
+    /// A row without an attempt never carries a write meta, in Live and Demo alike (C2b increment 3 retired the v0 creation op).
     func refuseUnattachedWrite(_ plaintext: Data) throws {
         guard let meta = try? Bridge.unframe(plaintext).meta.object, let op = meta["op"]?.string,
               R2.allOps.first(where: { $0.key.utf8.elementsEqual(op.utf8) })?.value.kind == .write else { return }
-        if !cfg.enforcesOpTable, cfg.context.realm == .demo, op == "new_ticket", meta["creation_id"] != nil { return }
         throw ViewError.writesUnavailable
     }
 
     /// Inside the transaction that re-seals a write row: the attempt is still current and sendable, the framed bytes are its event's, and
     /// the window holds.
     static func revalidate(_ tx: SQLiteTransaction, attempt: String, plaintext: Data, clock: WriteClock, workspace: ID16) throws {
-        guard let r = try tx.query("SELECT a.state, a.event, a.ulid_ms, a.signed_wall_ms, r.current_idem, r.state AS rstate, r.log FROM pe_attempts a JOIN pe_reviews r ON r.review = a.review WHERE a.idem=?",
+        guard let r = try tx.query("SELECT a.state, a.event, a.ulid_ms, a.signed_wall_ms, r.current_idem, r.state AS rstate, r.log, r.kind FROM pe_attempts a JOIN pe_reviews r ON r.review = a.review WHERE a.idem=?",
                                    [.text(attempt)]).first,
               let st = r.text("state"), st == "signed" || st == "sent", r.text("current_idem") == attempt, r.text("rstate") == "active",
               let bytes = r.blob("event"), let log = r.text("log"), let ulid = r.int("ulid_ms"), let signed = r.int("signed_wall_ms")
         else { throw WriteGateError.notCurrent }
         guard clock.holds(ulidMs: ulid, signedWallMs: signed) else { throw WriteGateError.windowPassed }
-        try checkFramed(plaintext, event: try PhoneEvents.restore(bytes: bytes, kind: .questionAnswered, log: log, workspace: workspace))
+        let kind: SignedPhoneEvent.Kind = r.text("kind") == "new_ticket" ? .ticketCreated : .questionAnswered
+        try checkFramed(plaintext, event: try PhoneEvents.restore(bytes: bytes, kind: kind, log: log, workspace: workspace))
     }
 
     /// The framed meta minus `rd` must be byte-equal to `cj(R2.writeMeta(event))`, and carry no data.
@@ -354,17 +371,27 @@ extension WorkspaceSession {
         }
         // MUST 4 (Opus, increment 1): the stored event re-binds to its reviewed snapshot byte for byte (only `id`, and for an automatic
         // re-sign `roster_v`, differ from the review), then validates in full, then the framed bytes are exactly its meta.
-        let e = try PhoneEvents.restore(bytes: a.event, kind: .questionAnswered, log: log, workspace: workspace)
-        let snap = try StoredSnapshot(bytes: snapBytes)
-        let roster = a.origin == "auto" ? (e.event["roster_v"]?.int ?? -1) : snap.rosterV
+        let eventKind: SignedPhoneEvent.Kind = kind == "new_ticket" ? .ticketCreated : .questionAnswered
+        let e = try PhoneEvents.restore(bytes: a.event, kind: eventKind, log: log, workspace: workspace)
         let actor = try policy.actor(person: try storedPerson(), device: cfg.deviceID)
-        let expected = try PhoneEvents.unsignedAnswer(try snap.reviewed(workspace: workspace, rosterV: roster), option: snap.option, text: nil,
+        let expected: PhoneEvents.UnsignedPhoneEvent
+        if eventKind == .ticketCreated {
+            // a creation: only `roster_v`, `id` and (an automatic re-sign's) `key` differ from the review; the uid is the review's
+            let snap = try StoredCreation(bytes: snapBytes)
+            let roster = a.origin == "auto" ? (e.event["roster_v"]?.int ?? -1) : snap.rosterV
+            let key = a.origin == "auto" ? (e.event["key"]?.string ?? "") : snap.key
+            expected = try snap.unsigned(uid: log, key: key, rosterV: roster, id: attempt, actor: actor, workspace: workspace)
+        } else {
+            let snap = try StoredSnapshot(bytes: snapBytes)
+            let roster = a.origin == "auto" ? (e.event["roster_v"]?.int ?? -1) : snap.rosterV
+            expected = try PhoneEvents.unsignedAnswer(try snap.reviewed(workspace: workspace, rosterV: roster), option: snap.option, text: nil,
                                                       id: attempt, actor: actor, workspace: workspace)
+        }
         var unsigned = e.event; unsigned["sig"] = nil
         guard try canonicalJSON(.object(unsigned)) == canonicalJSON(.object(expected.event)), expected.log.bytesEqual(e.log) else {
             throw WriteGateError.bytesChanged
         }
-        try PhoneEvents.validateSigned(e, kind: .questionAnswered, actor: actor, workspace: workspace, pub: cfg.identity.publicKeys.sig)
+        try PhoneEvents.validateSigned(e, kind: eventKind, actor: actor, workspace: workspace, pub: cfg.identity.publicKeys.sig)
         try Self.checkFramed(row.plaintext, event: e)
         return (policy.permit(), ticket)
     }
@@ -386,6 +413,14 @@ extension WorkspaceSession {
                 try tx.execute("INSERT INTO pe_reviews(review, kind, log, question, snapshot, current_idem, ver, state, created_ms) VALUES(?,'answer',?,?,?,?,1,'active',?)",
                                [.text(rv), .text(log), .text(question), .blob(snapshot), .text(unsigned.id), .int(nowMs)])
                 review = rv
+            case .insertCreation(let rv, let log, let snapshot, let keyDisclosed, let nowMs):
+                // one review = one uid: a uid any review of this store already holds is never signed again under another review
+                guard try tx.query("SELECT 1 AS x FROM pe_reviews WHERE log=? AND kind='new_ticket'", [.text(log)]).isEmpty else {
+                    throw WriteGateError.notCurrent
+                }
+                try tx.execute("INSERT INTO pe_reviews(review, kind, log, question, snapshot, key_disclosed, current_idem, ver, state, created_ms) VALUES(?,'new_ticket',?,NULL,?,?,?,1,'active',?)",
+                               [.text(rv), .text(log), .blob(snapshot), keyDisclosed.map(SQLValue.text) ?? .null, .text(unsigned.id), .int(nowMs)])
+                review = rv
             case .resign(let rv, let expectIdem, let expectVer):
                 guard let r = try tx.query("SELECT current_idem, ver, state FROM pe_reviews WHERE review=?", [.text(rv)]).first,
                       r.text("current_idem") == expectIdem, r.int("ver") == expectVer, r.text("state") == "active" else { throw WriteGateError.notCurrent }
@@ -403,13 +438,14 @@ extension WorkspaceSession {
             try hook?("pe.sign")
             let e = try PhoneEvents.sign(unsigned, signer: signer)
             try hook?("pe.signed")
-            try PhoneEvents.validateSigned(e, kind: .questionAnswered, actor: actor, workspace: workspace, pub: pub)
+            try PhoneEvents.validateSigned(e, kind: unsigned.kind, actor: actor, workspace: workspace, pub: pub)
             let meta = try R2.writeMeta(e)
             _ = try R2.checkMeta(meta, data: Data())
             let plaintext = try Bridge.frame(meta: meta, data: Data())
             guard let ulid = ULID.timeMs(of: e.id), clock.holds(ulidMs: ulid, signedWallMs: clock.wallMs) else { throw WriteGateError.windowPassed }
-            try tx.execute("INSERT INTO pe_attempts(idem, review, n, origin, event, digest, key, auth, ulid_ms, signed_wall_ms, signed_offset_ms, state) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,'signed')",
-                           [.text(e.id), .text(review), .int(n), .text(origin), .blob(e.bytes), .text(e.digest), .text(actor.auth.rawValue), .int(ulid),
+            let key: SQLValue = e.event["key"]?.string.map(SQLValue.text) ?? .null
+            try tx.execute("INSERT INTO pe_attempts(idem, review, n, origin, event, digest, key, auth, ulid_ms, signed_wall_ms, signed_offset_ms, state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'signed')",
+                           [.text(e.id), .text(review), .int(n), .text(origin), .blob(e.bytes), .text(e.digest), key, .text(actor.auth.rawValue), .int(ulid),
                             .int(clock.wallMs), .int(clock.offsetMs)])
             return (plaintext, e.id)
         }
@@ -473,13 +509,19 @@ extension WorkspaceSession {
     package func pendingWrites() async throws -> [WriteStatus] {
         try await ensureCurrent()
         return try await cfg.container.database().query(
-            "SELECT r.review, r.question, r.snapshot, r.log, a.event, a.dispatched FROM pe_reviews r JOIN pe_attempts a ON a.idem = r.current_idem WHERE r.state='active' ORDER BY r.created_ms, r.review"
+            "SELECT r.review, r.kind, r.question, r.snapshot, r.log, a.event, a.key, a.dispatched FROM pe_reviews r JOIN pe_attempts a ON a.idem = r.current_idem WHERE r.state='active' ORDER BY r.created_ms, r.review"
         ).compactMap { r in
             guard let id = r.text("review") else { return nil }
+            let state: WriteState = r.int("dispatched") == 1 ? .checking : .sending
+            if r.text("kind") == "new_ticket" {
+                let c = r.blob("snapshot").flatMap { try? StoredCreation(bytes: $0) }
+                return WriteStatus(reviewID: id, questionID: nil, option: nil, state: state, review: nil,
+                                   creation: c.map { StoredCreationReview(ticketType: $0.ticketType, title: $0.title, owner: $0.owner,
+                                                                          uid: r.text("log") ?? "", key: r.text("key") ?? $0.key) })
+            }
             let snap = r.blob("snapshot").flatMap { try? StoredSnapshot(bytes: $0) }
             let review = snap.flatMap { s in r.blob("event").flatMap { e in r.text("log").flatMap { storedReview(s, event: e, log: $0) } } }
-            return WriteStatus(reviewID: id, questionID: r.text("question").flatMap(ID16.init(hex:)), option: snap?.option,
-                               state: r.int("dispatched") == 1 ? .checking : .sending, review: review)
+            return WriteStatus(reviewID: id, questionID: r.text("question").flatMap(ID16.init(hex:)), option: snap?.option, state: state, review: review)
         }
     }
 
@@ -691,8 +733,8 @@ extension WorkspaceSession {
         WriteClock(wallMs: cfg.wall.nowMs, offsetMs: try await clockOffsetMs(), monoMs: monotonicMs(a.idem)).holds(ulidMs: a.ulidMs, signedWallMs: a.signedWallMs)
     }
 
-    private func restore(_ a: AttemptRec, _ rv: ReviewRec) throws -> SignedPhoneEvent {
-        try PhoneEvents.restore(bytes: a.event, kind: .questionAnswered, log: rv.log, workspace: workspace)
+    func restore(_ a: AttemptRec, _ rv: ReviewRec) throws -> SignedPhoneEvent {
+        try PhoneEvents.restore(bytes: a.event, kind: rv.eventKind, log: rv.log, workspace: workspace)
     }
 
     /// The first send of a signed attempt, through the gate.
@@ -766,11 +808,12 @@ extension WorkspaceSession {
         catch { return .unresolved }
     }
 
-    private func hostNowMs() async throws -> Int64 { saturatingAddMs(cfg.wall.nowMs, try await clockOffsetMs()) }
+    func hostNowMs() async throws -> Int64 { saturatingAddMs(cfg.wall.nowMs, try await clockOffsetMs()) }
 
     /// The explicit log rule (plan 4, codex 9): the question's answer is this event (landed, `src: log`), or the read shows it absent
     /// (C-review). A failed read is unresolved.
     private func logRead(_ a: AttemptRec, _ rv: ReviewRec, absent code: String) async throws -> Evidence {
+        if rv.isCreation { return try await creationLogRead(a, rv, absent: code) }
         do {
             let snap = try StoredSnapshot(bytes: rv.snapshot)
             let get = try await ticketGet(snap.ticketUID)
@@ -784,7 +827,7 @@ extension WorkspaceSession {
 
     // MARK: recording evidence (one transaction each)
 
-    private static func appendEvidence(_ tx: SQLiteTransaction, idem: String, _ item: [String: JSONValue]) throws -> String {
+    static func appendEvidence(_ tx: SQLiteTransaction, idem: String, _ item: [String: JSONValue]) throws -> String {
         let old = try tx.query("SELECT evidence FROM pe_attempts WHERE idem=?", [.text(idem)]).first?.text("evidence") ?? "[]"
         var list = (try? StrictJSON.parse(Data(old.utf8)))?.array ?? []
         list.append(.object(item))
@@ -802,7 +845,9 @@ extension WorkspaceSession {
         case .landed(let seq, let src): try await recordLanding(rv, a, seq: seq, src: src)
         case .definite(let code, let cls, let src):
             switch cls {
-            case .d where code.bytesEqual("question.answered"):
+            case .d where rv.isCreation && code.bytesEqual("ticket.exists"):
+                return try await applyTicketExists(rv, a, code: code, src: src)
+            case .d where !rv.isCreation && code.bytesEqual("question.answered"):
                 // who answered? If it was this very event, that is our landing
                 let snap = try StoredSnapshot(bytes: rv.snapshot)
                 let read: Question?
@@ -851,7 +896,7 @@ extension WorkspaceSession {
     }
 
     /// Definite, zero landed for this attempt: its class and evidence, its bridge rows gone; the review finishes unless it is C-auto.
-    private func recordDefinite(_ rv: ReviewRec, _ a: AttemptRec, code: String, cls: PhoneRetryClass, src: String, outcome: WriteOutcome?) async throws {
+    func recordDefinite(_ rv: ReviewRec, _ a: AttemptRec, code: String, cls: PhoneRetryClass, src: String, outcome: WriteOutcome?) async throws {
         let state = cls == .cAuto ? "c_auto" : (cls == .cReview ? "c_review" : "d")
         let reviewState = cls == .cReview ? "needs_review" : "refused"
         let now = cfg.wall.nowMs, hook = crashHook
@@ -895,6 +940,7 @@ extension WorkspaceSession {
     /// yet: the confirmation is tried again later.
     private func confirmLanding(_ rv: ReviewRec) async throws -> WriteOutcome {
         guard let idem = rv.landedIdem, let a = try await loadAttempts(rv.review).first(where: { $0.idem == idem }) else { throw SessionError.unknownRequest }
+        if rv.isCreation { return try await confirmCreation(rv, a) }
         let snap = try StoredSnapshot(bytes: rv.snapshot)
         let seq = a.landedSeq
         let outcome: WriteOutcome
@@ -933,7 +979,10 @@ extension WorkspaceSession {
         // the fence's ticket already requires the foreground (and an unlocked, protected-data lifecycle)
         guard let policy, let ticket = lifecycleFence.ticket(review: rv.review), rv.resigns < Int64(AutoResign.maxPerReview),
               hostWritesAllowed(rv.kind) else { return false }
-        do { return try await autoResign(rv, a, policy: policy, ticket: ticket) }
+        do {
+            if rv.isCreation { return try await autoResignCreation(rv, a, policy: policy, ticket: ticket) }
+            return try await autoResign(rv, a, policy: policy, ticket: ticket)
+        }
         catch {
             // SH1: a lock (or any lifecycle end) inside the re-sign ends the eligibility here, whatever the App does: no later re-sign
             noteIfLocked(error)

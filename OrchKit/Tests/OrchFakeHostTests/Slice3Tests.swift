@@ -117,33 +117,6 @@ extension FakeHost {
             }
         }
     }
-    @Test func unsafeDraftsAreRejectedWithoutRewrite() async throws {
-        let (w, _, api, _) = try await setup()
-        await w.host.setRoster([(w.phone, World.all)])
-        for title in ["", "Unsafe\u{202E}", String(repeating: "x", count: 201)] {
-            let draft = NewTicketSubmission(creationID: .fresh(92), title: title, body: "")
-            await #expect(throws: ViewError.invalidDraft) { _ = try await api.newTicket(draft) }
-        }
-        #expect(!validTicketKey("MOB-0001\n"))
-    }
-    @Test func testNewTicketRetryCreatesOnce() async throws {
-        let (w, p, api, s) = try await setup()
-        await w.host.setRoster([(w.phone, World.all), (w.primary.deviceKeys, World.all)])
-        let draft = NewTicketSubmission(creationID: .fresh(90), title: "A ticket", body: "Text", epicKey: "FAC-0001")
-        let first = try await w.serve(p) { try await api.newTicket(draft) }
-        let second = try await w.serve(p) { try await api.newTicket(draft) }
-        #expect(first == second)
-        #expect(try await w.serve(p) { try await api.snapshot() }.tickets.count == s.tickets.count + 1)
-    }
-    @Test func testCreationConflictIsSealed409() async throws {
-        let (w, p, api, _) = try await setup()
-        await w.host.setRoster([(w.phone, World.all)])
-        let draft = NewTicketSubmission(creationID: .fresh(91), title: "First", body: "")
-        _ = try await w.serve(p) { try await api.newTicket(draft) }
-        let changed = NewTicketSubmission(creationID: draft.creationID, title: "Changed", body: "")
-        await #expect(throws: ViewError.http(409, "creation_conflict")) { _ = try await w.serve(p) { try await api.newTicket(changed) } }
-        #expect(try await p.session.pinFailures() == 0)
-    }
     /// Change detection by polling the activity cursor (`wait` is not served): while nothing changes the poller reads `activity.list` only
     /// and emits no snapshot; the interval backs off from 15 s toward 60 s; a host-side change is picked up within one interval and
     /// resets it to 15 s.
@@ -209,40 +182,6 @@ extension FakeHost {
                 } else { var rows = d["rows"]!.array!; rows.append(rows[0]); d["rows"] = .array(rows) }
             })
             await #expect(throws: ViewError.malformed) { _ = try await w.serve(p) { try await api.snapshot() } }
-        }
-    }
-    @Test func newTicketLostResponseRetriesWithoutOrphan() async throws {
-        let faults = ScriptedFaults()
-        let w = try await World.make(faults: faults)
-        let p = try await w.makePhone()
-        await w.host.setRoster([(w.phone, World.all)])
-        let api = BridgeWorkspaceAPI(session: p.session)
-        let draft = NewTicketSubmission(creationID: .fresh(209), title: "Persisted draft", body: "Body")
-        await w.host.setHandler { req in
-            let reply = await w.host.handleView(req)
-            if req.meta.object?["op"] == "new_ticket" { faults.enqueue(.disconnect, at: .pollDelivery) }
-            return reply
-        }
-        await #expect(throws: (any Error).self) { _ = try await w.serve(p) { try await api.newTicket(draft) } }
-        #expect(try await p.session.pendingRequests().count == 1)
-        await w.host.clearViewHandler()
-        w.clock.advance(milliseconds: 901_000); p.clock.advance(milliseconds: 901_000)
-        let ticket = try await w.serve(p) { try await api.newTicket(draft) }
-        #expect(ticket.title == draft.title)
-        #expect(try await p.session.pendingRequests().isEmpty)
-        #expect(try await w.serve(p) { try await api.snapshot() }.tickets.count == 3)
-    }
-    @Test func newTicketRejectsCanonicalEquivalentReturnedText() async throws {
-        let (w, p, api, _) = try await setup()
-        await w.host.setRoster([(w.phone, World.all)])
-        await w.host.setHandler { req in
-            guard case .response(let status, let headers, let data) = await w.host.handleView(req),
-                  var m = try? StrictJSON.parse(data).object, var ticket = m["ticket"]?.object else { return .refuse(.malformed) }
-            ticket["title"] = "e\u{301}"; m["ticket"] = .object(ticket)
-            return .response(status: status, headers: headers, data: try! canonicalJSON(.object(m)))
-        }
-        await #expect(throws: ViewError.malformed) {
-            _ = try await w.serve(p) { try await api.newTicket(NewTicketSubmission(creationID: .fresh(208), title: "é", body: "")) }
         }
     }
     @Test func backgroundCancelsPollerAndSubscriptionReplaysCache() async throws {

@@ -21,7 +21,7 @@ private actor WorkspaceStub: WorkspaceAPI {
     private(set) var subscriptions = 0
     func holdSubscription() { suspendSubscription = true }
     var foreground: [Bool] = []
-    var submissions: [ID16] = []
+    var submissions = 0
     var reviews = 0
     var verifiedReceiptMs: Int64? { nil }
     func start() {}
@@ -33,9 +33,9 @@ private actor WorkspaceStub: WorkspaceAPI {
     func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
     func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
     func pendingWrites() -> [WriteStatus] { [] }
-    func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket {
-        // Host accepted this ID; the reply was lost.
-        submissions.append(draft.creationID)
+    func reviewCreation(type: String, title: String) throws -> CreationReview {
+        // the workspace read for the review fails
+        submissions += 1
         throw ViewError.offline
     }
     func events() async -> AsyncStream<WorkspaceEvent> {
@@ -279,9 +279,9 @@ final class LiveLifecycleTests: XCTestCase {
         await staleReview.loadReview()
         let reads = await api.reviews
         XCTAssertEqual(reads, 0)
-        _ = await ws.createTicket(title: "Refused", body: "")
+        _ = await ws.reviewCreation(type: "feature", title: "Refused")
         let submissions = await api.submissions
-        XCTAssertTrue(submissions.isEmpty)
+        XCTAssertEqual(submissions, 0)
         services.exitDemo(); await bounded { await services.waitForReset() }
     }
 
@@ -477,10 +477,10 @@ final class LiveLifecycleTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         ws.draftURL = dir.appendingPathComponent("draft.json")
-        let result = await ws.createTicket(title: "Ticket", body: "Body")
+        let result = await ws.reviewCreation(type: "feature", title: "Ticket")
         guard case .failed = result else { return XCTFail("\(result)") }
         let sent = await api.submissions
-        XCTAssertTrue(sent.isEmpty)
+        XCTAssertEqual(sent, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: ws.draftURL!.path))
         let review = services.review(workspaceID: ws.info.id, questionID: "q", optionID: "a")
         await review.loadReview()
@@ -488,33 +488,62 @@ final class LiveLifecycleTests: XCTestCase {
     }
 
     #if DEBUG
-    func testDraftWriteFailureAndLostResponseRetry() async throws {
+    /// The draft is saved before the review; a draft that cannot be saved reviews nothing, and a saved one survives a new model.
+    func testDraftWriteFailureReviewsNothingAndTheDraftSurvives() async throws {
         let services = LiveServices(options: options)
         services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
         let api = WorkspaceStub()
         let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        XCTAssertTrue(ws.canCreateTickets)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         ws.draftURL = dir.appendingPathComponent("draft.json")
-        _ = await ws.createTicket(title: "Ticket", body: "Body")
+        _ = await ws.reviewCreation(type: "bug", title: "Ticket")
         let absent = await api.submissions
-        XCTAssertTrue(absent.isEmpty)
+        XCTAssertEqual(absent, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path), "stale drafts must not recreate wiped directories")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
         // A present directory is insufficient if the draft write fails.
         try FileManager.default.createDirectory(at: ws.draftURL!, withIntermediateDirectories: false)
-        _ = await ws.createTicket(title: "Ticket", body: "Body")
+        _ = await ws.reviewCreation(type: "bug", title: "Ticket")
         let failed = await api.submissions
-        XCTAssertTrue(failed.isEmpty)
+        XCTAssertEqual(failed, 0)
         try FileManager.default.removeItem(at: ws.draftURL!)
-        _ = await ws.createTicket(title: "Ticket", body: "Body")
-        // Recreate the model, proving the retry ID comes from disk rather than memory.
+        let result = await ws.reviewCreation(type: "bug", title: "Ticket")
+        XCTAssertEqual(result, .failed("The workspace could not be read. Nothing was signed."))
+        let read = await api.submissions
+        XCTAssertEqual(read, 1)
+        // a new model reads the same draft from disk (type and title; nothing pending)
         let reopened = LiveWorkspace(workspaceID: ws.workspaceID, generation: 1, api: api, info: ws.info)
         reopened.services = services; reopened.draftURL = ws.draftURL
-        _ = await reopened.createTicket(title: "Ticket", body: "Body")
-        let ids = await api.submissions
-        XCTAssertEqual(ids.count, 2)
-        XCTAssertEqual(Set(ids).count, 1)
+        let draft = reopened.loadCreationDraft()
+        XCTAssertEqual(draft?.type, "bug"); XCTAssertEqual(draft?.title, "Ticket"); XCTAssertEqual(draft?.pending, false)
+    }
+
+    /// `canCreateTickets` needs the host's `new_ticket` support, `decide` and an advertised next key (not `operate`).
+    func testCanCreateTicketsNeedsWriteSupportDecideAndANextKey() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let ws = workspace(services)
+        XCTAssertFalse(ws.canCreateTickets)
+        ws.info.createSupport = true
+        XCTAssertFalse(ws.canCreateTickets, "no next key")
+        ws.nextKey = "MOB-0002"
+        XCTAssertTrue(ws.canCreateTickets)
+        ws.info.scopes = [.look, .operate]
+        XCTAssertFalse(ws.canCreateTickets, "no decide")
+        ws.info.scopes = [.look, .decide]
+        XCTAssertTrue(ws.canCreateTickets, "operate is not needed")
+        ws.info.createSupport = false
+        XCTAssertFalse(ws.canCreateTickets)
+    }
+
+    func testTitleProblemsAreShownInline() {
+        XCTAssertNil(LiveWorkspace.titleProblem("Check the tariff seeds"))
+        XCTAssertEqual(LiveWorkspace.titleProblem("two\nlines"), "The title must be one line.")
+        XCTAssertEqual(LiveWorkspace.titleProblem("a\u{202E}b"), "The title has a text-direction control at character 2. Remove it.")
+        XCTAssertEqual(LiveWorkspace.titleProblem(String(repeating: "x", count: 201)), "At most 200 characters (now 201).")
     }
     #endif
 
@@ -562,7 +591,7 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertFalse(ordering.dropFirst().isEmpty)
         XCTAssertTrue(ordering.dropFirst().allSatisfy { $0 == "purged" })
         ws.draftURL = runtime.draftURL(workspace: ws.workspaceID)
-        _ = await ws.createTicket(title: "Stale model", body: "Must not be written")
+        _ = await ws.reviewCreation(type: "feature", title: "Stale model")
         XCTAssertFalse(ws.canCreateTickets)
         XCTAssertFalse(FileManager.default.fileExists(atPath: ws.draftURL!.deletingLastPathComponent().path))
         let delivered = await backend.delivered

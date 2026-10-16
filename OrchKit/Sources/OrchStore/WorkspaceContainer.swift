@@ -176,6 +176,20 @@ public actor WorkspaceContainer {
             "DELETE FROM meta WHERE key LIKE 'exhausted:%' AND substr(key, 11) IN (SELECT id FROM decisions)",
             "DROP TABLE decisions",
         ]),
+        // C2b increment 3: creation is an R2 person event (`new_ticket` over relay.submit). The interim v0 creation op is gone, so its
+        // leftover bridge rows (no attempt, a v0 `new_ticket` meta with `creation_id`) are retired, with their exhausted markers. Matched on
+        // the framed meta's bytes: canonical JSON escapes every quote inside a string, so `"op":"new_ticket"` and `"creation_id":` only
+        // occur as the meta's own keys. Reads are idempotent and stay.
+        Migration(version: 16, statements: [
+            """
+            DELETE FROM meta WHERE key IN (SELECT 'exhausted:' || logical FROM bridge_requests WHERE attempt IS NULL
+              AND instr(plaintext, CAST('"op":"new_ticket"' AS BLOB)) > 0 AND instr(plaintext, CAST('"creation_id":' AS BLOB)) > 0)
+            """,
+            """
+            DELETE FROM bridge_requests WHERE attempt IS NULL
+              AND instr(plaintext, CAST('"op":"new_ticket"' AS BLOB)) > 0 AND instr(plaintext, CAST('"creation_id":' AS BLOB)) > 0
+            """,
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {

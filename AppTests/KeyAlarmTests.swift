@@ -19,7 +19,7 @@ private actor AlarmedWorkspace: WorkspaceAPI {
     func review(questionID: ID16) throws -> QuestionReview { throw Refusal.wkCommitConflict }
     func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw Refusal.wkCommitConflict }
     func pendingWrites() -> [WriteStatus] { [] }
-    func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket { throw SessionError.wkCommitMismatch(2) }
+    func reviewCreation(type: String, title: String) throws -> CreationReview { throw SessionError.wkCommitMismatch(2) }
     func events() async -> AsyncStream<WorkspaceEvent> { AsyncStream { $0.finish() } }
     func keyAlarm() -> WorkspaceKeyAlarm? { alarm }
 }
@@ -91,7 +91,8 @@ final class KeyAlarmTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         ws.draftURL = dir.appendingPathComponent("draft.json")
-        let result = await ws.createTicket(title: "Ticket", body: "Body")
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let result = await ws.reviewCreation(type: "feature", title: "Ticket")
         XCTAssertEqual(result, .failed(LiveWorkspace.keyAlarmMessage))
         XCTAssertEqual(ws.info.keyAlarm, LiveWorkspace.keyAlarmMessage)
     }

@@ -42,6 +42,8 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     /// C2b: this workspace takes answers from this iPhone (the session's person-event policy and the host's support). Answering also
     /// needs the realm's `writes` capability.
     var writeSupport: Bool = false
+    /// C2b increment 3: this workspace takes new tickets from this iPhone (`new_ticket`: the session's policy and the host's support).
+    var createSupport: Bool = false
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
     var displayName: String { SafeText.inline(name, limit: 40) }
@@ -322,6 +324,64 @@ enum SignOutcome: String, CaseIterable, Hashable, Sendable {
         case .custodyUnavailable: "Key unavailable"
         case .loadFails: "Review fails to load"
         }
+    }
+}
+
+// MARK: New ticket (C2b creation)
+
+/// Display projection of one reviewed creation (the session's `CreationReview`, kept behind it): what the creation sheet renders and the
+/// session signs. Any new review is a new `revision`, so arming starts over.
+struct CreationValue: Hashable, Sendable {
+    let workspaceName: String
+    let hue: Int
+    let ticketType: String
+    /// The prepared title (LF, NFC, checked): exactly what is signed.
+    let title: String
+    /// The owner: this iPhone's person (`p_…`).
+    let owner: String
+    /// The advertised next key, disclosed before Sign; the host assigns the key when the ticket is created.
+    let nextKey: String
+    let uid: String
+    let workspaceID: String
+    let revision: Int
+    var isDemo = false
+    var disclosure: String { "The key is assigned when sent (next: \(nextKey))" }
+    var hasUnsafeContent: Bool { SafeText.hasUnsafe(title) || SafeText.hasUnsafe(workspaceName) }
+}
+
+enum CreationReviewResult: Hashable, Sendable {
+    case reviewed(CreationValue)
+    case failed(String)
+}
+
+/// What a signed creation ended as (or where it is).
+enum CreationPhase: Hashable, Sendable {
+    case ready
+    case sending
+    case created(key: String)
+    /// Landed after an automatic re-sign (a key race or a member change): "The workspace changed; sent again (KEY)".
+    case resentAfterChange(key: String)
+    /// Sent and recorded; the ticket can't be shown as signed here.
+    case landedUnconfirmed
+    case checking
+    /// Not created; review again (the key race could not be re-signed safely, or nothing was sent in time).
+    case needsReview(String)
+    /// The host refused it for good.
+    case refused
+    /// The ticket of this review already exists (the host said so and none of this review's attempts can be named as its creator).
+    case ticketExists(key: String?)
+    case unlockToContinue
+    /// The review is no longer current: review again.
+    case invalidated
+    /// Nothing was signed or stored.
+    case notSent(String)
+}
+
+/// The five R2 ticket types, in picker order.
+enum TicketTypes {
+    static let all = ["feature", "bug", "chore", "spike", "epic"]
+    static func label(_ t: String) -> String {
+        switch t { case "feature": "Feature"; case "bug": "Bug"; case "chore": "Chore"; case "spike": "Spike"; case "epic": "Epic"; default: t }
     }
 }
 

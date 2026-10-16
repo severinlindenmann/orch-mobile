@@ -38,9 +38,7 @@ private actor Calls {
         let sent = await w.host.coreState().rids.count
         let snapshot = try #require(review.snapshot)
         await #expect(throws: ViewError.writesUnavailable) { _ = try await api.answer(snapshot, option: "approve") }
-        await #expect(throws: ViewError.writesUnavailable) {
-            _ = try await api.newTicket(NewTicketSubmission(creationID: .fresh(7), title: "t", body: "user text"))
-        }
+        await #expect(throws: ViewError.writesUnavailable) { _ = try await api.reviewCreation(type: "feature", title: "t") }
         // not even a hand-built v0 meta gets through the one choke point: no row, no seq, no decision
         let v0: JSONValue = ["op": "new_ticket", "host_api": 0, "creation_id": .string(ID16.fresh(8).hex), "title": "x", "body": "user text", "epic_key": .null]
         await #expect(throws: R2.MetaError.reqInvalid) { _ = try await w.serve(p) { try await live.exchange(meta: v0) } }

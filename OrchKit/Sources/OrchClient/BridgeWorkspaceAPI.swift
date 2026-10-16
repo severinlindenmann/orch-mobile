@@ -32,14 +32,16 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func pendingWrites() async throws -> [WriteStatus] { try await session.pendingWrites() }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { try await session.writeOutcome(reviewID: reviewID) }
     public func writesAvailable() async -> Bool { await session.writesAvailable() }
+    public func writesAvailable(op: String) async -> Bool { await session.writesAvailable(op: op) }
+    public func reviewCreation(type: String, title: String) async throws -> CreationReview { try await session.reviewCreation(type: type, title: title) }
+    public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome {
+        try await session.create(review, disclosedKey: disclosedKey)
+    }
     public func noteInactive() { session.noteInactive() }
     public func noteProtectedDataUnavailable() { session.noteProtectedDataUnavailable() }
     public func noteCustodyLocked() { session.noteCustodyLocked() }
     public func noteBackground() { session.noteBackground() }
     public func noteReviewsInvalidated() { session.noteReviewsInvalidated() }
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    ///   Retry when coordination is available; this error does not confirm removal.
-    public func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket { try await session.createTicket(draft) }
     public func events() async -> AsyncStream<WorkspaceEvent> { await session.eventStream() }
     public func keyAlarm() async -> WorkspaceKeyAlarm? { await session.keyAlarm() }
     #if DEBUG

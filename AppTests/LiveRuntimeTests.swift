@@ -43,7 +43,7 @@ private actor DraftStub: WorkspaceAPI {
     func review(questionID: ID16) throws -> QuestionReview { throw ViewError.offline }
     func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
     func pendingWrites() -> [WriteStatus] { [] }
-    func newTicket(_ draft: NewTicketSubmission) throws -> OrchClient.Ticket { submissions += 1; throw ViewError.offline }
+    func reviewCreation(type: String, title: String) throws -> CreationReview { submissions += 1; throw ViewError.offline }
     func events() async -> AsyncStream<WorkspaceEvent> { AsyncStream { $0.finish() } }
 }
 
@@ -711,18 +711,19 @@ final class LiveRuntimeTests: XCTestCase {
         services.register(ws)
         ws.draftURL = draftDir.appendingPathComponent("ticket-draft.json")
         ws.requiresDraftFence = true
-        var result = await ws.createTicket(title: "t", body: "b")             // no fence at all: refused before anything is written
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        var result = await ws.reviewCreation(type: "feature", title: "t")     // no fence at all: refused before anything is written
         guard case .failed(let missing) = result else { return XCTFail("\(result)") }
         XCTAssertTrue(missing.contains("draft"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: draftDir.appendingPathComponent("ticket-draft.json").path))
         ws.draftFence = runtime.writeFence
-        result = await ws.createTicket(title: "t", body: "b")                 // fenced and current: saved, then sent (and the reply is lost)
-        guard case .failed(let unconfirmed) = result else { return XCTFail("\(result)") }
-        XCTAssertTrue(unconfirmed.contains("not confirmed"))
+        result = await ws.reviewCreation(type: "feature", title: "t")         // fenced and current: saved, then the review read fails
+        guard case .failed(let unread) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(unread.contains("could not be read"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: draftDir.appendingPathComponent("ticket-draft.json").path))
         try FileManager.default.removeItem(at: draftDir.appendingPathComponent("ticket-draft.json"))
         runtime.invalidate()                                                  // the realm ended: a late write is refused
-        result = await ws.createTicket(title: "t2", body: "b")
+        result = await ws.reviewCreation(type: "feature", title: "t2")
         XCTAssertFalse(FileManager.default.fileExists(atPath: draftDir.appendingPathComponent("ticket-draft.json").path))
         XCTAssertThrowsError(try sink.put(Data("m".utf8), realm: "live", ws: String(repeating: "c", count: 32), purpose: "push-material"))
     }
