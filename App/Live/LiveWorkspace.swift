@@ -311,12 +311,20 @@ final class LiveWorkspace: WorkspaceModel {
         #endif
         do { return await apply(try await api.settle(reviewID: id), uid: nil) }
         catch {
-            // the store no longer lists that review: nothing is pending, so the marker is stale (it would show "checking" for good)
-            if let stored = try? await api.pendingWrites(), !stored.contains(where: { $0.reviewID == id }) {
+            // The marker is stale only when the store has no such review, or it ended in a final outcome that is not a landing. A landing
+            // whose confirming read failed (offline) is a ticket that exists: keep the marker, never "not sent" (a new review would
+            // create it twice). Anything unreadable stays "checking".
+            switch try? await api.reviewStanding(reviewID: id) {
+            case .gone:
                 clearDraft()
                 return .notSent("Nothing is being checked.")
+            case .final(let outcome):
+                return await apply(outcome, uid: nil)
+            case .landedUnconfirmed:
+                return .createdUnconfirmed
+            default:
+                return .checking
             }
-            return .checking
         }
     }
 

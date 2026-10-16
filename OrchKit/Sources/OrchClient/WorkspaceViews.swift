@@ -24,6 +24,8 @@ public protocol WorkspaceAPI: Sendable {
     func pendingWrites() async throws -> [WriteStatus]
     /// The stored final outcome of one review (nil while it is still being settled).
     func writeOutcome(reviewID: String) async throws -> WriteOutcome?
+    /// Where one review stands in the store, distinguishing "no such row" from "landed, confirming read still missing".
+    func reviewStanding(reviewID: String) async throws -> ReviewStanding
     /// Whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them).
     func writesAvailable() async -> Bool
     /// The same for one write op (`answer`, `new_ticket`).
@@ -63,11 +65,23 @@ extension WorkspaceAPI {
     public func reviewCreation(type: String, title: String) async throws -> CreationReview { throw ViewError.writesUnavailable }
     public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome { throw ViewError.writesUnavailable }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { nil }
+    public func reviewStanding(reviewID: String) async throws -> ReviewStanding { .unsettled }
     public func noteInactive() {}
     public func noteProtectedDataUnavailable() {}
     public func noteCustodyLocked() {}
     public func noteBackground() {}
     public func noteReviewsInvalidated() {}
+}
+/// Where a stored review stands. Only `gone` and a final non-landing `final` outcome make a creation marker stale.
+public enum ReviewStanding: Equatable, Sendable {
+    /// No row: nothing is pending.
+    case gone
+    /// Still being sent or settled (active), or the standing is not known.
+    case unsettled
+    /// A landing whose confirming read has not succeeded yet (the ticket exists; `landed` or `landed_unconfirmed` with no outcome).
+    case landedUnconfirmed
+    /// The stored final outcome.
+    case final(WriteOutcome)
 }
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String)
     /// Writes from this phone are not offered (Live until C2b): nothing was signed, sealed or sent.

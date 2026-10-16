@@ -33,7 +33,10 @@ private actor WorkspaceStub: WorkspaceAPI {
     func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
     func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
     var pending: [WriteStatus] = []
+    var standing: ReviewStanding = .unsettled
     func setPending(_ p: [WriteStatus]) { pending = p }
+    func setStanding(_ s: ReviewStanding) { standing = s }
+    func reviewStanding(reviewID: String) -> ReviewStanding { standing }
     func pendingWrites() -> [WriteStatus] { pending }
     func reviewCreation(type: String, title: String) throws -> CreationReview {
         // the workspace read for the review fails
@@ -590,7 +593,9 @@ final class LiveLifecycleTests: XCTestCase {
     func testStaleCreationMarkerIsCleared() async throws {
         let services = LiveServices(options: options)
         services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
-        let ws = workspace(services)
+        let api = WorkspaceStub()
+        await api.setStanding(.gone)
+        let ws = workspace(services, api: api)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -599,6 +604,30 @@ final class LiveLifecycleTests: XCTestCase {
         let phase = await ws.checkCreation()
         XCTAssertEqual(phase, .notSent("Nothing is being checked."))
         XCTAssertNil(ws.loadCreationDraft())
+    }
+
+    /// A landing whose confirming read failed: settle throws, the store lists no active row, but the review is landed-unconfirmed. The
+    /// ticket exists, so the marker stays, the phase is never "not sent", and no new review is signed.
+    func testLandedUnconfirmedWithFailingSettleKeepsMarkerAndRefusesNewReview() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        await api.setStanding(.landedUnconfirmed)
+        let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        let marker = Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8)
+        try marker.write(to: ws.draftURL!)
+        let phase = await ws.checkCreation()
+        XCTAssertEqual(phase, .createdUnconfirmed)
+        XCTAssertEqual(try Data(contentsOf: ws.draftURL!), marker)
+        let result = await ws.reviewCreation(type: "feature", title: "Another")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertEqual(sent, 0)
     }
 
     /// #86: "not usable" (a lock, the background) is transient: a pending signed creation stays checking, never "nothing".

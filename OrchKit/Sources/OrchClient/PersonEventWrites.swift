@@ -584,6 +584,12 @@ extension WorkspaceSession {
         try await loadReview(reviewID)?.outcome.flatMap { try? Self.decodeOutcome($0) }
     }
 
+    package func reviewStanding(reviewID: String) async throws -> ReviewStanding {
+        guard let rv = try await loadReview(reviewID) else { return .gone }
+        if let o = rv.outcome, let outcome = try? Self.decodeOutcome(o) { return .final(outcome) }
+        return rv.state == "landed" || rv.state == "landed_unconfirmed" ? .landedUnconfirmed : .unsettled
+    }
+
     // MARK: drivers
 
     func reviewDriver(_ id: String) async throws -> WriteOutcome {

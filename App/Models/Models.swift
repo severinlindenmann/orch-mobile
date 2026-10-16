@@ -375,6 +375,8 @@ enum CreationPhase: Hashable, Sendable {
     /// Sent and recorded; the ticket can't be shown as signed here.
     case landedUnconfirmed
     case checking
+    /// The ticket was created (a landing is stored) but the confirming read has not succeeded yet: never "not sent", never re-created.
+    case createdUnconfirmed
     /// Not created; review again (the key race could not be re-signed safely, or nothing was sent in time).
     case needsReview(String)
     /// The host refused it for good.
