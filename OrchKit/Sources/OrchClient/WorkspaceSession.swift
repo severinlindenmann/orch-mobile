@@ -1435,8 +1435,10 @@ extension WorkspaceSession {
     func freshDevGrant() async -> DevSandboxGrant? {
         guard policy?.lane == .devSandbox, foreground, !closed else { return nil }
         let support: HostWriteSupport?
+        let gen = hostSupportGen
         do { support = try await whoami().relay } catch { clearHostSupport(); return nil }
-        guard foreground, !closed else { return nil }
+        // a refresh, a background or a close that began during the read supersedes it: no grant, nothing written
+        guard foreground, !closed, gen == hostSupportGen else { return nil }
         hostSupportGen &+= 1
         if hostSupport != support { hostSupport = support; emit(.writeSupportChanged) }
         guard let support, let dev = support.dev, support.allows("answer") else { return nil }

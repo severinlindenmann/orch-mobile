@@ -14,6 +14,26 @@ if [ -n "${SIMULATOR_ID:-}" ]; then SIM="platform=iOS Simulator,id=$SIMULATOR_ID
 [ -d Orch.xcodeproj ] || xcodegen generate >/dev/null
 fail=0
 
+# Source check: every `DevSandboxLaneEnabler(` in App/ must sit inside `#if ORCH_DEV_SANDBOX` (its true branch). The enabler is the proof of being the
+# variant, so minting it anywhere else would turn the lane on in the normal app. (The nm check below is the binary-side backstop.)
+enabler_sites() {
+  find App -name '*.swift' | sort | while read -r f; do
+    awk -v F="$f" '
+      /^[[:space:]]*#if/ { n++; on[n] = ($0 ~ /ORCH_DEV_SANDBOX/ && $0 !~ /!ORCH_DEV_SANDBOX/) ? 1 : 0; next }
+      /^[[:space:]]*#else/ { if (n > 0) on[n] = 0; next }
+      /^[[:space:]]*#elseif/ { if (n > 0) on[n] = 0; next }
+      /^[[:space:]]*#endif/ { if (n > 0) n--; next }
+      /^[[:space:]]*\/\// { next }
+      /DevSandboxLaneEnabler\(/ { ok = 0; for (i = 1; i <= n; i++) if (on[i]) ok = 1; print F ":" NR ":" ok }
+    ' "$f"
+  done
+}
+sites=$(enabler_sites)
+if [ -z "$sites" ]; then echo "error: no DevSandboxLaneEnabler( site found in App/ (the source check is blind)" >&2; fail=1; fi
+bad=$(echo "$sites" | grep ':0$' || true)
+if [ -n "$bad" ]; then echo "$bad" >&2; echo "error: DevSandboxLaneEnabler( outside #if ORCH_DEV_SANDBOX" >&2; fail=1
+else echo "ok: every DevSandboxLaneEnabler( in App/ is inside #if ORCH_DEV_SANDBOX ($(echo "$sites" | grep -c .) sites)"; fi
+
 build() { # scheme config destination derived-data
   local log; log="$(mktemp -t orch-lane-build)"
   xcodebuild -project Orch.xcodeproj -scheme "$1" -configuration "$2" -destination "$3" -derivedDataPath "$4" CODE_SIGNING_ALLOWED=NO build >"$log" 2>&1 \
