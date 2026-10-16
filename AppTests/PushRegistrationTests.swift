@@ -95,19 +95,19 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         XCTAssertEqual(r, .done); XCTAssertEqual(skipped, .done); XCTAssertEqual(a.unregisterCalls, 1)
     }
 
-    func test404MarksTheRelayOffAndAsksAgainOnlyAfterSixHours() async {
+    func test404MarksTheRelayOffAndAsksAgainOnlyAfterFifteenMinutes() async {
         let c = makeCoordinator(), a = FakePush(register: [.pushOff])
         await c.registerAll([a])
         XCTAssertTrue(c.relayPushOff); XCTAssertEqual(c.status[a.workspace.hex], .relayPushOff)
         await c.registerAll([a]); await c.register(a)
         XCTAssertEqual(a.registerCalls.count, 1, "no retry within the window (foreground included)")
         XCTAssertTrue(c.summary.contains("not enabled"))
-        now = now.addingTimeInterval(3600)
-        let next = makeCoordinator()                                          // a launch within six hours: still off, nothing sent
+        now = now.addingTimeInterval(300)
+        let next = makeCoordinator()                                          // a launch within 15 minutes: still off, nothing sent
         await next.registerAll([a])
         XCTAssertEqual(a.registerCalls.count, 1)
         XCTAssertTrue(next.summary.contains("not enabled"))
-        now = now.addingTimeInterval(6 * 3600)                                // a foreground after the window asks once more
+        now = now.addingTimeInterval(15 * 60)                                // a foreground after the window asks once more
         await c.register(a)
         XCTAssertEqual(a.registerCalls.count, 2)
         XCTAssertFalse(c.relayPushOff, "a relay that now registers clears the note")
@@ -117,10 +117,10 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
     func testAnotherPushOffAnswerRestartsTheWindow() async {
         let c = makeCoordinator(), a = FakePush(register: [.pushOff, .pushOff])
         await c.register(a)
-        now = now.addingTimeInterval(7 * 3600)
+        now = now.addingTimeInterval(16 * 60)
         await c.register(a)
         XCTAssertEqual(a.registerCalls.count, 2); XCTAssertTrue(c.relayPushOff)
-        now = now.addingTimeInterval(3600)
+        now = now.addingTimeInterval(300)
         await c.register(a)
         XCTAssertEqual(a.registerCalls.count, 2)
     }

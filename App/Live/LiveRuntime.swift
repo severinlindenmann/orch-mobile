@@ -424,7 +424,7 @@ final class LiveRuntime: RealmRuntime {
 
 extension RealmCapabilities {
     /// Live: Drop, share and Demo controls off; push and writes on (C2b increment 4; push since B4, per relay: a 404 from the relay marks push
-    /// unavailable for it and the app asks again at most every six hours). That is only the capability: a Live write also needs a
+    /// unavailable for it and the app asks again at most every 15 minutes). That is only the capability: a Live write also needs a
     /// Secure Enclave policy and the host's own `whoami.relay` signal (op at version 1 and `r6_ready`), checked per workspace (docs/live-mode.md).
     static let live = RealmCapabilities(drop: false, share: false, push: true, demoControls: false, writes: true)
 }

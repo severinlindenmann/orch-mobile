@@ -68,7 +68,7 @@ final class PushRegistrationCoordinator {
     }
 
     /// A relay that answered 404 is not asked again for this long (launch and foreground triggers alike).
-    static let pushOffRetry: TimeInterval = 6 * 3600
+    static let pushOffRetry: TimeInterval = 15 * 60
 
     private let config: Config
     private(set) var status: [String: Status] = [:]
