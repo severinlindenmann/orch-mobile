@@ -290,6 +290,8 @@ no error banner, one quiet line in Settings (`relay: push is not enabled on this
 successful registration). The retry happens at the next launch or foreground after the window. A relay with push answers 401 to an unauthenticated
 probe. The Simulator never registers (no APNs environment); real delivery is checked on the iPhone.
 
+The relay's own push fixtures (`push_register.json`, `push_unregister.json`, orch-relay 4a9f954) are vendored in `OrchKit/Tests/OrchTestVectors/push_fixtures/` and pinned by `PushFixtureShapeTests` (request fields, topic, token size, answer shapes, every refusal code). The older `http_fixtures` copy stays at MANIFEST revision 6 (see PROVENANCE.md).
+
 **Registration** (`OrchClient/PushService`, `RelayClient.registerPush/unregisterPush`, device session, `POST /v2/push/register`):
 body `{workspace_id, registration_id, env, topic: "io.severin.orch", token}`, `token` b64u of 32..100 bytes. The registration id is 16 random
 bytes (hex), kept per (workspace, env) in the workspace store (`push_registrations`, migration 14) and saved BEFORE the request, so a lost

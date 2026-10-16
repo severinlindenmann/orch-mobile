@@ -21,7 +21,7 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         // Test-only: the single copy of the protocol vectors. Not a product, never linked into the app.
         .target(name: "OrchTestVectors", path: "Tests/OrchTestVectors", exclude: ["PROVENANCE.md"],
-                resources: [.copy("vectors_v2.json"), .copy("reader_decl_vectors.json"), .copy("http_fixtures"), .copy("f1"), .copy("r2")]),
+                resources: [.copy("vectors_v2.json"), .copy("reader_decl_vectors.json"), .copy("http_fixtures"), .copy("push_fixtures"), .copy("f1"), .copy("r2")]),
         .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
         // Relay HTTP v2 examples (orch-relay tests/http_fixtures): schema, pure-wire checks and the PR2..PR5 skip list.
         .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),

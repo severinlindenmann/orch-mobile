@@ -55,3 +55,12 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
 - The vectors' read Results come from a test fake in core: only the framing is normative there (11A.5). The shapes of the individual ops are
   host section 0.8.
 - `Sources/OrchProtocol/PhoneRetryTableGenerated.swift` is generated from `r2/r2_framing.json` (`tables.retry`, `tables.retry_context`) plus a documented four-code overlay by `OrchKit/Scripts/gen_retry_table.py`; `--check` runs in CI (job `core`) and fails when the file drifted.
+
+## push_fixtures/ (orch-relay push registration)
+
+- Source: orch-relay `tests/http_fixtures/push_register.json` and `push_unregister.json` (protocol-v2 section 19.10, P3-D40), orch-relay `develop` at
+  `4a9f95474bdac8dc3ffae8be4099a9b4b2e6cdcc` (#79, MANIFEST.json revision 19). Copied 2026-10-16, unmodified (`git show`). `push_send.json` is the host's route and is not copied.
+- Why not all of `http_fixtures`: that directory is pinned to MANIFEST revision 6; revisions 7..19 changed membership, revocation and accounts
+  cases and added the Drop files, whose replay needs FakeRelay work that is not part of the push slice. A re-copy of the whole directory is a
+  separate change (it fails the case counts, the signature check, the replay of four files and the id-segment check for `{o}`).
+- Read by `PushFixtureShapeTests` (request fields, topic, token size, answer shapes, every refusal code and its `PushService.outcome`). Re-copy together with the relay and update this note.
