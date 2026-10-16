@@ -51,6 +51,8 @@ private func tokenB64(_ n: UInt8, count: Int = 32) -> String { B64U.encode(Data(
         #expect(first != second)
         let regs = await w.relay.pushRegistrations(device: w.phoneID)
         #expect(regs.count == 1 && regs[0].id == second && regs[0].token == tokenB64(4))
+        // the old id is unregistered explicitly (not `null`: that would remove the new one too)
+        #expect(await w.relay.pushUnregisteredIDs == [first])
     }
 
     @Test func registrationConflictMintsOneNewIdAndRetriesOnce() async throws {

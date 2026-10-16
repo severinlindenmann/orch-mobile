@@ -114,6 +114,7 @@ public actor FakeRelay: RequestSender, InProcessDemoSender {
     var pushScript: [WireReply] = []
     /// Tests: how many register requests were answered 200 / how many were refused, for asserting "refresh is free".
     var pushRegisterCalls = 0
+    var pushUnregisterIDs: [ID16] = []
     var dropUploadWindows: [ID16: Window] = [:]
     private var challenges: [Data: Int64] = [:]
     package var sessions: [String: Session] = [:]

@@ -180,7 +180,7 @@ enum LiveNotifications {
 @MainActor
 final class LiveRuntime: RealmRuntime {
     var realm: Realm { .live }
-    /// Drop, share and push come back when owner-approved relay routes exist; Live starts with all of them off.
+    /// Push is on (per relay: a 404 means that relay has none); Drop and share stay off until their relay routes are approved.
     var capabilities: RealmCapabilities = .live
     var deviceLabel = "iPhone"
     var nowMs: Int64 { storage.wall.nowMs }
@@ -423,7 +423,8 @@ final class LiveRuntime: RealmRuntime {
 }
 
 extension RealmCapabilities {
-    /// Live: Drop, share, push and Demo controls off; writes on (C2b increment 4). That is only the capability: a Live write also needs a
+    /// Live: Drop, share and Demo controls off; push and writes on (C2b increment 4; push since B4, per relay: a 404 from the relay marks push
+    /// unavailable for it and the app asks again at most every six hours). That is only the capability: a Live write also needs a
     /// Secure Enclave policy and the host's own `whoami.relay` signal (op at version 1 and `r6_ready`), checked per workspace (docs/live-mode.md).
-    static let live = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+    static let live = RealmCapabilities(drop: false, share: false, push: true, demoControls: false, writes: true)
 }

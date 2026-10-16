@@ -147,7 +147,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertTrue(runtime.context.isCurrent && runtime.skipped.isEmpty)
         // The realm and its capabilities are the runtime's: nothing optional is on.
         XCTAssertEqual(services.realm, .live)
-        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true))
+        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: true, demoControls: false, writes: true))
         XCTAssertNil(ws.drop)
         XCTAssertFalse(services.eligibleShareDestination(ws.info.id))
         XCTAssertNil(services.demo)
@@ -681,12 +681,18 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire()
     }
 
-    func testPushStaysOffInLiveByDefaultAndTheCoordinatorDoesNotExist() async throws {
+    func testPushIsOnInLiveAndTheSimulatorNeverRegisters() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
-        XCTAssertFalse(runtime.capabilities.push)
+        XCTAssertTrue(runtime.capabilities.push)
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
-        XCTAssertNil(services.pushCoordinatorForLive())
+        let c = try XCTUnwrap(services.pushCoordinatorForLive())
+        XCTAssertNil(PushEnvironment.resolve(provisioningProfile: nil, isSimulator: true), "the Simulator resolves no APNs environment")
+        XCTAssertFalse(c.relayPushOff)
+        services.pushOffSinceStored = Date()
+        XCTAssertTrue(c.relayPushOff, "the 404 note is stored per install")
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertNil(services.pushOffSinceStored)
         services.retire()
     }
 

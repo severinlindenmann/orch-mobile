@@ -95,8 +95,13 @@ public struct PushService: Sendable {
         do {
             var row = try await container.pushRegistration(env: env.rawValue)
             var id: ID16
+            // The id of a registration with another token: the token changed, so this one is retired after the new one is confirmed.
+            var superseded: ID16?
             if let row, row.token == token, let existing = ID16(hex: row.registrationID) { id = existing }
-            else { id = await session.pushEntropy().id16(); try await container.savePushRegistration(env: env.rawValue, registrationID: id.hex, token: token); row = nil }
+            else {
+                superseded = row.flatMap { ID16(hex: $0.registrationID) }
+                id = await session.pushEntropy().id16(); try await container.savePushRegistration(env: env.rawValue, registrationID: id.hex, token: token); row = nil
+            }
             for attempt in 0..<2 {
                 do {
                     let chosen = id
@@ -104,6 +109,11 @@ public struct PushService: Sendable {
                         try await client.registerPush(workspace: ws, registrationID: chosen, env: env.rawValue, topic: Self.topic, token: token, session: s)
                     }
                     try await container.confirmPushRegistration(env: env.rawValue, registrationID: id.hex, nowMs: await session.pushWallMs())
+                    if let old = superseded, old != id {
+                        // Best effort: a new id already retires the old one at the relay (one registration per device, workspace, env, topic),
+                        // so a failure here is harmless; an explicit unregister of the old id covers a relay that keeps both.
+                        try? await session.pushRelay { s in try await client.unregisterPush(workspace: ws, registrationID: old, session: s) }
+                    }
                     return .registered(id)
                 } catch ClientError.relay(let r) where r.code == .registrationConflict && attempt == 0 {
                     // The relay holds this id with another body (or it is another device's): mint a new one and register once more.
