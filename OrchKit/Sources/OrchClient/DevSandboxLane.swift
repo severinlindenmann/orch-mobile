@@ -22,10 +22,9 @@ package enum DevSandboxLane {
     /// The one dev relay origin (variant only; core production code holds no allow-list, O2).
     package static let relayOrigin = "https://relay.dev.severin.io"
 
-    /// The variant talks to the dev relay, or to a loopback relay (`http://127.0.0.1:<port>`, `http://[::1]:<port>`): the automated e2e runs
-    /// `dev-pair --relay local` on the same Mac as the Simulator. A loopback origin is reachable only from this machine, never from the
-    /// network; the host's dev gate and sandbox proof stay the real checks.
-    package static func admitsOrigin(_ origin: String) -> Bool { origin == relayOrigin || RealmContext.isLoopbackHTTP(origin) }
+    /// The variant talks to the dev relay only (owner ruling, 15 Oct: no http loopback in the app, not even in Debug; the Simulator e2e uses
+    /// `https://relay.dev.severin.io`).
+    package static func admitsOrigin(_ origin: String) -> Bool { origin == relayOrigin }
 
     /// What a screen says when the host does not offer Simulator answers (or the fresh read failed).
     package static let hostRefusesText = "This host does not accept Simulator answers"
@@ -55,20 +54,18 @@ public enum DevSandboxCheck: Sendable, Equatable {
 }
 
 extension RealmContext {
-    /// A Live context for the variant, which talks to exactly two kinds of relay: the dev relay (`https`) and a loopback `http` relay for the
-    /// automated e2e. Any other origin is refused. Needs the enabler, so only the variant's App code can ask.
+    /// A Live context for the variant, which talks to exactly one relay: the dev relay (`https`). Any other origin is refused. Needs the enabler, so only the variant's App code can ask.
     public static func liveDevSandbox(origin: String, pinnedOwner: SigningPublicKey? = nil, enabler: DevSandboxLaneEnabler) throws -> RealmContext {
         guard DevSandboxLane.admitsOrigin(origin) else { throw RealmViolation.invalidOrigin }
-        if isLoopbackHTTP(origin) { return try liveLoopbackForTesting(origin: origin, pinnedOwner: pinnedOwner) }
         return try live(origin: origin, pinnedOwner: pinnedOwner)
     }
 }
 
 extension LiveTransport {
-    /// The Live transport for a variant context: loopback `http` origins go over the plain-TCP sender, everything else as `make`.
+    /// The Live transport for a variant context: as `make` (`https` only).
     public static func makeDevSandbox(context: RealmContext, enabler: DevSandboxLaneEnabler) throws -> some RelayTransport {
         guard context.realm == .live else { throw TransportError.realm(.wrongTransport) }
-        let sender = RealmContext.isLoopbackHTTP(context.origin) ? try NWRequestSender(loopbackOrigin: context.origin) : try NWRequestSender(origin: context.origin)
+        let sender = try NWRequestSender(origin: context.origin)
         return try RoutedRelayTransport(context: context, origin: context.origin, sender: sender, clientAddress: clientAddress)
     }
 }

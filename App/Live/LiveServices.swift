@@ -386,7 +386,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// `https` only and not the Demo origin: what `RealmContext.live` accepts, checked here too so a refusal happens before anything else.
     static func isLiveOrigin(_ origin: String) -> Bool {
         #if ORCH_DEV_SANDBOX
-        // the variant: the dev relay, or a loopback relay on this Mac (the automated e2e's `dev-pair --relay local`); nothing else
+        // the variant: the dev relay only (owner ruling 15 Oct: no http loopback in the app)
         return (try? RealmContext.liveDevSandbox(origin: origin, enabler: DevSandboxLaneEnabler())) != nil
         #else
         return origin.hasPrefix("https://") && (try? RealmContext.live(origin: origin)) != nil

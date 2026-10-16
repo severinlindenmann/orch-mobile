@@ -79,7 +79,7 @@ struct LiveStorage: Sendable {
                            purgeNotifications: { await LiveNotifications.purge(workspace: $0) })
     }
 
-    /// The Live transport: `https` only. The OrchDevSandbox variant also reaches the dev relay's loopback twin (`http://127.0.0.1:<port>`).
+    /// The Live transport: `https` only. The OrchDevSandbox variant reaches the dev relay only.
     @Sendable static func productionTransport(_ context: RealmContext) throws -> any RelayTransport {
         #if ORCH_DEV_SANDBOX
         try LiveTransport.makeDevSandbox(context: context, enabler: DevSandboxLaneEnabler())

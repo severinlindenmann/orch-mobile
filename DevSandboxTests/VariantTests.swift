@@ -25,15 +25,14 @@ import OrchProtocol
         XCTAssertNil(QuestionScreen.writeBlock(writes: true, writeSupport: true, simulatorLane: true))
     }
 
-    func testTheVariantTalksToTheDevRelayAndALoopbackRelayOnly() {
+    func testTheVariantTalksToTheDevRelayOnly() {
         XCTAssertTrue(LiveServices.isLiveOrigin("https://relay.dev.severin.io"))
-        XCTAssertTrue(LiveServices.isLiveOrigin("http://127.0.0.1:8123"))
-        XCTAssertTrue(LiveServices.isLiveOrigin("http://[::1]:8123"))
+        XCTAssertFalse(LiveServices.isLiveOrigin("http://127.0.0.1:8123"))     // owner ruling 15 Oct: no http loopback, not even in Debug
+        XCTAssertFalse(LiveServices.isLiveOrigin("http://[::1]:8123"))
         XCTAssertFalse(LiveServices.isLiveOrigin("https://relay.example.org"))
         XCTAssertFalse(LiveServices.isLiveOrigin("https://tix.severin.io"))
         XCTAssertFalse(LiveServices.isLiveOrigin("http://relay.dev.severin.io"))
         XCTAssertFalse(LiveServices.isLiveOrigin("http://localhost:8123"))
-        XCTAssertFalse(LiveServices.isLiveOrigin("http://127.0.0.1"))      // a loopback origin needs its port
     }
 
     func testNotADevSandboxBlocksAnswersAndNamesTheWay() {

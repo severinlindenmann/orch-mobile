@@ -377,10 +377,9 @@ separate app, `OrchDevSandbox`, and answers only (a `ticket.created` is never ad
 - **Signal.** `whoami.relay.dev = {sim_convenience:true, sandbox:"<id8>"}`, present only while the host's dev gate passes for that workspace
   (`HostWriteSupport.dev`, parsed leniently: anything else is nil and the lane stays off; the rest of the read is untouched).
 - **Policy.** `PersonEventPolicy.derive` gives `auth: .convenience, lane: .devSandbox` only for a Live context + software custody + the enabler + a reader
-  capability of level 1 + the variant's origin: `https://relay.dev.severin.io`, or (variant only) a loopback `http://127.0.0.1:<port>` / `http://[::1]:<port>`
-  relay so `dev-pair --relay local` works in the automated e2e. A Secure Enclave identity is always `secure-enclave-unlocked`; Demo is unchanged. The variant's
-  context (`RealmContext.liveDevSandbox`) refuses every other origin. A loopback relay is reachable only from the Mac the Simulator runs on; the host's dev gate and
-  sandbox proof stay the real checks.
+  capability of level 1 + the variant's origin: `https://relay.dev.severin.io` only, by owner ruling (15 Oct: no http loopback in the app, not even in Debug; the
+  Simulator e2e uses the dev relay). A Secure Enclave identity is always `secure-enclave-unlocked`; Demo is unchanged. The variant's
+  context (`RealmContext.liveDevSandbox`) refuses every other origin.
 - **Freshness (O6).** `freshDevGrant()` is one `whoami` call, made for every `reviewQuestion` of an open question and before every automatic re-sign; it returns a
   grant only if that same reply says `relay.dev.sim_convenience`, `ops.answer == 1` and `r6_ready`. Without one: no sheet ("This host does not accept
   Simulator answers"), nothing signed, no re-sign (the answer goes back to review). `answer` signs only a review that carries the grant; the write gate's first

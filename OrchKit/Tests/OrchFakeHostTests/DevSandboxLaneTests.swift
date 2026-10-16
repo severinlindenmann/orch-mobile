@@ -150,9 +150,9 @@ private struct LaneRig {
         #expect(try derive(try software(), c, reader: level0) == nil)             // reader level 0
         #expect(try derive(try software(.demo), c) == nil)                        // a Demo identity in a Live context
         #expect(try derive(try software(), try RealmContext.live(origin: "https://relay.example.org")) == nil)   // the wrong origin
-        #expect(try derive(try software(), try ctx("http://127.0.0.1:8123")) != nil)       // the automated e2e's loopback relay (variant only)
-        #expect(try derive(try software(), try ctx("http://[::1]:8123"))?.lane == .devSandbox)
-        #expect(throws: (any Error).self) { try ctx("http://localhost:8123") }    // localhost can resolve to a non-loopback address
+        #expect(throws: (any Error).self) { try ctx("http://127.0.0.1:8123") }              // owner ruling 15 Oct: no http loopback in the app
+        #expect(throws: (any Error).self) { try ctx("http://[::1]:8123") }
+        #expect(throws: (any Error).self) { try ctx("http://localhost:8123") }
         // a Demo context never gets the lane, whatever the enabler says
         let world = try await World.make()
         let dctx = world.env.context
