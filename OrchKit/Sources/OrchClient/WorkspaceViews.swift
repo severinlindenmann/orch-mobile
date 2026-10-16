@@ -37,6 +37,14 @@ public protocol WorkspaceAPI: Sendable {
     /// Signs and sends exactly `review` and settles it. `disclosedKey`: the next key the sheet disclosed when it armed (nil: none; then the
     /// key is never changed by an automatic re-sign).
     func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome
+    /// B10 phase 1: the person's own open "approve on your phone" requests (`phone.requests`; the host's word, no authority). Nothing signs
+    /// from a request: the review below is read and RECOMPUTED on the phone whatever the request said.
+    func phoneRequests() async throws -> [PhoneRequest]
+    /// Reads the gate (`ticket.get` + `gate.input`), recomputes the section and gate hashes, and builds the review of a requirements or plan
+    /// gate. `GateReviewError.doesNotMatch` when anything differs, `cannotSignNow` when the host refuses `gate.input`; nothing can be signed then.
+    func reviewGate(ref: String, gate: String) async throws -> GateReviewSnapshot
+    /// Signs (one Face ID per signature) and sends `gate.approved` or `gate.changes_requested` for exactly `review`, and settles it like an answer.
+    func decideGate(_ review: GateReviewSnapshot, choice: GateChoice) async throws -> WriteOutcome
     /// Lifecycle signals that end the eligibility for an automatic re-sign (scenePhase inactive, protected data going away, custody lock,
     /// background, reviews invalidated). Synchronous and nonisolated: they reach the session's lifecycle fence at once, with no actor hop.
     func noteInactive()
@@ -64,6 +72,9 @@ extension WorkspaceAPI {
     public func writesAvailable(op: String) async -> Bool { false }
     public func reviewCreation(type: String, title: String) async throws -> CreationReview { throw ViewError.writesUnavailable }
     public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome { throw ViewError.writesUnavailable }
+    public func phoneRequests() async throws -> [PhoneRequest] { [] }
+    public func reviewGate(ref: String, gate: String) async throws -> GateReviewSnapshot { throw ViewError.writesUnavailable }
+    public func decideGate(_ review: GateReviewSnapshot, choice: GateChoice) async throws -> WriteOutcome { throw ViewError.writesUnavailable }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { nil }
     public func reviewStanding(reviewID: String) async throws -> ReviewStanding { .unsettled }
     public func noteInactive() {}

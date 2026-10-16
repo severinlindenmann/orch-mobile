@@ -38,6 +38,9 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome {
         try await session.create(review, disclosedKey: disclosedKey)
     }
+    public func phoneRequests() async throws -> [PhoneRequest] { try await session.openPhoneRequests() }
+    public func reviewGate(ref: String, gate: String) async throws -> GateReviewSnapshot { try await session.reviewGate(ref: ref, gate: gate) }
+    public func decideGate(_ review: GateReviewSnapshot, choice: GateChoice) async throws -> WriteOutcome { try await session.decideGate(review, choice: choice) }
     #if DEBUG && targetEnvironment(simulator)
     public func devSandboxStatus() async -> DevSandboxStatus { await session.devSandboxStatus() }
     public func devSandboxCheck() async -> DevSandboxCheck { await session.devSandboxCheck() }

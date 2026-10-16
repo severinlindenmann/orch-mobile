@@ -120,9 +120,13 @@ public struct WriteStatus: Equatable, Sendable {
     public let review: StoredReview?
     /// A creation still being sent or settled: what was reviewed and the key its current attempt carries (nil for answers).
     public let creation: StoredCreationReview?
+    /// B10: a gate decision still being sent or settled: the ticket key (per host), the gate, its generation and what was chosen.
+    public let gate: StoredGateReview?
 
-    public init(reviewID: String, questionID: ID16?, option: String?, state: WriteState, review: StoredReview?, creation: StoredCreationReview? = nil) {
+    public init(reviewID: String, questionID: ID16?, option: String?, state: WriteState, review: StoredReview?, creation: StoredCreationReview? = nil,
+                gate: StoredGateReview? = nil) {
         self.reviewID = reviewID; self.questionID = questionID; self.option = option; self.state = state; self.review = review; self.creation = creation
+        self.gate = gate
     }
 }
 
@@ -247,7 +251,13 @@ struct ReviewRec: Sendable {
     /// The next key the creation sheet disclosed when it armed ("The key is assigned when sent (next: KEY)"); NULL for answers.
     let keyDisclosed: String?
     var isCreation: Bool { kind == "new_ticket" }
-    var eventKind: SignedPhoneEvent.Kind { isCreation ? .ticketCreated : .questionAnswered }
+    var isGate: Bool { kind == "gate" }
+    var eventKind: SignedPhoneEvent.Kind {
+        if isGate { return (try? StoredGate(bytes: snapshot))?.eventKind ?? .gateApproved }
+        return isCreation ? .ticketCreated : .questionAnswered
+    }
+    /// The relay op the review is submitted under (`answer`, `new_ticket`, `approve`, `changes`).
+    var opName: String { isGate ? R2.writeOp(for: eventKind) : kind }
 
     init?(_ r: SQLRow) {
         guard let review = r.text("review"), let kind = r.text("kind"), let log = r.text("log"), let state = r.text("state"),
@@ -272,6 +282,8 @@ enum AttemptKind {
     case insert(review: String, log: String, question: String, snapshot: Data, nowMs: Int64)
     /// A creation's first attempt: the review keyed by its phone-made uid (`log`), with the disclosed key.
     case insertCreation(review: String, log: String, snapshot: Data, keyDisclosed: String?, nowMs: Int64)
+    /// B10: a gate decision; `question` is `gate:<uid>:<gate>` (one active decision per gate).
+    case insertGate(review: String, log: String, question: String, snapshot: Data, nowMs: Int64)
     case resign(review: String, expectIdem: String, expectVer: Int64)
 }
 
@@ -353,7 +365,7 @@ extension WorkspaceSession {
               let bytes = r.blob("event"), let log = r.text("log"), let ulid = r.int("ulid_ms"), let signed = r.int("signed_wall_ms")
         else { throw WriteGateError.notCurrent }
         guard clock.holds(ulidMs: ulid, signedWallMs: signed) else { throw WriteGateError.windowPassed }
-        let kind: SignedPhoneEvent.Kind = r.text("kind") == "new_ticket" ? .ticketCreated : .questionAnswered
+        let kind = eventKind(dbKind: r.text("kind") ?? "", event: bytes)
         try checkFramed(plaintext, event: try PhoneEvents.restore(bytes: bytes, kind: kind, log: log, workspace: workspace))
     }
 
@@ -384,7 +396,7 @@ extension WorkspaceSession {
         guard clock.holds(ulidMs: a.ulidMs, signedWallMs: a.signedWallMs) else { throw WriteGateError.windowPassed }
         var ticket: LifecycleFence.Ticket?
         if !a.dispatched {
-            guard hostWritesAllowed(kind) else { throw WriteGateError.unavailable }
+            guard hostWritesAllowed(Self.opName(dbKind: kind, event: a.event)) else { throw WriteGateError.unavailable }
             #if DEBUG && targetEnvironment(simulator)
             // a first dispatch on the dev-sandbox lane comes from a grant-bearing review: an answer signed as `convenience` (signing needed the
             // fresh read). It does not read again: the window is seconds, and the host's own gate decides.
@@ -404,7 +416,7 @@ extension WorkspaceSession {
         }
         // MUST 4 (Opus, increment 1): the stored event re-binds to its reviewed snapshot byte for byte (only `id`, and for an automatic
         // re-sign `roster_v`, differ from the review), then validates in full, then the framed bytes are exactly its meta.
-        let eventKind: SignedPhoneEvent.Kind = kind == "new_ticket" ? .ticketCreated : .questionAnswered
+        let eventKind = Self.eventKind(dbKind: kind, event: a.event)
         let e = try PhoneEvents.restore(bytes: a.event, kind: eventKind, log: log, workspace: workspace)
         let actor = try policy.actor(person: try storedPerson(), device: cfg.deviceID)
         let expected: PhoneEvents.UnsignedPhoneEvent
@@ -414,6 +426,11 @@ extension WorkspaceSession {
             let roster = a.origin == "auto" ? (e.event["roster_v"]?.int ?? -1) : snap.rosterV
             let key = a.origin == "auto" ? (e.event["key"]?.string ?? "") : snap.key
             expected = try snap.unsigned(uid: log, key: key, rosterV: roster, id: attempt, actor: actor, workspace: workspace)
+        } else if kind == "gate" {
+            // a gate decision: the stored snapshot re-verifies (hashes recomputed), then only `roster_v` (an automatic re-sign) and `id` differ
+            let snap = try StoredGate(bytes: snapBytes)
+            let roster = a.origin == "auto" ? (e.event["roster_v"]?.int ?? -1) : nil
+            expected = try snap.unsigned(rosterV: roster, id: attempt, actor: actor, workspace: workspace)
         } else {
             let snap = try StoredSnapshot(bytes: snapBytes)
             let roster = a.origin == "auto" ? (e.event["roster_v"]?.int ?? -1) : snap.rosterV
@@ -453,6 +470,13 @@ extension WorkspaceSession {
                 }
                 try tx.execute("INSERT INTO pe_reviews(review, kind, log, question, snapshot, key_disclosed, current_idem, ver, state, created_ms) VALUES(?,'new_ticket',?,NULL,?,?,?,1,'active',?)",
                                [.text(rv), .text(log), .blob(snapshot), keyDisclosed.map(SQLValue.text) ?? .null, .text(unsigned.id), .int(nowMs)])
+                review = rv
+            case .insertGate(let rv, let log, let question, let snapshot, let nowMs):
+                guard try tx.query("SELECT 1 AS x FROM pe_reviews WHERE question=? AND state='active'", [.text(question)]).isEmpty else {
+                    throw WriteGateError.notCurrent
+                }
+                try tx.execute("INSERT INTO pe_reviews(review, kind, log, question, snapshot, current_idem, ver, state, created_ms) VALUES(?,'gate',?,?,?,?,1,'active',?)",
+                               [.text(rv), .text(log), .text(question), .blob(snapshot), .text(unsigned.id), .int(nowMs)])
                 review = rv
             case .resign(let rv, let expectIdem, let expectVer):
                 guard let r = try tx.query("SELECT current_idem, ver, state FROM pe_reviews WHERE review=?", [.text(rv)]).first,
@@ -555,6 +579,10 @@ extension WorkspaceSession {
                 return WriteStatus(reviewID: id, questionID: nil, option: nil, state: state, review: nil,
                                    creation: c.map { StoredCreationReview(ticketType: $0.ticketType, title: $0.title, owner: $0.owner,
                                                                           uid: r.text("log") ?? "", key: r.text("key") ?? $0.key) })
+            }
+            if r.text("kind") == "gate" {
+                let g = r.blob("snapshot").flatMap { try? StoredGate(bytes: $0) }
+                return WriteStatus(reviewID: id, questionID: nil, option: nil, state: state, review: nil, gate: g?.summary)
             }
             let snap = r.blob("snapshot").flatMap { try? StoredSnapshot(bytes: $0) }
             let review = snap.flatMap { s in r.blob("event").flatMap { e in r.text("log").flatMap { storedReview(s, event: e, log: $0) } } }
@@ -857,6 +885,7 @@ extension WorkspaceSession {
     /// (C-review). A failed read is unresolved.
     private func logRead(_ a: AttemptRec, _ rv: ReviewRec, absent code: String) async throws -> Evidence {
         if rv.isCreation { return try await creationLogRead(a, rv, absent: code) }
+        if rv.isGate { return try await gateLogRead(a, rv, absent: code) }
         do {
             let snap = try StoredSnapshot(bytes: rv.snapshot)
             let get = try await ticketGet(snap.ticketUID)
@@ -890,7 +919,7 @@ extension WorkspaceSession {
             switch cls {
             case .d where rv.isCreation && code.bytesEqual("ticket.exists"):
                 return try await applyTicketExists(rv, a, code: code, src: src)
-            case .d where !rv.isCreation && code.bytesEqual("question.answered"):
+            case .d where !rv.isCreation && !rv.isGate && code.bytesEqual("question.answered"):
                 // who answered? If it was this very event, that is our landing
                 let snap = try StoredSnapshot(bytes: rv.snapshot)
                 let read: Question?
@@ -984,6 +1013,7 @@ extension WorkspaceSession {
     private func confirmLanding(_ rv: ReviewRec) async throws -> WriteOutcome {
         guard let idem = rv.landedIdem, let a = try await loadAttempts(rv.review).first(where: { $0.idem == idem }) else { throw SessionError.unknownRequest }
         if rv.isCreation { return try await confirmCreation(rv, a) }
+        if rv.isGate { return try await confirmGate(rv, a) }
         let snap = try StoredSnapshot(bytes: rv.snapshot)
         let seq = a.landedSeq
         let outcome: WriteOutcome
@@ -1021,13 +1051,14 @@ extension WorkspaceSession {
         // the review's ticket, bound to its eligibility token: re-validated after the fresh read and inside the signing transaction
         // the fence's ticket already requires the foreground (and an unlocked, protected-data lifecycle)
         guard let policy, let ticket = lifecycleFence.ticket(review: rv.review), rv.resigns < Int64(AutoResign.maxPerReview),
-              hostWritesAllowed(rv.kind) else { return false }
+              hostWritesAllowed(rv.opName) else { return false }
         #if DEBUG && targetEnvironment(simulator)
         // dev-sandbox lane: a fresh `relay.dev` read first; without a grant nothing is signed again (the answer goes back to review)
         if policy.lane == .devSandbox, await freshDevGrant() == nil { return false }
         #endif
         do {
             if rv.isCreation { return try await autoResignCreation(rv, a, policy: policy, ticket: ticket) }
+            if rv.isGate { return try await autoResignGate(rv, a, policy: policy, ticket: ticket) }
             return try await autoResign(rv, a, policy: policy, ticket: ticket)
         }
         catch {

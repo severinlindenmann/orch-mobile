@@ -75,6 +75,10 @@ extension WorkspaceSession {
     package func ticketGet(_ ref: String) async throws -> TicketGet {
         try TicketGet(try await callRead("ticket.get", args: ["ref": .string(ref), "log_limit": 1]).data)
     }
+    package func phoneRequests() async throws -> PhoneRequestsResult { try PhoneRequestsResult(try await callRead("phone.requests").data) }
+    package func gateInput(ref: String, gate: String) async throws -> GateInputResult {
+        try GateInputResult(try await callRead("gate.input", args: ["ref": .string(ref), "gate": .string(gate)]).data)
+    }
     package func memberList() async throws -> MemberListResult { try MemberListResult(try await callRead("member.list").data) }
     package func workspaceShow() async throws -> WorkspaceShowResult { try WorkspaceShowResult(try await callRead("workspace.show").data) }
     package func activityList(limit: Int = 50, types: [String]? = nil, page: String? = nil) async throws -> ActivityPage {

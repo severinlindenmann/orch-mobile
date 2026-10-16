@@ -70,6 +70,12 @@ public enum GateReview {
         public let input: JSONValue
         /// The texts of the sections G names, each checked against `G.sections[id]`.
         public let texts: [String: String]
+
+        /// The same verified gate under another roster version (an automatic re-sign after `members.stale`): nothing else changes.
+        public func withRoster(_ v: Int64) -> Verified {
+            Verified(ticketUID: ticketUID, gate: gate, workspace: workspace, gen: gen, hash: hash, policyHash: policyHash, basedOn: basedOn, rosterV: v,
+                     input: input, texts: texts)
+        }
     }
 
     /// Recomputes and compares. `claimed*` and `gen` are what `gate.input` said; `sectionTexts` is `ticket.get` `doc.sections`.
