@@ -133,9 +133,10 @@ import OrchProtocol
     }
 
     /// The shape of host changelog 57 / `Dispatch._relay_caps`.
-    @Test func parsesTheHostShapeAndIgnoresDev() throws {
+    @Test func parsesTheHostShapeAndDev() throws {
         let r = try who(["ops": ["answer": 1, "new_ticket": 1], "r6_ready": true, "dev": ["sim_convenience": true, "sandbox": "abcd1234"]]).relay
-        #expect(r == HostWriteSupport(ops: ["answer": 1, "new_ticket": 1], r6Ready: true))
+        #expect(r == HostWriteSupport(ops: ["answer": 1, "new_ticket": 1], r6Ready: true, dev: RelayDevSignal(sandbox: "abcd1234")))
+        #expect(r?.dev?.sandbox == "abcd1234")
         #expect(r?.allows("answer") == true && r?.allows("new_ticket") == true)
         #expect(try who(["ops": ["answer": 1], "r6_ready": false]).relay?.allows("answer") == false)
     }

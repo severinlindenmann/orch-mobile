@@ -1365,7 +1365,12 @@ extension PairingCoordinator {
                                               vault: vault, transport: cfg.transport, clock: cfg.clock, wall: cfg.wall, entropy: cfg.entropy,
                                               reader: cfg.reader, sendsReaderDigest: true, blocksUntilDeclared: false,
                                          enforcesOpTable: cfg.context.realm == .live, processLocalWriteGrant: cfg.processLocalWriteGrant)
-            let session = try await WorkspaceSession(wcfg)
+            #if DEBUG && targetEnvironment(simulator)
+            let sessionCfg = wcfg.carrying(cfg.devSandboxEnabler)
+            #else
+            let sessionCfg = wcfg
+            #endif
+            let session = try await WorkspaceSession(sessionCfg)
             // the verified list becomes the device's head (rollback protection, Q10 `wk_commit`) before any key is kept
             _ = try await session.acceptMemberList(v.listJSON)
             for g in v.grants.sorted(by: { $0.epoch < $1.epoch }) {

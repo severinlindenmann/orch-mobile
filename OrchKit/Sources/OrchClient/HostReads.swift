@@ -413,12 +413,16 @@ public struct WhoAmIResult: Equatable, Sendable {
 }
 
 /// What the host says it takes from this phone: `relay:{ops:{<kind>:<version>}, r6_ready:bool}`. Held in memory by the session only (never
-/// persisted), refreshed per `startViews`, per foreground and per epoch change, and cleared on any failure (fail closed). `dev` is not parsed here.
+/// persisted), refreshed per `startViews`, per foreground and per epoch change, and cleared on any failure (fail closed).
 public struct HostWriteSupport: Equatable, Sendable {
     public let ops: [String: Int64]
     public let r6Ready: Bool
+    /// `relay.dev` (host 11A.17): present only while the host's dev gate passes for this workspace. nil for anything else (absent, `false`,
+    /// non-bool, a bad sandbox id, a non-object): the lane stays off and nothing else about the read changes. Display/UX input only; core
+    /// admission is the gate.
+    public let dev: RelayDevSignal?
 
-    public init(ops: [String: Int64], r6Ready: Bool) { self.ops = ops; self.r6Ready = r6Ready }
+    public init(ops: [String: Int64], r6Ready: Bool, dev: RelayDevSignal? = nil) { self.ops = ops; self.r6Ready = r6Ready; self.dev = dev }
 
     /// nil for anything but `{ops: {string: int}, r6_ready: bool}`. Unknown keys and unknown ops are ignored; a malformed op value drops that op only.
     init?(_ v: JSONValue?) {
@@ -427,10 +431,27 @@ public struct HostWriteSupport: Equatable, Sendable {
         for (k, n) in opsObject { if let i = n.int { ops[k] = i } }
         self.ops = ops
         r6Ready = ready
+        dev = RelayDevSignal(o["dev"])
     }
 
     /// A write of `kind` is accepted only at version 1 and while R6 is ready.
     public func allows(_ kind: String) -> Bool { r6Ready && ops[kind] == 1 }
+}
+
+/// `whoami.relay.dev` = `{sim_convenience:true, sandbox:"<id8>"}` (host 11A.17.2). Lenient: only exactly that shape counts.
+public struct RelayDevSignal: Equatable, Sendable {
+    /// Eight lower-case hex digits.
+    public let sandbox: String
+
+    public init?(sandbox: String) {
+        guard sandbox.utf8.count == 8, sandbox.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) else { return nil }
+        self.sandbox = sandbox
+    }
+
+    init?(_ v: JSONValue?) {
+        guard let o = v?.object, o["sim_convenience"]?.bool == true, let id = o["sandbox"]?.string else { return nil }
+        self.init(sandbox: id)
+    }
 }
 
 /// `outcome.get {idem}` (11A.5, host 0.7): the host's record of a write, or `pending`. `failed` without `seqs` means nothing landed:

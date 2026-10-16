@@ -37,6 +37,10 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome {
         try await session.create(review, disclosedKey: disclosedKey)
     }
+    #if DEBUG && targetEnvironment(simulator)
+    public func devSandboxStatus() async -> DevSandboxStatus { await session.devSandboxStatus() }
+    public func devSandboxCheck() async -> DevSandboxCheck { await session.devSandboxCheck() }
+    #endif
     public func noteInactive() { session.noteInactive() }
     public func noteProtectedDataUnavailable() { session.noteProtectedDataUnavailable() }
     public func noteCustodyLocked() { session.noteCustodyLocked() }

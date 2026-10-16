@@ -45,9 +45,18 @@ public protocol WorkspaceAPI: Sendable {
     func events() async -> AsyncStream<WorkspaceEvent>
     /// The durable key alarm (Q10), read at launch.
     func keyAlarm() async -> WorkspaceKeyAlarm?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane (host 11A.17), for the `OrchDevSandbox` App only.
+    func devSandboxStatus() async -> DevSandboxStatus
+    func devSandboxCheck() async -> DevSandboxCheck
+    #endif
 }
 
 extension WorkspaceAPI {
+    #if DEBUG && targetEnvironment(simulator)
+    public func devSandboxStatus() async -> DevSandboxStatus { DevSandboxStatus(laneActive: false, sandbox: nil) }
+    public func devSandboxCheck() async -> DevSandboxCheck { .unknown }
+    #endif
     public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
     public func writesAvailable() async -> Bool { false }
     public func writesAvailable(op: String) async -> Bool { false }
@@ -63,6 +72,8 @@ extension WorkspaceAPI {
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String)
     /// Writes from this phone are not offered (Live until C2b): nothing was signed, sealed or sent.
     case writesUnavailable
+    /// The Simulator dev-sandbox lane only: the host did not confirm `relay.dev` in a fresh `whoami` (or the read failed). Nothing was signed.
+    case hostRefusesSimulator
 }
 public enum ConnectionState: Equatable, Sendable { case online, offline, reconciling }
 /// Q10: a key state that blocks the workspace until the person removes it and pairs again (never "retry later").
@@ -204,6 +215,10 @@ public struct QuestionReview: Equatable, Sendable {
     /// The F1 gate (`F1Question.reviewed`) of an OPEN question, with the `doc.head` and `members_v` of the same `ticket.get`: what a person
     /// event signs (C2b). nil for a closed question.
     package let reviewed: F1Question.Reviewed?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The fresh `whoami` read that opened this review on the dev-sandbox lane (`freshDevGrant`); nil on every other lane.
+    package var devGrant: DevSandboxGrant?
+    #endif
     package init(question: Question, realm: Realm, workspaceID: ID16, generation: Int64, token: UUID, reviewed: F1Question.Reviewed? = nil) {
         self.question = question; self.realm = realm; self.workspaceID = workspaceID; self.generation = generation; self.token = token; self.reviewed = reviewed
     }

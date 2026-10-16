@@ -1,3 +1,4 @@
+#if os(macOS)   // Process: the iOS Simulator run of the package tests (dev-sandbox lane) skips the real-network suites
 import Foundation
 import Testing
 @testable import OrchClient
@@ -455,3 +456,5 @@ import Testing
         #expect(r.status == 413)
     }
 }
+
+#endif

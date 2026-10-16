@@ -108,6 +108,10 @@ public struct WorkspaceSessionConfig: Sendable {
     /// C2b: the Demo environment's permission to sign `passphrase` person events (orch-52 Q2), bound to its generation AND to the one
     /// in-process transport it was minted with. nil everywhere else (Live derives its policy from Secure Enclave custody alone).
     public var processLocalWriteGrant: ProcessLocalWriteGrant?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane's enabler (`DevSandboxLane.swift`): minted by the `OrchDevSandbox` App target only; nil everywhere else.
+    public var devSandboxEnabler: DevSandboxLaneEnabler?
+    #endif
 
     public init(context: RealmContext, workspace: ID16, generation: Int64, identity: DeviceIdentity, wsk: SigningPublicKey,
                 container: WorkspaceContainer, vault: RealmVault, transport: any RelayTransport, clock: any Clock<Duration>,
@@ -245,7 +249,12 @@ public actor WorkspaceSession: RealmParticipant {
         try c.container.bind(fence: fence)
         // MUST 2 (Opus, increment 1): a Demo grant is good only for the transport instance it was minted with, in this lifetime.
         if let g = c.processLocalWriteGrant, !g.admits(context: c.context, transport: c.transport) { throw RealmViolation.wrongTransport }
+        #if DEBUG && targetEnvironment(simulator)
+        policy = PersonEventPolicy.derive(identity: c.identity, context: c.context, grant: c.processLocalWriteGrant, transport: c.transport,
+                                          enabler: c.devSandboxEnabler, reader: c.reader)
+        #else
         policy = PersonEventPolicy.derive(identity: c.identity, context: c.context, grant: c.processLocalWriteGrant, transport: c.transport)
+        #endif
         cfg = c
         lifecycleFence = LifecycleFence(generation: fence)
         sessionAge = Self.marker(c.clock)
@@ -1342,10 +1351,26 @@ extension WorkspaceSession {
         let (q, reviewed) = try await readQuestion(id)
         try await ensureCurrent()
         guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+        #if DEBUG && targetEnvironment(simulator)
+        // dev-sandbox lane: a signable (open) question needs a `whoami` read of its own, never the cache (O6): no `relay.dev` in it, nothing is
+        // offered. A closed question is shown as ever.
+        var devGrant: DevSandboxGrant?
+        if policy?.lane == .devSandbox, reviewed != nil {
+            guard let g = await freshDevGrant() else { throw ViewError.hostRefusesSimulator }
+            try await ensureCurrent()
+            guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+            devGrant = g
+        }
+        #endif
         lifecycleFence.reviewedAgain()
         reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
         if reviews.count >= 128 { reviews.removeAll() }
+        #if DEBUG && targetEnvironment(simulator)
+        var review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
+        review.devGrant = devGrant
+        #else
         let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
+        #endif
         reviews[review.token] = review
         return review
     }
@@ -1403,6 +1428,34 @@ extension WorkspaceSession {
         hostSupport = value
         emit(.writeSupportChanged)
     }
+    #if DEBUG && targetEnvironment(simulator)
+    /// One `whoami` call, made now: the lane's only source of "the host takes Simulator answers" (host 11A.17.6, O6). The grant exists only when
+    /// that same reply says `relay.dev.sim_convenience == true`, `ops.answer == 1` and `r6_ready == true`. A failed read, or one without
+    /// `relay.dev`, gives nil. The cached `hostSupport` follows the result (UI), failing closed on a failed read.
+    func freshDevGrant() async -> DevSandboxGrant? {
+        guard policy?.lane == .devSandbox, foreground, !closed else { return nil }
+        let support: HostWriteSupport?
+        do { support = try await whoami().relay } catch { clearHostSupport(); return nil }
+        guard foreground, !closed else { return nil }
+        hostSupportGen &+= 1
+        if hostSupport != support { hostSupport = support; emit(.writeSupportChanged) }
+        guard let support, let dev = support.dev, support.allows("answer") else { return nil }
+        return DevSandboxGrant(sandbox: dev.sandbox, readAtMs: cfg.wall.nowMs)
+    }
+
+    /// Owner note 4: a read of its own, right after a join. `relay.dev` absent in a successful read means this is not a dev sandbox.
+    public func devSandboxCheck() async -> DevSandboxCheck {
+        guard foreground, !closed, let w = try? await whoami() else { return .unknown }
+        guard let dev = w.relay?.dev else { return .notASandbox }
+        return .sandbox(dev.sandbox)
+    }
+
+    /// What the App shows: the lane is on for this session, and the sandbox id of the last `whoami` that carried `relay.dev`.
+    public func devSandboxStatus() -> DevSandboxStatus {
+        DevSandboxStatus(laneActive: policy?.lane == .devSandbox, sandbox: hostSupport?.dev?.sandbox)
+    }
+    #endif
+
     /// Test seam-free read for the checks in this module.
     var currentHostSupport: HostWriteSupport? { hostSupport }
     public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
