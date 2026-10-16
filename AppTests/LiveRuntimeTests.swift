@@ -85,6 +85,17 @@ final class LiveRuntimeTests: XCTestCase {
     private func makeServices(_ rig: Rig) -> LiveServices {
         let services = LiveServices(options: options, resetFlags: rig.flags)
         services.liveStorage = { rig.storage }
+        return isolated(services)
+    }
+
+    /// Push is on in Live: a booted workspace starts its push lifecycle. These tests are about boot, leave and wipe, so the relay side is a
+    /// fake (no session work or network behind the test's back) and the OS notification centre is never asked (a hosted CI simulator crashes
+    /// in it): permission is a fixed answer. Push behaviour has its own tests.
+    @discardableResult private func isolated(_ services: LiveServices) -> LiveServices {
+        services.makePushService = { FakePush($0.workspace, generation: $0.generation) }
+        services.pushUnregister = { _ in .removed }
+        services.currentPermission = { .denied }
+        services.registerForAPNs = {}
         return services
     }
 
@@ -147,7 +158,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertTrue(runtime.context.isCurrent && runtime.skipped.isEmpty)
         // The realm and its capabilities are the runtime's: nothing optional is on.
         XCTAssertEqual(services.realm, .live)
-        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true))
+        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: true, demoControls: false, writes: true))
         XCTAssertNil(ws.drop)
         XCTAssertFalse(services.eligibleShareDestination(ws.info.id))
         XCTAssertNil(services.demo)
@@ -195,7 +206,7 @@ final class LiveRuntimeTests: XCTestCase {
         let joined = try await demoJoin()
         let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
-        let services = LiveServices(options: options, resetFlags: rig.flags)
+        let services = isolated(LiveServices(options: options, resetFlags: rig.flags))
         var available = false
         services.liveStorage = { if available { return rig.storage }; throw LiveError.keychainUnavailable }
         await services.boot()
@@ -274,9 +285,9 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertTrue(try rig.keys.contains(SecretID(realm: .live, ws: staged, purpose: "pairing")))
         XCTAssertTrue(try rig.push.contains(SecretID(realm: .live, ws: staged, purpose: "push")))
         for dir in [stateDir, stagedDir, quarantine] { XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path), dir.path) }
-        services.resetThisiPhone()                                            // Leave Live
-        XCTAssertFalse(services.lifetime.isActive)
+        services.resetThisiPhone()                                            // Leave Live (with push on the registration drain runs first)
         await services.waitForReset()
+        XCTAssertFalse(services.lifetime.isActive)
         XCTAssertFalse(services.resetIncomplete)
         XCTAssertEqual(try liveVaultItems(rig), 0)
         XCTAssertTrue(try rig.keys.contains(demoItem))                        // another realm is never addressed
@@ -387,11 +398,12 @@ final class LiveRuntimeTests: XCTestCase {
         try await commit(joined, into: rig)
         let controller = RealmController(options: options, resetFlags: rig.flags)
         controller.services.liveStorage = { rig.storage }
+        isolated(controller.services)
         let base = controller.makeServices
-        controller.makeServices = { options, defaults in
+        controller.makeServices = { [self] options, defaults in
             let services = base(options, defaults)
             services.liveStorage = { rig.storage }
-            return services
+            return isolated(services)
         }
         await controller.boot()
         XCTAssertEqual(controller.state, .live)
@@ -436,6 +448,7 @@ final class LiveRuntimeTests: XCTestCase {
     func testLiveHasNoApnsNoLiveDropAndNoShareBridge() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
+        runtime.capabilities = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)   // the no-capability path
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
         var reads = 0, registrations = 0
         services.currentPermission = { reads += 1; return .authorized }
@@ -471,6 +484,20 @@ final class LiveRuntimeTests: XCTestCase {
         services.pushUnregister = { [weak ws] _ in await (ws?.push as? FakePush)?.unregisterAll() ?? .removed }
         _ = services.pushCoordinatorForLive()
         return (services, runtime, ws, fake)
+    }
+
+    func testWithoutAnApnsEnvironmentTheCoordinatorSendsNothingAtAll() async throws {
+        let rig = try makeRig(); defer { rig.cleanup() }
+        let (services, _, ws, push) = try pushServices(rig)
+        services.pushEnvironment = { nil }                                    // the Simulator, or a build without the push entitlement
+        let c = try XCTUnwrap(services.pushCoordinatorForLive())
+        await c.register(push); await c.registerAll([push])
+        let removal = await c.unregister(workspace: ws.workspaceID)
+        XCTAssertEqual(removal, .done)
+        XCTAssertEqual(push.registerCalls.count, 0); XCTAssertEqual(push.unregisterCalls, 0)
+        _ = await services.leave(workspaceID: ws.info.id, simulateOffline: false)
+        XCTAssertEqual(push.registerCalls.count, 0); XCTAssertEqual(push.unregisterCalls, 0, "Leave sends no unregister either")
+        services.retire()
     }
 
     func testLiveLeaveRemovesTheRelayRegistrationBeforeTheWipeAndOwesNothingWhenItWorked() async throws {
@@ -681,12 +708,18 @@ final class LiveRuntimeTests: XCTestCase {
         services.retire()
     }
 
-    func testPushStaysOffInLiveByDefaultAndTheCoordinatorDoesNotExist() async throws {
+    func testPushIsOnInLiveAndTheSimulatorNeverRegisters() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
-        XCTAssertFalse(runtime.capabilities.push)
+        XCTAssertTrue(runtime.capabilities.push)
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
-        XCTAssertNil(services.pushCoordinatorForLive())
+        let c = try XCTUnwrap(services.pushCoordinatorForLive())
+        XCTAssertNil(PushEnvironment.resolve(provisioningProfile: nil, isSimulator: true), "the Simulator resolves no APNs environment")
+        XCTAssertFalse(c.relayPushOff)
+        services.pushOffSinceStored = Date()
+        XCTAssertTrue(c.relayPushOff, "the 404 note is stored per install")
+        services.resetThisiPhone(); await services.waitForReset()
+        XCTAssertNil(services.pushOffSinceStored)
         services.retire()
     }
 
@@ -996,10 +1029,11 @@ extension LiveRuntimeTests {
         let controller = RealmController(options: opts, resetFlags: rig.flags)
         controller.shareArea = nil
         controller.services.liveStorage = { rig.storage }
-        controller.makeServices = { o, d in
+        isolated(controller.services)
+        controller.makeServices = { [self] o, d in
             let s = LiveServices(options: o, resetFlags: d)
             s.liveStorage = { rig.storage }
-            return s
+            return isolated(s)
         }
         return controller
     }

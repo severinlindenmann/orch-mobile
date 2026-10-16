@@ -155,7 +155,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         live.append(ws)
     }
     func waitForLifecycle() async { await lifecycleTask?.value }
-    func waitForReset() async { await resetTask?.value }
+    func waitForReset() async { await leaveTask?.value; await resetTask?.value }
+    /// Leave without a controller (unit tests): the registration drain, then the teardown.
+    @ObservationIgnored private var leaveTask: Task<Void, Never>?
 
     func transition(_ id: String, to state: WorkspaceLifecycle) {
         if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
@@ -1048,6 +1050,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Tests: replaces the realm transport for the detached unregister.
     @ObservationIgnored var pushUnregister: ((ID16) async -> PushRegistrationOutcome)?
 
+    /// When a relay 404 last said push is off (see `PushRegistrationCoordinator.pushOffRetry`). Per install; cleared by a Reset.
+    var pushOffSinceStored: Date? {
+        get { resetFlags.object(forKey: Self.pushOffKey) as? Date }
+        set { if let newValue { resetFlags.set(newValue, forKey: Self.pushOffKey) } else { resetFlags.removeObject(forKey: Self.pushOffKey) } }
+    }
+    static let pushOffKey = "orch.push.relayOffSince"
+
     func pushCoordinatorForLive() -> PushRegistrationCoordinator? {
         guard isLive, capabilities.push, let runtime else { return nil }
         if let pushCoordinator { return pushCoordinator }
@@ -1066,7 +1075,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 if let f = self?.pushUnregister { return await f(id) }
                 guard let runtime else { return .failed("runtime gone") }
                 return await runtime.unregisterPushOutcome(workspace: id)
-            }))
+            },
+            pushOffSince: { [weak self] in self?.pushOffSinceStored },
+            setPushOffSince: { [weak self] in self?.pushOffSinceStored = $0 }))
         pushCoordinator = c
         // iOS hands the token over at every launch that registers: refresh the relay registrations then (a changed token gets a new id).
         OrchAppDelegate.onTokenReceived = { [weak self] _ in Task { @MainActor in await self?.registerPushAll() } }
@@ -1211,7 +1222,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     /// Wipes the Demo realm through the real reset path and leaves Demo.
-    func resetThisiPhone() { leaveRealm(thenDemo: false) }
+    func resetThisiPhone() { pushOffSinceStored = nil; leaveRealm(thenDemo: false) }
     func exitDemo() { leaveRealm(thenDemo: false) }
     /// "Reset Demo data" is leave-then-Demo: only a `RealmController` can do the second half, so without one it is a no-op.
     func resetDemoData() { leaveRealm(thenDemo: true) }
@@ -1221,7 +1232,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let transitions { transitions.realmLeave(thenDemo: thenDemo); return }
         // Without a controller (unit tests): the same two halves.
         guard !thenDemo else { return }
-        if beginLeave() { Task { await drainPushRegistrations(); teardown() } } else { teardown() }
+        if beginLeave() { leaveTask = Task { await drainPushRegistrations(); teardown() } } else { teardown() }
     }
 
     /// True while Leave Live / Reset is removing the relay registrations (the realm is already marked for removal and cut off from the UI).

@@ -38,7 +38,7 @@ func racing<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async -> 
 final class PushRegistrationCoordinator {
     enum Status: Hashable, Sendable {
         case registered
-        /// 404: push is not configured on this relay. Nothing is asked again until the next launch.
+        /// 404: push is not configured on this relay. Asked again on a later launch or foreground, but at most every `pushOffRetry`.
         case relayPushOff
         case refused(String)
         case rateLimited
@@ -62,12 +62,22 @@ final class PushRegistrationCoordinator {
         /// stopped, and its store may already carry the wipe's tombstone). Throws nothing; the outcome says what happened.
         var unregisterDetached: (ID16) async -> PushRegistrationOutcome = { _ in .removed }
         var now: () -> Date = { Date() }
+        /// When a 404 last told this install's relay has no push (persisted across launches), nil if never or cleared.
+        var pushOffSince: () -> Date? = { nil }
+        var setPushOffSince: (Date?) -> Void = { _ in }
     }
+
+    /// A relay that answered 404 is not asked again for this long (launch and foreground triggers alike).
+    static let pushOffRetry: TimeInterval = 15 * 60
 
     private let config: Config
     private(set) var status: [String: Status] = [:]
-    /// Set by a 404 on any push route: the relay has no push. Per process, so the next launch asks again.
-    private(set) var relayPushOff = false
+    /// True while a 404 on a push route (in the last `pushOffRetry`, also from an earlier launch) says the relay has no push. One relay per install.
+    var relayPushOff: Bool {
+        guard let since = config.pushOffSince() else { return false }
+        let age = config.now().timeIntervalSince(since)
+        return age >= 0 && age < Self.pushOffRetry
+    }
     private var backoffUntil: Date?
     /// One registration at a time per workspace; a trigger that arrives meanwhile is answered by that run (or by one re-run if the token
     /// changed under it). Left workspaces are refused until they are started again (a re-pair).
@@ -144,9 +154,9 @@ final class PushRegistrationCoordinator {
 
     private func record(_ outcome: PushRegistrationOutcome, ws: String) {
         switch outcome {
-        case .registered: status[ws] = .registered
+        case .registered: status[ws] = .registered; if config.pushOffSince() != nil { config.setPushOffSince(nil) }
         case .removed: status[ws] = nil
-        case .pushOff: relayPushOff = true; status[ws] = .relayPushOff
+        case .pushOff: config.setPushOffSince(config.now()); status[ws] = .relayPushOff
         case .refused(let why): suppressed.insert(ws); status[ws] = .refused(why)
         case .rateLimited(let after): backoffUntil = config.now().addingTimeInterval(TimeInterval(max(after ?? 300, 1))); status[ws] = .rateLimited
         case .failed(let why): status[ws] = .failed(why)

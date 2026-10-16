@@ -60,12 +60,16 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         return await c.unregister(workspace: f.workspace, seconds: seconds)
     }
 
+    /// The persisted 404 note (per install): survives a coordinator, like the next launch.
+    var offSince: Date?
+
     func makeCoordinator() -> PushRegistrationCoordinator {
         PushRegistrationCoordinator(.init(
             realm: "live", enabled: { [unowned self] in enabled }, environment: { [unowned self] in env }, token: { [unowned self] in flag.v ? B64U.encode(Data(repeating: 4, count: 32)) : token },
             permissionAllowed: { [unowned self] in allowed }, sink: { [unowned self] in VaultPushSink(backend: backend, realm: .live) },
             isActive: { [unowned self] _ in active },
-            unregisterDetached: { [unowned self] id in await fakes[id]?.unregisterAll() ?? .removed }, now: { [unowned self] in now }))
+            unregisterDetached: { [unowned self] id in await fakes[id]?.unregisterAll() ?? .removed }, now: { [unowned self] in now },
+            pushOffSince: { [unowned self] in offSince }, setPushOffSince: { [unowned self] in offSince = $0 }))
     }
 
     func testRegistersEveryWorkspaceWithTheStoredTokenAndEnvironment() async {
@@ -91,15 +95,33 @@ final class PushRegistrationCoordinatorTests: XCTestCase {
         XCTAssertEqual(r, .done); XCTAssertEqual(skipped, .done); XCTAssertEqual(a.unregisterCalls, 1)
     }
 
-    func test404StopsAskingUntilTheNextLaunch() async {
+    func test404MarksTheRelayOffAndAsksAgainOnlyAfterFifteenMinutes() async {
         let c = makeCoordinator(), a = FakePush(register: [.pushOff])
         await c.registerAll([a])
         XCTAssertTrue(c.relayPushOff); XCTAssertEqual(c.status[a.workspace.hex], .relayPushOff)
         await c.registerAll([a]); await c.register(a)
-        XCTAssertEqual(a.registerCalls.count, 1, "no retry in this process")
+        XCTAssertEqual(a.registerCalls.count, 1, "no retry within the window (foreground included)")
         XCTAssertTrue(c.summary.contains("not enabled"))
-        let next = makeCoordinator()                                          // the next launch asks again
+        now = now.addingTimeInterval(300)
+        let next = makeCoordinator()                                          // a launch within 15 minutes: still off, nothing sent
         await next.registerAll([a])
+        XCTAssertEqual(a.registerCalls.count, 1)
+        XCTAssertTrue(next.summary.contains("not enabled"))
+        now = now.addingTimeInterval(15 * 60)                                // a foreground after the window asks once more
+        await c.register(a)
+        XCTAssertEqual(a.registerCalls.count, 2)
+        XCTAssertFalse(c.relayPushOff, "a relay that now registers clears the note")
+        XCTAssertNil(offSince)
+    }
+
+    func testAnotherPushOffAnswerRestartsTheWindow() async {
+        let c = makeCoordinator(), a = FakePush(register: [.pushOff, .pushOff])
+        await c.register(a)
+        now = now.addingTimeInterval(16 * 60)
+        await c.register(a)
+        XCTAssertEqual(a.registerCalls.count, 2); XCTAssertTrue(c.relayPushOff)
+        now = now.addingTimeInterval(300)
+        await c.register(a)
         XCTAssertEqual(a.registerCalls.count, 2)
     }
 

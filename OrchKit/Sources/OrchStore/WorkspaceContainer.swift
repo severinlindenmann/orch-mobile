@@ -190,6 +190,11 @@ public actor WorkspaceContainer {
               AND instr(plaintext, CAST('"op":"new_ticket"' AS BLOB)) > 0 AND instr(plaintext, CAST('"creation_id":' AS BLOB)) > 0
             """,
         ]),
+        // B4: the registration id a token change replaced and the relay may still hold: owed an explicit unregister, kept across a failed
+        // register or a kill, cleared once the unregister was answered.
+        Migration(version: 17, statements: [
+            "ALTER TABLE push_registrations ADD COLUMN supersedes TEXT",
+        ]),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {
@@ -505,23 +510,31 @@ public struct PushRegistrationRow: Equatable, Sendable {
     public let registrationID: String
     public let token: String
     public let confirmedMs: Int64?
-    public init(env: String, registrationID: String, token: String, confirmedMs: Int64?) {
-        self.env = env; self.registrationID = registrationID; self.token = token; self.confirmedMs = confirmedMs
+    /// An earlier registration id (another token) whose unregister is still owed.
+    public let supersedes: String?
+    public init(env: String, registrationID: String, token: String, confirmedMs: Int64?, supersedes: String? = nil) {
+        self.env = env; self.registrationID = registrationID; self.token = token; self.confirmedMs = confirmedMs; self.supersedes = supersedes
     }
 }
 
 extension WorkspaceContainer {
     public func pushRegistration(env: String) async throws -> PushRegistrationRow? {
-        try await database().query("SELECT env, registration_id, token, confirmed_ms FROM push_registrations WHERE env=?", [.text(env)]).first.flatMap {
+        try await database().query("SELECT env, registration_id, token, confirmed_ms, supersedes FROM push_registrations WHERE env=?", [.text(env)]).first.flatMap {
             guard let e = $0.text("env"), let id = $0.text("registration_id"), let t = $0.text("token") else { return nil }
-            return PushRegistrationRow(env: e, registrationID: id, token: t, confirmedMs: $0.int("confirmed_ms"))
+            return PushRegistrationRow(env: e, registrationID: id, token: t, confirmedMs: $0.int("confirmed_ms"), supersedes: $0.text("supersedes"))
         }
     }
 
     /// Records the id and token about to be sent (unconfirmed). Replaces the row of this environment.
-    public func savePushRegistration(env: String, registrationID: String, token: String) async throws {
-        try await database().execute("INSERT INTO push_registrations(env, registration_id, token, confirmed_ms) VALUES(?,?,?,NULL) ON CONFLICT(env) DO UPDATE SET registration_id=excluded.registration_id, token=excluded.token, confirmed_ms=NULL",
-                                     [.text(env), .text(registrationID), .text(token)])
+    /// `supersedes` is the id this one replaces (its unregister is owed until `clearPushSupersedes`).
+    public func savePushRegistration(env: String, registrationID: String, token: String, supersedes: String? = nil) async throws {
+        try await database().execute("INSERT INTO push_registrations(env, registration_id, token, confirmed_ms, supersedes) VALUES(?,?,?,NULL,?) ON CONFLICT(env) DO UPDATE SET registration_id=excluded.registration_id, token=excluded.token, confirmed_ms=NULL, supersedes=excluded.supersedes",
+                                     [.text(env), .text(registrationID), .text(token), supersedes.map { .text($0) } ?? .null])
+    }
+
+    /// The owed unregister of the superseded id was answered.
+    public func clearPushSupersedes(env: String) async throws {
+        try await database().execute("UPDATE push_registrations SET supersedes=NULL WHERE env=?", [.text(env)])
     }
 
     /// The relay answered 200 for exactly this id: only then is it confirmed.

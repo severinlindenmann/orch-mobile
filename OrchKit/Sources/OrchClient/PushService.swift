@@ -57,7 +57,7 @@ public enum PushRegistrationOutcome: Equatable, Sendable {
     case registered(ID16)
     /// 200 on an unregister (also when nothing was registered).
     case removed
-    /// 404 `not_found`: push is not configured on this relay. The caller stops asking until the next launch.
+    /// 404 `not_found`: push is not configured on this relay. The caller stops asking for a while (the app: 15 minutes, then on a launch or foreground).
     case pushOff
     /// 403 `not_eligible` (not a member, or a `drop:` device) or `revoked`: asking again changes nothing.
     case refused(String)
@@ -93,10 +93,17 @@ public struct PushService: Sendable {
         let ws = session.workspace
         let client = RelayClient(transport: await session.pushTransport)
         do {
-            var row = try await container.pushRegistration(env: env.rawValue)
+            let row = try await container.pushRegistration(env: env.rawValue)
             var id: ID16
+            // An id the relay may still hold under another token. Persisted with the new row BEFORE the request, so a failed register (or a
+            // kill) still owes its unregister at the next launch.
+            var owed: ID16? = row?.supersedes.flatMap { ID16(hex: $0) }
             if let row, row.token == token, let existing = ID16(hex: row.registrationID) { id = existing }
-            else { id = await session.pushEntropy().id16(); try await container.savePushRegistration(env: env.rawValue, registrationID: id.hex, token: token); row = nil }
+            else {
+                if let old = row.flatMap({ ID16(hex: $0.registrationID) }) { owed = old }
+                id = await session.pushEntropy().id16()
+                try await container.savePushRegistration(env: env.rawValue, registrationID: id.hex, token: token, supersedes: owed?.hex)
+            }
             for attempt in 0..<2 {
                 do {
                     let chosen = id
@@ -104,11 +111,17 @@ public struct PushService: Sendable {
                         try await client.registerPush(workspace: ws, registrationID: chosen, env: env.rawValue, topic: Self.topic, token: token, session: s)
                     }
                     try await container.confirmPushRegistration(env: env.rawValue, registrationID: id.hex, nowMs: await session.pushWallMs())
+                    if let old = owed, old != id {
+                        // A new id already retires the old one at the relay (one registration per device, workspace, env, topic); the explicit
+                        // unregister covers a relay that keeps both. Kept owed (next launch) if it fails.
+                        let done = (try? await session.pushRelay { s in try await client.unregisterPush(workspace: ws, registrationID: old, session: s) }) != nil
+                        if done { try? await container.clearPushSupersedes(env: env.rawValue) }
+                    } else if owed != nil { try? await container.clearPushSupersedes(env: env.rawValue) }
                     return .registered(id)
                 } catch ClientError.relay(let r) where r.code == .registrationConflict && attempt == 0 {
                     // The relay holds this id with another body (or it is another device's): mint a new one and register once more.
                     id = await session.pushEntropy().id16()
-                    try await container.savePushRegistration(env: env.rawValue, registrationID: id.hex, token: token)
+                    try await container.savePushRegistration(env: env.rawValue, registrationID: id.hex, token: token, supersedes: owed?.hex)
                 }
             }
             return .failed("registration_conflict")

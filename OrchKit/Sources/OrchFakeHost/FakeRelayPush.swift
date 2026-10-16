@@ -16,6 +16,8 @@ extension FakeRelay {
     public func setPushEnabled(_ on: Bool) { pushEnabled = on }
     public func scriptPush(_ replies: [WireReply]) { pushScript = replies }
     public var pushRegisterRequests: Int { pushRegisterCalls }
+    /// Tests: the registration ids named by unregister requests (a `null` request is not listed).
+    public var pushUnregisteredIDs: [ID16] { pushUnregisterIDs }
 
     func pushRoute(_ r: WireRequest, _ which: String, _ query: String?) -> WireReply {
         guard pushEnabled else { return refuse(404, .notFound) }
@@ -56,6 +58,7 @@ extension FakeRelay {
             return json(200, ["registration_id": .null, "registered": .bool(false)])
         case .some(.string(let h)):
             guard let id = ID16(hex: h) else { return refuse(400, .malformed) }
+            pushUnregisterIDs.append(id)
             if pushRegs.contains(where: { $0.key.device != s.id && $0.value.id == id }) { return refuse(403, .notForThisDevice) }
             for (k, v) in pushRegs where k.device == s.id && k.workspace == ws && v.id == id { pushRegs[k] = nil }
             return json(200, ["registration_id": .string(h), "registered": .bool(false)])
