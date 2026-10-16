@@ -85,6 +85,10 @@ final class LiveRuntimeTests: XCTestCase {
     private func makeServices(_ rig: Rig) -> LiveServices {
         let services = LiveServices(options: options, resetFlags: rig.flags)
         services.liveStorage = { rig.storage }
+        // Push is on in Live: a booted workspace starts its push lifecycle. These tests are about boot, leave and wipe, so the relay side is a
+        // fake (no session work or network behind the test's back); push behaviour has its own tests below.
+        services.makePushService = { FakePush($0.workspace, generation: $0.generation) }
+        services.pushUnregister = { _ in .removed }
         return services
     }
 
