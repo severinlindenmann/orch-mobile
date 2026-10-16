@@ -186,7 +186,7 @@ struct SwitchOfferScreen: View {
         EntryChrome(title: "Invitation received", onCancel: { intake.dismiss() }) {
             Image(systemName: "theatermasks").font(OF.display).foregroundStyle(OC.demo).accessibilityHidden(true)
             Text("You are in the Demo").font(OF.display).accessibilityAddTraits(.isHeader).accessibilityIdentifier("switch.title")
-            Text("An invitation was opened (\(intake.source.label.lowercased()); relay below). Demo and Live never run together, so using it means leaving the Demo, which deletes the Demo workspaces from this iPhone.")
+            Text(verbatim: "An invitation was opened (\(intake.source.label.lowercased()); relay below). Demo and Live never run together, so using it means leaving the Demo, which deletes the Demo workspaces from this iPhone.")
                 .font(OF.body).foregroundStyle(OC.textMuted)
             Text(verbatim: link.reviewedOrigin).font(OF.machine.weight(.semibold)).accessibilityIdentifier("switch.origin")
                 .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
