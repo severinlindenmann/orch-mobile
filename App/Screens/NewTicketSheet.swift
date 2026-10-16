@@ -23,6 +23,7 @@ struct NewTicketSheet: View {
             Group {
                 if let review { CreationSheet(review: review, phase: $phase, model: model, onClose: onClose, onReviewAgain: reviewAgain) }
                 else if phase == .checking { checkingForm }
+                else if let outcome = CreationOutcome(phase) { settledForm(outcome) }
                 else { form }
             }
             .navigationTitle(review == nil ? "New ticket" : "Review the ticket")
@@ -78,10 +79,41 @@ struct NewTicketSheet: View {
                     .foregroundStyle(OC.info).accessibilityIdentifier("ticket.new.checking")
                 Text(verbatim: SafeText.inline(title, limit: 200)).font(OF.body)
                 Text("It is not signed or sent again until this is settled.").font(OF.meta).foregroundStyle(OC.textMuted)
-                Button("Check again") { Task { phase = await model.checkCreation() } }
+                Button("Check again") { Task { await recheck() } }
                     .accessibilityIdentifier("ticket.new.recheck")
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("ticket.new.closeChecking")
             }
+        }
+    }
+
+    /// A creation settled from the form (after the sheet was closed or the app relaunched): its result, never the form with the signed
+    /// title and Review again. Only "Not created; review again" leads back to the form; a landing offers a new, empty ticket.
+    private func settledForm(_ outcome: CreationOutcome) -> some View {
+        Form {
+            Section {
+                outcome.view
+                if case .needsReview = phase {
+                    Button("Review again") { phase = .ready }.accessibilityIdentifier("ticket.new.reviewAgain")
+                } else {
+                    Button("Done", action: onClose).accessibilityIdentifier("ticket.new.done")
+                    Button("New ticket") { phase = .ready }.accessibilityIdentifier("ticket.new.another")
+                }
+            }
+        }
+    }
+
+    /// Settles the pending creation again (reads only). Once it is settled for good (landed, exists, refused) the signed title and type
+    /// are gone from the form: a new ticket starts empty, under a new review.
+    private func recheck() async {
+        let p = await model.checkCreation()
+        switch p {
+        case .created, .resentAfterChange, .landedUnconfirmed, .ticketExists, .refused:
+            title = ""; type = "feature"; phase = p
+        case .notSent(let message):
+            // nothing is pending any more (settled elsewhere): start empty, never with the signed title
+            title = ""; type = "feature"; error = message; phase = .ready
+        default:
+            phase = p
         }
     }
 
@@ -154,6 +186,7 @@ struct CreationSheet: View {
                     }
                     VStack(alignment: .leading, spacing: OS.s1) {
                         Text("Signed details").font(.footnote.weight(.bold)).foregroundStyle(OC.textMuted)
+                        Text(verbatim: "Owner \(SafeText.inline(review.owner, limit: 200))").font(.system(.footnote, design: .monospaced))
                         Text(verbatim: "Ticket uid \(review.uid)").font(.system(.footnote, design: .monospaced))
                         Text(verbatim: "Workspace \(review.workspaceID)").font(.system(.footnote, design: .monospaced))
                     }
@@ -208,31 +241,17 @@ struct CreationSheet: View {
                     .foregroundStyle(OC.brand).accessibilityIdentifier("create.cancel")
             case .sending:
                 ProgressView("Sending…").accessibilityIdentifier("create.sending")
-            case .created(let key):
-                state("checkmark.seal.fill", OC.ok, "Created \(SafeText.inline(key, limit: 24))", "The host created the ticket you signed.", id: "create.created")
-                done
-            case .resentAfterChange(let key):
-                state("checkmark.seal.fill", OC.ok, "The workspace changed; sent again (\(SafeText.inline(key, limit: 24)))",
-                      "Another ticket took the key first, so yours was signed again with the next key. Nothing else changed.", id: "create.resent")
-                done
-            case .landedUnconfirmed:
-                state("checkmark.circle", OC.ok, "Sent and recorded", "The ticket was created. It can't be shown here as signed.", id: "create.landedUnconfirmed")
+            case .created, .resentAfterChange, .landedUnconfirmed, .refused, .ticketExists:
+                CreationOutcome(phase)?.view
                 done
             case .checking:
                 state("clock.arrow.circlepath", OC.info, "Checking whether your ticket was created",
                       "It is not signed or sent again until this is settled. If you close this, orch keeps checking.", id: "create.checking")
                 Button("Check again") { Task { phase = await model.checkCreation() } }.buttonStyle(.bordered).accessibilityIdentifier("create.recheck")
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("create.closeChecking")
-            case .needsReview(let message):
-                state("arrow.triangle.2.circlepath", OC.warn, "Not created; review again", message, id: "create.needsReview")
+            case .needsReview:
+                CreationOutcome(phase)?.view
                 Button("Review again", action: onReviewAgain).buttonStyle(.orchProminent).accessibilityIdentifier("create.reviewAgain")
-            case .refused:
-                state("eye.slash", OC.warn, "The ticket wasn't created", "The host refused it for good. Nothing is sent again.", id: "create.refused")
-                done
-            case .ticketExists(let key):
-                state("doc.on.doc", OC.info, "This ticket already exists",
-                      key.map { "It is \(SafeText.inline($0, limit: 24)). Nothing new was created." } ?? "Nothing new was created.", id: "create.ticketExists")
-                done
             case .unlockToContinue:
                 state("lock.fill", OC.warn, "Unlock to continue", "Unlock this iPhone, then review the ticket again.", id: "create.unlock")
                 Button("Review again", action: onReviewAgain).buttonStyle(.bordered).accessibilityIdentifier("create.reviewAgain")
@@ -254,6 +273,53 @@ struct CreationSheet: View {
     }
 
     private func state(_ icon: String, _ color: Color, _ title: String, _ detail: String, id: String) -> some View {
+        CreationOutcome(icon: icon, color: color, title: title, detail: detail, id: id).view
+    }
+
+    private func sign() async {
+        guard phase == .ready, armedRevision == review.revision else { return }
+        phase = .sending
+        phase = await model.create(review)
+    }
+}
+
+/// How a settled creation reads, the same in the creation sheet and in the form that settles it after a relaunch.
+@MainActor
+struct CreationOutcome {
+    let icon: String, color: Color, title: String, detail: String, id: String
+
+    init(icon: String, color: Color, title: String, detail: String, id: String) {
+        self.icon = icon; self.color = color; self.title = title; self.detail = detail; self.id = id
+    }
+
+    /// nil for a phase that is not settled (ready, sending, checking) or that leads back to a review (unlock, expired, not sent).
+    init?(_ phase: CreationPhase) {
+        switch phase {
+        case .created(let key):
+            self.init(icon: "checkmark.seal.fill", color: OC.ok, title: "Created \(SafeText.inline(key, limit: 24))",
+                      detail: "The host created the ticket you signed.", id: "create.created")
+        case .resentAfterChange(let key):
+            self.init(icon: "checkmark.seal.fill", color: OC.ok, title: "The workspace changed; sent again (\(SafeText.inline(key, limit: 24)))",
+                      detail: "Another ticket took the key first, so yours was signed again with the next key. Nothing else changed.", id: "create.resent")
+        case .landedUnconfirmed:
+            self.init(icon: "checkmark.circle", color: OC.ok, title: "Sent and recorded",
+                      detail: "The ticket was created. It can't be shown here as signed.", id: "create.landedUnconfirmed")
+        case .needsReview(let message):
+            self.init(icon: "arrow.triangle.2.circlepath", color: OC.warn, title: "Not created; review again", detail: message, id: "create.needsReview")
+        case .refused:
+            self.init(icon: "eye.slash", color: OC.warn, title: "The ticket wasn't created",
+                      detail: "The host refused it for good. Nothing is sent again.", id: "create.refused")
+        case .ticketExists(let key):
+            // none of this review's attempts can be named as its creator: it may still be the one sent from here
+            self.init(icon: "doc.on.doc", color: OC.info,
+                      title: key.map { "This ticket already exists (\(SafeText.inline($0, limit: 24)))" } ?? "This ticket already exists",
+                      detail: "It may be the one you sent; check on your Mac.", id: "create.ticketExists")
+        case .ready, .sending, .checking, .unlockToContinue, .invalidated, .notSent:
+            return nil
+        }
+    }
+
+    var view: some View {
         VStack(spacing: OS.s2) {
             Image(systemName: icon).font(.title).foregroundStyle(color)
             Text(verbatim: title).font(OF.section).multilineTextAlignment(.center)
@@ -262,11 +328,5 @@ struct CreationSheet: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(id)
-    }
-
-    private func sign() async {
-        guard phase == .ready, armedRevision == review.revision else { return }
-        phase = .sending
-        phase = await model.create(review)
     }
 }

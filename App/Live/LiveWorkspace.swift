@@ -259,6 +259,9 @@ final class LiveWorkspace: WorkspaceModel {
 
     func checkCreation() async -> CreationPhase {
         guard usable, let draft = loadDraft(), let id = draft.review else { return .notSent("Nothing is being checked.") }
+        #if DEBUG
+        await services?.releaseDemoHeldCreation(workspace: self)
+        #endif
         do { return await apply(try await api.settle(reviewID: id), uid: nil) }
         catch { return .checking }
     }

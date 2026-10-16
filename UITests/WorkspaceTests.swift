@@ -94,6 +94,42 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertTrue(resent.label.contains("The workspace changed; sent again"), resent.label)
     }
 
+    /// A signed creation that is still being checked, reopened from the form (the relaunch path: the draft says "pending"), then settled
+    /// with "Check again": the form shows the result, never the signed title with Review again (a second signature, a duplicate).
+    @MainActor
+    func testACreationSettledFromTheFormShowsTheResultNotReviewAgain() {
+        let app = launch("workspace/laptop/tickets", extra: ["--demo-hold-creation"])
+        let title = openNewTicket(app)
+        title.tap(); title.typeText("Held ticket")
+        app.buttons["ticket.new.review"].tap()
+        let confirm = app.buttons["create.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 60))
+        XCTAssertTrue(app.arm(confirm))
+        confirm.tap()
+        let close = app.buttons["create.closeChecking"]
+        XCTAssertTrue(close.waitForExistence(timeout: 60), "the held creation stays checking")
+        close.tap()
+        let add = app.buttons["ws.newTicket"]
+        XCTAssertTrue(add.waitForExistence(timeout: 30))
+        add.tap()
+        XCTAssertTrue(app.el("ticket.new.checking").waitForExistence(timeout: 10))
+        app.buttons["ticket.new.recheck"].tap()
+        let created = app.el("create.created")
+        XCTAssertTrue(created.waitForExistence(timeout: 60), "the settled result is shown in the form")
+        XCTAssertFalse(app.buttons["ticket.new.review"].exists, "no Review for a settled creation")
+        XCTAssertFalse(app.textFields["ticket.new.title"].exists)
+        // a new ticket is started explicitly, and starts empty
+        app.buttons["ticket.new.another"].tap()
+        let fresh = app.textFields["ticket.new.title"]
+        XCTAssertTrue(fresh.waitForExistence(timeout: 10))
+        XCTAssertFalse((fresh.value as? String ?? "").contains("Held ticket"), "the signed title is not prefilled")
+        XCTAssertFalse(app.buttons["ticket.new.review"].isEnabled)
+        app.buttons["ticket.new.cancel"].tap()
+        let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'ticket.' AND label CONTAINS 'Held ticket'"))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 30))
+        XCTAssertEqual(rows.count, 1)
+    }
+
     @MainActor
     func testATitleViolationIsShownInlineAndBlocksReview() {
         let app = launch("workspace/laptop/tickets")

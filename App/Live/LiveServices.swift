@@ -773,12 +773,26 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     #if DEBUG
     /// UI tests: `--demo-key-race` makes the Demo host give the next key away before the first creation is sent (one key race).
+    /// `--demo-hold-creation` makes the Demo host hold the first creation admitted and not run (it stays "checking") until the next
+    /// "Check again" (`releaseDemoHeldCreation`).
     @ObservationIgnored private var demoKeyRaceUsed = false
+    @ObservationIgnored private var demoHoldCreationUsed = false
     func applyDemoCreationControl(workspace: LiveWorkspace) async {
-        guard ProcessInfo.processInfo.arguments.contains("--demo-key-race"), !demoKeyRaceUsed, workspace.usable, let runtime = demo,
+        let args = ProcessInfo.processInfo.arguments
+        guard workspace.usable, let runtime = demo, let host = runtime.entry(for: workspace.workspaceID)?.host else { return }
+        if args.contains("--demo-key-race"), !demoKeyRaceUsed {
+            demoKeyRaceUsed = true
+            await host.demoTakeNextKey()
+        }
+        if args.contains("--demo-hold-creation"), !demoHoldCreationUsed {
+            demoHoldCreationUsed = true
+            await host.demoHoldNextWrite()
+        }
+    }
+    func releaseDemoHeldCreation(workspace: LiveWorkspace) async {
+        guard ProcessInfo.processInfo.arguments.contains("--demo-hold-creation"), workspace.usable, let runtime = demo,
               let host = runtime.entry(for: workspace.workspaceID)?.host else { return }
-        demoKeyRaceUsed = true
-        await host.demoTakeNextKey()
+        await host.demoRecoverWrites()
     }
     #endif
 
