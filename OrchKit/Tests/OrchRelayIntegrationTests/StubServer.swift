@@ -109,13 +109,20 @@ final class StubServer: @unchecked Sendable {
         }
     }
 
+    private func drain(_ c: NWConnection) {
+        c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] _, _, done, err in
+            if done || err != nil { c.cancel() } else { self?.drain(c) }
+        }
+    }
+
     private func respond(_ c: NWConnection, _ b: Behaviour) {
         switch b {
         case .raw(let d):
-            // an early reply (request body unread) is closed late, so the client's reset-free read of it is not racing a RST
-            let linger = readsRequestBody ? 0 : 300
+            // An early reply (request body unread) must not be followed by a close while the client is still writing: closing a socket
+            // with unread input sends a RST that can discard the reply. So keep draining and discarding the request until the client
+            // closes its side (the sender cancels as soon as it has the final reply); the connection is cancelled then, or by stop().
             c.send(content: d, completion: .contentProcessed { [weak self] _ in
-                if linger == 0 { c.cancel() } else { self?.queue.asyncAfter(deadline: .now() + .milliseconds(linger)) { c.cancel() } }
+                if self?.readsRequestBody == false { self?.drain(c) } else { c.cancel() }
             })
         case .truncated(let d): c.send(content: d, completion: .contentProcessed { _ in c.cancel() })
         case .hang: break

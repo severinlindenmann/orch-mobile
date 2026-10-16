@@ -146,7 +146,8 @@ jobs:
           xcodebuild -project Orch.xcodeproj -scheme OrchDevSandbox \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath .build/dd-variant-test CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES \
-            -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 test 2>&1 | tee "$RUNNER_TEMP/variant.log"
+            -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
+            -only-testing:OrchDevSandboxTests test 2>&1 | tee "$RUNNER_TEMP/variant.log"
           scripts/assert-test-count.sh "$RUNNER_TEMP/variant.log" 6 "variant tests"
       - name: Dev-sandbox lane package tests (Simulator, 12 tests)
         run: |
