@@ -256,6 +256,7 @@ struct WorkspaceSettingsScreen: View {
                 Text("This workspace is no longer on this iPhone.")
             }
         }
+        .convenienceBanner(ws)
         .navigationTitle(Text(verbatim: ws?.displayName ?? "Workspace"))
         .navigationBarTitleDisplayMode(.inline)
         .alert(Text(verbatim: "Remove \(ws?.displayName ?? "workspace") from this iPhone?"), isPresented: $confirm) {

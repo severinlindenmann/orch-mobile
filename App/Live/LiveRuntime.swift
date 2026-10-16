@@ -27,6 +27,8 @@ enum LiveError: Error, Equatable {
     case differentOrigin
     /// Not an `https` relay origin the Live realm accepts (no loopback `http`, no Demo origin).
     case unsupportedOrigin
+    /// The OrchDevSandbox variant pairs only as a level-1 reader (host 11A.17.4): this build's reader self-test did not pass.
+    case readerRequired
 }
 
 /// The persisted fact that this iPhone is a Live install: the ONE relay origin (taken only from an invitation, B2b) and, once the first
@@ -73,8 +75,17 @@ struct LiveStorage: Sendable {
     static func production() throws -> LiveStorage {
         guard let backend = KeychainBackend.fromBundle() else { throw LiveError.keychainUnavailable }
         return LiveStorage(layout: try liveLayout(), backend: backend, lock: SimulatedLock(), clock: ContinuousClock(), wall: SystemWallClock(),
-                           entropy: SystemEntropy(), makeTransport: { try LiveTransport.make(context: $0) },
+                           entropy: SystemEntropy(), makeTransport: Self.productionTransport,
                            purgeNotifications: { await LiveNotifications.purge(workspace: $0) })
+    }
+
+    /// The Live transport: `https` only. The OrchDevSandbox variant also reaches the dev relay's loopback twin (`http://127.0.0.1:<port>`).
+    @Sendable static func productionTransport(_ context: RealmContext) throws -> any RelayTransport {
+        #if ORCH_DEV_SANDBOX
+        try LiveTransport.makeDevSandbox(context: context, enabler: DevSandboxLaneEnabler())
+        #else
+        try LiveTransport.make(context: context)
+        #endif
     }
 
     /// `<Application Support>/OrchLive/app/orch/live/...`, and the Live realm's subdirectories of both App Groups (push state, share
@@ -83,12 +94,17 @@ struct LiveStorage: Sendable {
         let fm = FileManager.default
         let base = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("OrchLive", isDirectory: true)
+        #if ORCH_DEV_SANDBOX
+        let pushGroup = "group.io.severin.orch.devsandbox", shareGroup = "group.io.severin.orch.devsandbox.share"
+        #else
+        let pushGroup = "group.io.severin.orch", shareGroup = "group.io.severin.orch.share"
+        #endif
         func group(_ id: String, _ fallback: String) -> URL {
             fm.containerURL(forSecurityApplicationGroupIdentifier: id) ?? base.appendingPathComponent(fallback, isDirectory: true)
         }
         return try StoreLayout(appRoot: base.appendingPathComponent("app", isDirectory: true),
-                               pushGroupRoot: group("group.io.severin.orch", "push"),
-                               shareGroupRoot: group("group.io.severin.orch.share", "share"),
+                               pushGroupRoot: group(pushGroup, "push"),
+                               shareGroupRoot: group(shareGroup, "share"),
                                realm: Realm.live.rawValue)
     }
 
@@ -207,7 +223,11 @@ final class LiveRuntime: RealmRuntime {
             guard let bytes = B64U.decode(text), let key = try? SigningPublicKey(x963: bytes) else { throw LiveError.invalidInstall }
             owner = key
         }
+        #if ORCH_DEV_SANDBOX
+        let context = try RealmContext.liveDevSandbox(origin: install.origin, pinnedOwner: owner, enabler: DevSandboxLaneEnabler())
+        #else
         let context = try RealmContext.live(origin: install.origin, pinnedOwner: owner)
+        #endif
         let transport = try storage.makeTransport(context)
         // A runtime owns exactly one RealmContext: a transport on any other generation would not stop when this one is invalidated.
         guard transport.context.sharesLifetime(with: context), transport.context.origin == context.origin, transport.context.realm == .live else {
@@ -240,9 +260,13 @@ final class LiveRuntime: RealmRuntime {
         await recovery.realmShutdown()                 // the recovery coordinator is not kept: a retried boot builds a fresh one
         try await step("recover")
         derivedOwner = try await Self.agreedOwner(index: idx, pinned: install.owner)
-        let outcome = try await WorkspaceRestoration.restore(RestoreConfig(
+        var restoreConfig = RestoreConfig(
             context: context, transport: transport, index: idx, vault: keys, custody: custody, clock: storage.clock, wall: storage.wall,
-            entropy: storage.entropy))
+            entropy: storage.entropy)
+        #if ORCH_DEV_SANDBOX
+        restoreConfig.devSandboxEnabler = DevSandboxLaneEnabler()
+        #endif
+        let outcome = try await WorkspaceRestoration.restore(restoreConfig)
         do { try await step("restore") }
         catch { await WorkspaceRestoration.release(outcome.handles); throw error }
         await WorkspaceRestoration.release(restored)   // handles of an earlier, unadopted boot (none normally)
@@ -279,12 +303,20 @@ final class LiveRuntime: RealmRuntime {
 
     func makeCoordinator() throws -> PairingCoordinator {
         guard booted, let index else { throw LiveError.notBooted }
+        #if ORCH_DEV_SANDBOX
+        // pairing at reader level 1 (the dev host requires it): a build whose reader self-test failed declares nothing
+        guard ReaderRuntime.production.level >= 1 else { throw LiveError.readerRequired }
+        #endif
         return makeBootCoordinator(index)
     }
 
     private func makeBootCoordinator(_ index: WorkspaceIndex) -> PairingCoordinator {
-        PairingCoordinator(PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
-                                         clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel))
+        var config = PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
+                                   clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel)
+        #if ORCH_DEV_SANDBOX
+        config.devSandboxEnabler = DevSandboxLaneEnabler()
+        #endif
+        return PairingCoordinator(config)
     }
 
     /// The workspaces `boot` rebuilt (handed over once).

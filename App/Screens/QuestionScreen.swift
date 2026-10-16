@@ -47,6 +47,7 @@ struct QuestionScreen: View {
             .padding(OS.s4)
         }
         .background(OC.bg)
+        .convenienceBanner(info)
         .navigationTitle("Question")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $signing) { item in
@@ -129,11 +130,22 @@ struct QuestionScreen: View {
     }
 
     /// C2b: answering needs the realm's `writes` capability AND a workspace whose session may sign and whose host takes answers.
-    private func writeBlock(_ info: WorkspaceInfo) -> String? { Self.writeBlock(writes: services.capabilities.writes, writeSupport: info.writeSupport) }
+    private func writeBlock(_ info: WorkspaceInfo) -> String? {
+        #if ORCH_DEV_SANDBOX
+        return Self.writeBlock(writes: services.capabilities.writes, writeSupport: info.writeSupport, simulatorLane: info.devSandboxLane)
+        #else
+        return Self.writeBlock(writes: services.capabilities.writes, writeSupport: info.writeSupport)
+        #endif
+    }
 
-    static func writeBlock(writes: Bool, writeSupport: Bool) -> String? {
+    static func writeBlock(writes: Bool, writeSupport: Bool, simulatorLane: Bool = false) -> String? {
         guard writes else { return "Answering from this iPhone is not available yet. Answer on your Mac." }
-        guard writeSupport else { return "Your Mac's orch doesn't accept answers from iPhone yet. Answer on your Mac." }
+        guard writeSupport else {
+            #if ORCH_DEV_SANDBOX
+            if simulatorLane { return DevSandboxText.hostRefuses }
+            #endif
+            return "Your Mac's orch doesn't accept answers from iPhone yet. Answer on your Mac."
+        }
         return nil
     }
 
@@ -220,9 +232,19 @@ struct SignSheet: View {
         .task { await model.loadReview() }
     }
 
+    private func footnote(_ review: ReviewValue) -> String {
+        #if ORCH_DEV_SANDBOX
+        if review.devSandbox != nil { return DevSandboxText.footnote }
+        #endif
+        return review.isDemo ? "Demo key (passphrase custody, this app only)." : "Signed by this iPhone's Secure Enclave key."
+    }
+
     @ViewBuilder
     private func content(_ review: ReviewValue) -> some View {
         if review.isDemo { DemoStripe() }
+        #if ORCH_DEV_SANDBOX
+        if review.devSandbox != nil { DevSandboxBanner(sandbox: review.devSandbox) }
+        #endif
         ScrollView {
             VStack(alignment: .leading, spacing: OS.s4) {
                 AdaptiveStack {
@@ -493,7 +515,7 @@ struct SignSheet: View {
                           "This iPhone can no longer sign for this workspace. Re-pair it to continue.", id: "sign.custody")
                 doneButton
             }
-            Text(review.isDemo ? "Demo key (passphrase custody, this app only)." : "Signed by this iPhone's Secure Enclave key.")
+            Text(verbatim: footnote(review))
                 .font(OF.meta).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
                 .accessibilityIdentifier("sign.footnote")
             if review.isDemo { SimulationNotice() }

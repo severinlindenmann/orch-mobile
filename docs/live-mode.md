@@ -360,3 +360,36 @@ Flip `RealmCapabilities.live` in `App/Live/LiveRuntime.swift` (`drop: true`, `pu
 4. After flipping: run the simulator suites, `scripts/check-release-flags.sh`, and re-run the probe once more.
 5. **Do not flip `push` off while registrations exist.** With the capability off there is no coordinator, so Leave owes nothing and the
    relay keeps the device's registrations until a host removal, an APNs 410 or 60 days without a refresh.
+
+## The Simulator dev-sandbox lane (C2b increment 5, host 11A.17)
+
+A Simulator can answer questions in a throwaway **dev sandbox** with its software key, signed `auth: "convenience"` (no presence check). It is a
+separate app, `OrchDevSandbox`, and answers only (a `ticket.created` is never admitted on the dev gate; test creation on a device).
+
+- **Where it exists.** OrchKit compiles the lane only under `DEBUG && targetEnvironment(simulator)` (`DevSandboxLane.swift`, `PersonEventPolicy.Lane.devSandbox`,
+  `PhoneActor(.convenience)`, the permit's lane workspace, the transport check). A device build (any configuration) and a Release Simulator build contain none of
+  it; `scripts/check-dev-sandbox-symbols.sh` checks that with `nm`/`strings` in CI. The normal Debug Simulator `Orch` has the OrchKit code but no way to turn it
+  on: the switch is a `DevSandboxLaneEnabler`, minted only by App code under `ORCH_DEV_SANDBOX`, which only the `OrchDevSandbox` target defines.
+- **The variant.** XcodeGen target and scheme `OrchDevSandbox` (iphonesimulator only, Debug only, bundle `io.severin.orch.devsandbox`, its own entitlements and
+  keychain group base `io.severin.orch.devsandbox` through the `OrchKeychainGroupBase` Info key, App Groups `group.io.severin.orch.devsandbox[.share]`, no
+  extensions, no push, no `orch://` link). Pair through the in-app scanner or paste. Never pair it into a real workspace (owner note 4): after the join the
+  first `whoami` must carry `relay.dev`, else the workspace screen says "Not a dev sandbox. Remove this Simulator on your Mac." and offers Leave.
+- **Signal.** `whoami.relay.dev = {sim_convenience:true, sandbox:"<id8>"}`, present only while the host's dev gate passes for that workspace
+  (`HostWriteSupport.dev`, parsed leniently: anything else is nil and the lane stays off; the rest of the read is untouched).
+- **Policy.** `PersonEventPolicy.derive` gives `auth: .convenience, lane: .devSandbox` only for a Live context + software custody + the enabler + a reader
+  capability of level 1 + the variant's origin: `https://relay.dev.severin.io`, or (variant only) a loopback `http://127.0.0.1:<port>` / `http://[::1]:<port>`
+  relay so `dev-pair --relay local` works in the automated e2e. A Secure Enclave identity is always `secure-enclave-unlocked`; Demo is unchanged. The variant's
+  context (`RealmContext.liveDevSandbox`) refuses every other origin. A loopback relay is reachable only from the Mac the Simulator runs on; the host's dev gate and
+  sandbox proof stay the real checks.
+- **Freshness (O6).** `freshDevGrant()` is one `whoami` call, made for every `reviewQuestion` of an open question and before every automatic re-sign; it returns a
+  grant only if that same reply says `relay.dev.sim_convenience`, `ops.answer == 1` and `r6_ready`. Without one: no sheet ("This host does not accept
+  Simulator answers"), nothing signed, no re-sign (the answer goes back to review). `answer` signs only a review that carries the grant; the write gate's first
+  dispatch needs a convenience attempt on the lane and does not read again. A resend or a settlement read is never blocked. A host `op.not_allowed` (it restarted
+  without the flag) is class D: shown, never re-signed.
+- **Transport.** `WritePermit` carries `.devSandbox(workspace)`; `RoutedRelayTransport.bridgePost` lets a `convenience` permit over the network only for exactly
+  that workspace's route, on a variant origin, in a Live context. The in-process Demo sender refuses it.
+- **UI.** A red banner "DEV SANDBOX: convenience signing · <id8>" on the workspace screens and the sign sheet; the sign-sheet footnote and the refusal text are
+  fixed strings (`ConvenienceBanner.swift`).
+- **Tests.** OrchKit `DevSandboxLaneTests` (derive matrix, `relay.dev` parse, transport, session flows against the FakeHost with a Live-realm rig) run on the
+  Simulator destination (`xcodebuild test -scheme OrchKit-Package ... -only-testing:OrchFakeHostTests/DevSandboxLaneTests`), not macOS `swift test`. The variant's
+  own unit tests are `OrchDevSandboxTests`; `LaneAbsenceTests` runs in `Orch` under Release (`scripts/check-release-flags.sh`).

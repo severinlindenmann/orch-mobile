@@ -50,6 +50,9 @@ final class LiveWorkspace: WorkspaceModel {
             guard self.usable, !Task.isCancelled else { return }
             await self.api.start()
             await self.checkKeyAlarm()
+            #if ORCH_DEV_SANDBOX
+            await self.checkDevSandbox()
+            #endif
             await self.refresh()
             for await event in stream {
                 if Task.isCancelled { break }
@@ -92,11 +95,33 @@ final class LiveWorkspace: WorkspaceModel {
         await syncWriteSupport()
     }
 
+    #if ORCH_DEV_SANDBOX
+    /// Owner note 4, right after a join: a successful first `whoami` without `relay.dev` means this is not a dev sandbox. The screen says so
+    /// and offers Leave; nothing signs here (the lane needs the same field).
+    func checkDevSandbox() async {
+        switch await api.devSandboxCheck() {
+        case .sandbox(let id): info.devSandbox = id; info.notADevSandbox = false
+        case .notASandbox: info.notADevSandbox = true
+        case .unknown: break
+        }
+    }
+    #endif
+
     /// C2b: whether this workspace takes answers and new tickets from this iPhone now (a person-event policy and a host that says it serves
     /// them: Live reads `whoami.relay`, which the session refreshes and clears).
     func syncWriteSupport() async {
         let answers = await api.writesAvailable(), creates = await api.writesAvailable(op: "new_ticket")
+        #if ORCH_DEV_SANDBOX
+        let lane = await api.devSandboxStatus()
+        #endif
         guard usable else { return }
+        #if ORCH_DEV_SANDBOX
+        if info.devSandboxLane != lane.laneActive { info.devSandboxLane = lane.laneActive }
+        if let id = lane.sandbox {
+            if info.devSandbox != id { info.devSandbox = id }
+            if info.notADevSandbox { info.notADevSandbox = false }
+        }
+        #endif
         if info.writeSupport != answers { info.writeSupport = answers }
         if info.createSupport != creates { info.createSupport = creates }
     }

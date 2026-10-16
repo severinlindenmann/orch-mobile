@@ -100,3 +100,19 @@ jobs:
           CODE_SIGNING_ALLOWED=NO build
       - name: Release ignores debug launch flags
         run: scripts/check-release-flags.sh
+      # C2b increment 5 (host 11A.17): the Simulator dev-sandbox lane exists only in a Debug Simulator build, and only the variant turns it on.
+      - name: Dev-sandbox variant tests
+        run: >-
+          xcodebuild -project Orch.xcodeproj -scheme OrchDevSandbox
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath .build/dd-variant-test CODE_SIGNING_ALLOWED=NO
+          -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 test
+      - name: Dev-sandbox lane package tests (Simulator)
+        run: >-
+          cd OrchKit && xcodebuild -scheme OrchKit-Package
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath ../.build/dd-kit
+          -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1
+          -only-testing:OrchFakeHostTests/DevSandboxLaneTests test
+      - name: No lane symbols outside the variant
+        run: scripts/check-dev-sandbox-symbols.sh
