@@ -85,11 +85,15 @@ final class LiveRuntimeTests: XCTestCase {
     private func makeServices(_ rig: Rig) -> LiveServices {
         let services = LiveServices(options: options, resetFlags: rig.flags)
         services.liveStorage = { rig.storage }
-        // Push is on in Live: a booted workspace starts its push lifecycle. These tests are about boot, leave and wipe, so the relay side is a
-        // fake (no session work or network behind the test's back); push behaviour has its own tests below.
+        return isolated(services)
+    }
+
+    /// Push is on in Live: a booted workspace starts its push lifecycle. These tests are about boot, leave and wipe, so the relay side is a
+    /// fake (no session work or network behind the test's back) and the OS notification centre is never asked (a hosted CI simulator crashes
+    /// in it): permission is a fixed answer. Push behaviour has its own tests.
+    @discardableResult private func isolated(_ services: LiveServices) -> LiveServices {
         services.makePushService = { FakePush($0.workspace, generation: $0.generation) }
         services.pushUnregister = { _ in .removed }
-        // The OS notification centre is never asked from these tests (a hosted CI simulator crashes in it): permission is a fixed answer.
         services.currentPermission = { .denied }
         services.registerForAPNs = {}
         return services
@@ -202,7 +206,7 @@ final class LiveRuntimeTests: XCTestCase {
         let joined = try await demoJoin()
         let rig = try makeRig(); defer { rig.cleanup() }
         try await commit(joined, into: rig)
-        let services = LiveServices(options: options, resetFlags: rig.flags)
+        let services = isolated(LiveServices(options: options, resetFlags: rig.flags))
         var available = false
         services.liveStorage = { if available { return rig.storage }; throw LiveError.keychainUnavailable }
         await services.boot()
@@ -394,11 +398,12 @@ final class LiveRuntimeTests: XCTestCase {
         try await commit(joined, into: rig)
         let controller = RealmController(options: options, resetFlags: rig.flags)
         controller.services.liveStorage = { rig.storage }
+        isolated(controller.services)
         let base = controller.makeServices
-        controller.makeServices = { options, defaults in
+        controller.makeServices = { [self] options, defaults in
             let services = base(options, defaults)
             services.liveStorage = { rig.storage }
-            return services
+            return isolated(services)
         }
         await controller.boot()
         XCTAssertEqual(controller.state, .live)
@@ -1024,10 +1029,11 @@ extension LiveRuntimeTests {
         let controller = RealmController(options: opts, resetFlags: rig.flags)
         controller.shareArea = nil
         controller.services.liveStorage = { rig.storage }
-        controller.makeServices = { o, d in
+        isolated(controller.services)
+        controller.makeServices = { [self] o, d in
             let s = LiveServices(options: o, resetFlags: d)
             s.liveStorage = { rig.storage }
-            return s
+            return isolated(s)
         }
         return controller
     }
