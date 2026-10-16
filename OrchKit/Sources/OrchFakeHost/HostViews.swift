@@ -48,6 +48,8 @@ struct FakeEvent: Sendable, Equatable {
     var atMs: Int64
 }
 
+package enum FakeRelayCaps: Sendable, Equatable { case absent, r6NotReady, ready }
+
 struct HostViewState: Sendable {
     var tickets: [FakeTicket] = []
     var questions: [FakeQuestion] = []
@@ -62,6 +64,8 @@ struct HostViewState: Sendable {
     var outcomes: [String: FakeOutcome] = [:]
     var logged: [String: FakeLogged] = [:]
     var writeControls = FakeWriteControls()
+    /// What column-R `whoami` says about writes: `relay:{ops:{answer:1, new_ticket:1}, r6_ready}` (host changelog 57), or no field at all.
+    var relayCaps = FakeRelayCaps.ready
     /// Devices removed at the host (L2 standing): `not_member` for their writes.
     var removedDevices: Set<String> = []
     /// Request ids whose answer the host computed and kept but did not post (a lost response).
@@ -196,7 +200,13 @@ extension FakeHost {
         let asOf: JSONValue = .string(Self.time(wall.nowMs))
         switch op {
         case "whoami":
-            return result(["peer": ["uid": -1, "class": "person"], "person": .string(viewer), "tier": "A", "grant": .null, "session": .null])
+            var who: [String: JSONValue] = ["peer": ["uid": -1, "class": "person"], "person": .string(viewer), "tier": "A", "grant": .null, "session": .null]
+            switch s.relayCaps {
+            case .absent: break
+            case .r6NotReady: who["relay"] = ["ops": ["answer": 1, "new_ticket": 1], "r6_ready": false]
+            case .ready: who["relay"] = ["ops": ["answer": 1, "new_ticket": 1], "r6_ready": true]
+            }
+            return result(.object(who))
         case "workspace.show":
             return result(["id": .string(workspace.hex), "prefix": .string(s.prefix), "name": .string(name), "genesis": .string("sha256:" + String(repeating: "0", count: 64)),
                            "epoch": .int(Int64(epoch)), "wsk_fingerprint": "demo", "members_v": .int(s.membersV), "state": "ok",

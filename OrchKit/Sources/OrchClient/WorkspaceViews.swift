@@ -84,6 +84,8 @@ public enum WorkspaceKeyAlarm: Equatable, Sendable {
 public enum WorkspaceEvent: Equatable, Sendable { case snapshot(WorkspaceSnapshot), invalidated, connection(ConnectionState), removed
     /// A sealed reader refusal ended the cached view: the person updates orch or pairs again; nothing cached is current.
     case readerRefused
+    /// The host's write signal (`whoami.relay`) was read, or cleared: `writesAvailable()` may answer differently now. No view read follows.
+    case writeSupportChanged
 }
 public struct QuestionOption: Equatable, Sendable {
     /// The option's `key` (host section 0.8 `Question.options`); what a decision binds.

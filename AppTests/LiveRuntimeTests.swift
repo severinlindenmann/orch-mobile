@@ -147,7 +147,7 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertTrue(runtime.context.isCurrent && runtime.skipped.isEmpty)
         // The realm and its capabilities are the runtime's: nothing optional is on.
         XCTAssertEqual(services.realm, .live)
-        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: false))
+        XCTAssertEqual(services.capabilities, RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true))
         XCTAssertNil(ws.drop)
         XCTAssertFalse(services.eligibleShareDestination(ws.info.id))
         XCTAssertNil(services.demo)

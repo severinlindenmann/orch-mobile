@@ -150,6 +150,11 @@ public actor WorkspaceSession: RealmParticipant {
     var settleRetries: [String: Task<Void, Never>] = [:]
     var settleStage: [String: Int] = [:]
     var writeRecovery: Task<Void, Never>?
+    /// What the host's column-R `whoami.relay` said last (nil: unknown, so no Live write). In memory only, never persisted: refreshed at
+    /// `startViews`, on foreground and on an epoch change, and cleared on background, a failed read or an epoch change.
+    var hostSupport: HostWriteSupport?
+    private var hostSupportTask: Task<Void, Never>?
+    private var hostSupportGen = 0
     private var snapshotTask: Task<WorkspaceSnapshot, Error>?
     private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
     /// Snapshots yielded to subscribers; lets a test harness hold its fake clock while one is unconsumed (`World.serve`).
@@ -254,7 +259,9 @@ public actor WorkspaceSession: RealmParticipant {
         lifecycleFence.invalidate(.realmClosed)
         closed = true
         dropReviews()
-        let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
+        hostSupportGen &+= 1; hostSupport = nil
+        let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery, hostSupportTask].compactMap { $0 }
+        hostSupportTask?.cancel(); hostSupportTask = nil
         poller?.cancel(); poller = nil; hintRefresh?.cancel(); hintRefresh = nil; recovery?.cancel(); recovery = nil
         snapshotTask?.cancel()
         let drivers = Array(inflight.values), decisions = Array(reviewDrivers.values)
@@ -416,7 +423,7 @@ public actor WorkspaceSession: RealmParticipant {
     private func raiseEpoch(_ e: UInt32) async throws {
         let before = try await currentEpoch()
         try await cfg.container.raiseEpochHighWater(Int64(e))
-        if e > before { epochObserver?(e) }
+        if e > before { epochObserver?(e); refreshHostSupport() }
     }
 
     /// Called (inside the session's isolation, so it must only hand off) after this device's confirmed epoch rose.
@@ -1345,6 +1352,7 @@ extension WorkspaceSession {
     package func startViews() {
         guard !viewsStarted, !closed else { return }
         viewsStarted = true
+        refreshHostSupport()
         recoverWrites()
         startPoller()
     }
@@ -1354,9 +1362,11 @@ extension WorkspaceSession {
         if value { lifecycleFence.foregrounded() } else { lifecycleFence.invalidate(.background) }
         foreground = value
         if value {
+            refreshHostSupport()
             startPoller()
             recoverWrites()
         } else {
+            clearHostSupport()
             for t in settleRetries.values { t.cancel() }
             settleRetries.removeAll()
             writeRecovery?.cancel(); writeRecovery = nil
@@ -1369,6 +1379,32 @@ extension WorkspaceSession {
             for t in reviewDrivers.values { t.cancel() }
         }
     }
+    /// Drops the host's write signal (fail closed) and any read of it in flight.
+    private func clearHostSupport() {
+        hostSupportGen &+= 1
+        hostSupportTask?.cancel(); hostSupportTask = nil
+        if hostSupport != nil { hostSupport = nil; emit(.writeSupportChanged) }
+    }
+    /// Clears the signal, then reads `whoami.relay` again. A failed or malformed read leaves it nil (no Live write); a read that
+    /// finishes after a newer refresh, a background or a close is dropped.
+    func refreshHostSupport() {
+        clearHostSupport()
+        // a session whose views were never started (pairing, a test harness) asks nothing: `startViews` reads it
+        guard foreground, !closed, viewsStarted else { return }
+        let gen = hostSupportGen
+        hostSupportTask = Task { [weak self] in
+            let got = try? await self?.whoami().relay
+            guard let self, !Task.isCancelled else { return }
+            await self.applyHostSupport(got, gen: gen)
+        }
+    }
+    private func applyHostSupport(_ value: HostWriteSupport?, gen: Int) {
+        guard gen == hostSupportGen, foreground, !closed, hostSupport != value else { return }
+        hostSupport = value
+        emit(.writeSupportChanged)
+    }
+    /// Test seam-free read for the checks in this module.
+    var currentHostSupport: HostWriteSupport? { hostSupport }
     public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
     /// Every held review goes, and a review read in flight is refused (`reviewQuestion` compares the counter). The fence is separate: it
     /// also ends on `.inactive` and a lock, which must not refuse the new review that is the way back from them.

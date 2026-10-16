@@ -268,11 +268,19 @@ enum AttemptKind {
 extension WorkspaceSession {
     // MARK: policy and host support
 
-    /// Whether the host takes this write. Demo: the FakeHost serves `answer`. Live: the column-R host signal is increment 4; until then no
-    /// Live write is admitted (fail closed).
+    /// Whether the host takes this write. Demo: the FakeHost serves `answer` and `new_ticket`. Live: the host said so in its column-R
+    /// `whoami.relay` (op at version 1 and `r6_ready`); no signal, or one cleared by a failed read, a background or an epoch change, means no.
+    /// Checked for a new signature and for the first dispatch only; a resend or a settlement read never asks.
     func hostWritesAllowed(_ kind: String) -> Bool {
         guard let policy else { return false }
-        return policy.realm == .demo && (kind == "answer" || kind == "new_ticket")
+        return Self.hostAdmits(realm: policy.realm, support: hostSupport, kind: kind)
+    }
+    /// The rule itself (pure, so the Live branch is tested without a Secure Enclave): Demo unchanged; Live needs the host's signal.
+    static func hostAdmits(realm: Realm, support: HostWriteSupport?, kind: String) -> Bool {
+        switch realm {
+        case .demo: return kind == "answer" || kind == "new_ticket"
+        case .live: return support?.allows(kind) == true
+        }
     }
 
     /// The UI may offer answers here: a policy, and a host that takes them.
@@ -360,12 +368,15 @@ extension WorkspaceSession {
         var ticket: LifecycleFence.Ticket?
         if !a.dispatched {
             guard hostWritesAllowed(kind) else { throw WriteGateError.unavailable }
-            // the first dispatch of an automatic attempt needs its review's eligibility token; a tap's needs a usable lifecycle
+            // the first dispatch of an automatic attempt needs its review's eligibility token. A tap's needs a usable lifecycle that did not
+            // end for ITS review since the Sign tap (#84 SHOULD-B, one rule): a tap stopped before its first charge is never sent later,
+            // whichever of the fence and the actor hop got there first. (After a relaunch no token ever existed: the crash-recovery send of
+            // the same signed bytes stays.)
             if a.origin == "auto" {
                 guard let t = lifecycleFence.ticket(review: a.review) else { throw WriteGateError.eligibilityLost }
                 ticket = t
             } else {
-                guard let t = lifecycleFence.ticket() else { throw WriteGateError.lifecycleEnded }
+                guard let t = lifecycleFence.tapTicket(review: a.review) else { throw WriteGateError.lifecycleEnded }
                 ticket = t
             }
         }

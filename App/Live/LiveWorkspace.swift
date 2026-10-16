@@ -89,9 +89,16 @@ final class LiveWorkspace: WorkspaceModel {
     /// and then it is cleared here.
     func checkKeyAlarm() async {
         info.keyAlarm = await api.keyAlarm() != nil ? Self.keyAlarmMessage : nil
-        // C2b: whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them)
-        info.writeSupport = await api.writesAvailable()
-        info.createSupport = await api.writesAvailable(op: "new_ticket")
+        await syncWriteSupport()
+    }
+
+    /// C2b: whether this workspace takes answers and new tickets from this iPhone now (a person-event policy and a host that says it serves
+    /// them: Live reads `whoami.relay`, which the session refreshes and clears).
+    func syncWriteSupport() async {
+        let answers = await api.writesAvailable(), creates = await api.writesAvailable(op: "new_ticket")
+        guard usable else { return }
+        if info.writeSupport != answers { info.writeSupport = answers }
+        if info.createSupport != creates { info.createSupport = creates }
     }
 
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
@@ -121,6 +128,7 @@ final class LiveWorkspace: WorkspaceModel {
             info.keyAlarm = ReaderGate.updateMessage
             markOffline()
         case .invalidated: break          // the session re-reads on its own (foreground, with a subscriber)
+        case .writeSupportChanged: Task { [weak self] in await self?.syncWriteSupport() }
         case .removed: services?.workspaceRemoved(self)
         }
     }
@@ -206,6 +214,9 @@ final class LiveWorkspace: WorkspaceModel {
 
     func reviewCreation(type: String, title: String) async -> CreationReviewResult {
         guard canCreateTickets else { return .failed("This workspace doesn't take new tickets from this iPhone now.") }
+        // #86: while a signed creation is unsettled there is no new review (its marker would be overwritten and a second signature could
+        // create the ticket twice). The form shows it as being checked.
+        if loadDraft()?.review != nil { return .failed("Your last ticket is still being checked. It is not signed again until that is settled.") }
         if let problem = Self.titleProblem(title) { return .failed(problem) }
         do { try saveDraft(CreationDraft(type: type, title: title, review: nil)) }
         catch { return .failed("Could not save the ticket draft. Nothing was sent. Try again.") }
@@ -258,7 +269,9 @@ final class LiveWorkspace: WorkspaceModel {
     }
 
     func checkCreation() async -> CreationPhase {
-        guard usable, let draft = loadDraft(), let id = draft.review else { return .notSent("Nothing is being checked.") }
+        guard let draft = loadDraft(), let id = draft.review else { return .notSent("Nothing is being checked.") }
+        // a lock or the background is transient: a pending signed creation stays "checking", never "nothing" (#86)
+        guard usable else { return .checking }
         #if DEBUG
         await services?.releaseDemoHeldCreation(workspace: self)
         #endif

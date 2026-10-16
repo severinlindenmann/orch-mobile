@@ -346,6 +346,8 @@ extension FakeHost {
         viewState!.append(type: "ticket.created", ticket: t, at: now)
     }
     /// The host holds the next write admitted and not run (`pending`) until `demoRecoverWrites`.
+    /// Test control: what `whoami` says about writes (no `relay` field, `r6_ready` false, or ready).
+    package func setRelayCaps(_ caps: FakeRelayCaps) { seedViews(); viewState!.relayCaps = caps }
     public func demoHoldNextWrite() { seedViews(); viewState!.writeControls.holdNext = true }
     public func demoRecoverWrites() { recoverWrites() }
     /// The host runs the next write but its answer is lost on the way back: the phone settles with `outcome.get`.

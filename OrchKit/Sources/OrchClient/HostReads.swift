@@ -401,11 +401,36 @@ public struct ActivityPage: Equatable, Sendable {
 public struct WhoAmIResult: Equatable, Sendable {
     public let person: String?
     public let tier: String?
+    /// Column-R `whoami.relay` (host changelog 57): which person-event writes the host serves and the live R6 gate. Lenient: absent or
+    /// malformed is nil and never fails the read. Read-only display input to `HostWriteSupport`; it grants nothing by itself.
+    public let relay: HostWriteSupport?
     init(_ data: JSONValue) throws {
         let o = try ViewObject(data)
         person = try o.optStr("person")
         tier = try o.optStr("tier")
+        relay = HostWriteSupport(o.o["relay"])
     }
+}
+
+/// What the host says it takes from this phone: `relay:{ops:{<kind>:<version>}, r6_ready:bool}`. Held in memory by the session only (never
+/// persisted), refreshed per `startViews`, per foreground and per epoch change, and cleared on any failure (fail closed). `dev` is not parsed here.
+public struct HostWriteSupport: Equatable, Sendable {
+    public let ops: [String: Int64]
+    public let r6Ready: Bool
+
+    public init(ops: [String: Int64], r6Ready: Bool) { self.ops = ops; self.r6Ready = r6Ready }
+
+    /// nil for anything but `{ops: {string: int}, r6_ready: bool}`. Unknown keys and unknown ops are ignored; a malformed op value drops that op only.
+    init?(_ v: JSONValue?) {
+        guard let o = v?.object, let opsObject = o["ops"]?.object, let ready = o["r6_ready"]?.bool else { return nil }
+        var ops: [String: Int64] = [:]
+        for (k, n) in opsObject { if let i = n.int { ops[k] = i } }
+        self.ops = ops
+        r6Ready = ready
+    }
+
+    /// A write of `kind` is accepted only at version 1 and while R6 is ready.
+    public func allows(_ kind: String) -> Bool { r6Ready && ops[kind] == 1 }
 }
 
 /// `outcome.get {idem}` (11A.5, host 0.7): the host's record of a write, or `pending`. `failed` without `seqs` means nothing landed:

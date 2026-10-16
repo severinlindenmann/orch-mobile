@@ -227,6 +227,14 @@ struct CreationSheet: View {
     private var footer: some View {
         VStack(spacing: OS.s3) {
             switch phase {
+            case .ready where review.hasUnsafeContent:
+                // fail closed like the answer sheet's refusal (#86): hidden or look-alike characters in anything the signature binds or the
+                // sheet shows (the title, the workspace name) mean there is no Sign button. The draft stays; the person edits the title.
+                state("exclamationmark.octagon", OC.danger, "Can't be checked here",
+                      "The title or the workspace name has characters you cannot see or that look like other letters. Change the title, or create the ticket on your Mac.",
+                      id: "create.refused")
+                Button(role: .cancel, action: onClose) { Text("Cancel").frame(maxWidth: .infinity, minHeight: 44) }
+                    .foregroundStyle(OC.brand).accessibilityIdentifier("create.cancel")
             case .ready:
                 Button { Task { await sign() } } label: { Label("Sign and create", systemImage: "signature") }
                     .buttonStyle(.orchProminent)

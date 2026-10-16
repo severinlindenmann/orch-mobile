@@ -539,6 +539,45 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertFalse(ws.canCreateTickets)
     }
 
+    /// #86: a signed creation that is still unsettled blocks a new review (the marker would be overwritten and a second signature could
+    /// create the ticket twice); the draft file is untouched.
+    func testNoNewReviewWhileASignedCreationIsUnsettled() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        let pending = Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8)
+        try pending.write(to: ws.draftURL!)
+        let result = await ws.reviewCreation(type: "feature", title: "Another")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertEqual(sent, 0)
+        XCTAssertEqual(try Data(contentsOf: ws.draftURL!), pending)
+    }
+
+    /// #86: "not usable" (a lock, the background) is transient: a pending signed creation stays checking, never "nothing".
+    func testCheckCreationStaysCheckingWhileUnusableAndWithAPendingReview() async throws {
+        let id = SystemEntropy().id16()
+        let info = WorkspaceInfo(id: id.hex, name: "Test", host: "Mac", hue: 0, hostedBy: nil, clientHosted: false,
+                                 scopes: [.look, .decide], connection: .online, primaryLabel: "Mac", notificationsOn: true)
+        let ws = LiveWorkspace(workspaceID: id, generation: 1, api: WorkspaceStub(), info: info)      // not registered: not usable
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        XCTAssertFalse(ws.usable)
+        let none = await ws.checkCreation()
+        XCTAssertEqual(none, .notSent("Nothing is being checked."))
+        try Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8).write(to: ws.draftURL!)
+        let pending = await ws.checkCreation()
+        XCTAssertEqual(pending, .checking)
+    }
+
     func testTitleProblemsAreShownInline() {
         XCTAssertNil(LiveWorkspace.titleProblem("Check the tariff seeds"))
         XCTAssertEqual(LiveWorkspace.titleProblem("two\nlines"), "The title must be one line.")

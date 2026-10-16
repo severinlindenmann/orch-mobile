@@ -124,3 +124,37 @@ import OrchProtocol
         #expect(throws: ViewError.malformed) { _ = try HostResult(parsing: Data("[]".utf8)) }
     }
 }
+
+@Suite struct HostWriteSupportTests {
+    private func who(_ relay: JSONValue?) throws -> WhoAmIResult {
+        var o: [String: JSONValue] = ["peer": ["uid": -1, "class": "person"], "person": "p_x", "tier": "A", "grant": .null, "session": .null]
+        if let relay { o["relay"] = relay }
+        return try WhoAmIResult(.object(o))
+    }
+
+    /// The shape of host changelog 57 / `Dispatch._relay_caps`.
+    @Test func parsesTheHostShapeAndIgnoresDev() throws {
+        let r = try who(["ops": ["answer": 1, "new_ticket": 1], "r6_ready": true, "dev": ["sim_convenience": true, "sandbox": "abcd1234"]]).relay
+        #expect(r == HostWriteSupport(ops: ["answer": 1, "new_ticket": 1], r6Ready: true))
+        #expect(r?.allows("answer") == true && r?.allows("new_ticket") == true)
+        #expect(try who(["ops": ["answer": 1], "r6_ready": false]).relay?.allows("answer") == false)
+    }
+
+    @Test func absentOrMalformedIsNilAndNeverFailsTheRead() throws {
+        #expect(try who(nil).relay == nil)
+        for bad: JSONValue in [.null, "x", 1, [], ["ops": ["answer": 1]], ["r6_ready": true], ["ops": [], "r6_ready": true],
+                               ["ops": ["answer": 1], "r6_ready": "yes"], ["ops": ["answer": 1], "r6_ready": 1]] {
+            let w = try who(bad)
+            #expect(w.relay == nil && w.person == "p_x")
+        }
+    }
+
+    @Test func onlyVersionOneOfAnOpWithR6ReadyIsAllowed() throws {
+        let ready = HostWriteSupport(ops: ["answer": 1, "new_ticket": 2, "other": 1], r6Ready: true)
+        #expect(ready.allows("answer") && !ready.allows("new_ticket") && !ready.allows("unlisted"))
+        #expect(!HostWriteSupport(ops: ["answer": 1], r6Ready: false).allows("answer"))
+        // a malformed op value drops that op, not the others
+        let partial = try who(["ops": ["answer": 1, "new_ticket": "1"], "r6_ready": true]).relay
+        #expect(partial?.allows("answer") == true && partial?.allows("new_ticket") == false)
+    }
+}

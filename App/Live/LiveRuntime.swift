@@ -391,6 +391,7 @@ final class LiveRuntime: RealmRuntime {
 }
 
 extension RealmCapabilities {
-    /// Live starts with Drop, share, push and Demo controls off (docs/live-mode.md).
-    static let live = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: false)
+    /// Live: Drop, share, push and Demo controls off; writes on (C2b increment 4). That is only the capability: a Live write also needs a
+    /// Secure Enclave policy and the host's own `whoami.relay` signal (op at version 1 and `r6_ready`), checked per workspace (docs/live-mode.md).
+    static let live = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
 }

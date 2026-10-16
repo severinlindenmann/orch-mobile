@@ -758,6 +758,19 @@ extension FakeHost {
         #expect(r.hooks.count("pe.sign") == 1 && r.ops.value("answer") == 0)
     }
 
+    /// #84 SHOULD-B, one rule: a tap whose lifecycle ENDED between its Sign tap and its first charge is never sent, even when the app is
+    /// already usable again by the time the gate runs (the actor hop won the race): `notSent`, discarded, nothing sent later.
+    @Test func aTapWhoseLifecycleEndedIsNotSentWhenTheAppIsBackBeforeTheGate() async throws {
+        let r = try await rig()
+        await trip(r, at: "pe.signed") { s in s.noteInactive(); s.lifecycleFence.foregrounded() }
+        #expect(try await answer(r) == .needsReview(.notSent))
+        #expect(r.ops.value("answer") == 0)
+        let a = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts").first)
+        #expect(a.int("dispatched") == 0 && a.text("state") == "discarded")
+        #expect(try await settleAll(r, r.p).isEmpty)
+        #expect(r.ops.value("answer") == 0)
+    }
+
     /// The `ensureCurrent` after the charge: the accepted crash-after-charge window. The attempt stays dispatched (conservative) and is
     /// settled later.
     @Test func aTapInvalidatedAfterTheChargeIsSettledLater() async throws {
