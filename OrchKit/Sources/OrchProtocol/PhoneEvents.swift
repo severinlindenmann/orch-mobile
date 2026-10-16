@@ -73,7 +73,7 @@ public struct PhoneActor: Equatable, Sendable {
 
 /// A signed person event ready for `relay.submit` (host section 11A.14 14.1, 14.2). `bytes` is `cj(event)` with `sig`.
 public struct SignedPhoneEvent: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable { case questionAnswered, ticketCreated }
+    public enum Kind: Equatable, Sendable { case questionAnswered, ticketCreated, gateApproved, gateChangesRequested }
     public let kind: Kind
     public let log: String
     /// The event id: also `opts.idem` (idem = event id, 14.4).
@@ -196,6 +196,36 @@ public enum PhoneEvents {
         return UnsignedPhoneEvent(kind: .ticketCreated, log: ticketUID, id: id, event: e, workspace: workspace)
     }
 
+    // MARK: gate decisions (B10 phase 1)
+
+    /// `gate.approved` / `gate.changes_requested` on `requirements` or `plan` (host contract (c)): the envelope plus exactly `gate`,
+    /// `gate_gen`, `hash`, `policy_hash` (and `text` on a request for changes). Every value is the verified gate's; nothing host-stamped
+    /// (no `source_sha`). `convenience` is `op.not_allowed` on a gate event, so it is never built.
+    package static func unsignedGateDecision(_ g: GateReview.Verified, approve: Bool, text: PreparedText?, id: String, actor: PhoneActor,
+                                             workspace: ID16) throws -> UnsignedPhoneEvent {
+        guard ULID.isValid(id) else { throw Failure.badID }
+        guard g.workspace == workspace else { throw Failure.schema("workspace") }
+        guard GateReview.isPhoneGate(g.gate) else { throw Failure.schema("gate") }
+        guard actor.auth == .secureEnclaveUnlocked || actor.auth == .passphrase else { throw Failure.actorMismatch }
+        guard ULID.isValid(g.ticketUID) else { throw Failure.badTicketUID }
+        guard g.rosterV >= 0, g.rosterV <= maxSafeInt else { throw Failure.badRoster }
+        guard F1ASCII.isHash(g.basedOn) else { throw Failure.badBase }
+        var e = envelope(actor: actor, id: id, rosterV: g.rosterV, type: approve ? "gate.approved" : "gate.changes_requested", basedOn: .string(g.basedOn))
+        e["gate"] = .string(g.gate)
+        e["gate_gen"] = .int(g.gen)
+        e["hash"] = .string(g.hash)
+        e["policy_hash"] = .string(g.policyHash)
+        if approve {
+            guard text == nil else { throw Failure.schema("text") }
+        } else {
+            guard let text else { throw Failure.emptyText }
+            guard !text.value.isEmpty else { throw Failure.emptyText }
+            guard text.value.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
+            e["text"] = .string(text.value)
+        }
+        return UnsignedPhoneEvent(kind: approve ? .gateApproved : .gateChangesRequested, log: g.ticketUID, id: id, event: e, workspace: workspace)
+    }
+
     // MARK: signing
 
     private static func envelope(actor: PhoneActor, id: String, rosterV: Int64, type: String, basedOn: JSONValue) -> [String: JSONValue] {
@@ -264,6 +294,12 @@ public enum PhoneEvents {
         case .ticketCreated:
             type = "ticket.created"
             guard Set(ev.keys) == common.union(["key", "ticket_type", "title", "owner"]) else { throw Failure.schema("fields") }
+        case .gateApproved:
+            type = "gate.approved"
+            guard Set(ev.keys) == common.union(["gate", "gate_gen", "hash", "policy_hash"]) else { throw Failure.schema("fields") }
+        case .gateChangesRequested:
+            type = "gate.changes_requested"
+            guard Set(ev.keys) == common.union(["gate", "gate_gen", "hash", "policy_hash", "text"]) else { throw Failure.schema("fields") }
         }
         guard ev["v"]?.int == 2, ev["hash_v"]?.int == 1 else { throw Failure.schema("version") }
         guard let t = ev["type"]?.string, t.bytesEqual(type) else { throw Failure.schema("type") }
@@ -296,6 +332,18 @@ public enum PhoneEvents {
             guard n >= 1, n <= maxTitleScalars else { throw Failure.titleLength }
             do { try F1Text.check(title, oneLine: true) } catch let v as F1Text.Violation { throw Failure.text(v) }
             guard ev["owner"]?.string?.bytesEqual(actor.personID) == true else { throw Failure.actorMismatch }
+        case .gateApproved, .gateChangesRequested:
+            guard actor.auth == .secureEnclaveUnlocked || actor.auth == .passphrase else { throw Failure.actorMismatch }
+            guard let b = ev["based_on"]?.string, F1ASCII.isHash(b) else { throw Failure.badBase }
+            guard let gate = ev["gate"]?.string, GateReview.isPhoneGate(gate) else { throw Failure.schema("gate") }
+            guard let gen = ev["gate_gen"]?.int, gen >= 0, gen <= maxSafeInt else { throw Failure.schema("gate_gen") }
+            guard let h = ev["hash"]?.string, F1ASCII.isHash(h), let ph = ev["policy_hash"]?.string, F1ASCII.isHash(ph) else { throw Failure.schema("hash") }
+            if kind == .gateChangesRequested {
+                guard let tx = ev["text"]?.string else { throw Failure.schema("text") }
+                guard !tx.isEmpty else { throw Failure.emptyText }
+                guard tx.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
+                do { try F1Text.check(tx) } catch let v as F1Text.Violation { throw Failure.text(v) }
+            }
         }
         // the signature, over bytes recomputed from the event itself
         guard let sigText = ev["sig"]?.string, let sig = B64U.decode(sigText, length: Suite2.signatureLength) else { throw Failure.schema("sig") }

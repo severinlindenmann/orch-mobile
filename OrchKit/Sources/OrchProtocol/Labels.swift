@@ -67,6 +67,9 @@ public enum Label {
     public static let hDropParent = "orch/v2/drop-parent|"
     public static let hWSEnvelope = "orch/v2/ws-envelope-hash|"
     public static let hQuestion = "orch/v2/question|"
+    /// B10: `H("orch/v2/gate|" || cj(G))` and `H("orch/v2/section|" || UTF-8(text))` (ticket-format 5.6, 5.7), recomputed by the phone before it signs a gate decision.
+    public static let hGate = "orch/v2/gate|"
+    public static let hSection = "orch/v2/section|"
     /// F1 section 5.6 (host section 11A.14 14.5): `qid = hex(H("orch/v2/question-id|" || cj({question, ticket, workspace_id}))[0:16])`.
     public static let hQuestionID = "orch/v2/question-id|"
     public static let hAssert = "orch/v2/assert|"

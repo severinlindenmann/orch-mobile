@@ -36,6 +36,12 @@ public enum R2 {
         // `req.invalid`) and no `rd` (exempt from the check). Idempotent on the declaration digest and answered synchronously, so after a
         // crash or `already_done {unknown}` it is issued again under a new rid.
         "reader.declare": OpSpec(backend: "reader.declare", kind: .read, scope: "look", event: nil),
+        // B10 phase 1 (core #628): the person's own open approval hints, and the gate-hash input G the phone recomputes; both reads.
+        "phone.requests": OpSpec(backend: "phone.requests", kind: .read, scope: "look", event: nil),
+        "gate.input": OpSpec(backend: "gate.input", kind: .read, scope: "look", event: nil),
+        // gate decisions on requirements and plan only (the host refuses every other gate with `op.not_allowed`)
+        "approve": OpSpec(backend: "relay.submit", kind: .write, scope: "decide", event: "gate.approved"),
+        "changes": OpSpec(backend: "relay.submit", kind: .write, scope: "decide", event: "gate.changes_requested"),
     ]
     public static var allOps: [String: OpSpec] { ops }
 

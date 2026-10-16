@@ -20,6 +20,8 @@ extension R2 {
         switch kind {
         case .questionAnswered: "answer"
         case .ticketCreated: "new_ticket"
+        case .gateApproved: "approve"
+        case .gateChangesRequested: "changes"
         }
     }
 

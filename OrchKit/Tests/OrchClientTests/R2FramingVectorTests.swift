@@ -5,7 +5,7 @@ import Testing
 import OrchTestVectors
 @testable import OrchClient
 
-/// The R2 framing vectors of orch-core (`r2_framing.json`, 40 cases, vendored unmodified; see PROVENANCE.md): every case's request
+/// The R2 framing vectors of orch-core (`r2_framing.json`, 46 cases, vendored unmodified; see PROVENANCE.md): every case's request
 /// opens under the vector's key and carries the meta the vector names, every response chunk passes the phone's own section 8.8 checks,
 /// and the assembled answer is exactly the vector's (Result or refusal, with the closed per-code field sets) in the vector's retry class.
 struct R2Vectors {
@@ -49,9 +49,9 @@ private func phoneChunks(_ c: [String: JSONValue], _ v: R2Vectors) throws -> [R2
     let v = R2Vectors()
 
     @Test func inventory() {
-        #expect(v.cases.count == 40)
+        #expect(v.cases.count == 46)
         let names = v.cases.map { $0["name"]!.string! }
-        #expect(Set(names).count == 40)
+        #expect(Set(names).count == 46)
     }
 
     @Test func constantsAndTablesMatch() {
