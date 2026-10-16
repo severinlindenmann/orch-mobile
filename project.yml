@@ -199,6 +199,18 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SUPPORTED_PLATFORMS: iphonesimulator
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG ORCH_DEV_SANDBOX"
+  # The Simulator end-to-end UI test (batch B3): skipped unless TEST_RUNNER_ORCH_E2E_LINK is set (kit e2e/scenarios/sim-pair-answer.sh).
+  OrchDevSandboxUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [DevSandboxUITests]
+    dependencies:
+      - target: OrchDevSandbox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.devsandbox.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        SUPPORTED_PLATFORMS: iphonesimulator
 schemes:
   Orch:
     build:
@@ -216,7 +228,7 @@ schemes:
       config: Debug
     test:
       config: Debug
-      targets: [OrchDevSandboxTests]
+      targets: [OrchDevSandboxTests, OrchDevSandboxUITests]
       parallelizeBuild: false
       randomExecutionOrder: false
     profile:
