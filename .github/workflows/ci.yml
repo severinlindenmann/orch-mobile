@@ -100,19 +100,64 @@ jobs:
           CODE_SIGNING_ALLOWED=NO build
       - name: Release ignores debug launch flags
         run: scripts/check-release-flags.sh
+  lane:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Select pinned Xcode
+        run: |
+          test -d "/Applications/Xcode_${XCODE_VERSION}.app"
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+      - name: Install XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate project and audit extensions
+        run: |
+          test "$(xcodegen --version)" = "Version: ${XCODEGEN_VERSION}"
+          xcodegen generate
+          scripts/check-extension-links.sh
+          scripts/test-check-extension-links.sh
+      - name: Select iPhone simulator
+        run: |
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          python3 - <<'PY'
+          import json, os
+          with open(os.environ['RUNNER_TEMP'] + '/devices.json') as source:
+              devices = json.load(source)['devices']
+          candidates = [d for runtime, values in sorted(devices.items())
+                        if 'iOS-18-' in runtime for d in values
+                        if d['isAvailable'] and d['name'].startswith('iPhone')]
+          if not candidates:
+              raise SystemExit('No available iOS 18 iPhone simulator')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('SIMULATOR_ID=' + candidates[0]['udid'] + '\n')
+          PY
       # C2b increment 5 (host 11A.17): the Simulator dev-sandbox lane exists only in a Debug Simulator build, and only the variant turns it on.
-      - name: Dev-sandbox variant tests
-        run: >-
-          xcodebuild -project Orch.xcodeproj -scheme OrchDevSandbox
-          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
-          -derivedDataPath .build/dd-variant-test CODE_SIGNING_ALLOWED=NO
-          -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 test
-      - name: Dev-sandbox lane package tests (Simulator)
-        run: >-
-          cd OrchKit && xcodebuild -scheme OrchKit-Package
-          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
-          -derivedDataPath ../.build/dd-kit
-          -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1
-          -only-testing:OrchFakeHostTests/DevSandboxLaneTests test
+      # Its own job so the `app` job keeps its 45 minute budget. Each test step logs to a file and asserts a minimum executed-test count
+      # (scripts/assert-test-count.sh), so a filter that matches nothing cannot pass.
+      - name: Dev-sandbox variant tests (6 tests)
+        run: |
+          set -o pipefail
+          xcodebuild -project Orch.xcodeproj -scheme OrchDevSandbox \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -derivedDataPath .build/dd-variant-test CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES \
+            -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 test 2>&1 | tee "$RUNNER_TEMP/variant.log"
+          scripts/assert-test-count.sh "$RUNNER_TEMP/variant.log" 6 "variant tests"
+      - name: Dev-sandbox lane package tests (Simulator, 12 tests)
+        run: |
+          set -o pipefail
+          cd OrchKit
+          xcodebuild -scheme OrchKit-Package \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -derivedDataPath ../.build/dd-kit \
+            -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 \
+            -only-testing:OrchFakeHostTests/DevSandboxLaneTests test 2>&1 | tee "$RUNNER_TEMP/lane.log"
+          cd ..
+          scripts/assert-test-count.sh "$RUNNER_TEMP/lane.log" 11 "lane suite"
       - name: No lane symbols outside the variant
         run: scripts/check-dev-sandbox-symbols.sh

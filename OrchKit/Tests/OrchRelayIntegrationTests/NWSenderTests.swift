@@ -1,4 +1,3 @@
-#if os(macOS)   // Process: the iOS Simulator run of the package tests (dev-sandbox lane) skips the real-network suites
 import Foundation
 import Testing
 @testable import OrchClient
@@ -184,6 +183,7 @@ import Testing
 
     // MARK: compression bombs (nothing is ever decoded)
 
+    #if os(macOS)   // Process (gzip of zeros)
     @Test func compressedBombsAreRefusedAtTheHeadersWithoutDecoding() async throws {
         let gz = try Self.gzipOfZeros(mebibytes: 512)
         #expect(gz.count < 2 << 20)
@@ -222,6 +222,7 @@ import Testing
         p.waitUntilExit()
         return data
     }
+    #endif
 
     // MARK: malformed framing
 
@@ -456,5 +457,3 @@ import Testing
         #expect(r.status == 413)
     }
 }
-
-#endif

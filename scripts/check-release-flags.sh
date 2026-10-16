@@ -12,6 +12,7 @@ xcodebuild -project Orch.xcodeproj -scheme Orch -configuration Release -destinat
   -only-testing:OrchTests/LaunchOptionsTests \
   -only-testing:OrchTests/LaneAbsenceTests test >"$LOG" 2>&1 || { tail -30 "$LOG"; exit 1; }
 tail -5 "$LOG"
+# Expected: 6 or more tests (LaunchOptionsTests + LaneAbsenceTests + the one MappingTests case). A filter that matches nothing runs 0 and fails here.
 N=$(grep -Eo "Executed [0-9]+ tests?" "$LOG" | tail -1 | grep -Eo "[0-9]+" || echo 0)
 if ! grep -q "TEST SUCCEEDED" "$LOG" || [ "$N" -lt 6 ]; then echo "error: release flag check did not run its tests (executed: $N)" >&2; exit 1; fi
 echo "release flag check OK ($N tests)"
