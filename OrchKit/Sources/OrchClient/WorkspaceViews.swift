@@ -26,6 +26,15 @@ public protocol WorkspaceAPI: Sendable {
     func writeOutcome(reviewID: String) async throws -> WriteOutcome?
     /// Whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them).
     func writesAvailable() async -> Bool
+    /// The same for one write op (`answer`, `new_ticket`).
+    func writesAvailable(op: String) async -> Bool
+    /// C2b creation: reviews a new ticket (type, title through `prepareText(oneLine: true)`, a fresh `workspace.show` for the advertised
+    /// next key, a uid made once). Title violations are thrown as `PhoneEvents.Failure`; `writesUnavailable` when this session may not
+    /// create here.
+    func reviewCreation(type: String, title: String) async throws -> CreationReview
+    /// Signs and sends exactly `review` and settles it. `disclosedKey`: the next key the sheet disclosed when it armed (nil: none; then the
+    /// key is never changed by an automatic re-sign).
+    func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome
     /// Lifecycle signals that end the eligibility for an automatic re-sign (scenePhase inactive, protected data going away, custody lock,
     /// background, reviews invalidated). Synchronous and nonisolated: they reach the session's lifecycle fence at once, with no actor hop.
     func noteInactive()
@@ -44,6 +53,9 @@ public protocol WorkspaceAPI: Sendable {
 extension WorkspaceAPI {
     public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
     public func writesAvailable() async -> Bool { false }
+    public func writesAvailable(op: String) async -> Bool { false }
+    public func reviewCreation(type: String, title: String) async throws -> CreationReview { throw ViewError.writesUnavailable }
+    public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome { throw ViewError.writesUnavailable }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { nil }
     public func noteInactive() {}
     public func noteProtectedDataUnavailable() {}

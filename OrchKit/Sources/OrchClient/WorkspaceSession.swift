@@ -130,6 +130,8 @@ public struct WorkspaceSessionConfig: Sendable {
 /// is durable before it is sent (a single synchronous transaction allocates the seq and stores the sealed envelope).
 public actor WorkspaceSession: RealmParticipant {
     var reviews: [UUID: QuestionReview] = [:]
+    /// Issued creation reviews (C2b increment 3), consumed by `create`; dropped with the question reviews.
+    var creationReviews: [UUID: CreationReview] = [:]
     var reviewLifecycle: UInt64 = 0
     private var viewsStarted = false
     /// Set by realm shutdown: nothing is restarted afterwards (no poller, no recovery).
@@ -1370,7 +1372,7 @@ extension WorkspaceSession {
     public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
     /// Every held review goes, and a review read in flight is refused (`reviewQuestion` compares the counter). The fence is separate: it
     /// also ends on `.inactive` and a lock, which must not refuse the new review that is the way back from them.
-    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll() }
+    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll(); creationReviews.removeAll() }
 
     package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
         guard !cfg.enforcesOpTable else { throw ViewError.writesUnavailable }       // Live: no write path until C2b

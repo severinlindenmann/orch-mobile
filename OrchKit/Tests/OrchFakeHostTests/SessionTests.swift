@@ -277,9 +277,7 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         await w.host.setHandler(echo())
         let phone = try await w.makePhone()
         let s = phone.session
-        // scope: this phone holds look and decide, not operate
-        let nt: JSONValue = ["op": "new_ticket", "creation_id": .string(ID16.fresh(5).hex), "title": "t", "body": "", "epic_key": .null]
-        await #expect(throws: ClientError.host(.forbiddenScope)) { _ = try await w.serve(phone) { try await s.exchange(meta: nt) } }
+        // (a write's scope is the R2 table's `decide`, checked by the host's own admission: SubmitAdmissionTests, literal codes)
         // an op outside the closed table is forbidden_scope (R2, 11A.5)
         await #expect(throws: R2.MetaError.forbiddenScope) { _ = try await w.serve(phone) { try await s.exchange(meta: ["op": "nope"]) } }   // refused locally
         // removed from the host roster (bad state on the host): not_member, sealed and host-signed
