@@ -60,7 +60,9 @@ final class E2EPairAnswerTests: XCTestCase {
 
         // 3. Pairing: the SAS, then (after the host approves) the certification code. Both are reported to the script.
         let sas = app.el("pair.sas")
-        XCTAssertTrue(sas.waitForExistence(timeout: 90), "step 3: the SAS did not appear within 90 s (pairing state: \(pairingState(app)))")
+        let sasEnd = Date().addingTimeInterval(90)
+        while Date() < sasEnd, !sas.exists, !app.el("pair.refused").exists, !app.el("pair.alarm").exists { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertTrue(sas.exists, "step 3: the SAS did not appear within 90 s (pairing state: \(pairingState(app)))")
         report(offerID, "sas", Self.code(from: sas.label), to: codesPath)
         // The SAS shows until the host approves; the cert code appears when the primary step starts (dev-pair plays the primary).
         let cert = app.el("pair.certCode")
@@ -191,16 +193,16 @@ final class E2EPairAnswerTests: XCTestCase {
         XCTAssertFalse(code.isEmpty, "the \(phase) code could not be read from the screen")
         print("ORCH_E2E_CODE \(offerID) \(phase) \(code)")
         guard !path.isEmpty else { return }
-        let line = Data("\(offerID) \(phase) \(code)\n".utf8)
-        do {
-            if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
-            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: line)
-            try handle.synchronize()
-        } catch {
-            print("ORCH_E2E_NOTE could not write \(path): \(error) (the stdout line is the fallback)")
+        let line = Array("\(offerID) \(phase) \(code)\n".utf8)
+        // POSIX open: the path is usually the script's FIFO (no seeking; a non-blocking open fails at once when nobody reads it).
+        let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK, 0o600)
+        guard fd >= 0 else {
+            print("ORCH_E2E_NOTE could not open \(path): errno \(errno) (the stdout line is the fallback)")
+            return
+        }
+        defer { close(fd) }
+        if write(fd, line, line.count) != line.count {
+            print("ORCH_E2E_NOTE could not write \(path): errno \(errno) (the stdout line is the fallback)")
         }
     }
 
