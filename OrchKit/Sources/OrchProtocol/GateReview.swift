@@ -105,10 +105,22 @@ public enum GateReview {
 
     // MARK: the plain view
 
-    public struct Section: Equatable, Sendable { public let id: String, title: String, text: String }
-    public struct Criterion: Equatable, Sendable { public let id: String, text: String }
-    public struct TaskRow: Equatable, Sendable { public let n: Int, id: String, title: String, verify: [String] }
-    public struct Row: Equatable, Sendable { public let field: String, value: String }
+    public struct Section: Equatable, Sendable {
+        public let id: String, title: String, text: String
+        public init(id: String, title: String, text: String) { self.id = id; self.title = title; self.text = text }
+    }
+    public struct Criterion: Equatable, Sendable {
+        public let id: String, text: String
+        public init(id: String, text: String) { self.id = id; self.text = text }
+    }
+    public struct TaskRow: Equatable, Sendable {
+        public let n: Int, id: String, title: String, verify: [String]
+        public init(n: Int, id: String, title: String, verify: [String]) { self.n = n; self.id = id; self.title = title; self.verify = verify }
+    }
+    public struct Row: Equatable, Sendable {
+        public let field: String, value: String
+        public init(field: String, value: String) { self.field = field; self.value = value }
+    }
 
     /// What the review screen shows of a verified gate. `fullReview`: something signed is outside what the plain view knows how to show
     /// (or non-default where the contract asks for the whole input), so the raw input is shown in full and first.

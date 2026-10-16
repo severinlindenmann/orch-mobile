@@ -196,11 +196,9 @@ public actor WorkspaceContainer {
             "ALTER TABLE push_registrations ADD COLUMN supersedes TEXT",
         ]),
         // B10 phase 1: gate decisions (`approve` / `changes` over relay.submit) are a third review kind, 'gate'. SQLite cannot change a CHECK,
-        // so `pe_reviews` is rebuilt (the 12-step way, inside this migration's transaction: foreign keys are deferred until commit, when
-        // every `pe_attempts.review` points at a row again). Its index and its trigger go with the old table and are made again.
+        // so `pe_reviews` is rebuilt (the 12-step way: `rebuildsTables` switches foreign keys off for the transaction and checks them before commit). Its index and its trigger go with the old table and are made again.
         // `question` of a gate row is `gate:<ticket uid>:<gate>`: one active decision per gate, in SQL.
         Migration(version: 18, statements: [
-            "PRAGMA defer_foreign_keys = ON",
             """
             CREATE TABLE pe_reviews_new (review TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('answer','new_ticket','gate')), log TEXT NOT NULL,
               question TEXT, snapshot BLOB NOT NULL, key_disclosed TEXT, current_idem TEXT NOT NULL, ver INTEGER NOT NULL,
@@ -220,7 +218,7 @@ public actor WorkspaceContainer {
             WHEN OLD.state IN ('landed','landed_unconfirmed') AND (NEW.state NOT IN ('landed','landed_unconfirmed') OR NEW.landed_idem IS NOT OLD.landed_idem)
             BEGIN SELECT RAISE(ABORT, 'pe_reviews: a landing is final'); END
             """,
-        ]),
+        ], rebuildsTables: true),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {

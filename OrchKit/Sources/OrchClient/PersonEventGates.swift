@@ -178,7 +178,13 @@ extension WorkspaceSession {
         guard let policy, hostWritesAllowed(choice.opName) else { throw ViewError.writesUnavailable }
         guard GateReview.isPhoneGate(s.gate) else { throw GateReviewError.notOffered }
         var prepared: PhoneEvents.PreparedText?
-        if case .changes(let text) = choice { prepared = try PhoneEvents.prepareText(text, oneLine: false) }
+        if case .changes(let text) = choice {
+            // everything about the text is decided before the review is used up: a refused text leaves the review to try again
+            let t = try PhoneEvents.prepareText(text, oneLine: false)
+            guard !t.value.isEmpty else { throw PhoneEvents.Failure.emptyText }
+            guard t.value.utf8.count <= PhoneEvents.maxAnswerTextBytes else { throw PhoneEvents.Failure.textTooLong }
+            prepared = t
+        }
         guard s.workspaceID == workspace, s.generation == generation, s.realm == cfg.context.realm, foreground,
               let held = gateReviews[s.token], held == s else { throw ViewError.invalidReview }
         gateReviews[s.token] = nil

@@ -307,7 +307,7 @@ extension WorkspaceSession {
     /// The rule itself (pure, so the Live branch is tested without a Secure Enclave): Demo unchanged; Live needs the host's signal.
     static func hostAdmits(realm: Realm, support: HostWriteSupport?, kind: String) -> Bool {
         switch realm {
-        case .demo: return kind == "answer" || kind == "new_ticket"
+        case .demo: return kind == "answer" || kind == "new_ticket" || kind == "approve" || kind == "changes"
         case .live: return support?.allows(kind) == true
         }
     }
