@@ -64,6 +64,10 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('ORCH_E2E_SIM_UDID=' + candidates[0]['udid'] + '\n')
           PY
+      - name: Wait for the simulator
+        run: |
+          xcrun simctl boot "$ORCH_E2E_SIM_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$ORCH_E2E_SIM_UDID" -b
       - name: Write the invite key and pinned host key
         env:
           INVITE_KEY: ${{ secrets.ORCH_E2E_INVITE_KEY }}
@@ -89,15 +93,16 @@ jobs:
           scripts/e2e/sim-pair-answer.sh 2>&1 | tee "$RUNNER_TEMP/sim-pair-answer.log"
           exit "${PIPESTATUS[0]}"
       - name: Collect failure logs
-        if: failure()
+        if: always()
         run: |
+          # Text logs only, with every pairing code and link line removed. Never an .xcresult: XCUITest records the typed pair link (its secret) and screenshots.
           mkdir -p "$RUNNER_TEMP/e2e-logs"
-          cp "$RUNNER_TEMP/sim-pair-answer.log" "$RUNNER_TEMP/e2e-logs/" 2>/dev/null || true
-          # the per-step logs (build, up, xcodebuild, ...); the invite file is deleted by the script and never copied
-          for f in "$HOME"/e2e/spa/*.log; do [ -f "$f" ] && cp "$f" "$RUNNER_TEMP/e2e-logs/"; done
-          find .build/dd-e2e/Logs/Test -name '*.xcresult' -maxdepth 1 -exec cp -R {} "$RUNNER_TEMP/e2e-logs/" \; 2>/dev/null || true
+          redact() { grep -a -v -e 'ORCH_E2E_CODE' -e '#v2\.' -e 'orch://pair' "$1" > "$RUNNER_TEMP/e2e-logs/$(basename "$1")" 2>/dev/null || true; }
+          [ -f "$RUNNER_TEMP/sim-pair-answer.log" ] && redact "$RUNNER_TEMP/sim-pair-answer.log"
+          for f in "$HOME"/e2e/spa/*.log; do [ -f "$f" ] && redact "$f"; done
+          true
       - name: Upload failure logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4.6.2
         with:
           name: e2e-nightly-logs

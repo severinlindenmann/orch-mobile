@@ -39,6 +39,13 @@ final class E2EPairAnswerTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 30), "step 1: the Live entry (live.paste) did not appear")
         field.tap()
         field.typeText(link)
+        // typeText can drop characters on a slow simulator: compare the field with the link and retype once on a mismatch.
+        if (field.value as? String) != link {
+            field.press(forDuration: 1.0)
+            if app.menuItems["Select All"].waitForExistence(timeout: 3) { app.menuItems["Select All"].tap() }
+            field.typeText(link)
+            XCTAssertEqual(field.value as? String, link, "step 1: the typed link does not match after a retry")
+        }
         if app.buttons["live.keyboardDone"].waitForExistence(timeout: 5) { app.buttons["live.keyboardDone"].tap() }
         let review = app.buttons["live.review"]
         expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: review)
@@ -91,9 +98,9 @@ final class E2EPairAnswerTests: XCTestCase {
         XCTAssertTrue(app.el("devsandbox.banner").waitForExistence(timeout: 60), "step 4: no DEV SANDBOX banner in the joined workspace")
         XCTAssertFalse(app.el("devsandbox.notSandbox").exists, "step 4: the host does not say this is a dev sandbox")
 
-        // 5. The question carrying the nonce (<= 180 s; the workspace is re-opened every 30 s to read afresh).
+        // 5. The question carrying the nonce (<= 300 s; the workspace is re-opened every 30 s to read afresh).
         let row = app.questionRow(nonce)
-        let waitEnd = Date().addingTimeInterval(180)
+        let waitEnd = Date().addingTimeInterval(300)
         var lastReopen = Date()
         while Date() < waitEnd, !row.exists {
             Thread.sleep(forTimeInterval: 1)
@@ -101,17 +108,17 @@ final class E2EPairAnswerTests: XCTestCase {
         }
         if !row.exists {
             let macOnly = app.el("ws.macOnly")
-            XCTFail("step 5: no open question with the nonce within 180 s"
+            XCTFail("step 5: no open question with the nonce within 300 s"
                 + (macOnly.exists ? " (the workspace says \"\(macOnly.label)\": the phone cannot answer a free-text question, give the question options)" : ""))
             return
         }
         row.tap()
 
-        // 6. Answer: the option labelled `e2e-ok-<nonce>` if there is one, else the first option; convenience signing.
+        // 6. Answer: the option labelled `e2e_ok_<nonce>` if there is one, else the first option; convenience signing.
         let wanted = NSPredicate(format: "identifier BEGINSWITH 'question.option.' AND NOT (identifier BEGINSWITH 'question.option.cost.')")
         let options = app.descendants(matching: .any).matching(wanted)
         XCTAssertTrue(options.firstMatch.waitForExistence(timeout: 30), "step 6: the question shows no options to choose from (free text is answered on the Mac)")
-        let named = options.matching(NSPredicate(format: "label CONTAINS %@", "e2e-ok-\(nonce)")).firstMatch
+        let named = options.matching(NSPredicate(format: "label CONTAINS %@", "e2e_ok_\(nonce)")).firstMatch
         (named.exists ? named : options.firstMatch).tap()
         let confirm = app.buttons["sign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60), "step 6: the sign sheet (sign.confirm) did not appear: \(signState(app))")
@@ -154,7 +161,7 @@ final class E2EPairAnswerTests: XCTestCase {
 
     @MainActor
     private func reopenWorkspace(_ app: XCUIApplication) {
-        let back = app.navigationBars.buttons.element(boundBy: 0)
+        let back = app.navigationBars.buttons["BackButton"] // the system back button's identifier
         guard back.exists, back.isHittable else { return }
         back.tap()
         let card = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'home.workspace.'")).firstMatch

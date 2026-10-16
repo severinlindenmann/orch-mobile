@@ -11,7 +11,7 @@
 #   phone     the UI test OrchDevSandboxUITests/E2EPairAnswerTests/testPairAndAnswer starts; the codes it prints
 #             (ORCH_E2E_CODE <offer> <phase> <CODE>) are relayed into the FIFO when its own file write did not arrive
 #   ask       dev-pair up exits 0 (approved), then dev-pair ask creates a ticket + a free-text question with the nonce
-#   answer    dev-pair check-answer sees question.answered "e2e-ok-<nonce>" signed by the paired device
+#   answer    dev-pair check-answer sees question.answered "e2e_ok_<nonce>" signed by the paired device
 #   xcodebuild the UI test exits 0 (it saw the settlement)
 # Environment (ORCH_CORE_DIR is required; the rest is optional):
 #   ORCH_CORE_DIR             an orch-core checkout with plugins/orch-core/.venv (uv sync --locked)   E2E_BASE  $HOME/e2e (short, not under /tmp)
@@ -178,7 +178,9 @@ run_scenario() {
   step_pass "phone (UI test started)"
 
   # -- up finishes when the pairing is approved
+  local up_deadline=$((SECONDS + 900))
   while kill -0 "$up_pid" 2>/dev/null; do
+    if ((SECONDS > up_deadline)); then step_fail "up (pairing not approved within 900 s; see $work/up.log)"; return 1; fi
     if ! kill -0 "$xb_pid" 2>/dev/null; then # the UI test ended before the pairing did
       sleep 3
       kill -0 "$up_pid" 2>/dev/null && { step_fail "up (the UI test ended first; see $work/xcodebuild.log)"; return 1; }
