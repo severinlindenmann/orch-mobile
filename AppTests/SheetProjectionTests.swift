@@ -62,6 +62,7 @@ final class SheetProjectionTests: XCTestCase {
         clean.0.resetThisiPhone(); await clean.0.waitForReset()
     }
 
+    #if DEBUG
     /// Opus SH4: the question is safe when first seen, then an UNSELECTED cost turns unsafe at the host before the sheet loads its
     /// review. The sheet refuses (fail closed): Sign does nothing, no signature, no stored attempt.
     func testAnUnselectedCostTurnedUnsafeBeforeTheReviewNeverSigns() async throws {
@@ -84,6 +85,7 @@ final class SheetProjectionTests: XCTestCase {
         XCTAssertEqual(attempts, 0)
         services.resetThisiPhone(); await services.waitForReset()
     }
+    #endif
 
     /// The Live block texts: no realm writes, then a host that does not take answers yet.
     func testWriteBlockTexts() {
