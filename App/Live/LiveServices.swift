@@ -155,7 +155,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         live.append(ws)
     }
     func waitForLifecycle() async { await lifecycleTask?.value }
-    func waitForReset() async { await resetTask?.value }
+    func waitForReset() async { await leaveTask?.value; await resetTask?.value }
+    /// Leave without a controller (unit tests): the registration drain, then the teardown.
+    @ObservationIgnored private var leaveTask: Task<Void, Never>?
 
     func transition(_ id: String, to state: WorkspaceLifecycle) {
         if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
@@ -1230,7 +1232,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let transitions { transitions.realmLeave(thenDemo: thenDemo); return }
         // Without a controller (unit tests): the same two halves.
         guard !thenDemo else { return }
-        if beginLeave() { Task { await drainPushRegistrations(); teardown() } } else { teardown() }
+        if beginLeave() { leaveTask = Task { await drainPushRegistrations(); teardown() } } else { teardown() }
     }
 
     /// True while Leave Live / Reset is removing the relay registrations (the realm is already marked for removal and cut off from the UI).

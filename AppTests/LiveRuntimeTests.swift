@@ -274,9 +274,9 @@ final class LiveRuntimeTests: XCTestCase {
         XCTAssertTrue(try rig.keys.contains(SecretID(realm: .live, ws: staged, purpose: "pairing")))
         XCTAssertTrue(try rig.push.contains(SecretID(realm: .live, ws: staged, purpose: "push")))
         for dir in [stateDir, stagedDir, quarantine] { XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path), dir.path) }
-        services.resetThisiPhone()                                            // Leave Live
-        XCTAssertFalse(services.lifetime.isActive)
+        services.resetThisiPhone()                                            // Leave Live (with push on the registration drain runs first)
         await services.waitForReset()
+        XCTAssertFalse(services.lifetime.isActive)
         XCTAssertFalse(services.resetIncomplete)
         XCTAssertEqual(try liveVaultItems(rig), 0)
         XCTAssertTrue(try rig.keys.contains(demoItem))                        // another realm is never addressed
@@ -436,6 +436,7 @@ final class LiveRuntimeTests: XCTestCase {
     func testLiveHasNoApnsNoLiveDropAndNoShareBridge() async throws {
         let rig = try makeRig(); defer { rig.cleanup() }
         let runtime = try LiveRuntime(install: LiveInstall(origin: origin, owner: nil), storage: rig.storage)
+        runtime.capabilities = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)   // the no-capability path
         let services = LiveServices(options: options, runtime: runtime, resetFlags: rig.flags)
         var reads = 0, registrations = 0
         services.currentPermission = { reads += 1; return .authorized }

@@ -95,7 +95,7 @@ owner key, in `UserDefaults` key `orch.live.install`). Nothing writes that recor
   deleted. Only after success are the gate, the install record and the realm's pending server cleanups cleared. A launch that finds the
   gate completes the wipe before any realm starts. Tombstone coordination files are kept; `WorkspaceIndex.nextGeneration` now also looks at them
   so a rejoin after Leave starts above a burnt generation.
-* **Capabilities** (`RealmCapabilities.live`): drop, share, push and demoControls all off until owner-approved relay routes exist. `writes` is ON since C2b increment 4 (answers and new tickets), but the capability is only the first of three conditions: a Live write also needs a Secure Enclave policy (software custody, e.g. the Simulator, has none) and the host's own signal, column-R `whoami.relay` with the op at version 1 and `r6_ready` true (see `host-api-v1.md`, "Live write signal"). The signal is kept in memory by the session, read at `startViews`, on foreground and on an epoch change, and cleared on background, on a failed or malformed read and on an epoch change: no signal, no new Live signature and no first dispatch.
+* **Capabilities** (`RealmCapabilities.live`): drop, share and demoControls off until owner-approved relay routes exist; `push` is ON since B4 (orch-relay #79 routes exist), per relay: a 404 from the relay marks push unavailable for it (see below). `writes` is ON since C2b increment 4 (answers and new tickets), but the capability is only the first of three conditions: a Live write also needs a Secure Enclave policy (software custody, e.g. the Simulator, has none) and the host's own signal, column-R `whoami.relay` with the op at version 1 and `r6_ready` true (see `host-api-v1.md`, "Live write signal"). The signal is kept in memory by the session, read at `startViews`, on foreground and on an epoch change, and cleared on background, on a failed or malformed read and on an epoch change: no signal, no new Live signature and no first dispatch.
 * Live `leave(workspaceID:)` never reports server success (`finishOnMac`): no acknowledged server operation exists yet.
 * Custody: Secure Enclave on device, software on Simulator. Passphrase custody (orch-core #465) is a later item.
 * Known limit: restored sessions use the same poll cadence as a fresh join (no long poll yet); real-relay tuning belongs with PR C.
@@ -283,19 +283,19 @@ Drop stays capability-off in Live until the relay serves the routes. When it is 
 The phone side is built and stays **capability-off in Live** until `relay.dev.severin.io` serves the push routes. Demo is unchanged: its
 push is the local simulation, and Demo never registers.
 
-**The one switch.** `RealmCapabilities.live` in `App/Live/LiveRuntime.swift`: set `push: true`. Nothing else changes. Checked on 15 Oct 2026:
-`relay.dev.severin.io` answers `{"detail":"Not Found"}` (FastAPI routing 404, the body of a route that does not exist) for
-`POST /v2/push/register`, `/v2/push/unregister` and for an unrelated `/v2/push/...` path alike, and for `/v2/drop/list`. A relay that has D40 but
-no push configured answers `404 {"error":"not_found"}`; a relay with push answers 401 `unauthenticated` to the same request without a bearer.
-Flip the switch only after the unauthenticated probe says 401, and re-run it first. The phone treats a 404 from a configured route as "push
-is off on this relay" (below), so a premature flip degrades to a visible diagnostics line, not an error.
+**Push is on in Live (B4), per relay.** `RealmCapabilities.live.push` is true. A relay without push configured answers `404 {"error":"not_found"}` on
+`POST /v2/push/register` and `/unregister` before any check (orch-relay protocol-v2 section 19.10); the phone treats that as "this relay has no push":
+no error banner, one quiet line in Settings (`relay: push is not enabled on this relay`), and no further requests until six hours have passed
+(`PushRegistrationCoordinator.pushOffRetry`, the time is stored per install in `UserDefaults` `orch.push.relayOffSince`, cleared by Reset and by a
+successful registration). The retry happens at the next launch or foreground after the window. A relay with push answers 401 to an unauthenticated
+probe. The Simulator never registers (no APNs environment); real delivery is checked on the iPhone.
 
 **Registration** (`OrchClient/PushService`, `RelayClient.registerPush/unregisterPush`, device session, `POST /v2/push/register`):
 body `{workspace_id, registration_id, env, topic: "io.severin.orch", token}`, `token` b64u of 32..100 bytes. The registration id is 16 random
 bytes (hex), kept per (workspace, env) in the workspace store (`push_registrations`, migration 14) and saved BEFORE the request, so a lost
 reply retries the same body (200, free). A changed token mints a new id (a new id retires the old one at the relay; the same id with another
-body is 409). 409 `registration_conflict`: mint a new id and register once more, a second 409 is reported. 404: `relayPushOff`, nothing is
-asked again until the next launch. 403 `not_eligible` / `revoked`: shown, not retried. 429: no retries for `Retry-After` (300 s without one).
+body is 409) and, once the new one is confirmed, the old id is also unregistered explicitly (best effort; never the `null` form, which would remove the new one). 409 `registration_conflict`: mint a new id and register once more, a second 409 is reported. 404: `relayPushOff`, nothing is
+asked again for six hours (launch and foreground alike). 403 `not_eligible` / `revoked`: shown, not retried. 429: no retries for `Retry-After` (300 s without one).
 
 **When it runs** (`App/Push/PushRegistrationCoordinator`, owned by `LiveServices`, only when the realm has `capabilities.push`):
 * A workspace is ready (joined, or restored at launch): publish the notification extension's material, follow the epoch, read the OS
