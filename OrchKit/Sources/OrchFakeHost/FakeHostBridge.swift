@@ -267,7 +267,8 @@ extension FakeHost {
             let reply = await run(a)
             running.remove(h.rid)
             // Demo/test control: the write ran and its answer is kept (a same-rid resend replays it), but this copy is not posted
-            if a.meta.object?["op"]?.string == "answer", viewState?.writeControls.loseNextResponse == true {
+            if ["answer", "new_ticket"].contains(a.meta.object?["op"]?.string ?? ""), a.meta.object?["creation_id"] == nil,
+               viewState?.writeControls.loseNextResponse == true {
                 viewState!.writeControls.loseNextResponse = false
                 viewState!.lostRids.insert(h.rid)
             }

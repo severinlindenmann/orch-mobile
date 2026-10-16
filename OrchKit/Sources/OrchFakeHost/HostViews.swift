@@ -290,7 +290,7 @@ extension FakeHost {
             guard req.data.isEmpty else { return .refuse(.malformed) }
             // not an R2 op: the closed table has no `http`; kept only as the bridge tests' vehicle (a plain 404)
             return reply(["host_api": 0, "error": "not_found"], 404)
-        case "answer":
+        case "answer", "new_ticket" where m["creation_id"] == nil:
             // the FakeHost's OWN shape check of a write's meta (never only the client's): {op, args{...}, idem, rd?}, no data
             guard Set(m.keys).isSubset(of: ["op", "args", "idem", "rd"]), m["args"]?.object != nil, m["idem"]?.string != nil, req.data.isEmpty
             else { return hostRefusal("invalid.input") }
@@ -303,9 +303,9 @@ extension FakeHost {
             catch { return .refuse(.malformed) }
             guard req.scopes.contains(checked.spec.scope) else { return .refuse(.forbiddenScope) }
             if checked.spec.kind == .write {
-                // `answer` is served (SubmitAdmission.swift); R2 `new_ticket` waits for increment 3 (Demo creation is still the v0 op)
-                guard checked.op == "answer" else { return hostRefusal("op.not_allowed") }
-                return submitAnswer(req, args: checked.args, idem: checked.idem)
+                // `answer` and `new_ticket` (SubmitAdmission.swift)
+                guard checked.op == "answer" || checked.op == "new_ticket" else { return hostRefusal("op.not_allowed") }
+                return submitWrite(req, op: checked.op, args: checked.args, idem: checked.idem)
             }
             if checked.op == "outcome.get" {
                 guard let idem = checked.args["idem"]?.string, ULID.isValid(idem) else { return hostRefusal("invalid.input") }

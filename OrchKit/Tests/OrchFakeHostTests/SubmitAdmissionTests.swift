@@ -191,6 +191,153 @@ import OrchProtocol
     }
 }
 
+/// FakeHost conformance for `relay.submit` `new_ticket` (spec 14.6 with L4/L5 for a creation): expected codes written out literally.
+@Suite struct SubmitCreationAdmissionTests {
+    let base = SubmitAdmissionTests()
+    struct Ev { let log: String, id: String; let event: [String: JSONValue] }
+
+    func create(_ r: SubmitAdmissionTests.Rig, uid: String? = nil, key: String = "MOB-0002", type: String = "feature", title: String = "Check the tariff seeds",
+                id: String? = nil, rosterV: Int64 = 1, auth: F1Auth = .passphrase, device: ID16? = nil, signer: (any Signer)? = nil,
+                edit: (@Sendable (inout [String: JSONValue]) -> Void)? = nil) async throws -> Ev {
+        let person = await r.w.primary.personID
+        let actor = try PhoneActor(person: person, device: device ?? r.w.phoneID, auth: auth)
+        let eid = try id ?? ULID.make(timeMs: r.w.clock.nowMs, random: SystemEntropy().bytes(10))
+        let log = try uid ?? ULID.make(timeMs: r.w.clock.nowMs, random: SystemEntropy().bytes(10))
+        let u = try PhoneEvents.unsignedCreate(ticketUID: log, key: key, ticketType: type, title: try PhoneEvents.prepareText(title, oneLine: true), id: eid,
+                                               rosterV: rosterV, actor: actor, workspace: r.w.ws)
+        let e: SignedPhoneEvent
+        if let signer { e = try PhoneEvents.sign(u, signer: signer) } else { e = try PhoneEvents.sign(u, signer: r.w.env.device.sig) }
+        guard let edit else { return Ev(log: e.log, id: e.id, event: e.event) }
+        // a hand-edited event (re-signed over the edited content, so only the FakeHost's own checks can refuse it)
+        var ev = e.event; ev["sig"] = nil; edit(&ev)
+        let body = try canonicalJSON(["contract": 1, "event": .object(ev), "log": .string(log), "suite": 2, "workspace_id": .string(r.w.ws.hex)])
+        let sig: Data
+        if let signer { sig = try Signature.sign(signer, label: "orch/v2/sig/ticket-event|", message: body) }
+        else { sig = try Signature.sign(r.w.env.device.sig, label: "orch/v2/sig/ticket-event|", message: body) }
+        ev["sig"] = .string(B64U.encode(sig))
+        return Ev(log: log, id: eid, event: ev)
+    }
+
+    /// The write meta built by hand (the phone's `R2.writeMeta` would refuse a hand-edited event).
+    func submit(_ r: SubmitAdmissionTests.Rig, _ e: Ev, scopes: [String] = ["look", "decide"], op: String = "new_ticket") async throws -> HostReply {
+        let meta: JSONValue = ["op": .string(op), "args": ["log": .string(e.log), "events": [.object(e.event)]], "idem": .string(e.id)]
+        return await r.w.host.handleView(HostRequest(device: r.w.phoneID, scopes: scopes, meta: meta, data: Data(), epoch: 1))
+    }
+
+    func refusal(_ reply: HostReply) -> (code: String, nextKey: String?)? {
+        if case .refuse(.host(let code, _, _, let k)) = reply { return (code, k) }
+        if case .refuse(let h) = reply { return (h.code, nil) }
+        return nil
+    }
+
+    func result(_ reply: HostReply) throws -> (log: String, seqs: [JSONValue], key: String?, duplicate: Bool)? {
+        guard case .r2(let bytes) = reply, let o = try StrictJSON.parse(bytes).object, let d = o["data"]?.object else { return nil }
+        return (d["log"]?.string ?? "", d["seqs"]?.array ?? [], o["key"]?.string, o["duplicate"]?.bool ?? false)
+    }
+
+    @Test func aCreationLandsWithItsKeyAndAnIdenticalRetryReplays() async throws {
+        let r = try await base.rig()
+        let e = try await create(r)
+        let first = try #require(try result(try await submit(r, e)))
+        #expect(first.log == e.log && first.seqs == [1] && first.key == "MOB-0002" && first.duplicate == false)
+        let again = try #require(try result(try await submit(r, e)))
+        #expect(again.seqs == [1] && again.key == "MOB-0002" && again.duplicate == true)
+        // the ticket exists under the phone's uid, and the next key moved on
+        #expect(await r.w.host.nextKey == "MOB-0003")
+        // the same idem with other content
+        #expect(refusal(try await submit(r, try await create(r, uid: e.log, title: "Other", id: e.id)))?.code == "idem.conflict")
+    }
+
+    @Test func aKeyRaceIsKeyNotNextWithTheAdvisoryNextKey() async throws {
+        let r = try await base.rig()
+        await r.w.host.demoTakeNextKey()
+        let e = try await create(r)
+        let got = try #require(refusal(try await submit(r, e)))
+        #expect(got.code == "ticket.key_not_next" && got.nextKey == "MOB-0003")
+        // the stored outcome answers the same, with the detail
+        let o = await r.w.host.outcomeRecord(device: r.w.phoneID, idem: e.id)
+        #expect(o?.state == "failed" && o?.code == "ticket.key_not_next")
+        // signed with the advertised key, under the same uid: lands
+        let again = try #require(try result(try await submit(r, try await create(r, uid: e.log, key: "MOB-0003"))))
+        #expect(again.key == "MOB-0003")
+    }
+
+    @Test func aUsedUidIsTicketExists() async throws {
+        let r = try await base.rig()
+        let e = try await create(r)
+        _ = try await submit(r, e)
+        // a new event (new id) for the same uid, even with the right next key
+        #expect(refusal(try await submit(r, try await create(r, uid: e.log, key: "MOB-0003")))?.code == "ticket.exists")
+    }
+
+    @Test func ownerTypeTitleAndShape() async throws {
+        let r = try await base.rig()
+        #expect(refusal(try await submit(r, try await create(r) { $0["owner"] = .string("p_" + String(repeating: "00", count: 16)) }))?.code == "invalid.input")
+        #expect(refusal(try await submit(r, try await create(r) { $0["ticket_type"] = "story" }))?.code == "validation.event")
+        #expect(refusal(try await submit(r, try await create(r) { $0["title"] = "two\nlines" }))?.code == "validation.text")
+        #expect(refusal(try await submit(r, try await create(r) { $0["title"] = "" }))?.code == "validation.text")
+        #expect(refusal(try await submit(r, try await create(r) { $0["based_on"] = .string("sha256:" + String(repeating: "ab", count: 32)) }))?.code == "validation.event")
+        #expect(refusal(try await submit(r, try await create(r) { $0["key"] = "mob-2" }))?.code == "validation.event")
+        #expect(refusal(try await submit(r, try await create(r) { $0["body"] = "details" }))?.code == "validation.event")
+        // P2: a creation under the answer op, and an answer-typed event under new_ticket
+        #expect(refusal(try await submit(r, try await create(r), op: "answer"))?.code == "forbidden_scope")
+    }
+
+    @Test func checksBeforeAndUnderTheLock() async throws {
+        let r = try await base.rig()
+        // P4, P5 (convenience never on a creation), P7
+        #expect(refusal(try await submit(r, try await create(r, device: ID16.fresh(9))))?.code == "op.not_allowed")
+        #expect(refusal(try await submit(r, try await create(r) { $0["auth"] = "convenience" }))?.code == "op.not_allowed")
+        #expect(refusal(try await submit(r, try await create(r, signer: SoftwareSigner())))?.code == "sig.invalid")
+        // L2
+        #expect(refusal(try await submit(r, try await create(r), scopes: ["look"]))?.code == "forbidden_scope")
+        await r.w.host.demoRemoveDevice(r.w.phoneID)
+        #expect(refusal(try await submit(r, try await create(r)))?.code == "not_member")
+    }
+
+    @Test func aStaleRosterIsMembersStale() async throws {
+        let r = try await base.rig()
+        await r.w.host.demoBumpMembersV()
+        #expect(refusal(try await submit(r, try await create(r)))?.code == "members.stale")
+        #expect(try result(try await submit(r, try await create(r, rosterV: 2))) != nil)
+    }
+
+    @Test func theWindowAppliesToANeverSeenCreation() async throws {
+        let r = try await base.rig()
+        let old = try ULID.make(timeMs: r.w.clock.nowMs - 901_000, random: Data(repeating: 1, count: 10))
+        #expect(refusal(try await submit(r, try await create(r, id: old)))?.code == "event.expired")
+    }
+
+    @Test func crashAfterPlanRecoversAndAKeyTakenMeanwhileIsKeyNotNext() async throws {
+        let r = try await base.rig()
+        await r.w.host.setWriteControls(crashAfterPlan: true)
+        let e = try await create(r)
+        #expect(refusal(try await submit(r, e))?.code == "already_done")
+        await r.w.host.recoverWrites()
+        let rec = try #require(await r.w.host.outcomeRecord(device: r.w.phoneID, idem: e.id))
+        #expect(rec.state == "committed" && rec.seq == 1)
+        #expect(try result(try await submit(r, e))?.duplicate == true)
+
+        await r.w.host.setWriteControls(crashAfterPlan: true)
+        let f = try await create(r, key: "MOB-0003")
+        _ = try await submit(r, f)
+        await r.w.host.demoTakeNextKey()
+        await r.w.host.recoverWrites()
+        let g = try #require(await r.w.host.outcomeRecord(device: r.w.phoneID, idem: f.id))
+        #expect(g.state == "failed" && g.code == "ticket.key_not_next")
+    }
+
+    @Test func crashAfterAppendRecoversAsCommitted() async throws {
+        let r = try await base.rig()
+        await r.w.host.setWriteControls(crashAfterAppend: true)
+        let e = try await create(r)
+        #expect(refusal(try await submit(r, e))?.code == "already_done")
+        await r.w.host.recoverWrites()
+        #expect(await r.w.host.loggedCount() == 1)
+        #expect(await r.w.host.outcomeRecord(device: r.w.phoneID, idem: e.id)?.state == "committed")
+    }
+}
+
 extension FakeHost {
     fileprivate func forgetOutcomes() { viewState?.outcomes = [:] }
 }
