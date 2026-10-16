@@ -667,6 +667,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     var needsYouCount: Int { live.reduce(0) { $0 + $1.waiting.count } }
 
+    var approvalGroups: [ApprovalGroup] {
+        live.compactMap { ws in ws.usable && !ws.approvals.isEmpty ? ApprovalGroup(workspace: ws.info, requests: ws.approvals) : nil }
+    }
+
+    func refreshApprovals() async { for ws in live { await ws.refreshApprovals() } }
+
     var oldestWaiting: (question: Question, workspace: WorkspaceInfo)? {
         live.flatMap { ws in ws.waiting.map { ($0, ws.info) } }.min { $0.0.created < $1.0.created }
     }

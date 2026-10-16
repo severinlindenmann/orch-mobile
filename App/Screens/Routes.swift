@@ -14,6 +14,9 @@ enum WorkspaceSegment: String, CaseIterable, Hashable, Sendable {
 
 enum Route: Hashable {
     case needsYou
+    /// B10: the approvals list (it is the top of the Questions tab); a notification for an approval request opens it.
+    case approvals
+    case approval(workspace: String, id: String)
     case workspace(String, WorkspaceSegment)
     case question(workspace: String, id: String, autoSign: Bool)
     case ticket(workspace: String, key: String)
@@ -46,6 +49,9 @@ enum InitialRouteParser {
         case "welcome": result.forceWelcome = true
         case "empty": (services as? PreviewWorld)?.removeAllWorkspaces()   // preview only; a live launch without --demo-seed is already empty
         case "needs-you": result.path = [.needsYou]
+        case "approvals": result.path = [.approvals]
+        case "approval":
+            if parts.count > 2, let ws = services.resolveWorkspace(parts[1]) { result.path = [.approvals, .approval(workspace: ws, id: parts[2])] }
         case "workspace":
             if let raw = arg, let id = services.resolveWorkspace(raw) {
                 let seg = parts.count > 2 ? WorkspaceSegment(rawValue: parts[2]) ?? .questions : .questions

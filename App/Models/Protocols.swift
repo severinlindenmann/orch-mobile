@@ -26,6 +26,9 @@ protocol HomeModel: AnyObject, Observable {
     var skippedWorkspaceCount: Int { get }
     /// A transient Live notice (for example "the owner could not be recorded yet").
     var liveNotice: String? { get }
+    /// B10: the approval requests of every workspace, grouped by workspace (the host's word; none is needed to sign).
+    var approvalGroups: [ApprovalGroup] { get }
+    func refreshApprovals() async
 }
 
 extension HomeModel {
@@ -33,6 +36,8 @@ extension HomeModel {
     var liveProblem: String? { nil }
     var skippedWorkspaceCount: Int { 0 }
     var liveNotice: String? { nil }
+    var approvalGroups: [ApprovalGroup] { [] }
+    func refreshApprovals() async {}
 }
 
 @MainActor
@@ -59,9 +64,20 @@ protocol WorkspaceModel: AnyObject, Observable {
     func create(_ review: CreationValue) async -> CreationPhase
     /// Settles the pending creation of the draft again (reads only; never signs).
     func checkCreation() async -> CreationPhase
+    /// B10: this workspace's open approval requests (unsigned hints from the Mac; the host's word).
+    var approvals: [ApprovalRequest] { get }
+    func refreshApprovals() async
+    /// Reads and RECOMPUTES the gate behind `request` (never from the hint's words). Nothing is signed.
+    func reviewApproval(_ request: ApprovalRequest) async -> ApprovalReviewResult
+    /// Signs (one Face ID per signature) exactly the held review `value` with the person's choice, and settles it.
+    func decide(_ value: ApprovalReviewValue, choice: ApprovalChoice) async -> ApprovalPhase
 }
 
 extension WorkspaceModel {
+    var approvals: [ApprovalRequest] { [] }
+    func refreshApprovals() async {}
+    func reviewApproval(_ request: ApprovalRequest) async -> ApprovalReviewResult { .failed("This workspace does not allow this on the phone.") }
+    func decide(_ value: ApprovalReviewValue, choice: ApprovalChoice) async -> ApprovalPhase { .notAllowed }
     var macOnlyCount: Int { 0 }
     var ticketsIncomplete: Bool { false }
     var canCreateTickets: Bool { false }

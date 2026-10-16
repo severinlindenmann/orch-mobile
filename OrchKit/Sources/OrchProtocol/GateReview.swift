@@ -134,6 +134,11 @@ public enum GateReview {
         public let fullReviewReasons: [String]
         /// Every key of G, sorted, one line each (`key: cj(value)`): the details, always one tap away, and the whole review when `fullReview`.
         public let rawLines: [String]
+        public init(gate: String, sections: [Section], acceptance: [Criterion], tasks: [TaskRow], rows: [Row], fullReview: Bool, fullReviewReasons: [String],
+                    rawLines: [String]) {
+            self.gate = gate; self.sections = sections; self.acceptance = acceptance; self.tasks = tasks; self.rows = rows; self.fullReview = fullReview
+            self.fullReviewReasons = fullReviewReasons; self.rawLines = rawLines
+        }
     }
 
     static let fieldsShown: Set<String> = ["ticket_type", "size", "acceptance", "links", "addons"]

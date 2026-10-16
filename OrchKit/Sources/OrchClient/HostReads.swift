@@ -355,6 +355,10 @@ public struct PhoneRequest: Equatable, Sendable, Identifiable {
     public let gateGen: Int64
     public let createdMs: Int64
     public let expiresMs: Int64
+    public init(id: String, uid: String, ref: String, title: String, gate: String, gateGen: Int64, createdMs: Int64, expiresMs: Int64) {
+        self.id = id; self.uid = uid; self.ref = ref; self.title = title; self.gate = gate; self.gateGen = gateGen
+        self.createdMs = createdMs; self.expiresMs = expiresMs
+    }
 }
 
 /// `phone.requests` (read, column R): `{requests:[{id, uid, ref, title, gate, gate_gen, created_at, expires_at}], now}`. A request that is
