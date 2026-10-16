@@ -31,12 +31,17 @@ public struct BridgeWorkspaceAPI: WorkspaceAPI {
     ///   Retry when coordination is available; this error does not confirm removal.
     public func pendingWrites() async throws -> [WriteStatus] { try await session.pendingWrites() }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { try await session.writeOutcome(reviewID: reviewID) }
+    public func reviewStanding(reviewID: String) async throws -> ReviewStanding { try await session.reviewStanding(reviewID: reviewID) }
     public func writesAvailable() async -> Bool { await session.writesAvailable() }
     public func writesAvailable(op: String) async -> Bool { await session.writesAvailable(op: op) }
     public func reviewCreation(type: String, title: String) async throws -> CreationReview { try await session.reviewCreation(type: type, title: title) }
     public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome {
         try await session.create(review, disclosedKey: disclosedKey)
     }
+    #if DEBUG && targetEnvironment(simulator)
+    public func devSandboxStatus() async -> DevSandboxStatus { await session.devSandboxStatus() }
+    public func devSandboxCheck() async -> DevSandboxCheck { await session.devSandboxCheck() }
+    #endif
     public func noteInactive() { session.noteInactive() }
     public func noteProtectedDataUnavailable() { session.noteProtectedDataUnavailable() }
     public func noteCustodyLocked() { session.noteCustodyLocked() }

@@ -140,7 +140,7 @@ private let session = RelaySession(token: "tok123")
         // a Live identity under a Demo context
         #expect(DevicePolicy.derive(try identity(realm: .live, custody: .secureEnclave), ctx, w.env.processLocalWriteGrant, w.transport) == nil)
         // the permit follows the policy
-        let permit = p!.permit()
+        let permit = p!.permit(workspace: ws)
         #expect(permit.auth == .passphrase && permit.realm == .demo && permit.generation === ctx.generation)
     }
 
@@ -201,7 +201,7 @@ private let session = RelaySession(token: "tok123")
             let r = ID16.fresh(n)
             return try await w.transport.bridgePost(try w.envelope(rid: r), route: BridgeRoute(workspaceID: w.ws, requestID: r), session: w.phoneSession, permit: permit).status
         }
-        let demo = DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant, w.transport)!.permit()
+        let demo = DevicePolicy.derive(w.env.device, ctx, w.env.processLocalWriteGrant, w.transport)!.permit(workspace: ws)
         #expect(try await post(nil, 0x41) == 202)
         #expect(try await post(demo, 0x42) == 202)
         // a Live Secure Enclave permit or a permit of another lifetime is refused before the relay sees anything

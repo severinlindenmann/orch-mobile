@@ -44,6 +44,13 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var writeSupport: Bool = false
     /// C2b increment 3: this workspace takes new tickets from this iPhone (`new_ticket`: the session's policy and the host's support).
     var createSupport: Bool = false
+    #if ORCH_DEV_SANDBOX
+    /// The OrchDevSandbox variant: this workspace's session is on the convenience-signing lane; the sandbox id (id8) of the last `whoami` that
+    /// carried `relay.dev`; and the first read after the join that did not (owner note 4: not a dev sandbox, leave).
+    var devSandboxLane = false
+    var devSandbox: String?
+    var notADevSandbox = false
+    #endif
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
     var displayName: String { SafeText.inline(name, limit: 40) }
@@ -191,6 +198,10 @@ struct ReviewValue: Hashable, Sendable {
     /// Bumped each time the question is re-read after `question_changed`.
     let revision: Int
     var isDemo = false
+    #if ORCH_DEV_SANDBOX
+    /// The dev-sandbox lane's id (id8) when this review is signed with the Simulator's software key (convenience), else nil.
+    var devSandbox: String? = nil
+    #endif
     /// Unbound context (shown under "Not signed").
     var why: String? = nil
     var recommended: String? = nil
@@ -364,6 +375,8 @@ enum CreationPhase: Hashable, Sendable {
     /// Sent and recorded; the ticket can't be shown as signed here.
     case landedUnconfirmed
     case checking
+    /// The ticket was created (a landing is stored) but the confirming read has not succeeded yet: never "not sent", never re-created.
+    case createdUnconfirmed
     /// Not created; review again (the key race could not be re-signed safely, or nothing was sent in time).
     case needsReview(String)
     /// The host refused it for good.

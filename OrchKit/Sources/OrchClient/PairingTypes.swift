@@ -138,6 +138,10 @@ public struct PairingConfig: Sendable {
     public var reader: ReaderRuntime
     /// C2b: the Demo environment's write grant, handed to every session this coordinator builds (nil in Live).
     public var processLocalWriteGrant: ProcessLocalWriteGrant?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane's enabler (`DevSandboxLane.swift`): minted by the `OrchDevSandbox` App target only; nil everywhere else.
+    public var devSandboxEnabler: DevSandboxLaneEnabler?
+    #endif
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
                 clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), deviceLabel: String,

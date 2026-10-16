@@ -2,7 +2,7 @@
 
 Status: C2a (reads), 15 Oct 2026. Source of truth: orch-core `docs/architecture/orch-v2-host.md` section 11A.5 "As built in R2" (the framing
 sheet), 11A.4 (column R), section 0.8 (op schemas), 11A.14 (phone person events). Vectors: `OrchKit/Tests/OrchTestVectors/r2/r2_framing.json`
-(provenance and sha in `PROVENANCE.md`). Supersedes [host-api-v0.md](host-api-v0.md). Writes (`relay.submit`) are C2b.
+(provenance and sha in `PROVENANCE.md`). Supersedes [host-api-v0.md](host-api-v0.md). Writes (`relay.submit`) are C2b; their Live enable is the `whoami.relay` signal below.
 
 ## Framing
 
@@ -70,8 +70,26 @@ mutation reserve. A cut list says so: `WorkspaceSnapshot.ticketsIncomplete` (pag
   `ticket.key_not_next` refusal is checked loosely (`advisoryKeyHint`; the R2 vector carries `DEMO-42`). `workspace.show.next_key` is strict.
 - Option `cost` is bound in the question hash with the label, so it is shown wherever the label is (option rows, the sign sheet).
 
-## What stays interim until C2b
+## Live write signal (`whoami.relay`, C2b increment 4)
 
-In Demo the sign sheet still sends the v0 detached `decision` op and the new-ticket flow the v0 `new_ticket` op, against FakeHost only; a real R2
-host refuses both, so Live offers neither (capability `writes` off, and the session refuses them locally). C2b replaces them with person events signed over `relay.submit` (11A.14), using `QuestionReview.reviewed`, `members_v` and `next_key`
-from these reads.
+Source: orch-core host changelog 57 and `Dispatch._relay_caps` (column R only). `whoami` answers `{peer, person, tier, grant, session, relay}` with
+
+```
+relay: {ops: {"answer": 1, "new_ticket": 1}, r6_ready: bool, dev?: {sim_convenience: true, sandbox: "<id8>"}}
+```
+
+`ops` lists the person-event write kinds the host serves on R with their versions; `r6_ready` is the live R6 gate (`false` while R6 is dormant).
+`WhoAmIResult.relay` parses it leniently: an absent or malformed `relay` (or one without `ops` as an object and `r6_ready` as a bool) is
+`nil` and never fails the read; a malformed op value drops that op only. `dev` is not read by the phone yet (the Simulator lane, increment 5).
+
+`HostWriteSupport` is held by the session in memory only (never persisted). It is read at `startViews`, on every foreground and on an
+epoch change; it is cleared on background, on an epoch change and on a failed read, so the phone fails closed. `hostWritesAllowed(kind)`:
+Demo is unchanged (FakeHost serves both kinds); Live needs `ops[kind] == 1 && r6_ready`. It is checked for a new signature (review, tap,
+automatic re-sign) and for the first dispatch of an attempt; a resend, a reseal and settlement reads are never blocked by it. FakeHost emits
+`relay` with toggles (`setRelayCaps`: absent, `r6_ready` false, ready).
+
+## What stays interim
+
+In Demo the FakeHost serves `answer` and `new_ticket` as person events over `relay.submit` (11A.14) like a real R2 host. Live offers them only
+under the three conditions above; until the R6 gate flips on a real host, `r6_ready` is false and Live shows "Your Mac's orch doesn't accept
+answers from iPhone yet. Answer on your Mac."

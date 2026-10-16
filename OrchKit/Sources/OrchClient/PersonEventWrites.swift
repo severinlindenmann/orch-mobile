@@ -19,6 +19,10 @@ public struct ReviewedSnapshot: Sendable, Equatable {
     /// `cj` of the reviewed content: what equality compares. Nil when it cannot be encoded: such a snapshot equals nothing, itself
     /// included (fail closed: it can never pass the session's `held == s` check, so it is never signed).
     package let contentBytes: Data?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The sandbox id (id8) of the fresh read behind this review when it is on the dev-sandbox lane; nil otherwise. Display only.
+    public internal(set) var devSandbox: String?
+    #endif
 
     package init(reviewed: F1Question.Reviewed, token: UUID, question: Question, realm: Realm, workspaceID: ID16, generation: Int64) {
         self.reviewed = reviewed; self.token = token; self.question = question; self.realm = realm; self.workspaceID = workspaceID
@@ -56,7 +60,13 @@ public struct ReviewedSnapshot: Sendable, Equatable {
 extension QuestionReview {
     /// The signable snapshot of an OPEN question (nil for a closed one).
     public var snapshot: ReviewedSnapshot? {
-        reviewed.map { ReviewedSnapshot(reviewed: $0, token: token, question: question, realm: realm, workspaceID: workspaceID, generation: generation) }
+        reviewed.map { r in
+            var s = ReviewedSnapshot(reviewed: r, token: token, question: question, realm: realm, workspaceID: workspaceID, generation: generation)
+            #if DEBUG && targetEnvironment(simulator)
+            s.devSandbox = devGrant?.sandbox
+            #endif
+            return s
+        }
     }
 }
 
@@ -268,11 +278,26 @@ enum AttemptKind {
 extension WorkspaceSession {
     // MARK: policy and host support
 
-    /// Whether the host takes this write. Demo: the FakeHost serves `answer`. Live: the column-R host signal is increment 4; until then no
-    /// Live write is admitted (fail closed).
+    /// Whether the host takes this write. Demo: the FakeHost serves `answer` and `new_ticket`. Live: the host said so in its column-R
+    /// `whoami.relay` (op at version 1 and `r6_ready`); no signal, or one cleared by a failed read, a background or an epoch change, means no.
+    /// Checked for a new signature and for the first dispatch only; a resend or a settlement read never asks.
     func hostWritesAllowed(_ kind: String) -> Bool {
         guard let policy else { return false }
-        return policy.realm == .demo && (kind == "answer" || kind == "new_ticket")
+        #if DEBUG && targetEnvironment(simulator)
+        // the dev-sandbox lane takes answers only, and only while the last read (cached: UI and the first dispatch) carried `relay.dev`
+        if policy.lane == .devSandbox { return Self.devSandboxAdmits(support: hostSupport, kind: kind) }
+        #endif
+        return Self.hostAdmits(realm: policy.realm, support: hostSupport, kind: kind)
+    }
+    #if DEBUG && targetEnvironment(simulator)
+    static func devSandboxAdmits(support: HostWriteSupport?, kind: String) -> Bool { kind == "answer" && support?.allows(kind) == true && support?.dev != nil }
+    #endif
+    /// The rule itself (pure, so the Live branch is tested without a Secure Enclave): Demo unchanged; Live needs the host's signal.
+    static func hostAdmits(realm: Realm, support: HostWriteSupport?, kind: String) -> Bool {
+        switch realm {
+        case .demo: return kind == "answer" || kind == "new_ticket"
+        case .live: return support?.allows(kind) == true
+        }
     }
 
     /// The UI may offer answers here: a policy, and a host that takes them.
@@ -360,12 +385,20 @@ extension WorkspaceSession {
         var ticket: LifecycleFence.Ticket?
         if !a.dispatched {
             guard hostWritesAllowed(kind) else { throw WriteGateError.unavailable }
-            // the first dispatch of an automatic attempt needs its review's eligibility token; a tap's needs a usable lifecycle
+            #if DEBUG && targetEnvironment(simulator)
+            // a first dispatch on the dev-sandbox lane comes from a grant-bearing review: an answer signed as `convenience` (signing needed the
+            // fresh read). It does not read again: the window is seconds, and the host's own gate decides.
+            if policy.lane == .devSandbox { guard kind == "answer", a.auth == F1Auth.convenience.rawValue else { throw WriteGateError.unavailable } }
+            #endif
+            // the first dispatch of an automatic attempt needs its review's eligibility token. A tap's needs a usable lifecycle that did not
+            // end for ITS review since the Sign tap (#84 SHOULD-B, one rule): a tap stopped before its first charge is never sent later,
+            // whichever of the fence and the actor hop got there first. (After a relaunch no token ever existed: the crash-recovery send of
+            // the same signed bytes stays.)
             if a.origin == "auto" {
                 guard let t = lifecycleFence.ticket(review: a.review) else { throw WriteGateError.eligibilityLost }
                 ticket = t
             } else {
-                guard let t = lifecycleFence.ticket() else { throw WriteGateError.lifecycleEnded }
+                guard let t = lifecycleFence.tapTicket(review: a.review) else { throw WriteGateError.lifecycleEnded }
                 ticket = t
             }
         }
@@ -393,7 +426,7 @@ extension WorkspaceSession {
         }
         try PhoneEvents.validateSigned(e, kind: eventKind, actor: actor, workspace: workspace, pub: cfg.identity.publicKeys.sig)
         try Self.checkFramed(row.plaintext, event: e)
-        return (policy.permit(), ticket)
+        return (policy.permit(workspace: workspace), ticket)
     }
 
     // MARK: beginning an attempt (plan 3.2)
@@ -462,6 +495,10 @@ extension WorkspaceSession {
         guard s.answerable, let chosen = s.reviewed.question.options.first(where: { $0.key.bytesEqual(option) }) else { throw ViewError.invalidOption }
         guard s.workspaceID == workspace, s.generation == generation, s.realm == cfg.context.realm, foreground,
               let held = reviews[s.token]?.snapshot, held == s else { throw ViewError.invalidReview }
+        #if DEBUG && targetEnvironment(simulator)
+        // dev-sandbox lane: only a review that carries the fresh `relay.dev` read signs (the session's own copy, not the caller's)
+        if policy.lane == .devSandbox { guard reviews[s.token]?.devGrant != nil else { throw ViewError.hostRefusesSimulator } }
+        #endif
         reviews[s.token] = nil
         let reviewID = cfg.entropy.id16().hex
         // the tap's checks end here: its ticket (with the review's eligibility token) is what the signing transaction re-validates
@@ -545,6 +582,12 @@ extension WorkspaceSession {
     /// The stored final outcome of a review, if it has one.
     package func writeOutcome(reviewID: String) async throws -> WriteOutcome? {
         try await loadReview(reviewID)?.outcome.flatMap { try? Self.decodeOutcome($0) }
+    }
+
+    package func reviewStanding(reviewID: String) async throws -> ReviewStanding {
+        guard let rv = try await loadReview(reviewID) else { return .gone }
+        if let o = rv.outcome, let outcome = try? Self.decodeOutcome(o) { return .final(outcome) }
+        return rv.state == "landed" || rv.state == "landed_unconfirmed" ? .landedUnconfirmed : .unsettled
     }
 
     // MARK: drivers
@@ -979,6 +1022,10 @@ extension WorkspaceSession {
         // the fence's ticket already requires the foreground (and an unlocked, protected-data lifecycle)
         guard let policy, let ticket = lifecycleFence.ticket(review: rv.review), rv.resigns < Int64(AutoResign.maxPerReview),
               hostWritesAllowed(rv.kind) else { return false }
+        #if DEBUG && targetEnvironment(simulator)
+        // dev-sandbox lane: a fresh `relay.dev` read first; without a grant nothing is signed again (the answer goes back to review)
+        if policy.lane == .devSandbox, await freshDevGrant() == nil { return false }
+        #endif
         do {
             if rv.isCreation { return try await autoResignCreation(rv, a, policy: policy, ticket: ticket) }
             return try await autoResign(rv, a, policy: policy, ticket: ticket)

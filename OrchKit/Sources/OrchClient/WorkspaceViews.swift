@@ -24,6 +24,8 @@ public protocol WorkspaceAPI: Sendable {
     func pendingWrites() async throws -> [WriteStatus]
     /// The stored final outcome of one review (nil while it is still being settled).
     func writeOutcome(reviewID: String) async throws -> WriteOutcome?
+    /// Where one review stands in the store, distinguishing "no such row" from "landed, confirming read still missing".
+    func reviewStanding(reviewID: String) async throws -> ReviewStanding
     /// Whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them).
     func writesAvailable() async -> Bool
     /// The same for one write op (`answer`, `new_ticket`).
@@ -45,24 +47,47 @@ public protocol WorkspaceAPI: Sendable {
     func events() async -> AsyncStream<WorkspaceEvent>
     /// The durable key alarm (Q10), read at launch.
     func keyAlarm() async -> WorkspaceKeyAlarm?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane (host 11A.17), for the `OrchDevSandbox` App only.
+    func devSandboxStatus() async -> DevSandboxStatus
+    func devSandboxCheck() async -> DevSandboxCheck
+    #endif
 }
 
 extension WorkspaceAPI {
+    #if DEBUG && targetEnvironment(simulator)
+    public func devSandboxStatus() async -> DevSandboxStatus { DevSandboxStatus(laneActive: false, sandbox: nil) }
+    public func devSandboxCheck() async -> DevSandboxCheck { .unknown }
+    #endif
     public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
     public func writesAvailable() async -> Bool { false }
     public func writesAvailable(op: String) async -> Bool { false }
     public func reviewCreation(type: String, title: String) async throws -> CreationReview { throw ViewError.writesUnavailable }
     public func create(_ review: CreationReview, disclosedKey: String?) async throws -> WriteOutcome { throw ViewError.writesUnavailable }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { nil }
+    public func reviewStanding(reviewID: String) async throws -> ReviewStanding { .unsettled }
     public func noteInactive() {}
     public func noteProtectedDataUnavailable() {}
     public func noteCustodyLocked() {}
     public func noteBackground() {}
     public func noteReviewsInvalidated() {}
 }
+/// Where a stored review stands. Only `gone` and a final non-landing `final` outcome make a creation marker stale.
+public enum ReviewStanding: Equatable, Sendable {
+    /// No row: nothing is pending.
+    case gone
+    /// Still being sent or settled (active), or the standing is not known.
+    case unsettled
+    /// A landing whose confirming read has not succeeded yet (the ticket exists; `landed` or `landed_unconfirmed` with no outcome).
+    case landedUnconfirmed
+    /// The stored final outcome.
+    case final(WriteOutcome)
+}
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String)
     /// Writes from this phone are not offered (Live until C2b): nothing was signed, sealed or sent.
     case writesUnavailable
+    /// The Simulator dev-sandbox lane only: the host did not confirm `relay.dev` in a fresh `whoami` (or the read failed). Nothing was signed.
+    case hostRefusesSimulator
 }
 public enum ConnectionState: Equatable, Sendable { case online, offline, reconciling }
 /// Q10: a key state that blocks the workspace until the person removes it and pairs again (never "retry later").
@@ -84,6 +109,8 @@ public enum WorkspaceKeyAlarm: Equatable, Sendable {
 public enum WorkspaceEvent: Equatable, Sendable { case snapshot(WorkspaceSnapshot), invalidated, connection(ConnectionState), removed
     /// A sealed reader refusal ended the cached view: the person updates orch or pairs again; nothing cached is current.
     case readerRefused
+    /// The host's write signal (`whoami.relay`) was read, or cleared: `writesAvailable()` may answer differently now. No view read follows.
+    case writeSupportChanged
 }
 public struct QuestionOption: Equatable, Sendable {
     /// The option's `key` (host section 0.8 `Question.options`); what a decision binds.
@@ -202,6 +229,10 @@ public struct QuestionReview: Equatable, Sendable {
     /// The F1 gate (`F1Question.reviewed`) of an OPEN question, with the `doc.head` and `members_v` of the same `ticket.get`: what a person
     /// event signs (C2b). nil for a closed question.
     package let reviewed: F1Question.Reviewed?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The fresh `whoami` read that opened this review on the dev-sandbox lane (`freshDevGrant`); nil on every other lane.
+    package var devGrant: DevSandboxGrant?
+    #endif
     package init(question: Question, realm: Realm, workspaceID: ID16, generation: Int64, token: UUID, reviewed: F1Question.Reviewed? = nil) {
         self.question = question; self.realm = realm; self.workspaceID = workspaceID; self.generation = generation; self.token = token; self.reviewed = reviewed
     }

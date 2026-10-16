@@ -32,6 +32,9 @@ extension WorkspaceInfo {
     var answerBlock: String? {
         if let message = lifecycle.message { return message }
         if let alarm = keyAlarm { return alarm }
+        #if ORCH_DEV_SANDBOX
+        if notADevSandbox { return DevSandboxText.notASandbox }
+        #endif
         if !scopes.contains(.decide) { return "This iPhone may not answer for this workspace." }
         switch connection {
         case .online: return nil

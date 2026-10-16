@@ -70,12 +70,23 @@ enum Mapping {
     /// and the signed details, all from the same immutable value the session signs. Strings pass unchanged (SheetProjectionTests).
     static func reviewValue(_ s: ReviewedSnapshot, info: WorkspaceInfo, optionID: String, revision: Int, isDemo: Bool) -> ReviewValue {
         let options = s.options.map { QuestionOption(id: $0.id, label: $0.label, cost: $0.cost) }
+        #if ORCH_DEV_SANDBOX
+        var value = ReviewValue(
+            workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
+            questionID: s.question.questionID.hex, ticket: s.ticketKey, text: s.text, optionID: optionID,
+            optionLabel: options.first { $0.id == optionID }?.label ?? optionID, options: options,
+            contentHash: hex(s.question.contentHash), revision: revision, isDemo: isDemo,
+            why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
+        value.devSandbox = s.devSandbox
+        return value
+        #else
         return ReviewValue(
             workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
             questionID: s.question.questionID.hex, ticket: s.ticketKey, text: s.text, optionID: optionID,
             optionLabel: options.first { $0.id == optionID }?.label ?? optionID, options: options,
             contentHash: hex(s.question.contentHash), revision: revision, isDemo: isDemo,
             why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
+        #endif
     }
 
     /// SH5: a stored answer's review, exactly as signed (from `pe_reviews.snapshot`).

@@ -61,6 +61,10 @@ final class LiveReviewModel: QuestionReviewModel {
             return true
         } catch {
             guard workspace.usable, mine == token else { return false }
+            #if ORCH_DEV_SANDBOX
+            // the fresh `whoami` did not say the host takes Simulator answers (or could not be read): nothing was signed
+            if case ViewError.hostRefusesSimulator = error { load = .failed(DevSandboxText.hostRefuses); return false }
+            #endif
             load = .failed(workspace.noteKeyAlarm(error) ? LiveWorkspace.keyAlarmMessage : Self.readFailure)
             return false
         }

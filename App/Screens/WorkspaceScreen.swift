@@ -34,6 +34,7 @@ struct WorkspaceScreen: View {
             case .terminal: terminal
             }
         }
+        .convenienceBanner(model.info)
         .navigationTitle(model.info.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -70,6 +71,12 @@ struct WorkspaceScreen: View {
             if let block = model.info.answerBlock, model.info.scopes.contains(.decide) {
                 Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted)
             }
+            #if ORCH_DEV_SANDBOX
+            if model.info.notADevSandbox {
+                NavigationLink(value: Route.workspaceSettings(workspaceID, confirmLeave: true)) { Label("Leave this workspace", systemImage: "rectangle.portrait.and.arrow.right") }
+                    .buttonStyle(.bordered).accessibilityIdentifier("devsandbox.leave")
+            }
+            #endif
             segmentControl
         }
         .padding(.vertical, OS.s2)

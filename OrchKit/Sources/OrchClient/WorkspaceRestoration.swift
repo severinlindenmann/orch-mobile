@@ -19,6 +19,10 @@ public struct RestoreConfig: Sendable {
     public var reader: ReaderRuntime
     /// C2b: the Demo environment's write grant, handed to every restored session (nil in Live).
     public var processLocalWriteGrant: ProcessLocalWriteGrant?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane's enabler (`DevSandboxLane.swift`): minted by the `OrchDevSandbox` App target only; nil everywhere else.
+    public var devSandboxEnabler: DevSandboxLaneEnabler?
+    #endif
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
                 clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), reader: ReaderRuntime = .production,
@@ -104,8 +108,13 @@ public enum WorkspaceRestoration {
                                          container: container, vault: c.vault.scoped(to: c.context.realm), transport: c.transport,
                                          clock: c.clock, wall: c.wall, entropy: c.entropy, reader: c.reader, sendsReaderDigest: true, blocksUntilDeclared: false,
                                          enforcesOpTable: c.context.realm == .live, processLocalWriteGrant: c.processLocalWriteGrant)
+        #if DEBUG && targetEnvironment(simulator)
+        let sessionCfg = cfg.carrying(c.devSandboxEnabler)
+        #else
+        let sessionCfg = cfg
+        #endif
         let session: WorkspaceSession
-        do { session = try await WorkspaceSession(cfg) }
+        do { session = try await WorkspaceSession(sessionCfg) }
         catch { await container.close(); throw error }
         let joined = JoinedWorkspace(workspace: ws, generation: row.generation, name: p.name,
                                      hosted: HostedMarker.decide(delegationClientHosted: p.hostedMarker, hostedBy: p.hostedBy),

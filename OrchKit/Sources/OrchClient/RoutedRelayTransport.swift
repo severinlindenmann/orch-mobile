@@ -84,10 +84,20 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
             if sender is any InProcessDemoSender {
                 guard context.realm == .demo, permit.auth == .passphrase else { throw TransportError.realm(.wrongTransport) }
             } else {
-                guard context.realm == .live, permit.auth == .secureEnclaveUnlocked else { throw TransportError.realm(.wrongTransport) }
+                guard context.realm == .live, permitTravelsOverNetwork(permit, route: route) else { throw TransportError.realm(.wrongTransport) }
             }
         }
         return try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
+    }
+
+    /// A network sender takes a Secure Enclave permit, and (Debug Simulator build only) a `convenience` permit minted for exactly this route's
+    /// workspace on the dev-sandbox lane, over the variant's origin.
+    private func permitTravelsOverNetwork(_ permit: WritePermit, route: BridgeRoute) -> Bool {
+        if permit.auth == .secureEnclaveUnlocked { return true }
+        #if DEBUG && targetEnvironment(simulator)
+        if permit.auth == .convenience, let ws = permit.devSandboxWorkspace, ws == route.workspaceID, DevSandboxLane.admitsOrigin(origin) { return true }
+        #endif
+        return false
     }
 
     /// The sender object's identity when it is an in-process Demo sender of a class type (the FakeRelay actor); otherwise nil.

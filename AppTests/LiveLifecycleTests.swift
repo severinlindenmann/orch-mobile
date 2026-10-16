@@ -32,7 +32,12 @@ private actor WorkspaceStub: WorkspaceAPI {
     func snapshot() throws -> WorkspaceSnapshot { throw ViewError.offline }
     func review(questionID: ID16) throws -> QuestionReview { reviews += 1; throw ViewError.offline }
     func answer(_ snapshot: ReviewedSnapshot, option: String) throws -> WriteOutcome { throw ViewError.offline }
-    func pendingWrites() -> [WriteStatus] { [] }
+    var pending: [WriteStatus] = []
+    var standing: ReviewStanding = .unsettled
+    func setPending(_ p: [WriteStatus]) { pending = p }
+    func setStanding(_ s: ReviewStanding) { standing = s }
+    func reviewStanding(reviewID: String) -> ReviewStanding { standing }
+    func pendingWrites() -> [WriteStatus] { pending }
     func reviewCreation(type: String, title: String) throws -> CreationReview {
         // the workspace read for the review fails
         submissions += 1
@@ -537,6 +542,110 @@ final class LiveLifecycleTests: XCTestCase {
         XCTAssertTrue(ws.canCreateTickets, "operate is not needed")
         ws.info.createSupport = false
         XCTAssertFalse(ws.canCreateTickets)
+    }
+
+    /// #86: a signed creation that is still unsettled blocks a new review (the marker would be overwritten and a second signature could
+    /// create the ticket twice); the draft file is untouched.
+    func testNoNewReviewWhileASignedCreationIsUnsettled() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        let pending = Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8)
+        try pending.write(to: ws.draftURL!)
+        let result = await ws.reviewCreation(type: "feature", title: "Another")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertEqual(sent, 0)
+        XCTAssertEqual(try Data(contentsOf: ws.draftURL!), pending)
+    }
+
+    /// #86 (Opus M2): a kill between `api.create` and the draft write leaves a signed creation in the store and a draft without a marker.
+    /// The refusal follows the store: no new review, and the review id is adopted into the draft.
+    func testNoNewReviewWhileTheStoreHoldsAnUnsettledCreation() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        await api.setPending([WriteStatus(reviewID: "r9", questionID: nil, option: nil, state: .checking, review: nil,
+                                          creation: StoredCreationReview(ticketType: "bug", title: "Signed", owner: "o", uid: "u", key: "MOB-0002"))])
+        let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        try Data(#"{"type":"bug","title":"Signed","review":null}"#.utf8).write(to: ws.draftURL!)       // the marker never got written
+        let result = await ws.reviewCreation(type: "feature", title: "Another")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertEqual(sent, 0)
+        let draft = ws.loadCreationDraft()
+        XCTAssertEqual(draft?.pending, true)
+        XCTAssertEqual(draft?.title, "Signed")
+    }
+
+    /// #86 (Opus L4): a marker whose review the store no longer lists is cleared, not "checking" for good.
+    func testStaleCreationMarkerIsCleared() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        await api.setStanding(.gone)
+        let ws = workspace(services, api: api)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        try Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8).write(to: ws.draftURL!)
+        let phase = await ws.checkCreation()
+        XCTAssertEqual(phase, .notSent("Nothing is being checked."))
+        XCTAssertNil(ws.loadCreationDraft())
+    }
+
+    /// A landing whose confirming read failed: settle throws, the store lists no active row, but the review is landed-unconfirmed. The
+    /// ticket exists, so the marker stays, the phase is never "not sent", and no new review is signed.
+    func testLandedUnconfirmedWithFailingSettleKeepsMarkerAndRefusesNewReview() async throws {
+        let services = LiveServices(options: options)
+        services.capabilitiesOverride = RealmCapabilities(drop: false, share: false, push: false, demoControls: false, writes: true)
+        let api = WorkspaceStub()
+        await api.setStanding(.landedUnconfirmed)
+        let ws = workspace(services, api: api)
+        ws.info.createSupport = true; ws.nextKey = "MOB-0002"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        let marker = Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8)
+        try marker.write(to: ws.draftURL!)
+        let phase = await ws.checkCreation()
+        XCTAssertEqual(phase, .createdUnconfirmed)
+        XCTAssertEqual(try Data(contentsOf: ws.draftURL!), marker)
+        let result = await ws.reviewCreation(type: "feature", title: "Another")
+        guard case .failed = result else { return XCTFail("\(result)") }
+        let sent = await api.submissions
+        XCTAssertEqual(sent, 0)
+    }
+
+    /// #86: "not usable" (a lock, the background) is transient: a pending signed creation stays checking, never "nothing".
+    func testCheckCreationStaysCheckingWhileUnusableAndWithAPendingReview() async throws {
+        let id = SystemEntropy().id16()
+        let info = WorkspaceInfo(id: id.hex, name: "Test", host: "Mac", hue: 0, hostedBy: nil, clientHosted: false,
+                                 scopes: [.look, .decide], connection: .online, primaryLabel: "Mac", notificationsOn: true)
+        let ws = LiveWorkspace(workspaceID: id, generation: 1, api: WorkspaceStub(), info: info)      // not registered: not usable
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ws.draftURL = dir.appendingPathComponent("draft.json")
+        XCTAssertFalse(ws.usable)
+        let none = await ws.checkCreation()
+        XCTAssertEqual(none, .notSent("Nothing is being checked."))
+        try Data(#"{"type":"bug","title":"Signed","review":"r1"}"#.utf8).write(to: ws.draftURL!)
+        let pending = await ws.checkCreation()
+        XCTAssertEqual(pending, .checking)
     }
 
     func testTitleProblemsAreShownInline() {

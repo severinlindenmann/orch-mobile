@@ -150,6 +150,11 @@ package final class DemoAuthorities: @unchecked Sendable {
     private var people: Set<ID16> = []
     package func register(_ person: ID16) { lock.lock(); people.insert(person); lock.unlock() }
     package func contains(_ person: ID16) -> Bool { lock.lock(); defer { lock.unlock() }; return people.contains(person) }
+    #if DEBUG
+    /// TEST-ONLY: lets a test host stand in for a real (Live) authority, e.g. the dev-sandbox lane tests, whose Live-realm phone talks to a
+    /// FakeHost. Not compiled into Release.
+    package func unregisterForTesting(_ person: ID16) { lock.lock(); people.remove(person); lock.unlock() }
+    #endif
 }
 
 /// A realm plus the one relay origin it may talk to. Wraps the OrchCustody `Realm`; there is no parallel Demo abstraction.

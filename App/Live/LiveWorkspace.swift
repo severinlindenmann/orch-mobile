@@ -50,6 +50,9 @@ final class LiveWorkspace: WorkspaceModel {
             guard self.usable, !Task.isCancelled else { return }
             await self.api.start()
             await self.checkKeyAlarm()
+            #if ORCH_DEV_SANDBOX
+            await self.checkDevSandbox()
+            #endif
             await self.refresh()
             for await event in stream {
                 if Task.isCancelled { break }
@@ -89,9 +92,38 @@ final class LiveWorkspace: WorkspaceModel {
     /// and then it is cleared here.
     func checkKeyAlarm() async {
         info.keyAlarm = await api.keyAlarm() != nil ? Self.keyAlarmMessage : nil
-        // C2b: whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them)
-        info.writeSupport = await api.writesAvailable()
-        info.createSupport = await api.writesAvailable(op: "new_ticket")
+        await syncWriteSupport()
+    }
+
+    #if ORCH_DEV_SANDBOX
+    /// Owner note 4, right after a join: a successful first `whoami` without `relay.dev` means this is not a dev sandbox. The screen says so
+    /// and offers Leave; nothing signs here (the lane needs the same field).
+    func checkDevSandbox() async {
+        switch await api.devSandboxCheck() {
+        case .sandbox(let id): info.devSandbox = id; info.notADevSandbox = false
+        case .notASandbox: info.notADevSandbox = true
+        case .unknown: break
+        }
+    }
+    #endif
+
+    /// C2b: whether this workspace takes answers and new tickets from this iPhone now (a person-event policy and a host that says it serves
+    /// them: Live reads `whoami.relay`, which the session refreshes and clears).
+    func syncWriteSupport() async {
+        let answers = await api.writesAvailable(), creates = await api.writesAvailable(op: "new_ticket")
+        #if ORCH_DEV_SANDBOX
+        let lane = await api.devSandboxStatus()
+        #endif
+        guard usable else { return }
+        #if ORCH_DEV_SANDBOX
+        if info.devSandboxLane != lane.laneActive { info.devSandboxLane = lane.laneActive }
+        if let id = lane.sandbox {
+            if info.devSandbox != id { info.devSandbox = id }
+            if info.notADevSandbox { info.notADevSandbox = false }
+        }
+        #endif
+        if info.writeSupport != answers { info.writeSupport = answers }
+        if info.createSupport != creates { info.createSupport = creates }
     }
 
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
@@ -121,6 +153,7 @@ final class LiveWorkspace: WorkspaceModel {
             info.keyAlarm = ReaderGate.updateMessage
             markOffline()
         case .invalidated: break          // the session re-reads on its own (foreground, with a subscriber)
+        case .writeSupportChanged: Task { [weak self] in await self?.syncWriteSupport() }
         case .removed: services?.workspaceRemoved(self)
         }
     }
@@ -206,6 +239,18 @@ final class LiveWorkspace: WorkspaceModel {
 
     func reviewCreation(type: String, title: String) async -> CreationReviewResult {
         guard canCreateTickets else { return .failed("This workspace doesn't take new tickets from this iPhone now.") }
+        // #86: while a signed creation is unsettled there is no new review (its marker would be overwritten and a second signature could
+        // create the ticket twice). The form shows it as being checked.
+        if loadDraft()?.review != nil { return .failed("Your last ticket is still being checked. It is not signed again until that is settled.") }
+        // The store is the truth, not the draft marker: the draft gets its review id only after `api.create` returns, so a kill in between
+        // leaves a signed, unsettled creation with no marker. Refuse while `pe_reviews` has one, and adopt its id into the draft.
+        // If the store cannot be read, nothing is signed.
+        let stored: [WriteStatus]
+        do { stored = try await api.pendingWrites() } catch { return .failed("The workspace could not be read. Nothing was signed.") }
+        if let open = stored.first(where: { $0.creation != nil }) {
+            if let c = open.creation { try? saveDraft(CreationDraft(type: c.ticketType, title: c.title, review: open.reviewID)) }
+            return .failed("Your last ticket is still being checked. It is not signed again until that is settled.")
+        }
         if let problem = Self.titleProblem(title) { return .failed(problem) }
         do { try saveDraft(CreationDraft(type: type, title: title, review: nil)) }
         catch { return .failed("Could not save the ticket draft. Nothing was sent. Try again.") }
@@ -258,12 +303,29 @@ final class LiveWorkspace: WorkspaceModel {
     }
 
     func checkCreation() async -> CreationPhase {
-        guard usable, let draft = loadDraft(), let id = draft.review else { return .notSent("Nothing is being checked.") }
+        guard let draft = loadDraft(), let id = draft.review else { return .notSent("Nothing is being checked.") }
+        // a lock or the background is transient: a pending signed creation stays "checking", never "nothing" (#86)
+        guard usable else { return .checking }
         #if DEBUG
         await services?.releaseDemoHeldCreation(workspace: self)
         #endif
         do { return await apply(try await api.settle(reviewID: id), uid: nil) }
-        catch { return .checking }
+        catch {
+            // The marker is stale only when the store has no such review, or it ended in a final outcome that is not a landing. A landing
+            // whose confirming read failed (offline) is a ticket that exists: keep the marker, never "not sent" (a new review would
+            // create it twice). Anything unreadable stays "checking".
+            switch try? await api.reviewStanding(reviewID: id) {
+            case .gone:
+                clearDraft()
+                return .notSent("Nothing is being checked.")
+            case .final(let outcome):
+                return await apply(outcome, uid: nil)
+            case .landedUnconfirmed:
+                return .createdUnconfirmed
+            default:
+                return .checking
+            }
+        }
     }
 
     private func apply(_ outcome: WriteOutcome, uid: String?) async -> CreationPhase {

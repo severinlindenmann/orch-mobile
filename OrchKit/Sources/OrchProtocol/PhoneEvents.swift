@@ -57,11 +57,16 @@ public enum ULID {
 public struct PhoneActor: Equatable, Sendable {
     public let personID: String
     public let deviceID: String
-    /// `secure-enclave-unlocked` on a device; `passphrase` only in Simulator/dev builds. Column R accepts exactly these two.
+    /// `secure-enclave-unlocked` on a device; `passphrase` only in Simulator/dev builds (Demo). `convenience` only in a Debug Simulator
+    /// build (the dev-sandbox lane, host 11A.17): every other build refuses to construct it.
     public let auth: F1Auth
 
     public init(person: ID16, device: ID16, auth: F1Auth) throws {
+        #if DEBUG && targetEnvironment(simulator)
+        guard auth == .secureEnclaveUnlocked || auth == .passphrase || auth == .convenience else { throw Refusal.malformed }
+        #else
         guard auth == .secureEnclaveUnlocked || auth == .passphrase else { throw Refusal.malformed }
+        #endif
         personID = "p_" + person.hex; deviceID = "d_" + device.hex; self.auth = auth
     }
 }

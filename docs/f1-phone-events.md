@@ -50,5 +50,13 @@ A core-parity `suspicious()` (invisible and bidi marking as in orch-core `canon/
   wins and is final. C-auto (`members.stale`) is re-signed automatically at most 3 times, only if nothing displayed changed; C-review asks
   for a new review; D is refused. A failed confirming read leaves the review `landed` and is retried; `landed_unconfirmed` means a
   successful read that shows something else.
-- **Live.** Off until increment 4: no Live write is admitted until the host's column-R `whoami` signals `relay.ops.answer` and
-  `r6_ready`. The Live policy also requires a Secure Enclave identity; this is application enforcement, not cryptographic attestation.
+- **Live (increment 4).** `RealmCapabilities.live.writes` is on. A Live write is admitted only when the host's column-R `whoami.relay`
+  lists the op at version 1 with `r6_ready` true (read at `startViews`, on foreground and on an epoch change; in memory only; cleared on
+  background, a failed read or an epoch change; absent means no). The check gates a new signature and the first dispatch, never a resend or a
+  settlement read. The Live policy also requires a Secure Enclave identity; this is application enforcement, not cryptographic attestation.
+- **Lifecycle (one rule for a tap).** The first dispatch of a tap needs a lifecycle that did not end for its review since the Sign tap: a tap
+  stopped before its first charge ends as "not sent" and is never sent later, whichever of the fence and the actor hop got there first (a
+  relaunch recovering already signed bytes is not such an end).
+- **Creation.** No new creation review while a signed creation is unsettled (`checkCreation` stays "checking" when the workspace is not
+  usable and a draft review exists; `reviewCreation` refuses while the draft holds a review), and the creation sheet has no Sign button when the
+  title or workspace name has hidden or look-alike characters.

@@ -183,6 +183,7 @@ import Testing
 
     // MARK: compression bombs (nothing is ever decoded)
 
+    #if os(macOS)   // Process (gzip of zeros)
     @Test func compressedBombsAreRefusedAtTheHeadersWithoutDecoding() async throws {
         let gz = try Self.gzipOfZeros(mebibytes: 512)
         #expect(gz.count < 2 << 20)
@@ -221,6 +222,7 @@ import Testing
         p.waitUntilExit()
         return data
     }
+    #endif
 
     // MARK: malformed framing
 

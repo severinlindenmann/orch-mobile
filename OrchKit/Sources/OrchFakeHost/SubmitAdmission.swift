@@ -112,8 +112,14 @@ extension FakeHost {
         // P4: actor = {person, the device's person, the device}; sig present
         guard let a = ev["actor"]?.object, Set(a.keys) == ["kind", "id", "device"], a["kind"]?.string == "person",
               a["id"]?.string == ownerPerson, a["device"]?.string == device, let sigText = ev["sig"]?.string else { return refusal("op.not_allowed") }
-        // P5: `convenience` is never admitted here (the FakeHost has no dev gate; a creation never takes it at all)
-        guard let auth = ev["auth"]?.string, ["secure-enclave-unlocked", "passphrase"].contains(auth) else { return refusal("op.not_allowed") }
+        // P5: `convenience` is admitted only on a dev-sandbox host (`devSimConvenience`), for an answer from a device that sent a reader
+        // digest (`rd`); the FakeHost's workspace has one member person, as the dev gate requires; a creation never takes it. Otherwise `op.not_allowed`.
+        guard let auth = ev["auth"]?.string else { return refusal("op.not_allowed") }
+        if auth == "convenience" {
+            guard viewState!.devSimConvenience != nil, !creation, req.meta.object?["rd"] != nil else { return refusal("op.not_allowed") }
+        } else {
+            guard ["secure-enclave-unlocked", "passphrase"].contains(auth) else { return refusal("op.not_allowed") }
+        }
         // P7: the signature over the recomputed person signing bytes
         var unsigned = ev; unsigned["sig"] = nil
         guard let pub = core.devicePubs[req.device], let sig = B64U.decode(sigText, length: 64),
@@ -346,6 +352,10 @@ extension FakeHost {
         viewState!.append(type: "ticket.created", ticket: t, at: now)
     }
     /// The host holds the next write admitted and not run (`pending`) until `demoRecoverWrites`.
+    /// Test control: what `whoami` says about writes (no `relay` field, `r6_ready` false, or ready).
+    /// Test control (host 11A.17): the host runs as a dev sandbox with `--dev-sim-convenience` (the sandbox id, 8 lower-case hex digits), or not (nil).
+    package func setDevSimConvenience(_ id8: String?) { seedViews(); viewState!.devSimConvenience = id8 }
+    package func setRelayCaps(_ caps: FakeRelayCaps) { seedViews(); viewState!.relayCaps = caps }
     public func demoHoldNextWrite() { seedViews(); viewState!.writeControls.holdNext = true }
     public func demoRecoverWrites() { recoverWrites() }
     /// The host runs the next write but its answer is lost on the way back: the phone settles with `outcome.get`.

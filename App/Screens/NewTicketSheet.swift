@@ -22,7 +22,7 @@ struct NewTicketSheet: View {
         NavigationStack {
             Group {
                 if let review { CreationSheet(review: review, phase: $phase, model: model, onClose: onClose, onReviewAgain: reviewAgain) }
-                else if phase == .checking { checkingForm }
+                else if phase == .checking || phase == .createdUnconfirmed { checkingForm }
                 else if let outcome = CreationOutcome(phase) { settledForm(outcome) }
                 else { form }
             }
@@ -75,7 +75,8 @@ struct NewTicketSheet: View {
     private var checkingForm: some View {
         Form {
             Section {
-                Label("Checking whether your ticket was created", systemImage: "clock.arrow.circlepath")
+                Label(phase == .createdUnconfirmed ? "Your ticket was created; not yet confirmed" : "Checking whether your ticket was created",
+                      systemImage: "clock.arrow.circlepath")
                     .foregroundStyle(OC.info).accessibilityIdentifier("ticket.new.checking")
                 Text(verbatim: SafeText.inline(title, limit: 200)).font(OF.body)
                 Text("It is not signed or sent again until this is settled.").font(OF.meta).foregroundStyle(OC.textMuted)
@@ -227,6 +228,14 @@ struct CreationSheet: View {
     private var footer: some View {
         VStack(spacing: OS.s3) {
             switch phase {
+            case .ready where review.hasUnsafeContent:
+                // fail closed like the answer sheet's refusal (#86): hidden or look-alike characters in anything the signature binds or the
+                // sheet shows (the title, the workspace name) mean there is no Sign button. The draft stays; the person edits the title.
+                state("exclamationmark.octagon", OC.danger, "Can't be checked here",
+                      "The title or the workspace name has characters you cannot see or that look like other letters. Change the title, or create the ticket on your Mac.",
+                      id: "create.refused")
+                Button(role: .cancel, action: onClose) { Text("Cancel").frame(maxWidth: .infinity, minHeight: 44) }
+                    .foregroundStyle(OC.brand).accessibilityIdentifier("create.cancel")
             case .ready:
                 Button { Task { await sign() } } label: { Label("Sign and create", systemImage: "signature") }
                     .buttonStyle(.orchProminent)
@@ -244,8 +253,9 @@ struct CreationSheet: View {
             case .created, .resentAfterChange, .landedUnconfirmed, .refused, .ticketExists:
                 CreationOutcome(phase)?.view
                 done
-            case .checking:
-                state("clock.arrow.circlepath", OC.info, "Checking whether your ticket was created",
+            case .checking, .createdUnconfirmed:
+                state("clock.arrow.circlepath", OC.info,
+                      phase == .createdUnconfirmed ? "Your ticket was created; not yet confirmed" : "Checking whether your ticket was created",
                       "It is not signed or sent again until this is settled. If you close this, orch keeps checking.", id: "create.checking")
                 Button("Check again") { Task { phase = await model.checkCreation() } }.buttonStyle(.bordered).accessibilityIdentifier("create.recheck")
                 Button("Close and keep checking", action: onClose).accessibilityIdentifier("create.closeChecking")
@@ -314,7 +324,7 @@ struct CreationOutcome {
             self.init(icon: "doc.on.doc", color: OC.info,
                       title: key.map { "This ticket already exists (\(SafeText.inline($0, limit: 24)))" } ?? "This ticket already exists",
                       detail: "It may be the one you sent; check on your Mac.", id: "create.ticketExists")
-        case .ready, .sending, .checking, .unlockToContinue, .invalidated, .notSent:
+        case .ready, .sending, .checking, .createdUnconfirmed, .unlockToContinue, .invalidated, .notSent:
             return nil
         }
     }

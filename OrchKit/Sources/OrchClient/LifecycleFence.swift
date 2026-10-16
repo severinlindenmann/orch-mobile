@@ -30,6 +30,8 @@ package final class LifecycleFence: Sendable {
         var epoch: UInt64 = 0
         var foreground = true, unlocked = true, protectedData = true, closed = false
         var eligibility: [String: UUID] = [:]
+        /// Reviews whose token an invalidation removed in this process (bounded): a tap of one of them is never dispatched afterwards.
+        var ended: Set<String> = []
         var usable: Bool { foreground && unlocked && protectedData && !closed }
     }
 
@@ -46,6 +48,8 @@ package final class LifecycleFence: Sendable {
     package func invalidate(_ why: Invalidation) {
         state.withLock { s in
             s.epoch &+= 1
+            if s.ended.count + s.eligibility.count > 1024 { s.ended.removeAll() }
+            s.ended.formUnion(s.eligibility.keys)
             s.eligibility.removeAll()
             switch why {
             case .background: s.foreground = false
@@ -72,6 +76,15 @@ package final class LifecycleFence: Sendable {
             let t = UUID()
             s.eligibility[review] = t
             return Ticket(epoch: s.epoch, review: review, token: t)
+        }
+    }
+
+    /// A plain ticket for the first dispatch of a TAP attempt: usable lifecycle, and no invalidation removed this review's token since its
+    /// Sign tap (#84 SHOULD-B). A review this process never issued a token for (a relaunch recovering signed bytes) is not "ended".
+    package func tapTicket(review: String) -> Ticket? {
+        state.withLock { s in
+            guard usable(s), !s.ended.contains(review) else { return nil }
+            return Ticket(epoch: s.epoch, review: nil, token: nil)
         }
     }
 
