@@ -57,7 +57,6 @@ struct HostViewState: Sendable {
     var prefix = "MOB"
     /// Devices named only by an answer's signer (Demo seeds), with the label `member.list` gives them.
     var extraDevices: [String: String] = [:]
-    var creations: [String: (request: Data, ticket: FakeTicket)] = [:]
     /// R2 writes (`relay.submit`, SubmitAdmission.swift): the outcome store keyed `(device, idem)`, the logged phone events by id, and the
     /// Demo/test controls of the write path.
     var outcomes: [String: FakeOutcome] = [:]
@@ -285,12 +284,11 @@ extension FakeHost {
             .response(status: status, headers: ["content-type": "application/json"], data: (try? canonicalJSON(v)) ?? Data())
         }
         switch op {
-        case "new_ticket" where m["creation_id"] != nil: return legacyNewTicket(req, m)
         case "http":
             guard req.data.isEmpty else { return .refuse(.malformed) }
             // not an R2 op: the closed table has no `http`; kept only as the bridge tests' vehicle (a plain 404)
             return reply(["host_api": 0, "error": "not_found"], 404)
-        case "answer", "new_ticket" where m["creation_id"] == nil:
+        case "answer", "new_ticket":
             // the FakeHost's OWN shape check of a write's meta (never only the client's): {op, args{...}, idem, rd?}, no data
             guard Set(m.keys).isSubset(of: ["op", "args", "idem", "rd"]), m["args"]?.object != nil, m["idem"]?.string != nil, req.data.isEmpty
             else { return hostRefusal("invalid.input") }
@@ -318,37 +316,5 @@ extension FakeHost {
     func label(ofSigner device: String) -> String {
         if let d = ID16(hex: String(device.dropFirst(2))), core.members[d] != nil || d == primary.deviceID { return deviceLabel(d) }
         return viewState?.extraDevices[device] ?? "Unknown device"
-    }
-
-    /// INTERIM (until C2b): the v0 `new_ticket` op, answered with the created ticket in the v0 shape the phone's creation flow still reads.
-    private func legacyNewTicket(_ req: HostRequest, _ m: [String: JSONValue]) -> HostReply {
-        func reply(_ v: JSONValue, _ status: Int = 200) -> HostReply {
-            .response(status: status, headers: ["content-type": "application/json"], data: (try? canonicalJSON(v)) ?? Data())
-        }
-        var bare = m; bare["rd"] = nil
-        guard bare.exactly(["op", "host_api", "creation_id", "title", "body", "epic_key"]) else { return .refuse(.malformed) }
-        guard bare["host_api"] == 0 else { return reply(["host_api": 0, "error": "unsupported_host_api"], 400) }
-        guard let id = bare.idField("creation_id"), let title = bare["title"]?.string, let body = bare["body"]?.string,
-              bare["epic_key"] == .null || bare["epic_key"]?.string != nil else { return .refuse(.malformed) }
-        let draft = NewTicketSubmission(creationID: id, title: title, body: body, epicKey: bare["epic_key"]?.string)
-        guard (try? draft.validate()) != nil, let bytes = try? canonicalJSON(.object(bare)) else { return .refuse(.malformed) }
-        func v0(_ t: FakeTicket) -> JSONValue {
-            ["key": .string(t.key), "title": .string(t.title), "body": .string(body), "state": "open", "kind": .string(t.type == "epic" ? "factory_epic" : "ticket"),
-             "epic_key": t.parent.map(JSONValue.string) ?? .null, "updated_ms": .int(t.updatedMs)]
-        }
-        let receiptID = req.device.hex + ":" + id.hex
-        if let old = viewState!.creations[receiptID] {
-            guard old.request == bytes else { return reply(["host_api": 0, "error": "creation_conflict"], 409) }
-            return reply(["host_api": 0, "creation_id": .string(id.hex), "ticket": v0(old.ticket)], 201)
-        }
-        if let epic = draft.epicKey, !viewState!.tickets.contains(where: { $0.key == epic && $0.type == "epic" }) { return .refuse(.malformed) }
-        let now = wall.nowMs
-        let n = viewState!.nextKeyNumber
-        viewState!.nextKeyNumber += 1
-        let t = HostViewState.ticket(entropy, now, viewState!.prefix + "-" + String(format: "%04d", n), title, parent: draft.epicKey)
-        viewState!.tickets.append(t)
-        viewState!.append(type: "ticket.created", ticket: t, at: now)
-        viewState!.creations[receiptID] = (bytes, t)
-        return reply(["host_api": 0, "creation_id": .string(id.hex), "ticket": v0(t)], 201)
     }
 }

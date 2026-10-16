@@ -49,22 +49,26 @@ protocol WorkspaceModel: AnyObject, Observable {
     var macOnlyCount: Int { get }
     /// The ticket list is cut: more tickets exist on the host than are listed.
     var ticketsIncomplete: Bool { get }
-    /// Only a workspace this iPhone may operate can take new tickets.
+    /// C2b: new tickets need a usable workspace, `new_ticket` write support, the `decide` scope and an advertised next key.
     var canCreateTickets: Bool { get }
-    /// One `creationID` per exact draft (persisted with it until a verified result): a retry of the same fields creates once.
-    func createTicket(title: String, body: String) async -> TicketCreation
-}
-
-enum TicketCreation: Hashable, Sendable {
-    case created(key: String)
-    case failed(String)
+    /// The saved draft (type, title) and, when a signed creation is still being settled, that it is.
+    func loadCreationDraft() -> (type: String, title: String, pending: Bool)?
+    /// Reviews a new ticket (a fresh next key, the uid made once; nothing is signed). The draft is saved first.
+    func reviewCreation(type: String, title: String) async -> CreationReviewResult
+    /// Signs exactly `review` (the sheet armed with its disclosure) and settles it.
+    func create(_ review: CreationValue) async -> CreationPhase
+    /// Settles the pending creation of the draft again (reads only; never signs).
+    func checkCreation() async -> CreationPhase
 }
 
 extension WorkspaceModel {
     var macOnlyCount: Int { 0 }
     var ticketsIncomplete: Bool { false }
     var canCreateTickets: Bool { false }
-    func createTicket(title: String, body: String) async -> TicketCreation { .failed("Not available here.") }
+    func loadCreationDraft() -> (type: String, title: String, pending: Bool)? { nil }
+    func reviewCreation(type: String, title: String) async -> CreationReviewResult { .failed("Not available here.") }
+    func create(_ review: CreationValue) async -> CreationPhase { .notSent("Not available here.") }
+    func checkCreation() async -> CreationPhase { .notSent("Not available here.") }
 }
 
 @MainActor

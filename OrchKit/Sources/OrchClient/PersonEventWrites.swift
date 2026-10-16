@@ -312,11 +312,10 @@ extension WorkspaceSession {
 
     // MARK: the write gate (plan 3.3)
 
-    /// A row without an attempt never carries a write meta (the interim v0 creation, Demo only, is the one exception until increment 3).
+    /// A row without an attempt never carries a write meta, in Live and Demo alike (C2b increment 3 retired the v0 creation op).
     func refuseUnattachedWrite(_ plaintext: Data) throws {
         guard let meta = try? Bridge.unframe(plaintext).meta.object, let op = meta["op"]?.string,
               R2.allOps.first(where: { $0.key.utf8.elementsEqual(op.utf8) })?.value.kind == .write else { return }
-        if !cfg.enforcesOpTable, cfg.context.realm == .demo, op == "new_ticket", meta["creation_id"] != nil { return }
         throw ViewError.writesUnavailable
     }
 

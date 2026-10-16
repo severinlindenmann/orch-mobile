@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OrchClient
+import OrchCustody
 import OrchProtocol
 import OrchStore
 
@@ -90,6 +91,7 @@ final class LiveWorkspace: WorkspaceModel {
         info.keyAlarm = await api.keyAlarm() != nil ? Self.keyAlarmMessage : nil
         // C2b: whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them)
         info.writeSupport = await api.writesAvailable()
+        info.createSupport = await api.writesAvailable(op: "new_ticket")
     }
 
     /// Any workspace call that failed on a key alarm (`wk_commit_conflict`, `wkCommitMismatch`) shows it instead of "try again".
@@ -115,7 +117,7 @@ final class LiveWorkspace: WorkspaceModel {
             }
         case .readerRefused:
             // a sealed reader refusal: nothing cached is shown as current; the person updates orch or pairs again
-            questions = []; allTickets = []; macOnlyCount = 0; ticketsIncomplete = false; loaded = false
+            questions = []; allTickets = []; macOnlyCount = 0; ticketsIncomplete = false; loaded = false; nextKey = nil
             info.keyAlarm = ReaderGate.updateMessage
             markOffline()
         case .invalidated: break          // the session re-reads on its own (foreground, with a subscriber)
@@ -133,15 +135,17 @@ final class LiveWorkspace: WorkspaceModel {
         questions = s.questions.map { Mapping.question($0, workspaceID: info.id) }
         allTickets = s.tickets.map { Mapping.ticket($0, workspaceID: info.id) }
         macOnlyCount = s.macOnlyCount; ticketsIncomplete = s.ticketsIncomplete
+        nextKey = s.nextKey
         loaded = true
         offlineSince = nil
         info.connection = .online
         services?.snapshotApplied(self)
     }
 
-    // MARK: New ticket
+    // MARK: New ticket (C2b creation)
 
-    private struct Draft: Codable, Equatable { var title: String, body: String, id: String }
+    /// The draft: the type and title, and the review id of a signed creation still being settled (the uid lives in `pe_reviews`).
+    struct CreationDraft: Codable, Equatable { var type: String, title: String; var review: String? }
 
     /// The draft lives in the workspace's own directory, so the local wipe removes it with everything else (U9).
     @ObservationIgnored var draftURL: URL?
@@ -149,42 +153,138 @@ final class LiveWorkspace: WorkspaceModel {
     /// A Live workspace without one cannot save a draft at all.
     @ObservationIgnored var draftFence: (any WriteFence)?
     @ObservationIgnored var requiresDraftFence = false
+    /// `workspace.show` -> `next_key` of the last snapshot (nil: this device may not create here).
+    var nextKey: String?
+    /// The issued creation review behind the sheet's `CreationValue` (the App never builds one).
+    @ObservationIgnored private var heldCreation: CreationReview?
+    @ObservationIgnored private var creationRevision = 0
 
-    private func loadDraft() -> Draft? {
+    private func loadDraft() -> CreationDraft? {
         guard let url = draftURL, let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Draft.self, from: data)
+        return try? JSONDecoder().decode(CreationDraft.self, from: data)
     }
-    private func saveDraft(_ d: Draft) throws {
-        guard canCreateTickets, let url = draftURL,
+    private func saveDraft(_ d: CreationDraft) throws {
+        guard usable, let url = draftURL,
               FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) else { throw ViewError.invalidDraft }
         let data = try JSONEncoder().encode(d)
         if let fence = draftFence { try fence.performFenced { try data.write(to: url, options: [.atomic, .completeFileProtection]) } }
         else if requiresDraftFence { throw ViewError.invalidDraft }
         else { try data.write(to: url, options: [.atomic, .completeFileProtection]) }
     }
+    private func clearDraft() {
+        guard let url = draftURL else { return }
+        if let fence = draftFence { try? fence.performFenced { try? FileManager.default.removeItem(at: url) } }
+        else { try? FileManager.default.removeItem(at: url) }
+    }
 
-    var canCreateTickets: Bool { usable && services?.capabilities.writes == true && info.scopes.contains(.operate) }
+    var canCreateTickets: Bool {
+        usable && services?.capabilities.writes == true && info.createSupport && info.scopes.contains(.decide) && nextKey != nil
+    }
 
-    /// The creation ID is persisted with the exact draft; the same fields reuse it, an edit gets a new one, success clears it.
-    func createTicket(title: String, body: String) async -> TicketCreation {
-        guard canCreateTickets else { return .failed("This workspace is unavailable.") }
-        let saved = loadDraft()
-        let draft = (saved?.title == title && saved?.body == body ? saved : nil)
-            ?? Draft(title: title, body: body, id: SystemEntropy().id16().hex)
-        do { try saveDraft(draft) } catch { return .failed("Could not save the ticket draft. Nothing was sent. Try again.") }
-        guard let id = ID16(hex: draft.id) else { return .failed("Could not prepare the ticket.") }
+    func loadCreationDraft() -> (type: String, title: String, pending: Bool)? {
+        loadDraft().map { ($0.type, $0.title, $0.review != nil) }
+    }
+
+    /// The form's inline check of a title: nil when it can be reviewed.
+    static func titleProblem(_ title: String) -> String? {
         do {
-            let ticket = try await api.newTicket(NewTicketSubmission(creationID: id, title: title, body: body, epicKey: nil))
-            if let url = draftURL { try? FileManager.default.removeItem(at: url) }
-            await refresh()
-            return .created(key: ticket.key)
-        } catch ViewError.invalidDraft {
-            return .failed("The title or text has characters that cannot be sent. Remove them and try again.")
+            let p = try PhoneEvents.prepareText(title, oneLine: true)
+            let n = p.value.unicodeScalars.count
+            if n == 0 { return "Enter a title." }
+            if n > PhoneEvents.maxTitleScalars { return "At most \(PhoneEvents.maxTitleScalars) characters (now \(n))." }
+            return nil
+        } catch PhoneEvents.Failure.text(let v) {
+            switch v.kind {
+            case .lineFeedInOneLine: return "The title must be one line."
+            case .bidiControl: return "The title has a text-direction control at character \(v.index + 1). Remove it."
+            case .control: return "The title has a control character at character \(v.index + 1). Remove it."
+            case .unassigned: return "The title has a character this iPhone can't check at character \(v.index + 1). Remove it."
+            case .notNFC: return "The title can't be sent as typed."
+            }
+        } catch { return "The title can't be sent as typed." }
+    }
+
+    func reviewCreation(type: String, title: String) async -> CreationReviewResult {
+        guard canCreateTickets else { return .failed("This workspace doesn't take new tickets from this iPhone now.") }
+        if let problem = Self.titleProblem(title) { return .failed(problem) }
+        do { try saveDraft(CreationDraft(type: type, title: title, review: nil)) }
+        catch { return .failed("Could not save the ticket draft. Nothing was sent. Try again.") }
+        do {
+            let r = try await api.reviewCreation(type: type, title: title)
+            guard usable else { return .failed("This workspace is unavailable.") }
+            heldCreation = r
+            creationRevision += 1
+            return .reviewed(CreationValue(workspaceName: r.workspaceName, hue: info.hue, ticketType: r.ticketType, title: r.title, owner: r.owner,
+                                           nextKey: r.nextKey, uid: r.uid, workspaceID: info.id, revision: creationRevision,
+                                           isDemo: services?.isDemo == true))
         } catch where noteKeyAlarm(error) {
             return .failed(Self.keyAlarmMessage)
+        } catch ViewError.writesUnavailable {
+            return .failed("This workspace doesn't take new tickets from this iPhone now.")
+        } catch let f as PhoneEvents.Failure {
+            return .failed(f == .badType ? "Choose a ticket type." : (Self.titleProblem(title) ?? "The title can't be sent as typed."))
         } catch {
-            return .failed("The ticket was not confirmed. Try again; it will not be created twice.")
+            return .failed("The workspace could not be read. Nothing was signed.")
         }
+    }
+
+    /// Signs exactly the held review behind `value`. The sheet only calls this once armed, after showing the disclosure: the disclosed
+    /// key is the review's own.
+    func create(_ value: CreationValue) async -> CreationPhase {
+        guard canCreateTickets, let held = heldCreation, held.uid == value.uid, value.revision == creationRevision else { return .invalidated }
+        heldCreation = nil
+        #if DEBUG
+        await services?.applyDemoCreationControl(workspace: self)
+        #endif
+        do {
+            let outcome = try await api.create(held, disclosedKey: held.nextKey)
+            return await apply(outcome, uid: held.uid)
+        } catch CustodyError.locked {
+            api.noteCustodyLocked()
+            return .unlockToContinue
+        } catch let committed as AnswerCommitted {
+            // signed and stored: it exists, so it is settled, never "not sent"
+            noteKeyAlarm(committed.underlying)
+            try? saveDraft(CreationDraft(type: held.ticketType, title: held.title, review: committed.reviewID))
+            if let outcome = try? await api.writeOutcome(reviewID: committed.reviewID) { return await apply(outcome, uid: held.uid) }
+            return .checking
+        } catch ViewError.invalidReview {
+            return .invalidated
+        } catch where noteKeyAlarm(error) {
+            return .notSent(Self.keyAlarmMessage)
+        } catch {
+            return .notSent("Nothing was signed or stored. Check the connection, then review the ticket again.")
+        }
+    }
+
+    func checkCreation() async -> CreationPhase {
+        guard usable, let draft = loadDraft(), let id = draft.review else { return .notSent("Nothing is being checked.") }
+        do { return await apply(try await api.settle(reviewID: id), uid: nil) }
+        catch { return .checking }
+    }
+
+    private func apply(_ outcome: WriteOutcome, uid: String?) async -> CreationPhase {
+        let phase: CreationPhase
+        switch outcome {
+        case .landed(_, let key): phase = .created(key: key)
+        case .landedAfterResign(_, let key): phase = .resentAfterChange(key: key)
+        case .landedUnconfirmed: phase = .landedUnconfirmed
+        case .ticketExists(let key): phase = .ticketExists(key: key)
+        case .refused, .alreadyAnswered: phase = .refused
+        case .needsReview(.notSent): phase = .needsReview("It was not sent in time. Review it again to send it.")
+        case .needsReview: phase = .needsReview("The workspace changed and the ticket could not be signed again safely. Review it again.")
+        case .checking:
+            // keep the review id with the draft, so the form shows it as being checked after a relaunch
+            if let uid, let id = try? await api.pendingWrites().first(where: { $0.creation?.uid == uid })?.reviewID,
+               var d = loadDraft() { d.review = id; try? saveDraft(d) }
+            return .checking
+        }
+        switch phase {
+        case .needsReview: if var d = loadDraft() { d.review = nil; try? saveDraft(d) }
+        default: clearDraft()
+        }
+        await refresh()
+        return phase
     }
 
     // MARK: WorkspaceModel

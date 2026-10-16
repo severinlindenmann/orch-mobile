@@ -771,6 +771,17 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         return true
     }
 
+    #if DEBUG
+    /// UI tests: `--demo-key-race` makes the Demo host give the next key away before the first creation is sent (one key race).
+    @ObservationIgnored private var demoKeyRaceUsed = false
+    func applyDemoCreationControl(workspace: LiveWorkspace) async {
+        guard ProcessInfo.processInfo.arguments.contains("--demo-key-race"), !demoKeyRaceUsed, workspace.usable, let runtime = demo,
+              let host = runtime.entry(for: workspace.workspaceID)?.host else { return }
+        demoKeyRaceUsed = true
+        await host.demoTakeNextKey()
+    }
+    #endif
+
     func applyDemoSignControl(workspace: LiveWorkspace, questionID: String, optionID: String) async {
         let outcome = signOutcome
         guard workspace.usable, outcome != .accepted, outcome != .loadFails, let runtime = demo,

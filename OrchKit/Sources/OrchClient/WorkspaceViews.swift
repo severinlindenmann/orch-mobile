@@ -42,9 +42,6 @@ public protocol WorkspaceAPI: Sendable {
     func noteCustodyLocked()
     func noteBackground()
     func noteReviewsInvalidated()
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    ///   Retry when coordination is available; this error does not confirm removal.
-    func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket
     func events() async -> AsyncStream<WorkspaceEvent>
     /// The durable key alarm (Q10), read at launch.
     func keyAlarm() async -> WorkspaceKeyAlarm?
@@ -214,15 +211,6 @@ public struct Ticket: Equatable, Sendable {
     public let epicKey: String?
     public let updatedMs: Int64
     package let wire: JSONValue
-    /// The creation reply of the (interim, v0) new-ticket op.
-    package init(_ v: JSONValue) throws {
-        let m = try fields(v, ["key", "title", "body", "state", "kind", "epic_key", "updated_ms"])
-        guard let k = m["key"]?.string, validTicketKey(k), let t = m["title"]?.string, let b = m["body"]?.string,
-              let s = m["state"]?.string, ["open", "in_progress", "done"].contains(s),
-              let kind = m["kind"]?.string, ["ticket", "factory_epic"].contains(kind), let at = m["updated_ms"]?.int, validViewTime(at),
-              m["epic_key"] == .null || m["epic_key"]?.string.map(validTicketKey) == true else { throw ViewError.malformed }
-        key = k; title = t; body = b; state = s; self.kind = kind; epicKey = m["epic_key"]?.string; updatedMs = at; wire = v
-    }
     /// From a `ticket.query` row. The R2 phone reads titles only (no ticket body travels, host 11A.5 J5): `body` is empty. Host statuses
     /// map to the three the App shows: backlog and open are `open`; in progress, waiting and testing are `in_progress`; done and closed are `done`.
     package init(row r: TicketRow) {
@@ -257,20 +245,6 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
         workspaceID = workspace; self.revision = revision; self.checkedMs = checkedMs; self.questions = questions; self.tickets = tickets
         self.members = members; self.name = name; self.nextKey = nextKey
         self.macOnlyCount = macOnlyCount; self.ticketsIncomplete = ticketsIncomplete
-    }
-}
-public struct NewTicketSubmission: Equatable, Sendable {
-    public let creationID: ID16
-    public let title: String, body: String
-    public let epicKey: String?
-    public init(creationID: ID16, title: String, body: String, epicKey: String? = nil) {
-        self.creationID = creationID; self.title = title; self.body = body; self.epicKey = epicKey
-    }
-    package var meta: JSONValue { ["op": "new_ticket", "host_api": 0, "creation_id": .string(creationID.hex),
-                                  "title": .string(title), "body": .string(body), "epic_key": epicKey.map(JSONValue.string) ?? .null] }
-    package func validate() throws {
-        guard (1...200).contains(title.unicodeScalars.count), body.unicodeScalars.count <= 20_000,
-              !unsafeDraft(title), !unsafeDraft(body), epicKey.map(validTicketKey) ?? true else { throw ViewError.invalidDraft }
     }
 }
 package func fields(_ v: JSONValue, _ keys: Set<String>) throws -> [String: JSONValue] {
