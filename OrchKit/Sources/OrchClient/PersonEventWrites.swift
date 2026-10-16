@@ -273,6 +273,10 @@ extension WorkspaceSession {
     public nonisolated func noteProtectedDataUnavailable() { lifecycleFence.invalidate(.protectedDataLost) }
     /// The custody reported `.locked`.
     public nonisolated func noteCustodyLocked() { lifecycleFence.invalidate(.custodyLocked) }
+    /// The fence half of `setForeground(false)`, callable before the actor hop.
+    public nonisolated func noteBackground() { lifecycleFence.invalidate(.background) }
+    /// The fence half of `invalidateReviews()`, callable before the actor hop.
+    public nonisolated func noteReviewsInvalidated() { lifecycleFence.invalidate(.reviewsInvalidated) }
 
     /// SH1: the session itself reacts to a lock anywhere in its write path (signing, the device key behind the bridge seal, the vault),
     /// whatever the App does with the error.
@@ -469,17 +473,22 @@ extension WorkspaceSession {
     package func pendingWrites() async throws -> [WriteStatus] {
         try await ensureCurrent()
         return try await cfg.container.database().query(
-            "SELECT r.review, r.question, r.snapshot, a.dispatched FROM pe_reviews r JOIN pe_attempts a ON a.idem = r.current_idem WHERE r.state='active' ORDER BY r.created_ms, r.review"
+            "SELECT r.review, r.question, r.snapshot, r.log, a.event, a.dispatched FROM pe_reviews r JOIN pe_attempts a ON a.idem = r.current_idem WHERE r.state='active' ORDER BY r.created_ms, r.review"
         ).compactMap { r in
             guard let id = r.text("review") else { return nil }
             let snap = r.blob("snapshot").flatMap { try? StoredSnapshot(bytes: $0) }
+            let review = snap.flatMap { s in r.blob("event").flatMap { e in r.text("log").flatMap { storedReview(s, event: e, log: $0) } } }
             return WriteStatus(reviewID: id, questionID: r.text("question").flatMap(ID16.init(hex:)), option: snap?.option,
-                               state: r.int("dispatched") == 1 ? .checking : .sending, review: snap.flatMap { storedReview($0) })
+                               state: r.int("dispatched") == 1 ? .checking : .sending, review: review)
         }
     }
 
-    private func storedReview(_ snap: StoredSnapshot) -> StoredReview? {
-        guard let r = try? snap.reviewed(workspace: workspace) else { return nil }
+    /// What was reviewed, shown back only when it still binds: the recomputed qid is the stored one and the recomputed hash is the one
+    /// the attempt signed. Anything else shows no review (nil), never a different text under the signed answer.
+    private func storedReview(_ snap: StoredSnapshot, event: Data, log: String) -> StoredReview? {
+        guard let r = try? snap.reviewed(workspace: workspace), r.qid == snap.qid,
+              let signed = try? PhoneEvents.restore(bytes: event, kind: .questionAnswered, log: log, workspace: workspace),
+              signed.event["hash"]?.string == r.hash else { return nil }
         return StoredReview(ticketKey: snap.ticketKey, ticketUID: r.ticketUID, qid: r.qid, hash: r.hash, text: r.text,
                             options: r.question.options.map { QuestionOption(id: $0.key, label: $0.label, cost: $0.cost) }, option: snap.option,
                             why: r.question.why, recommended: r.question.recommended, to: r.question.to, blocking: r.question.blocking)
@@ -563,19 +572,32 @@ extension WorkspaceSession {
         a.idem != current && a.dispatched && (a.state == "sent" || a.state == "c_auto" || a.state == "superseded")
     }
 
-    /// Reads every earlier attempt that may still land (oldest first, each against its OWN event): a landing is recorded and wins
-    /// (true). A definite refusal of a `sent` one is recorded as its own evidence. `skip` holds the attempts already read in this pass.
-    private func settleEarlier(_ rv: ReviewRec, _ attempts: [AttemptRec], skip: inout Set<String>) async throws -> Bool {
+    /// What reading the earlier attempts found: one landed (recorded; it wins), at least one still unresolved (no refusal of the
+    /// review may be final in this pass: it may still land), or none of them can land any more.
+    enum EarlierRead { case landed, unresolved, clear }
+
+    /// Reads every earlier attempt that may still land (oldest first, each against its OWN event): a landing is recorded and wins.
+    /// A definite refusal of a `sent` one is recorded as its own evidence. `skip` holds the attempts already read in this pass.
+    private func settleEarlier(_ rv: ReviewRec, _ attempts: [AttemptRec], skip: inout Set<String>) async throws -> EarlierRead {
+        var unresolved = false
         for e in attempts where Self.mayStillLand(e, current: rv.currentIdem) && !skip.contains(e.idem) {
             skip.insert(e.idem)
             let ev = try await settleByReading(e, rv)
             switch ev {
-            case .landed: try await apply(ev, rv, e); return true
-            case .definite where e.state == "sent": try await apply(ev, rv, e)
-            default: break
+            case .landed: try await apply(ev, rv, e); return .landed
+            case .definite where e.state == "sent": if try await !apply(ev, rv, e) { unresolved = true }
+            case .definite: break
+            default: unresolved = true
             }
         }
-        return false
+        return unresolved ? .unresolved : .clear
+    }
+
+    /// MUST-1: before a refusal finishes the review, every earlier attempt that may still land is read once more. A landing wins
+    /// (`continue`); a read that did not settle one of them (a transient failure) keeps the review checking, never refused.
+    private func earlierAllowFinal(_ rv: ReviewRec, _ attempts: [AttemptRec]) async throws -> EarlierRead {
+        var fresh: Set<String> = []
+        return try await settleEarlier(rv, attempts, skip: &fresh)
     }
 
     func runReview(_ id: String) async throws -> WriteOutcome {
@@ -594,7 +616,7 @@ extension WorkspaceSession {
             }
             let attempts = try await loadAttempts(id)
             // An earlier possibly sent attempt is settled first, against its OWN event: a late landing of any attempt wins.
-            if try await settleEarlier(rv, attempts, skip: &readEarlier) { continue }
+            if try await settleEarlier(rv, attempts, skip: &readEarlier) == .landed { continue }
             guard let a = attempts.first(where: { $0.idem == rv.currentIdem }) else { throw SessionError.unknownRequest }
             let ev: Evidence
             var retryRead = false
@@ -613,8 +635,11 @@ extension WorkspaceSession {
             case "c_auto":
                 if try await tryAutoResign(rv, a) { continue }
                 // final: every earlier attempt that may still land is read once more first (a late landing wins)
-                var fresh: Set<String> = []
-                if try await settleEarlier(rv, attempts, skip: &fresh) { continue }
+                switch try await earlierAllowFinal(rv, attempts) {
+                case .landed: continue
+                case .unresolved: scheduleSettle(id); return .checking
+                case .clear: break
+                }
                 try await finishReview(rv, state: "needs_review", outcome: .needsReview(.workspaceChanged))
                 continue
             default:
@@ -625,16 +650,31 @@ extension WorkspaceSession {
             switch ev {
             case .landed: try await apply(ev, rv, a)
             case .definite(_, let cls, _):
-                // before a final refusal settles the review, every earlier attempt that may still land is read once more
+                // before a final refusal (C-review or D) settles the review, every earlier attempt that may still land is read once more
                 if cls != .cAuto {
-                    var fresh: Set<String> = []
-                    if try await settleEarlier(rv, attempts, skip: &fresh) { continue }
+                    switch try await earlierAllowFinal(rv, attempts) {
+                    case .landed: continue
+                    case .unresolved: scheduleSettle(id); return .checking
+                    case .clear: break
+                    }
                 }
-                try await apply(ev, rv, a)
+                // `question.answered` whose answerer could not be read: not final either
+                if try await !apply(ev, rv, a) { scheduleSettle(id); return .checking }
             case .notSent:
-                try await discardUnsent(rv, a)
+                // never sent, so it is discarded; but the review's "not sent" is final only once no earlier attempt may still land
+                switch try await earlierAllowFinal(rv, attempts) {
+                case .landed: continue
+                case .unresolved: scheduleSettle(id); return .checking
+                case .clear: try await discardUnsent(rv, a)
+                }
             case .windowPassed:
-                if !a.dispatched { try await discardUnsent(rv, a); continue }
+                if !a.dispatched {
+                    switch try await earlierAllowFinal(rv, attempts) {
+                    case .landed: continue
+                    case .unresolved: scheduleSettle(id); return .checking
+                    case .clear: try await discardUnsent(rv, a); continue
+                    }
+                }
                 scheduleSettle(id)
                 return .checking
             case .unresolved:
@@ -661,6 +701,11 @@ extension WorkspaceSession {
         do {
             let resp = try await runDriver(row, isResend: false)
             return try evidence(response: resp, a, rv)
+        } catch WriteGateError.lifecycleEnded {
+            // SHOULD-1: the fence stopped the first dispatch before the charge committed: never sent, and never sent later either
+            // (`notSent`, discarded). Charged (the window after the charge): the driver stops, the attempt is settled later.
+            if try await loadAttempts(a.review).first(where: { $0.idem == a.idem })?.dispatched == false { return .notSent }
+            throw WriteGateError.lifecycleEnded
         } catch { return try evidence(error: error, a) }
     }
 
@@ -671,7 +716,7 @@ extension WorkspaceSession {
             let next = try await prepare(logical: row.logical, plaintext: row.plaintext, replacing: row.rid, reconciled: true)
             let resp = try await runDriver(next, isResend: false)
             return try evidence(response: resp, a, rv)
-        } catch { return try evidence(error: error, a) }
+        } catch { noteIfLocked(error); return try evidence(error: error, a) }
     }
 
     private func evidence(response: BridgeResponse, _ a: AttemptRec, _ rv: ReviewRec) throws -> Evidence {
@@ -749,7 +794,10 @@ extension WorkspaceSession {
         return new
     }
 
-    private func apply(_ ev: Evidence, _ rv: ReviewRec, _ a: AttemptRec) async throws {
+    /// Records the evidence. False: nothing was recorded because it cannot be decided yet (`question.answered` whose answerer could not
+    /// be read: the answer may be one of this review's own attempts), so the review stays checking.
+    @discardableResult
+    private func apply(_ ev: Evidence, _ rv: ReviewRec, _ a: AttemptRec) async throws -> Bool {
         switch ev {
         case .landed(let seq, let src): try await recordLanding(rv, a, seq: seq, src: src)
         case .definite(let code, let cls, let src):
@@ -757,11 +805,17 @@ extension WorkspaceSession {
             case .d where code.bytesEqual("question.answered"):
                 // who answered? If it was this very event, that is our landing
                 let snap = try StoredSnapshot(bytes: rv.snapshot)
-                if let qid = ID16(hex: snap.qid), let q = try? await readQuestion(qid, hint: snap.locator).question, let r = q.resolution {
+                let read: Question?
+                do {
+                    if let qid = ID16(hex: snap.qid) { read = try await readQuestion(qid, hint: snap.locator).question } else { read = nil }
+                } catch is CancellationError { throw CancellationError() }
+                catch ClientError.host(.host(let c, _, _, _)) where c.bytesEqual("not_found") { read = nil }   // a successful "gone"
+                catch { return false }                                                                       // transient: undecided
+                if let q = read, let r = q.resolution {
                     // the counting answer is one of THIS review's attempts (this one, or an earlier one delivered late): that is our
                     // landing, and it wins over the refusal of the later attempt
                     if let mine = try await loadAttempts(rv.review).first(where: { r.decisionID.bytesEqual($0.idem) }) {
-                        try await recordLanding(rv, mine, seq: nil, src: "log"); return
+                        try await recordLanding(rv, mine, seq: nil, src: "log"); return true
                     }
                     try await recordDefinite(rv, a, code: code, cls: cls, src: src, outcome: .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs))
                 } else {
@@ -773,6 +827,7 @@ extension WorkspaceSession {
             }
         default: break
         }
+        return true
     }
 
     /// A landing is final: the attempt `landed`, the review `landed` with it, every other open attempt superseded and every bridge row of
@@ -857,9 +912,10 @@ extension WorkspaceSession {
             // a successful answer from the host: the ticket can't be shown any more
             outcome = .landedUnconfirmed(seq: seq, reason: .unavailable)
         } catch {
-            // transient: stays `landed` with outcome NULL, confirmed on a later pass
+            // transient: stays `landed` with outcome NULL, confirmed on a later pass; meanwhile it reads as landed (its seq known) or checking
             scheduleSettle(rv.review)
-            return .landedUnconfirmed(seq: seq, reason: .unavailable)
+            guard let seq else { return .checking }
+            return a.origin == "auto" ? .landedAfterResign(seq: seq, key: snap.ticketKey) : .landed(seq: seq, key: snap.ticketKey)
         }
         let state: String
         if case .landedUnconfirmed = outcome { state = "landed_unconfirmed" } else { state = "landed" }
@@ -874,7 +930,8 @@ extension WorkspaceSession {
 
     func tryAutoResign(_ rv: ReviewRec, _ a: AttemptRec) async throws -> Bool {
         // the review's ticket, bound to its eligibility token: re-validated after the fresh read and inside the signing transaction
-        guard let policy, foreground, let ticket = lifecycleFence.ticket(review: rv.review), rv.resigns < Int64(AutoResign.maxPerReview),
+        // the fence's ticket already requires the foreground (and an unlocked, protected-data lifecycle)
+        guard let policy, let ticket = lifecycleFence.ticket(review: rv.review), rv.resigns < Int64(AutoResign.maxPerReview),
               hostWritesAllowed(rv.kind) else { return false }
         do { return try await autoResign(rv, a, policy: policy, ticket: ticket) }
         catch {

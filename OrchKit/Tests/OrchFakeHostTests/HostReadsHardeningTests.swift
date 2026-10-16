@@ -85,8 +85,9 @@ private actor Calls {
             return await w.host.handleView(req)
         }
         let outcome = try await w.serve(p) { try await api.answer(review, option: "approve") }
-        // the answer landed (the host's Result is the evidence); the confirmation could not be read: landed, unconfirmed, never a refusal
-        guard case .landedUnconfirmed(let seq, .unavailable) = outcome, seq != nil else { Issue.record("\(outcome)"); return }
+        // the answer landed (the host's Result is the evidence); the confirmation could not be read: landed with the written seq (the
+        // confirmation is retried later), never a refusal
+        guard case .landed(let seq, _) = outcome, seq >= 1 else { Issue.record("\(outcome)"); return }
     }
 
     @Test func aFailedDeclareLeavesNoRows() async throws {

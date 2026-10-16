@@ -251,7 +251,7 @@ public actor WorkspaceSession: RealmParticipant {
     private func closeForShutdown() async {
         lifecycleFence.invalidate(.realmClosed)
         closed = true
-        reviewLifecycle &+= 1; reviews.removeAll()
+        dropReviews()
         let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
         poller?.cancel(); poller = nil; hintRefresh?.cancel(); hintRefresh = nil; recovery?.cancel(); recovery = nil
         snapshotTask?.cancel()
@@ -996,11 +996,14 @@ public actor WorkspaceSession: RealmParticipant {
             if attempt != nil { try crashHook?("post.precharge") }
             // Charge resends too. Mark the dispatch boundary durably before handing bytes to transport. A write's `dispatched` is set
             // in the same transaction and never falls again (trigger): a crash or cancellation after it is settled, never discarded.
-            let hook = crashHook
+            let hook = crashHook, fence = lifecycleFence, firstTicket = ticket
             try await db.transaction { tx in
                 try tx.execute("INSERT INTO bridge_charges(rid,created_ms) VALUES(?,?)", [.text(UUID().uuidString), .int(cfg.wall.nowMs)])
                 if let attempt {
                     try hook?("post.charging")
+                    // the invariant's check inside the charge transaction, right before `dispatched=1`: a lifecycle that ended in any
+                    // window up to here rolls the charge back and leaves the attempt dispatched=0 (never sent: discarded, `notSent`)
+                    if let firstTicket, !fence.valid(firstTicket) { throw WriteGateError.lifecycleEnded }
                     let n = try tx.execute("UPDATE pe_attempts SET dispatched=1, state=CASE state WHEN 'signed' THEN 'sent' ELSE state END WHERE idem=? AND state IN ('signed','sent')",
                                            [.text(attempt)])
                     guard n == 1 else { throw WriteGateError.notCurrent }
@@ -1009,8 +1012,9 @@ public actor WorkspaceSession: RealmParticipant {
             if attempt != nil { try crashHook?("post.charged") }
             try await ensureCurrent()
             if Task.isCancelled { throw CancellationError() }
-            // the invariant's second check, after the last suspension: a first dispatch only while the lifecycle is still the one the gate
-            // saw. Failing here leaves the attempt dispatched=1 (charged above): conservative, settled later, never discarded.
+            // the invariant's last check, after the last suspension (`ensureCurrent`): a first dispatch only while the lifecycle is still
+            // the one the gate saw. Failing here leaves the attempt dispatched=1 (charged above): the accepted crash-after-charge case,
+            // settled later, never discarded.
             if let ticket, !lifecycleFence.valid(ticket) { throw WriteGateError.lifecycleEnded }
             return try await cfg.transport.bridgePost(row.envelope, route: route, session: s, permit: permit)
         }
@@ -1354,8 +1358,7 @@ extension WorkspaceSession {
             for t in settleRetries.values { t.cancel() }
             settleRetries.removeAll()
             writeRecovery?.cancel(); writeRecovery = nil
-            reviewLifecycle &+= 1
-            reviews.removeAll()
+            dropReviews()
             poller?.cancel(); poller = nil
             snapshotTask?.cancel()
             cancelAll()
@@ -1364,7 +1367,10 @@ extension WorkspaceSession {
             for t in reviewDrivers.values { t.cancel() }
         }
     }
-    public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); reviewLifecycle &+= 1; reviews.removeAll(); emit(.invalidated) }
+    public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
+    /// Every held review goes, and a review read in flight is refused (`reviewQuestion` compares the counter). The fence is separate: it
+    /// also ends on `.inactive` and a lock, which must not refuse the new review that is the way back from them.
+    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll() }
 
     package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
         guard !cfg.enforcesOpTable else { throw ViewError.writesUnavailable }       // Live: no write path until C2b

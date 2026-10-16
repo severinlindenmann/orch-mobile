@@ -138,8 +138,8 @@ extension FakeHost {
         catch SQLiteError.constraint(_, let m) { #expect(m == "pe_reviews: a landing is final") }
     }
 
-    /// The confirming read fails once after a landing: the review stays `landed` with no outcome (not `landed_unconfirmed`), and a later
-    /// pass confirms it with the log's seq.
+    /// The confirming read fails once after a landing: the review stays `landed` with no outcome (not `landed_unconfirmed`), the caller
+    /// is told `landed` with the seq the write returned, and a later pass confirms it with the log's seq.
     @Test func aTransientConfirmFailureIsRetriedNotUnconfirmed() async throws {
         let landed = Done(), failed = Done()
         let r = try await rig { req, host in
@@ -149,7 +149,8 @@ extension FakeHost {
             return nil
         }
         let out = try await answer(r)
-        #expect(out == .landedUnconfirmed(seq: try await rows(r.p, "SELECT evidence FROM pe_attempts").first.flatMap { AttemptSeq.of($0) }, reason: .unavailable))
+        let written = try #require(try await rows(r.p, "SELECT evidence FROM pe_attempts").first.flatMap { AttemptSeq.of($0) })
+        #expect(out == .landed(seq: written, key: "MOB-0001"))
         let review = try #require(try await rows(r.p, "SELECT review, state, outcome FROM pe_reviews").first)
         #expect(review.text("state") == "landed" && review.text("outcome") == nil)
         let again = try await r.w.serve(r.p) { try await r.p.session.settle(reviewID: review.text("review")!) }
@@ -542,7 +543,8 @@ extension FakeHost {
         #expect(r.p.session.lifecycleFence.ticket() == nil)
     }
 
-    /// C-auto while an earlier attempt of the review is still unresolved (its outcome cannot be read): no further re-sign.
+    /// C-auto while an earlier attempt of the review is still unresolved (its outcome cannot be read): no further re-sign, and (MUST-1)
+    /// no final "workspace changed" either while that attempt may still land: the review stays checking.
     @Test func noAutoReSignWhileAnEarlierAttemptIsUnresolved() async throws {
         let box = SessionBox()
         let first = RequestBox()
@@ -559,7 +561,8 @@ extension FakeHost {
             return nil
         }
         box.container = r.p.container
-        #expect(try await answer(r) == .needsReview(.workspaceChanged))
+        #expect(try await answer(r) == .checking)
+        #expect(try await reviewState(r.p) == ["active"])
         #expect(r.hooks.count("pe.sign") == 2 && r.ops.value("answer") == 2)
     }
 
@@ -640,6 +643,59 @@ extension FakeHost {
         #expect(await r.w.host.loggedCount() == 1)
     }
 
+    /// MUST-1: K1 is refused C-auto (misreported), re-signed as K2, and delivered late. K2 is refused (`question.answered`, or
+    /// `question.stale`) while K1's `outcome.get` fails once (and, for `answered`, the read of who answered fails once too). That
+    /// transient read never finalizes the refusal: the review stays checking, and settles landed WITH K1.
+    @Test(arguments: ["answered", "stale"])
+    func aTransientReadNeverRefusesWhileAnEarlierAttemptMayLand(_ variant: String) async throws {
+        let stash = RequestBox()
+        let outcomeFailed = Done(), ticketFailed = Done()
+        let r = try await rig { req, host in
+            let op = req.meta.object?["op"]?.string
+            if op == "outcome.get", stash.delivered, !outcomeFailed.value { outcomeFailed.set(); return .refuse(.malformed) }
+            if op == "ticket.get", variant == "answered", stash.delivered, !ticketFailed.value { ticketFailed.set(); return .refuse(.malformed) }
+            guard op == "answer" else { return nil }
+            guard let k1 = stash.request else {
+                stash.request = req
+                return .refuse(.host(code: "members.stale", retryable: false, seqs: nil, nextKey: nil))
+            }
+            if !stash.delivered { stash.delivered = true; _ = await host.handleView(k1) }          // K1, late: it lands at the host
+            if variant == "stale" { return .refuse(.host(code: "question.stale", retryable: false, seqs: nil, nextKey: nil)) }
+            return nil                                                                            // K2: refused question.answered
+        }
+        let out = try await answer(r)
+        #expect(out == .checking)
+        #expect(outcomeFailed.value)
+        #expect(try await reviewState(r.p) == ["active"])
+        let k1 = try #require(stash.request?.meta.object?["idem"]?.string)
+        let settled = try await settleAll(r, r.p)
+        guard case .landed = settled.first else { Issue.record("\(settled)"); return }
+        #expect(try await rows(r.p, "SELECT landed_idem FROM pe_reviews").first?.text("landed_idem") == k1)
+        #expect(try await rows(r.p, "SELECT state FROM pe_attempts WHERE idem=?", [.text(k1)]).first?.text("state") == "landed")
+        #expect(try await reviewState(r.p) == ["landed"])
+        #expect(await r.w.host.loggedCount() == 1)
+    }
+
+    /// MUST-1: `question.answered` whose answerer cannot be read (a transient failure) is not final: the review stays checking and
+    /// settles with who answered once the read succeeds.
+    @Test func anUnreadableAnswererKeepsTheReviewChecking() async throws {
+        let answered = Done(), failed = Done()
+        let r = try await rig { req, host in
+            let op = req.meta.object?["op"]?.string
+            if op == "answer" { answered.set(); return nil }
+            if op == "ticket.get", answered.value, !failed.value { failed.set(); return .refuse(.malformed) }
+            return nil
+        }
+        try await r.w.host.demoAnswerOnHost(question: r.snapshot.question.questionID, optionID: "reject", byLabel: "Lena's Mac")
+        #expect(try await answer(r) == .checking)
+        #expect(failed.value)
+        #expect(try await reviewState(r.p) == ["active"])
+        let out = try await settleAll(r, r.p)
+        guard case .alreadyAnswered(let label, _) = out.first else { Issue.record("\(out)"); return }
+        #expect(label == "Lena's Mac")
+        #expect(try await reviewState(r.p) == ["refused"])
+    }
+
     /// The last-moment check: the app goes to the background while `prepare` is suspended (key recovery, offset, database): no signature.
     @Test func backgroundDuringPreparationSignsNothing() async throws {
         let r = try await rig()
@@ -687,12 +743,26 @@ extension FakeHost {
         #expect(r.ops.value("answer") == 0)
     }
 
-    /// The charge transaction and the `ensureCurrent` after it: a tap's first dispatch is stopped right before `bridgePost`; the attempt
-    /// stays dispatched (conservative) and is settled later.
-    @Test(arguments: ["post.charging", "post.charged"])
-    func aTapInvalidatedBeforeItsFirstDispatchIsNotSentAndSettledLater(_ point: String) async throws {
+    /// The charge transaction: the fence is checked inside it, right before `dispatched=1`. A tap stopped there rolls the charge back,
+    /// stays dispatched=0 and is discarded ("not sent"); nothing is sent later.
+    @Test func aTapInvalidatedInTheChargeTransactionIsDiscarded() async throws {
         let r = try await rig()
-        await trip(r, at: point) { $0.noteInactive() }
+        await trip(r, at: "post.charging") { $0.noteInactive() }
+        #expect(try await answer(r) == .needsReview(.notSent))
+        #expect(r.ops.value("answer") == 0)
+        let a = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts").first)
+        #expect(a.int("dispatched") == 0 && a.text("state") == "discarded")
+        #expect(try await reviewState(r.p) == ["needs_review"])
+        #expect(try await rows(r.p, "SELECT * FROM bridge_requests").isEmpty)
+        #expect(try await settleAll(r, r.p).isEmpty)
+        #expect(r.hooks.count("pe.sign") == 1 && r.ops.value("answer") == 0)
+    }
+
+    /// The `ensureCurrent` after the charge: the accepted crash-after-charge window. The attempt stays dispatched (conservative) and is
+    /// settled later.
+    @Test func aTapInvalidatedAfterTheChargeIsSettledLater() async throws {
+        let r = try await rig()
+        await trip(r, at: "post.charged") { $0.noteInactive() }
         do { _ = try await answer(r); Issue.record("sent") }
         catch let e as AnswerCommitted { #expect(e.underlying as? WriteGateError == .lifecycleEnded) }
         #expect(r.ops.value("answer") == 0)
@@ -701,6 +771,17 @@ extension FakeHost {
         let out = try await settleAll(r, r.p)
         guard case .landed = out.first else { Issue.record("\(out)"); return }
         #expect(r.hooks.count("pe.sign") == 1 && r.ops.value("answer") == 1)
+    }
+
+    /// SHOULD-3: a realm generation that ends on the database hop before a TAP's signature: nothing is signed, stored or sent.
+    @Test func aGenerationEndBeforeTheTapSignatureSignsNothing() async throws {
+        let r = try await rig()
+        let generation = r.w.env.generation
+        await trip(r, at: "pe.presign") { _ in generation.invalidate() }
+        do { _ = try await answer(r); Issue.record("signed") } catch {}
+        #expect(r.hooks.count("pe.sign") == 0)
+        #expect(try await rows(r.p, "SELECT * FROM pe_attempts").isEmpty)
+        #expect(r.ops.value("answer") == 0)
     }
 
     /// The automatic re-sign: an invalidation on the database hop before its signature means no second signature.
@@ -716,17 +797,38 @@ extension FakeHost {
     }
 
     /// The automatic attempt's first dispatch: an invalidation in the charge transaction or `ensureCurrent` stops it before `bridgePost`.
+    /// Then it is settled: stopped in the charge transaction it was never sent (discarded, "not sent", nothing pending); stopped after
+    /// the charge it is dispatched and settles by reading and re-sealing the same bytes (landed).
     @Test(arguments: ["post.charging", "post.charged"])
-    func anAutoAttemptInvalidatedBeforeItsFirstDispatchIsNotSent(_ point: String) async throws {
+    func anAutoAttemptInvalidatedBeforeItsFirstDispatchIsNotSentAndSettles(_ point: String) async throws {
         let r = try await rig()
         await r.w.host.demoBumpMembersV()
         await trip(r, at: point, nth: 2) { $0.noteInactive() }
-        do { _ = try await answer(r); Issue.record("sent") }
-        catch let e as AnswerCommitted { #expect(e.underlying as? WriteGateError == .lifecycleEnded) }
+        let review: String
+        if point == "post.charging" {
+            #expect(try await answer(r) == .needsReview(.notSent))
+            let auto = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts WHERE origin='auto'").first)
+            #expect(auto.int("dispatched") == 0 && auto.text("state") == "discarded")
+            review = try #require(try await rows(r.p, "SELECT review FROM pe_reviews").first?.text("review"))
+        } else {
+            do { _ = try await answer(r); Issue.record("sent") }
+            catch let e as AnswerCommitted { #expect(e.underlying as? WriteGateError == .lifecycleEnded) }
+            let auto = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts WHERE origin='auto'").first)
+            #expect(auto.int("dispatched") == 1 && auto.text("state") == "sent")
+            review = try #require(try await rows(r.p, "SELECT review FROM pe_reviews").first?.text("review"))
+        }
         #expect(r.hooks.count("pe.sign") == 2)
         #expect(r.ops.value("answer") == 1)                     // the tap's only
-        let auto = try #require(try await rows(r.p, "SELECT dispatched, state FROM pe_attempts WHERE origin='auto'").first)
-        #expect(auto.int("dispatched") == 1 && auto.text("state") == "sent")
+        let settled = try await settleAll(r, r.p)
+        if point == "post.charging" {
+            #expect(settled.isEmpty)
+            #expect(try await r.p.session.writeOutcome(reviewID: review) == .needsReview(.notSent))
+            #expect(r.ops.value("answer") == 1)
+        } else {
+            guard case .landedAfterResign = settled.first else { Issue.record("\(settled)"); return }
+            #expect(try await attemptStates(r.p) == ["superseded", "landed"])
+        }
+        #expect(r.hooks.count("pe.sign") == 2)
     }
 
     /// A custody lock reported before the tap is surfaced as `CustodyError.locked` ("Unlock to continue"), signs nothing, and a new

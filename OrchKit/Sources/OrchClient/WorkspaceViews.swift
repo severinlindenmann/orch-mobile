@@ -26,10 +26,13 @@ public protocol WorkspaceAPI: Sendable {
     func writeOutcome(reviewID: String) async throws -> WriteOutcome?
     /// Whether this workspace takes answers from this iPhone now (a person-event policy and a host that serves them).
     func writesAvailable() async -> Bool
-    /// Lifecycle signals that end the eligibility for an automatic re-sign (scenePhase inactive, protected data going away, custody lock).
-    func noteInactive() async
-    func noteProtectedDataUnavailable() async
-    func noteCustodyLocked() async
+    /// Lifecycle signals that end the eligibility for an automatic re-sign (scenePhase inactive, protected data going away, custody lock,
+    /// background, reviews invalidated). Synchronous and nonisolated: they reach the session's lifecycle fence at once, with no actor hop.
+    func noteInactive()
+    func noteProtectedDataUnavailable()
+    func noteCustodyLocked()
+    func noteBackground()
+    func noteReviewsInvalidated()
     /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
     ///   Retry when coordination is available; this error does not confirm removal.
     func newTicket(_ draft: NewTicketSubmission) async throws -> Ticket
@@ -42,9 +45,11 @@ extension WorkspaceAPI {
     public func keyAlarm() async -> WorkspaceKeyAlarm? { nil }
     public func writesAvailable() async -> Bool { false }
     public func writeOutcome(reviewID: String) async throws -> WriteOutcome? { nil }
-    public func noteInactive() async {}
-    public func noteProtectedDataUnavailable() async {}
-    public func noteCustodyLocked() async {}
+    public func noteInactive() {}
+    public func noteProtectedDataUnavailable() {}
+    public func noteCustodyLocked() {}
+    public func noteBackground() {}
+    public func noteReviewsInvalidated() {}
 }
 public enum ViewError: Error, Equatable, Sendable { case offline, malformed, invalidReview, invalidOption, invalidDraft, readDeferred, http(Int, String)
     /// Writes from this phone are not offered (Live until C2b): nothing was signed, sealed or sent.
