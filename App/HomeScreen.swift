@@ -25,7 +25,7 @@ struct HomeScreen: View {
         _bridge = State(initialValue: (services as? any ShareWorld).flatMap { ShareBridge.make(world: $0) })
         // A deep link to a tab root (drop, settings, needs-you) is held back and applied to its tab once the tab bar exists, so the
         // screen (and e.g. a confirm alert it presents on appear) is never created twice, first on Home and then in its tab.
-        let isTabRoot: Bool = switch initial.path.first { case .drop?, .settings?, .needsYou?: true; default: false }
+        let isTabRoot: Bool = switch initial.path.first { case .drop?, .settings?, .needsYou?, .approvals?: true; default: false }
         _path = State(initialValue: isTabRoot ? [] : initial.path)
         _pendingRoute = State(initialValue: isTabRoot ? initial.path : [])
         _forceWelcome = State(initialValue: initial.forceWelcome)
@@ -47,7 +47,7 @@ struct HomeScreen: View {
         switch route {
         case .drop where services.capabilities.drop: dropPath = []; tab = .drop
         case .settings: settingsPath = []; tab = .settings
-        case .needsYou: questionsPath = []; tab = .questions
+        case .needsYou, .approvals: questionsPath = []; tab = .questions
         default: break
         }
     }
@@ -74,9 +74,16 @@ struct HomeScreen: View {
         switch first {
         case .drop where services.capabilities.drop: dropPath = rest; composeOnDropTab = initial.composeDrop; tab = .drop
         case .settings: settingsPath = rest; tab = .settings
-        case .needsYou: questionsPath = rest; tab = .questions
+        case .needsYou, .approvals: questionsPath = rest; tab = .questions
         default: path = source
         }
+    }
+
+    /// B10: a tap on an approval request's notification opens the approvals list (the top of the Questions tab), read fresh from the host.
+    private func takeApprovalsTap() {
+        guard PushRouteInbox.shared.takeApprovals() else { return }
+        if showsTabs { select(.approvals) } else { path = [.approvals] }
+        Task { await services.home.refreshApprovals() }
     }
 
     /// Demo pairs through the Demo panels; everything else (Live) goes through scan or paste and a review screen.
@@ -158,7 +165,7 @@ struct HomeScreen: View {
                     .tag(AppTab.home)
                 tabStack($questionsPath) { NeedsYouScreen(services: services) }
                     .tabItem { Label("Questions", systemImage: "questionmark.bubble") }
-                    .badge(services.home.needsYouCount)
+                    .badge(services.home.needsYouCount + services.home.approvalGroups.reduce(0) { $0 + $1.requests.count })
                     .tag(AppTab.questions)
                 if services.capabilities.drop {
                     tabStack($dropPath) { DropScreen(services: services, startComposing: composeOnDropTab) }
@@ -177,8 +184,9 @@ struct HomeScreen: View {
     var body: some View {
         rootContent
         .environment(\.routeSelector, showsTabs ? RouteSelector({ select($0) }, goHome: { tab = .home }) : nil)
-        .onAppear { adoptInitialRoute() }
-        .onChange(of: showsTabs) { _, _ in adoptInitialRoute() }
+        .onAppear { adoptInitialRoute(); takeApprovalsTap() }
+        .onChange(of: showsTabs) { _, _ in adoptInitialRoute(); takeApprovalsTap() }
+        .onChange(of: PushRouteInbox.shared.approvalsRequested) { _, _ in takeApprovalsTap() }
         .tint(OC.brand)
         // A10: claim what the share extension staged, on launch and on every activation.
         .task {
@@ -232,7 +240,8 @@ private struct RouteView: View {
 
     var body: some View {
         switch route {
-        case .needsYou: NeedsYouScreen(services: services)
+        case .needsYou, .approvals: NeedsYouScreen(services: services)
+        case .approval(let ws, let id): ApprovalReviewScreen(services: services, workspaceID: ws, requestID: id)
         case .workspace(let id, let segment): WorkspaceScreen(services: services, workspaceID: id, segment: segment)
         case .question(let ws, let id, let autoSign):
             QuestionScreen(services: services, workspaceID: ws, questionID: id, autoSign: autoSign)
@@ -588,6 +597,7 @@ struct NeedsYouScreen: View {
 
     var body: some View {
         List {
+            ApprovalsSection(services: services)
             ForEach(services.home.needsYou) { group in
                 Section {
                     ForEach(group.questions) { q in
@@ -609,7 +619,7 @@ struct NeedsYouScreen: View {
                 Text(verbatim: "Last checked \(Fmt.relative(services.home.lastChecked))")
                     .font(OF.meta).foregroundStyle(OC.textMuted)
             }
-            if services.home.needsYouCount == 0 {
+            if services.home.needsYouCount == 0, services.home.approvalGroups.isEmpty {
                 EmptyState(systemImage: "checkmark.seal", title: "Nothing needs you").listRowBackground(Color.clear)
             }
         }
@@ -620,6 +630,7 @@ struct NeedsYouScreen: View {
         .toolbarBackground(.regularMaterial, for: .tabBar)
         .navigationTitle("Questions")
         .accessibilityIdentifier("needsYou.list")
+        .task { await services.home.refreshApprovals() }
     }
 }
 

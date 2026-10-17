@@ -37,6 +37,7 @@ enum PhoneRetryTableGenerated {
         "event.abandoned",
         "event.bad_base",
         "event.expired",
+        "gate.stale",
         "question.stale",
     ]
     static let classD: Set<String> = [

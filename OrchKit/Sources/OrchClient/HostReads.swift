@@ -261,6 +261,11 @@ public struct TicketGet: Equatable, Sendable {
     public let questions: [TicketQuestion]
     public let membersV: Int64
     public let subCursor: String
+    /// B10: `doc.sections` (section id -> text), the texts a gate's section hashes are recomputed from; nil when absent or not strings
+    /// (then no gate review can be built from this read).
+    public let sections: [String: String]?
+    /// B10: `gates.<gate>` as far as the phone reads it (the host's word, except what `gate.input` lets it recompute).
+    public let gates: [String: TicketGateInfo]
 
     init(_ data: JSONValue) throws {
         let o = try ViewObject(data)
@@ -281,6 +286,121 @@ public struct TicketGet: Equatable, Sendable {
         let ids = qs.compactMap { $0.question?.id }
         guard Set(ids.map { Array($0.utf8) }).count == ids.count else { throw ViewError.malformed }
         questions = qs
+        if let so = d.o["sections"]?.object, so.allSatisfy({ $0.value.string != nil }) {
+            sections = so.mapValues { $0.string ?? "" }
+        } else { sections = nil }
+        var gs: [String: TicketGateInfo] = [:]
+        for (name, v) in o.o["gates"]?.object ?? [:] { if let g = TicketGateInfo(v) { gs[name] = g } }
+        gates = gs
+    }
+}
+
+/// One decision of a gate, as `ticket.get` `gates.<gate>.decisions` lists it (B10: how a landed approval is found in the log).
+public struct GateDecisionRef: Equatable, Sendable {
+    public let id: String
+    public let kind: String
+    public let person: String
+    public let seq: Int64
+    public let gen: Int64
+}
+
+/// `ticket.get` `gates.<gate>`: lenient (a gate it cannot read is simply absent). Everything here is the host's word.
+public struct TicketGateInfo: Equatable, Sendable {
+    public let gen: Int64?
+    public let applies: Bool?
+    public let state: String?
+    public let policy: JSONValue?
+    public let decisions: [GateDecisionRef]
+
+    init?(_ v: JSONValue) {
+        guard let o = v.object else { return nil }
+        gen = o["gen"]?.int
+        applies = o["applies"]?.bool
+        state = o["state"]?.string
+        policy = o["policy"]
+        decisions = (o["decisions"]?.array ?? []).compactMap { d in
+            guard let x = d.object, let id = x["id"]?.string, let k = x["kind"]?.string, let p = x["person"]?.string, let seq = x["seq"]?.int,
+                  let gen = x["gen"]?.int else { return nil }
+            return GateDecisionRef(id: id, kind: k, person: p, seq: seq, gen: gen)
+        }
+    }
+
+    /// The policy in words (host `signcontent.policy_words`); a policy with a key it does not know is shown as its JSON. Per host, not signed.
+    public var policyWords: String? {
+        guard let p = policy?.object else { return nil }
+        guard Set(p.keys).isSubset(of: ["approvers", "count", "not", "applies", "independent"]) else {
+            return (try? canonicalJSON(policy ?? .null)).map { GateReview.oneLine(String(decoding: $0, as: UTF8.self)) }
+        }
+        func list(_ k: String) -> [String] { (p[k]?.array ?? []).compactMap(\.string) }
+        let n = p["count"]?.int ?? 0
+        var out = "\(n) approval\(n == 1 ? "" : "s") from \(list("approvers").isEmpty ? "nobody" : list("approvers").joined(separator: ", "))"
+        if !list("not").isEmpty { out += "; not by \(list("not").joined(separator: ", "))" }
+        let applies = p["applies"]?.string ?? "?"
+        out += "; applies to " + (applies == "all" ? "all tickets" : applies == "off" ? "no ticket" : applies)
+        if p["independent"]?.bool == true { out += "; approvers independent of the author" }
+        return GateReview.oneLine(out)
+    }
+}
+
+// MARK: phone.requests, gate.input (B10)
+
+/// One open approval hint from `phone.requests` (core #628): the host's word, unsigned. `ref` (the key), `title` and `gateGen` are not
+/// proven by anything; a request grants no authority and is not needed to sign.
+public struct PhoneRequest: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let uid: String
+    public let ref: String
+    public let title: String
+    public let gate: String
+    public let gateGen: Int64
+    public let createdMs: Int64
+    public let expiresMs: Int64
+    public init(id: String, uid: String, ref: String, title: String, gate: String, gateGen: Int64, createdMs: Int64, expiresMs: Int64) {
+        self.id = id; self.uid = uid; self.ref = ref; self.title = title; self.gate = gate; self.gateGen = gateGen
+        self.createdMs = createdMs; self.expiresMs = expiresMs
+    }
+}
+
+/// `phone.requests` (read, column R): `{requests:[{id, uid, ref, title, gate, gate_gen, created_at, expires_at}], now}`. A request that is
+/// not for a phone gate, or has a bad id, is dropped (it could never be reviewed); the shape of the rest is strict.
+public struct PhoneRequestsResult: Equatable, Sendable {
+    public let requests: [PhoneRequest]
+    public let nowMs: Int64
+    public static let hintPrefix = "ph_"
+
+    init(_ data: JSONValue) throws {
+        let o = try ViewObject(data)
+        var out: [PhoneRequest] = []
+        for v in try o.array("requests") {
+            let r = try ViewObject(v)
+            let id = try r.str("id"), uid = try r.str("uid"), ref = try r.str("ref"), gate = try r.str("gate")
+            guard id.hasPrefix(Self.hintPrefix), ULID.isValid(String(id.dropFirst(3))), ViewShape.isULID(uid), validTicketKey(ref) else { throw ViewError.malformed }
+            guard GateReview.isPhoneGate(gate) else { continue }
+            out.append(PhoneRequest(id: id, uid: uid, ref: ref, title: try r.str("title"), gate: gate, gateGen: try r.int("gate_gen"),
+                                    createdMs: try r.time("created_at"), expiresMs: try r.time("expires_at")))
+        }
+        guard Set(out.map(\.id)).count == out.count, out.count <= 64 else { throw ViewError.malformed }
+        requests = out
+        nowMs = try o.time("now")
+    }
+}
+
+/// `gate.input {ref, gate}` (read): `{ref:uid, gate, gen, hash, policy_hash, input}`. All of it is the host's claim until `GateReview.verify`
+/// recomputes it. A gate that cannot be hashed now answers an `invalid.input` ERROR (not nulls); nulls are refused here as well.
+public struct GateInputResult: Equatable, Sendable {
+    public let uid: String
+    public let gate: String
+    public let gen: Int64
+    public let hash: String
+    public let policyHash: String
+    public let input: JSONValue
+
+    init(_ data: JSONValue) throws {
+        let o = try ViewObject(data)
+        uid = try o.str("ref"); gate = try o.str("gate"); gen = try o.int("gen")
+        guard ViewShape.isULID(uid), let h = try o.optStr("hash"), let ph = try o.optStr("policy_hash"), ViewShape.isHash(h), ViewShape.isHash(ph),
+              let input = o.o["input"], input.object != nil else { throw ViewError.malformed }
+        hash = h; policyHash = ph; self.input = input
     }
 }
 

@@ -195,6 +195,30 @@ public actor WorkspaceContainer {
         Migration(version: 17, statements: [
             "ALTER TABLE push_registrations ADD COLUMN supersedes TEXT",
         ]),
+        // B10 phase 1: gate decisions (`approve` / `changes` over relay.submit) are a third review kind, 'gate'. SQLite cannot change a CHECK,
+        // so `pe_reviews` is rebuilt (the 12-step way: `rebuildsTables` switches foreign keys off for the transaction and checks them before commit). Its index and its trigger go with the old table and are made again.
+        // `question` of a gate row is `gate:<ticket uid>:<gate>`: one active decision per gate, in SQL.
+        Migration(version: 18, statements: [
+            """
+            CREATE TABLE pe_reviews_new (review TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('answer','new_ticket','gate')), log TEXT NOT NULL,
+              question TEXT, snapshot BLOB NOT NULL, key_disclosed TEXT, current_idem TEXT NOT NULL, ver INTEGER NOT NULL,
+              resigns INTEGER NOT NULL DEFAULT 0,
+              state TEXT NOT NULL CHECK (state IN ('active','landed','landed_unconfirmed','needs_review','refused','discarded')),
+              landed_idem TEXT, outcome TEXT, created_ms INTEGER NOT NULL)
+            """,
+            """
+            INSERT INTO pe_reviews_new(review, kind, log, question, snapshot, key_disclosed, current_idem, ver, resigns, state, landed_idem, outcome, created_ms)
+              SELECT review, kind, log, question, snapshot, key_disclosed, current_idem, ver, resigns, state, landed_idem, outcome, created_ms FROM pe_reviews
+            """,
+            "DROP TABLE pe_reviews",
+            "ALTER TABLE pe_reviews_new RENAME TO pe_reviews",
+            "CREATE UNIQUE INDEX pe_reviews_one_active ON pe_reviews(question) WHERE state = 'active'",
+            """
+            CREATE TRIGGER pe_reviews_landed BEFORE UPDATE ON pe_reviews
+            WHEN OLD.state IN ('landed','landed_unconfirmed') AND (NEW.state NOT IN ('landed','landed_unconfirmed') OR NEW.landed_idem IS NOT OLD.landed_idem)
+            BEGIN SELECT RAISE(ABORT, 'pe_reviews: a landing is final'); END
+            """,
+        ], rebuildsTables: true),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {

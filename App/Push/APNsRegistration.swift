@@ -1,6 +1,8 @@
 import Foundation
 import OrchClient
 import OrchProtocol
+import OrchPush
+import Observation
 import UIKit
 import UserNotifications
 
@@ -171,6 +173,15 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         return [.banner, .list, .sound]
     }
 
+    /// B10: a tap on the notification of an approval request (`ticket.update` with a `ph_` id) opens the approvals list. Only that one is
+    /// routed; every other notification keeps today's behaviour. The key comes from the notification the extension built from a verified
+    /// push, and the route carries no id: the list is read from the host.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        let key = response.notification.request.content.userInfo[PushPresentation.keyInfo] as? String
+        guard case .approvals = PushRouting.route(entityKey: key) else { return }
+        await MainActor.run { PushRouteInbox.shared.openApprovals() }
+    }
+
     /// Set by the session layer: called with the stored token EVERY time iOS hands one over (each launch that registers), changed or not,
     /// so the relay registration is refreshed at every launch and moves with a new token (the relay call is idempotent for the same token).
     nonisolated(unsafe) static var onTokenReceived: (@Sendable (APNsTokenStore.Stored) -> Void)?
@@ -236,5 +247,21 @@ enum PresentationGate {
         lock.lock(); defer { lock.unlock() }
         if !rebuilt { return true }
         return blocked.contains { $0 == thread || identifier.hasPrefix("demo/\($0)/") }
+    }
+}
+
+
+/// Where a notification tap leaves its route until the Home screen takes it (it may not exist yet at launch).
+@MainActor @Observable
+final class PushRouteInbox {
+    static let shared = PushRouteInbox()
+    private(set) var approvalsRequested = 0
+    private var taken = 0
+    func openApprovals() { approvalsRequested += 1 }
+    /// True once per request.
+    func takeApprovals() -> Bool {
+        guard approvalsRequested > taken else { return false }
+        taken = approvalsRequested
+        return true
     }
 }

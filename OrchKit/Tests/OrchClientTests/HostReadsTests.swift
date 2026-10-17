@@ -159,3 +159,76 @@ import OrchProtocol
         #expect(partial?.allows("answer") == true && partial?.allows("new_ticket") == false)
     }
 }
+
+/// B10 phase 1 reads: `phone.requests`, `gate.input` and the gate decisions of `ticket.get`.
+@Suite struct GateReadsTests {
+    let uid = "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+    let hint = "ph_01M4JM4RKG79RG3QTWCP60NNNG"
+    let h = "sha256:" + String(repeating: "a", count: 64)
+
+    func req(_ f: [String: JSONValue] = [:]) -> JSONValue {
+        var r: [String: JSONValue] = ["id": .string(hint), "uid": .string(uid), "ref": "MOB-0001", "title": "Seeds", "gate": "requirements", "gate_gen": 2,
+                                      "created_at": "2026-10-15T10:00:00Z", "expires_at": "2026-10-15T10:10:00Z"]
+        for (k, v) in f { r[k] = v }
+        return ["requests": [.object(r)], "now": "2026-10-15T10:01:00Z"]
+    }
+
+    @Test func phoneRequestsParseStrictlyAndDropWhatCannotBeReviewed() throws {
+        let r = try PhoneRequestsResult(req(["surprise": 1]))
+        #expect(r.requests.count == 1 && r.requests[0].id == hint && r.requests[0].gateGen == 2 && r.requests[0].expiresMs - r.requests[0].createdMs == 600_000)
+        // a gate the phone does not offer is left out, not fatal; a bad id, uid or key is
+        #expect(try PhoneRequestsResult(req(["gate": "code"])).requests.isEmpty)
+        for bad: [String: JSONValue] in [["id": "x_01M4JM4RKG79RG3QTWCP60NNNG"], ["id": "ph_x"], ["uid": "u"], ["ref": "mob"], ["gate_gen": -1], ["created_at": "soon"]] {
+            #expect(throws: ViewError.malformed) { _ = try PhoneRequestsResult(req(bad)) }
+        }
+        #expect(throws: ViewError.malformed) { _ = try PhoneRequestsResult(["requests": [], "now": "never"]) }
+        #expect(try PhoneRequestsResult(["requests": [], "now": "2026-10-15T10:01:00Z"]).requests.isEmpty)
+    }
+
+    @Test func gateInputNeedsAllItsClaims() throws {
+        let ok: [String: JSONValue] = ["ref": .string(uid), "gate": "plan", "gen": 3, "hash": .string(h), "policy_hash": .string(h), "input": ["uid": .string(uid)]]
+        let r = try GateInputResult(.object(ok))
+        #expect(r.uid == uid && r.gate == "plan" && r.gen == 3 && r.hash == h)
+        // nulls (the contract's old wording) and an error shape are not an input to recompute
+        for (k, v) in [("hash", JSONValue.null), ("input", .null), ("policy_hash", .null), ("hash", "sha256:xyz"), ("input", "text"), ("ref", "uid")] {
+            var o = ok; o[k] = v
+            #expect(throws: ViewError.malformed) { _ = try GateInputResult(.object(o)) }
+        }
+    }
+
+    func get(_ decisions: [JSONValue]) -> JSONValue {
+        ["doc": ["uid": .string(uid), "key": "MOB-0001", "title": "t", "type": "feature", "status": "open", "head": ["seq": 3, "head": .string(h)],
+                 "sections": ["summary": "S"]],
+         "questions": [], "gates": ["requirements": ["gen": 2, "applies": true, "state": "approved", "policy": ["approvers": ["owner"], "count": 1, "not": [],
+                                                      "applies": "all", "independent": false], "decisions": .array(decisions)]],
+         "members_v": 4, "sub_cursor": "j:1"]
+    }
+    func decision(auth: String) -> JSONValue {
+        ["id": "01M4JM4RKG79RG3QTWCP60NNNG", "kind": "approve", "person": "p_75bf75a3bb50b0c4ac02f8a757b90e23", "at": "2026-10-15T10:00:00Z", "seq": 3, "gen": 2,
+         "counting": true, "voided": false, "auth": .string(auth), "hash": .string(h), "policy_hash": .string(h)]
+    }
+
+    @Test func aConvenienceSignedAndAFaceIDSignedApprovalLookIdenticalInTheHistory() throws {
+        // phase 1 shows NO auth label on a decision (READER_VIEWS_1 covers answers only): the parsed decision has no auth to show
+        let a = try TicketGet(get([decision(auth: "convenience")]))
+        let b = try TicketGet(get([decision(auth: "secure-enclave-unlocked")]))
+        let c = try TicketGet(get([decision(auth: "novel-auth-from-a-newer-host")]))
+        #expect(a.gates["requirements"]?.decisions == b.gates["requirements"]?.decisions)
+        #expect(a.gates["requirements"]?.decisions == c.gates["requirements"]?.decisions)
+        #expect(a.gates["requirements"]?.decisions.count == 1 && a.gates["requirements"]?.decisions[0].seq == 3)
+        #expect(a == b)
+    }
+
+    @Test func ticketGetCarriesSectionsGenerationAndThePolicyInWords() throws {
+        let g = try TicketGet(get([]))
+        #expect(g.sections == ["summary": "S"] && g.gates["requirements"]?.gen == 2)
+        #expect(g.gates["requirements"]?.policyWords == "1 approval from owner; applies to all tickets")
+        // sections that are not all strings: no review can be built from this read
+        var o = get([]).object!; var d = o["doc"]!.object!; d["sections"] = ["summary": 3]; o["doc"] = .object(d)
+        #expect(try TicketGet(.object(o)).sections == nil)
+        // a policy with a key it does not know is shown as its JSON, per host
+        o = get([]).object!
+        var gs = o["gates"]!.object!; var rg = gs["requirements"]!.object!; rg["policy"] = ["approvers": [], "mystery": true]; gs["requirements"] = .object(rg); o["gates"] = .object(gs)
+        #expect(try TicketGet(.object(o)).gates["requirements"]?.policyWords == "{\"approvers\":[],\"mystery\":true}")
+    }
+}

@@ -136,6 +136,8 @@ public actor WorkspaceSession: RealmParticipant {
     var reviews: [UUID: QuestionReview] = [:]
     /// Issued creation reviews (C2b increment 3), consumed by `create`; dropped with the question reviews.
     var creationReviews: [UUID: CreationReview] = [:]
+    /// B10: issued gate-decision reviews, consumed by `decideGate`; dropped with the others.
+    var gateReviews: [UUID: GateReviewSnapshot] = [:]
     var reviewLifecycle: UInt64 = 0
     private var viewsStarted = false
     /// Set by realm shutdown: nothing is restarted afterwards (no poller, no recovery).
@@ -1463,7 +1465,7 @@ extension WorkspaceSession {
     public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
     /// Every held review goes, and a review read in flight is refused (`reviewQuestion` compares the counter). The fence is separate: it
     /// also ends on `.inactive` and a lock, which must not refuse the new review that is the way back from them.
-    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll(); creationReviews.removeAll() }
+    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll(); creationReviews.removeAll(); gateReviews.removeAll() }
 
     func emit(_ event: WorkspaceEvent) {
         if case .connection(let state) = event { connectionState = state }

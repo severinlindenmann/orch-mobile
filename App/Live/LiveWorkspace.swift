@@ -27,6 +27,11 @@ final class LiveWorkspace: WorkspaceModel {
     private(set) var loaded = false
     private(set) var macOnlyCount = 0
     private(set) var ticketsIncomplete = false
+    /// B10: the open approval requests (`phone.requests`), the host's word. Refreshed with the snapshot and when the approvals list opens.
+    private(set) var approvals: [ApprovalRequest] = []
+    func setApprovals(_ new: [ApprovalRequest]) { if approvals != new { approvals = new } }
+    @ObservationIgnored var heldGate: GateReviewSnapshot?
+    @ObservationIgnored var gateRevision = 0
     @ObservationIgnored weak var services: LiveServices?
     @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
     @ObservationIgnored private var eventRevision = 0
@@ -78,6 +83,7 @@ final class LiveWorkspace: WorkspaceModel {
             guard usable else { return }
             apply(snapshot)
             await checkKeyAlarm()
+            await refreshApprovals()
         } catch {
             noteKeyAlarm(error)
             markOffline()
@@ -149,7 +155,7 @@ final class LiveWorkspace: WorkspaceModel {
             }
         case .readerRefused:
             // a sealed reader refusal: nothing cached is shown as current; the person updates orch or pairs again
-            questions = []; allTickets = []; macOnlyCount = 0; ticketsIncomplete = false; loaded = false; nextKey = nil
+            questions = []; allTickets = []; macOnlyCount = 0; ticketsIncomplete = false; loaded = false; nextKey = nil; approvals = []
             info.keyAlarm = ReaderGate.updateMessage
             markOffline()
         case .invalidated: break          // the session re-reads on its own (foreground, with a subscriber)

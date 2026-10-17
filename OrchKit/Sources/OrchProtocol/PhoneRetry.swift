@@ -116,9 +116,25 @@ public struct CreationDisplay: Equatable, Sendable {
     }
 }
 
+/// B10: what a gate decision's review showed and signs (the gate, its generation, the verified hashes, the choice and the typed text).
+public struct GateDisplay: Equatable, Sendable {
+    public let gate: String, hash: String, policyHash: String
+    public let gen: Int64
+    public let approve: Bool
+    public let text: String?
+    public init(gate: String, gen: Int64, hash: String, policyHash: String, approve: Bool, text: String?) {
+        self.gate = gate; self.gen = gen; self.hash = hash; self.policyHash = policyHash; self.approve = approve; self.text = text
+    }
+    public static func == (a: GateDisplay, b: GateDisplay) -> Bool {
+        a.gate.bytesEqual(b.gate) && a.gen == b.gen && a.hash.bytesEqual(b.hash) && a.policyHash.bytesEqual(b.policyHash) && a.approve == b.approve
+            && bytesEqual(a.text, b.text)
+    }
+}
+
 public enum ReviewDisplay: Equatable, Sendable {
     case answer(AnswerDisplay)
     case creation(CreationDisplay)
+    case gate(GateDisplay)
 }
 
 public struct AutoResignInput: Sendable {

@@ -41,7 +41,7 @@ import OrchProtocol
         #expect(await p.session.currentHostSupport == nil)          // nothing before the first read
         await p.session.startViews()
         try await settle(w, p, ops, whoamis: 1)
-        #expect(await p.session.currentHostSupport == HostWriteSupport(ops: ["answer": 1, "new_ticket": 1], r6Ready: true))
+        #expect(await p.session.currentHostSupport == HostWriteSupport(ops: ["answer": 1, "approve": 1, "changes": 1, "new_ticket": 1], r6Ready: true))
     }
 
     @Test(arguments: [FakeRelayCaps.absent, .r6NotReady])
@@ -78,11 +78,11 @@ import OrchProtocol
         await w.host.setRelayCaps(.r6NotReady)
         await p.session.setForeground(true)
         try await settle(w, p, ops, whoamis: 2)
-        #expect(await p.session.currentHostSupport == HostWriteSupport(ops: ["answer": 1, "new_ticket": 1], r6Ready: false))
+        #expect(await p.session.currentHostSupport == HostWriteSupport(ops: ["answer": 1, "approve": 1, "changes": 1, "new_ticket": 1], r6Ready: false))
     }
 
     @Test func theLiveRuleNeedsTheOpAtVersionOneAndR6() {
-        let ready = HostWriteSupport(ops: ["answer": 1, "new_ticket": 1], r6Ready: true)
+        let ready = HostWriteSupport(ops: ["answer": 1, "approve": 1, "changes": 1, "new_ticket": 1], r6Ready: true)
         func live(_ s: HostWriteSupport?, _ k: String) -> Bool { WorkspaceSession.hostAdmits(realm: .live, support: s, kind: k) }
         #expect(live(ready, "answer") && live(ready, "new_ticket") && !live(ready, "other"))
         #expect(!live(nil, "answer"))                                                     // fail closed without a signal

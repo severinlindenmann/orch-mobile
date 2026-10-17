@@ -64,6 +64,10 @@ struct HostViewState: Sendable {
     var outcomes: [String: FakeOutcome] = [:]
     var logged: [String: FakeLogged] = [:]
     var writeControls = FakeWriteControls()
+    /// B10: the requirements and plan gates of seeded tickets (by ticket uid), the open approval hints, and the test controls that make the host lie.
+    var gates: [String: FakeGateSet] = [:]
+    var hints: [FakeHint] = []
+    var gateLies = FakeGateLies()
     /// What column-R `whoami` says about writes: `relay:{ops:{answer:1, new_ticket:1}, r6_ready}` (host changelog 57), or no field at all.
     var relayCaps = FakeRelayCaps.ready
     /// Host 11A.17 dev gate: the sandbox id (id8) while the host runs as a dev sandbox with `--dev-sim-convenience` (whoami carries
@@ -157,17 +161,17 @@ extension FakeHost {
         return String(format: "%04d-%02d-%02dT%02d:%02d:%02dZ", p.year!, p.month!, p.day!, p.hour!, p.minute!, p.second!)
     }
 
-    private var viewer: String { "p_" + primary.personID.hex }
+    var viewer: String { "p_" + primary.personID.hex }
 
     // MARK: ops
 
     /// The R2 read answer: the section 0.3 Result envelope around `data`.
-    private func result(_ data: JSONValue) -> HostReply {
+    func result(_ data: JSONValue) -> HostReply {
         let r: JSONValue = ["data": data, "key": .null, "seq": 0, "cursor": 0, "hints": [], "lines": [], "duplicate": false, "exit": 0, "head": .null]
         guard let bytes = try? canonicalJSON(r), bytes.count <= R2.maxAnswer else { return .refuse(.host(code: "frame.too_large", retryable: false, seqs: nil, nextKey: nil)) }
         return .r2(bytes)
     }
-    private func hostRefusal(_ code: String) -> HostReply {
+    func hostRefusal(_ code: String) -> HostReply {
         .refuse(.host(code: code, retryable: PhoneRetryTable.classify(code, PhoneRefusalContext(eventID: "", hostNowMs: 0)).retryable, seqs: nil, nextKey: nil))
     }
 
@@ -207,8 +211,8 @@ extension FakeHost {
             var who: [String: JSONValue] = ["peer": ["uid": -1, "class": "person"], "person": .string(viewer), "tier": "A", "grant": .null, "session": .null]
             switch s.relayCaps {
             case .absent: break
-            case .r6NotReady: who["relay"] = ["ops": ["answer": 1, "new_ticket": 1], "r6_ready": false]
-            case .ready: who["relay"] = ["ops": ["answer": 1, "new_ticket": 1], "r6_ready": true]
+            case .r6NotReady: who["relay"] = ["ops": ["answer": 1, "approve": 1, "changes": 1, "new_ticket": 1], "r6_ready": false]
+            case .ready: who["relay"] = ["ops": ["answer": 1, "approve": 1, "changes": 1, "new_ticket": 1], "r6_ready": true]
             }
             if let id8 = s.devSimConvenience, var relay = who["relay"]?.object {
                 relay["dev"] = ["sim_convenience": true, "sandbox": .string(id8)]
@@ -269,10 +273,12 @@ extension FakeHost {
                            "sub_cursor": cursor, "as_of": asOf])
         case "ticket.get":
             guard let ref = args["ref"]?.string, let t = s.tickets.first(where: { $0.key == ref || $0.uid == ref }) else { return hostRefusal("not_found") }
-            let doc: JSONValue = ["uid": .string(t.uid), "key": .string(t.key), "title": .string(t.title), "type": .string(t.type), "status": .string(t.status),
-                                  "owner": .string(viewer), "head": ["seq": .int(t.headSeq), "head": .string(t.headHash)]]
+            var docFields: [String: JSONValue] = ["uid": .string(t.uid), "key": .string(t.key), "title": .string(t.title), "type": .string(t.type), "status": .string(t.status),
+                                                  "owner": .string(viewer), "head": ["seq": .int(t.headSeq), "head": .string(t.headHash)]]
+            if let g = s.gates[t.uid] { docFields["sections"] = .object(gateSectionTexts(g).mapValues(JSONValue.string)) }
+            let doc = JSONValue.object(docFields)
             let qs = s.questions.filter { $0.ticketUID == t.uid }.map(questionJSON)
-            return result(["doc": doc, "log": [], "log_more": false, "questions": .array(qs), "criteria": [], "gates": [:], "sub_cursor": cursor,
+            return result(["doc": doc, "log": [], "log_more": false, "questions": .array(qs), "criteria": [], "gates": gatesJSON(t.uid), "sub_cursor": cursor,
                            "status": .string(t.status), "settled": .bool(t.status == "done" || t.status == "closed"), "members_v": .int(s.membersV)])
         case "activity.list":
             var items = s.events.reversed().filter { e in
@@ -291,6 +297,8 @@ extension FakeHost {
             // H12d-3 (a read on column R): the host stores the declaration and answers `{device, reader, level, digest}`
             guard let v = args["reader_decl"], let d = try? ReaderDeclaration(signed: v) else { return hostRefusal("reader.decl_invalid") }
             return result(["device": .string("d_" + device.hex), "reader": .int(Int64(d.level)), "level": .int(Int64(d.level)), "digest": .string(d.digest)])
+        case "phone.requests": return phoneRequestsReply(scopes: scopes)
+        case "gate.input": return gateInputReply(args: args)
         case "workspace.settings": return result(["settings": [:]])
         default: return hostRefusal("not_found")
         }
@@ -307,7 +315,7 @@ extension FakeHost {
             guard req.data.isEmpty else { return .refuse(.malformed) }
             // not an R2 op: the closed table has no `http`; kept only as the bridge tests' vehicle (a plain 404)
             return reply(["host_api": 0, "error": "not_found"], 404)
-        case "answer", "new_ticket":
+        case "answer", "new_ticket", "approve", "changes":
             // the FakeHost's OWN shape check of a write's meta (never only the client's): {op, args{...}, idem, rd?}, no data
             guard Set(m.keys).isSubset(of: ["op", "args", "idem", "rd"]), m["args"]?.object != nil, m["idem"]?.string != nil, req.data.isEmpty
             else { return hostRefusal("invalid.input") }
@@ -321,7 +329,7 @@ extension FakeHost {
             guard req.scopes.contains(checked.spec.scope) else { return .refuse(.forbiddenScope) }
             if checked.spec.kind == .write {
                 // `answer` and `new_ticket` (SubmitAdmission.swift)
-                guard checked.op == "answer" || checked.op == "new_ticket" else { return hostRefusal("op.not_allowed") }
+                guard ["answer", "new_ticket", "approve", "changes"].contains(checked.op) else { return hostRefusal("op.not_allowed") }
                 return submitWrite(req, op: checked.op, args: checked.args, idem: checked.idem)
             }
             if checked.op == "outcome.get" {

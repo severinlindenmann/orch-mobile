@@ -82,7 +82,9 @@ extension FakeHost {
         guard let id = ev["id"]?.string, let idem, Data(idem.utf8) == Data(id.utf8) else { return refusal("invalid.input") }
         // P2: the op's one event type
         let creation = op == "new_ticket"
-        guard ev["type"]?.string == (creation ? "ticket.created" : "question.answered") else { return refusal("forbidden_scope") }
+        let gateOp = op == "approve" || op == "changes"
+        let wantType = creation ? "ticket.created" : (gateOp ? (op == "approve" ? "gate.approved" : "gate.changes_requested") : "question.answered")
+        guard ev["type"]?.string == wantType else { return refusal("forbidden_scope") }
         // P3: the submitted subset, exactly
         let host: Set<String> = ["seq", "at", "prev", "ws_seq", "host_sig"]
         guard Set(ev.keys).isDisjoint(with: host) else { return refusal("validation.event") }
@@ -92,7 +94,16 @@ extension FakeHost {
               let roster = ev["roster_v"]?.int, roster >= 0 else { return refusal("validation.event") }
         var shape: (base: String, qn: String, hash: String)?
         var created: (key: String, type: String, title: String, owner: String)?
-        if creation {
+        var decision: (base: String, gate: String, gen: Int64, hash: String, policy: String)?
+        if gateOp {
+            // B10 phase 1: exactly gate, gate_gen, hash, policy_hash (and text on a request for changes); no source_sha, no host field
+            let extra: Set<String> = op == "changes" ? ["gate", "gate_gen", "hash", "policy_hash", "text"] : ["gate", "gate_gen", "hash", "policy_hash"]
+            guard keys == common.union(extra), let base = ev["based_on"]?.string, let gate = ev["gate"]?.string, let gen = ev["gate_gen"]?.int, gen >= 0,
+                  let hash = ev["hash"]?.string, let policy = ev["policy_hash"]?.string else { return refusal("validation.event") }
+            if op == "changes" { guard let t = ev["text"]?.string, !t.isEmpty, t.utf8.count <= 4096, F1Text.isClean(t) else { return refusal("validation.text") } }
+            guard gate == "requirements" || gate == "plan" else { return refusal("op.not_allowed") }
+            decision = (base, gate, gen, hash, policy)
+        } else if creation {
             // a creation: exactly key, ticket_type, title, owner; based_on null; the key's shape; one of the five types; a one-line title
             guard keys == common.union(["key", "ticket_type", "title", "owner"]), ev["based_on"] == .null,
                   let key = ev["key"]?.string, Self.isKey(key), let type = ev["ticket_type"]?.string,
@@ -116,7 +127,7 @@ extension FakeHost {
         // digest (`rd`); the FakeHost's workspace has one member person, as the dev gate requires; a creation never takes it. Otherwise `op.not_allowed`.
         guard let auth = ev["auth"]?.string else { return refusal("op.not_allowed") }
         if auth == "convenience" {
-            guard viewState!.devSimConvenience != nil, !creation, req.meta.object?["rd"] != nil else { return refusal("op.not_allowed") }
+            guard viewState!.devSimConvenience != nil, !creation, !gateOp, req.meta.object?["rd"] != nil else { return refusal("op.not_allowed") }
         } else {
             guard ["secure-enclave-unlocked", "passphrase"].contains(auth) else { return refusal("op.not_allowed") }
         }
@@ -152,6 +163,7 @@ extension FakeHost {
         guard t >= now - Self.windowPastMs, t <= now + Self.windowFutureMs else { return record(okey, binding, log, t, ev, device, failed: "event.expired") }
         let target: WriteTarget
         if let created { target = .creation(key: created.key, type: created.type, title: created.title, owner: created.owner) }
+        else if let decision { target = .gate(base: decision.base, gate: decision.gate, gen: decision.gen, hash: decision.hash, policy: decision.policy) }
         else if let shape { target = .answer(base: shape.base, qn: shape.qn, hash: shape.hash) }
         else { return refusal("validation.event") }
         return admit(okey: okey, binding: binding, log: log, idMs: t, event: ev, device: device, digest: digest, roster: roster, target: target)
@@ -180,13 +192,16 @@ extension FakeHost {
     enum WriteTarget {
         case answer(base: String, qn: String, hash: String)
         case creation(key: String, type: String, title: String, owner: String)
+        case gate(base: String, gate: String, gen: Int64, hash: String, policy: String)
     }
 
     /// L4 to L6 for either type (also run again by `recoverWrites`): nil when admitted, else the refusal code and, for a key race, the
     /// advisory next key.
-    private func check(log: String, roster: Int64, target: WriteTarget, option: String?) -> (code: String, nextKey: String?)? {
+    private func check(log: String, roster: Int64, target: WriteTarget, option: String?, device: String) -> (code: String, nextKey: String?)? {
         let s = viewState!
         switch target {
+        case .gate(let base, let gate, let gen, let hash, let policy):
+            return judgeGate(log: log, roster: roster, base: base, gate: gate, gen: gen, hash: hash, policyHash: policy, device: device).map { ($0, nil) }
         case .answer(let base, let qn, let hash):
             // L4: the ticket exists and the person may see it (uniform not_found)
             guard let ticket = s.tickets.first(where: { $0.uid == log }) else { return ("not_found", nil) }
@@ -207,7 +222,7 @@ extension FakeHost {
     /// L4 to L9 for an event that passed L3 and W.
     private func admit(okey: String, binding: Data, log: String, idMs: Int64, event ev: [String: JSONValue], device: String, digest: String,
                        roster: Int64, target: WriteTarget) -> HostReply {
-        if let refused = check(log: log, roster: roster, target: target, option: ev["option"]?.string) {
+        if let refused = check(log: log, roster: roster, target: target, option: ev["option"]?.string, device: device) {
             return record(okey, binding, log, idMs, ev, device, failed: refused.code, nextKey: refused.nextKey)
         }
         // L7: plan, persisted as pending
@@ -255,6 +270,7 @@ extension FakeHost {
             viewState!.logged[ev["id"]?.string ?? ""] = FakeLogged(log: log, digest: digest, actor: ev["actor"] ?? .null, seq: 1)
             return 1
         }
+        if ev["type"]?.string == "gate.approved" || ev["type"]?.string == "gate.changes_requested" { return appendGateDecision(log: log, ev: ev, digest: digest, device: device) }
         guard let ticket = viewState!.tickets.first(where: { $0.uid == log }) else { return 0 }
         viewState!.touch(ticket.key, type: "question.answered", at: now)
         let seq = viewState!.tickets.first { $0.uid == ticket.uid }!.headSeq
@@ -316,13 +332,16 @@ extension FakeHost {
                 viewState!.outcomes[okey]!.state = .failed; viewState!.outcomes[okey]!.code = "event.expired"; continue
             }
             let target: WriteTarget
-            if o.event["type"]?.string == "ticket.created" {
+            if o.event["type"]?.string == "gate.approved" || o.event["type"]?.string == "gate.changes_requested" {
+                target = .gate(base: o.event["based_on"]?.string ?? "", gate: o.event["gate"]?.string ?? "", gen: o.event["gate_gen"]?.int ?? -1,
+                               hash: o.event["hash"]?.string ?? "", policy: o.event["policy_hash"]?.string ?? "")
+            } else if o.event["type"]?.string == "ticket.created" {
                 target = .creation(key: o.event["key"]?.string ?? "", type: o.event["ticket_type"]?.string ?? "", title: o.event["title"]?.string ?? "",
                                    owner: o.event["owner"]?.string ?? "")
             } else {
                 target = .answer(base: o.event["based_on"]?.string ?? "", qn: o.event["question"]?.string ?? "", hash: o.event["hash"]?.string ?? "")
             }
-            if let refused = check(log: o.log, roster: o.event["roster_v"]?.int ?? -1, target: target, option: o.event["option"]?.string) {
+            if let refused = check(log: o.log, roster: o.event["roster_v"]?.int ?? -1, target: target, option: o.event["option"]?.string, device: o.device) {
                 viewState!.outcomes[okey]!.state = .failed; viewState!.outcomes[okey]!.code = refused.code
                 viewState!.outcomes[okey]!.nextKey = refused.nextKey; continue
             }
