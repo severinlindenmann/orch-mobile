@@ -151,7 +151,7 @@ final class PreviewPairingModel: PairingFlowModel {
             if !world.workspaces.contains(where: { $0.id == id }) {
                 world.workspaces.append(WorkspaceInfo(
                     id: id, name: "Demo Lab", host: "Demo Mac", hue: 2, hostedBy: nil, clientHosted: false,
-                    scopes: [.look, .decide], connection: .online, primaryLabel: "Demo Mac", notificationsOn: true))
+                    scopes: [.look, .decide], connection: .online, primaryLabel: "Demo Mac", notificationsOn: true, writeSupport: true))
             }
             state = .ready(workspaceName: "Demo Lab")
         }

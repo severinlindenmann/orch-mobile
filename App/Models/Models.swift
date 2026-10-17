@@ -39,6 +39,18 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
     var notificationsOn: Bool
     /// Q10 key alarm (wk_commit conflict or mismatch): blocks answering and sending until the workspace is removed and paired again.
     var keyAlarm: String?
+    /// C2b: this workspace takes answers from this iPhone (the session's person-event policy and the host's support). Answering also
+    /// needs the realm's `writes` capability.
+    var writeSupport: Bool = false
+    /// C2b increment 3: this workspace takes new tickets from this iPhone (`new_ticket`: the session's policy and the host's support).
+    var createSupport: Bool = false
+    #if ORCH_DEV_SANDBOX
+    /// The OrchDevSandbox variant: this workspace's session is on the convenience-signing lane; the sandbox id (id8) of the last `whoami` that
+    /// carried `relay.dev`; and the first read after the join that did not (owner note 4: not a dev sandbox, leave).
+    var devSandboxLane = false
+    var devSandbox: String?
+    var notADevSandbox = false
+    #endif
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
     var displayName: String { SafeText.inline(name, limit: 40) }
@@ -49,6 +61,8 @@ struct WorkspaceInfo: Identifiable, Hashable, Sendable {
 struct QuestionOption: Hashable, Sendable, Identifiable {
     let id: String
     let label: String
+    /// Bound into the question hash with the label, so it is shown wherever the label is (host 11A.14 14.5).
+    var cost: String? = nil
 }
 
 struct Resolution: Hashable, Sendable {
@@ -130,6 +144,8 @@ struct DropItem: Identifiable, Hashable, Sendable {
     var mime: String? = nil
     var hasSignedExpiry = true
     var blocked = false
+    /// The last list walk did not complete: a cached copy is not shown as current and cannot be opened until a complete walk succeeds.
+    var outdated = false
     var presentationID: String { alias ?? id }
 }
 
@@ -162,8 +178,9 @@ enum DropLimits {
 
 // MARK: Sign sheet
 
-/// Display projection of the session-issued review (U7). The issued review (all options, realm,
-/// workspace and generation binding, review identity) stays behind `QuestionReviewSession`.
+/// Display projection of ONE `ReviewedSnapshot` (U7, C2b codex 13/14): the sheet renders, SafeText checks and the session signs the same
+/// immutable value. EVERY option is here in hash order (key, label, cost) with the selected key; the unbound context is kept apart from
+/// what is signed. Any re-read is a new snapshot and a new `revision`, so arming starts over.
 struct ReviewValue: Hashable, Sendable {
     let workspaceID: String
     let workspaceName: String
@@ -175,29 +192,56 @@ struct ReviewValue: Hashable, Sendable {
     let text: String
     let optionID: String
     let optionLabel: String
+    /// All options, in the order the hash binds them.
     let options: [QuestionOption]
     let contentHash: String
     /// Bumped each time the question is re-read after `question_changed`.
     let revision: Int
     var isDemo = false
-    /// Non-nil: the sheet refuses to sign (look-alike answers, or answers outside the plain-label allowlist). Computed once.
+    #if ORCH_DEV_SANDBOX
+    /// The dev-sandbox lane's id (id8) when this review is signed with the Simulator's software key (convenience), else nil.
+    var devSandbox: String? = nil
+    #endif
+    /// Unbound context (shown under "Not signed").
+    var why: String? = nil
+    var recommended: String? = nil
+    var to: [String] = []
+    var blocking: Bool = false
+    /// Signed details: the recomputed `qid`, `hash` and the ticket uid (empty for a projection that did not come from a snapshot).
+    var qid: String = ""
+    var hash: String = ""
+    var ticketUID: String = ""
+    /// Non-nil: the sheet refuses to sign (fail closed). SafeText over EVERY label and EVERY cost, selected or not, and every key.
     let optionsRefusal: SafeText.OptionRefusal?
     /// Computed once: the sheet body reads it on every pass and host text can be long.
     let hasUnsafeContent: Bool
 
     init(workspaceID: String, workspaceName: String, hue: Int, clientHosted: Bool, hostedBy: String?, questionID: String,
          ticket: String, text: String, optionID: String, optionLabel: String, options: [QuestionOption], contentHash: String,
-         revision: Int, isDemo: Bool = false) {
+         revision: Int, isDemo: Bool = false, why: String? = nil, recommended: String? = nil, to: [String] = [], blocking: Bool = false,
+         qid: String = "", hash: String = "", ticketUID: String = "") {
         self.workspaceID = workspaceID; self.workspaceName = workspaceName; self.hue = hue; self.clientHosted = clientHosted
         self.hostedBy = hostedBy; self.questionID = questionID; self.ticket = ticket; self.text = text; self.optionID = optionID
         self.optionLabel = optionLabel; self.options = options; self.contentHash = contentHash; self.revision = revision
-        self.isDemo = isDemo
-        optionsRefusal = SafeText.optionRefusal(options.map(\.label))
+        self.isDemo = isDemo; self.why = why; self.recommended = recommended; self.to = to; self.blocking = blocking
+        self.qid = qid; self.hash = hash; self.ticketUID = ticketUID
+        optionsRefusal = SafeText.boundRefusal(labels: options.map(\.label), costs: options.map(\.cost), keys: options.map(\.id))
         hasUnsafeContent = SafeText.hasUnsafe(text) || options.contains { SafeText.hasUnsafe($0.label, strictLabel: true) }
+            || options.contains { $0.cost.map { SafeText.hasUnsafe($0, strictLabel: true) } == true }
             || SafeText.hasUnsafe(workspaceName) || hostedBy.map { SafeText.hasUnsafe($0) } == true
     }
 
     var isHosted: Bool { clientHosted || hostedBy != nil }
+
+    /// The rows the sheet renders, one per option, in hash order: exactly the snapshot's strings (SheetProjectionTests).
+    var rows: [SignRow] { options.map { SignRow(key: $0.id, label: $0.label, cost: $0.cost, selected: $0.id == optionID) } }
+}
+
+/// One option row of the sign sheet.
+struct SignRow: Hashable, Sendable {
+    let key: String, label: String
+    let cost: String?
+    let selected: Bool
 }
 
 /// Opaque session-issued review: the only thing `decide` would accept. Views never see it.
@@ -217,19 +261,26 @@ enum ReviewLoad: Hashable, Sendable {
     case failed(String)
 }
 
-/// `needsRetry`: the relay ended delivery (`retry_exhausted`) and the question is still open; only "Send again" sends it.
-enum DecisionOutcomeState: String, Hashable, Sendable { case pending, uncertain, needsRetry, resolved }
+/// Whether a question has a stored answer: `unknown` when the store could not be read (SH3: never taken as "none").
+enum StoredWriteLookup: Hashable, Sendable {
+    case none
+    case found(String)
+    case unknown
+}
 
-struct DecisionStatus: Identifiable, Hashable, Sendable {
-    var id: String { decisionID }
-    let decisionID: String
+/// A signed answer this iPhone is still sending or settling (C2b `pendingWrites`).
+enum PendingWriteState: String, Hashable, Sendable { case sending, checking }
+
+struct PendingWrite: Identifiable, Hashable, Sendable {
+    var id: String { reviewID }
+    let reviewID: String
     let questionID: String
     let workspaceID: String
     let optionID: String
     let optionLabel: String
-    /// The immutable review this decision was signed from; reopening shows exactly this.
+    /// The immutable review this answer was signed from; reopening shows exactly this.
     let review: ReviewValue
-    var outcome: DecisionOutcomeState
+    var state: PendingWriteState
 }
 
 enum SignPhase: Hashable, Sendable {
@@ -239,30 +290,36 @@ enum SignPhase: Hashable, Sendable {
     case invalidated
     case sending
     case accepted
+    /// Landed after an automatic re-sign: "The workspace changed; sent again".
+    case resentAfterChange
+    /// Sent and recorded; the question has since changed or can't be shown.
+    case landedUnconfirmed
     case alreadyAnswered(by: String, at: Date)
     case questionChanged
     case checking
-    /// Delivery ended without an answer (relay `retry_exhausted`) and the question is still open. Nothing is sent again unless the
-    /// person taps "Send again", which resends the SAME signed answer.
-    case needsRetry
-    /// The host signed that it recorded the answer and did not apply it (`not_visible`): definite, never sent again.
-    case notApplied
+    /// Not sent (the window passed before the first send, or the eligibility ended first): review again.
+    case needsReview
+    /// Sent and refused because the workspace changed, and not re-signed automatically (a displayed field changed, the lifecycle ended,
+    /// the limit was reached): review again. Never "not sent".
+    case workspaceChanged
+    /// The host refused it for good: nothing was applied and nothing is sent again.
+    case refused
     case unlockToContinue
     case custodyUnavailable
-    /// The send failed before anything was signed or stored.
+    /// The send failed before anything was stored (the session confirmed no attempt exists).
     case notSent
 }
 
 /// What the fake host does with the next answer (Demo controls and tests).
 enum SignOutcome: String, CaseIterable, Hashable, Sendable {
-    case accepted, alreadyAnswered, questionChanged, uncertain, notDelivered, locked, custodyUnavailable, loadFails
+    case accepted, alreadyAnswered, questionChanged, uncertain, workspaceChanged, held, locked, custodyUnavailable, loadFails
 
     /// What the Demo can really do to the next answer (the fake host or the lock); `custodyUnavailable` stays preview-only.
     static var liveCases: [SignOutcome] {
         #if targetEnvironment(simulator)
-        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .locked, .loadFails]
+        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .workspaceChanged, .held, .locked, .loadFails]
         #else
-        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .loadFails]
+        [.accepted, .alreadyAnswered, .questionChanged, .uncertain, .workspaceChanged, .held, .loadFails]
         #endif
     }
 
@@ -272,11 +329,72 @@ enum SignOutcome: String, CaseIterable, Hashable, Sendable {
         case .alreadyAnswered: "Already answered"
         case .questionChanged: "Question changed"
         case .uncertain: "Response lost (checking)"
-        case .notDelivered: "Not delivered (send again)"
+        case .workspaceChanged: "Members changed (sent again)"
+        case .held: "Host holds it (checking)"
         case .locked: "iPhone locked"
         case .custodyUnavailable: "Key unavailable"
         case .loadFails: "Review fails to load"
         }
+    }
+}
+
+// MARK: New ticket (C2b creation)
+
+/// Display projection of one reviewed creation (the session's `CreationReview`, kept behind it): what the creation sheet renders and the
+/// session signs. Any new review is a new `revision`, so arming starts over.
+struct CreationValue: Hashable, Sendable {
+    let workspaceName: String
+    let hue: Int
+    let ticketType: String
+    /// The prepared title (LF, NFC, checked): exactly what is signed.
+    let title: String
+    /// The owner: this iPhone's person (`p_…`).
+    let owner: String
+    /// The advertised next key, disclosed before Sign; the host assigns the key when the ticket is created.
+    let nextKey: String
+    let uid: String
+    let workspaceID: String
+    let revision: Int
+    var isDemo = false
+    var disclosure: String { "The key is assigned when sent (next: \(nextKey))" }
+    var hasUnsafeContent: Bool { SafeText.hasUnsafe(title) || SafeText.hasUnsafe(workspaceName) }
+}
+
+enum CreationReviewResult: Hashable, Sendable {
+    case reviewed(CreationValue)
+    case failed(String)
+}
+
+/// What a signed creation ended as (or where it is).
+enum CreationPhase: Hashable, Sendable {
+    case ready
+    case sending
+    case created(key: String)
+    /// Landed after an automatic re-sign (a key race or a member change): "The workspace changed; sent again (KEY)".
+    case resentAfterChange(key: String)
+    /// Sent and recorded; the ticket can't be shown as signed here.
+    case landedUnconfirmed
+    case checking
+    /// The ticket was created (a landing is stored) but the confirming read has not succeeded yet: never "not sent", never re-created.
+    case createdUnconfirmed
+    /// Not created; review again (the key race could not be re-signed safely, or nothing was sent in time).
+    case needsReview(String)
+    /// The host refused it for good.
+    case refused
+    /// The ticket of this review already exists (the host said so and none of this review's attempts can be named as its creator).
+    case ticketExists(key: String?)
+    case unlockToContinue
+    /// The review is no longer current: review again.
+    case invalidated
+    /// Nothing was signed or stored.
+    case notSent(String)
+}
+
+/// The five R2 ticket types, in picker order.
+enum TicketTypes {
+    static let all = ["feature", "bug", "chore", "spike", "epic"]
+    static func label(_ t: String) -> String {
+        switch t { case "feature": "Feature"; case "bug": "Bug"; case "chore": "Chore"; case "spike": "Spike"; case "epic": "Epic"; default: t }
     }
 }
 
@@ -296,6 +414,21 @@ enum PairingRefusal: String, Hashable, Sendable {
     case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
     /// Fresh keys could not be drawn for this attempt (G3b): another pairing may use the current ones, or that could not be confirmed.
     case keysInUse
+    /// Live could not be prepared on this iPhone (the install record or the keychain): nothing was added.
+    case liveNotPrepared
+    /// The invitation's relay is not the one this iPhone uses, or is not an https relay: refused before any network access.
+    case originRefused
+}
+
+/// What Settings shows about the active realm. No secrets, tokens or workspace keys.
+struct RealmSummary: Equatable, Sendable {
+    var name: String
+    /// The reviewed relay origin (Live only), read-only.
+    var origin: String?
+    var custody: String
+    var connection: String
+    var lastChecked: Date?
+    var build: String
 }
 
 enum PairingState: Hashable, Sendable {

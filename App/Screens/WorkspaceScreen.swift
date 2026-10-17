@@ -34,6 +34,7 @@ struct WorkspaceScreen: View {
             case .terminal: terminal
             }
         }
+        .convenienceBanner(model.info)
         .navigationTitle(model.info.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -70,6 +71,12 @@ struct WorkspaceScreen: View {
             if let block = model.info.answerBlock, model.info.scopes.contains(.decide) {
                 Text(verbatim: block).font(OF.meta).foregroundStyle(OC.textMuted)
             }
+            #if ORCH_DEV_SANDBOX
+            if model.info.notADevSandbox {
+                NavigationLink(value: Route.workspaceSettings(workspaceID, confirmLeave: true)) { Label("Leave this workspace", systemImage: "rectangle.portrait.and.arrow.right") }
+                    .buttonStyle(.bordered).accessibilityIdentifier("devsandbox.leave")
+            }
+            #endif
             segmentControl
         }
         .padding(.vertical, OS.s2)
@@ -114,7 +121,11 @@ struct WorkspaceScreen: View {
     @ViewBuilder
     private var questions: some View {
         Section("Waiting") {
-            if model.waiting.isEmpty {
+            if model.macOnlyCount > 0 {
+                Label(model.macOnlyCount == 1 ? "1 question needs your Mac" : "\(model.macOnlyCount) questions need your Mac", systemImage: "desktopcomputer")
+                    .font(OF.meta).foregroundStyle(OC.warn).accessibilityIdentifier("ws.macOnly")
+            }
+            if model.waiting.isEmpty, model.macOnlyCount == 0 {
                 Text(model.info.isLive ? "Nothing needs you here." : "Nothing was waiting when last checked.")
                     .foregroundStyle(OC.textMuted)
             }
@@ -156,6 +167,10 @@ struct WorkspaceScreen: View {
                     TicketRow(ticket: t, progress: t.kind == .factoryEpic ? model.epicProgress(for: t.key) : nil)
                 }
                 .accessibilityIdentifier("ticket.\(t.key)")
+            }
+            if model.ticketsIncomplete {
+                Text("Showing the newest tickets only. The full list is on your Mac.").font(OF.meta).foregroundStyle(OC.textMuted)
+                    .accessibilityIdentifier("ws.ticketsIncomplete")
             }
         }
     }

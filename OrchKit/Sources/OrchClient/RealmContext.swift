@@ -150,6 +150,11 @@ package final class DemoAuthorities: @unchecked Sendable {
     private var people: Set<ID16> = []
     package func register(_ person: ID16) { lock.lock(); people.insert(person); lock.unlock() }
     package func contains(_ person: ID16) -> Bool { lock.lock(); defer { lock.unlock() }; return people.contains(person) }
+    #if DEBUG
+    /// TEST-ONLY: lets a test host stand in for a real (Live) authority, e.g. the dev-sandbox lane tests, whose Live-realm phone talks to a
+    /// FakeHost. Not compiled into Release.
+    package func unregisterForTesting(_ person: ID16) { lock.lock(); people.remove(person); lock.unlock() }
+    #endif
 }
 
 /// A realm plus the one relay origin it may talk to. Wraps the OrchCustody `Realm`; there is no parallel Demo abstraction.
@@ -268,7 +273,7 @@ public struct RealmContext: Sendable {
     /// The identity with its signer and key agreer leased to this context's generation. Leasing an already leased handle wraps it again
     /// (harmless: both leases check the same generation); it is not a no-op.
     public func leased(_ identity: DeviceIdentity) -> DeviceIdentity {
-        DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: generation), kx: LeasedKeyAgreer(inner: identity.kx, generation: generation), realm: identity.realm)
+        DeviceIdentity(sig: LeasedSigner(inner: identity.sig, generation: generation), kx: LeasedKeyAgreer(inner: identity.kx, generation: generation), realm: identity.realm, custody: identity.custody)
     }
 
     /// An identity of the other realm never signs, logs in or is bound in this one.

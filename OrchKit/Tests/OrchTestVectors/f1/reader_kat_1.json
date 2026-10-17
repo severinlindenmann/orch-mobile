@@ -1,0 +1,408 @@
+{
+ "digest": "\"sha256:\" + hex(sha256(cj(results))), results in corpus order (F1 \u00a711.5)",
+ "expected": {
+  "1": {
+   "log": "sha256:70b450df574b6c372005b7504a7f9efe80552cb2841193b960fe538c6aa6fc0e",
+   "view": "sha256:d76e4593ec191e91ca2f6bddef570cbfa1af14dae702bb5ded0572eebe1d9085"
+  }
+ },
+ "log": {
+  "cases": [
+   {
+    "event": {
+     "actor": {
+      "device": "d_c65032f21d43401cc223b05723c1e5b4",
+      "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "kind": "person"
+     },
+     "at": "2026-10-10T10:00:30Z",
+     "auth": "convenience",
+     "based_on": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+     "hash_v": 1,
+     "host_sig": "bOwDvEwcdZZaL54Jqt7OR-JKExcN6FReWHGNrNAXA-Fi46PvPIdkKW9fg0xh5J71FpPSTU6-rxgC-cAUd-i3fQ",
+     "id": "01J9ZK00000000000000000003",
+     "prev": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+     "roster_v": 2,
+     "seq": 3,
+     "set": {
+      "grant_hours": 4
+     },
+     "sig": "qcmBZrgzTTZk4xijXBA-qR8HEfdqzPEbJOMw5mabxnjTMboNtDvgNLTJra8YBIgMdV7X9FoVk4kLkjxOg2rfbQ",
+     "type": "settings.changed",
+     "v": 2
+    },
+    "expect": {
+     "accepted": true,
+     "auth": "convenience",
+     "head": "sha256:dfd5bcc450f1b4c597da30b7c11b0ce4f87c48db1d582c7ed5702509364d7e88"
+    },
+    "name": "convenience"
+   },
+   {
+    "event": {
+     "actor": {
+      "device": "d_c65032f21d43401cc223b05723c1e5b4",
+      "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "kind": "person"
+     },
+     "at": "2026-10-10T10:00:30Z",
+     "auth": "passphrase",
+     "based_on": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+     "hash_v": 1,
+     "host_sig": "RP0pN7WSt9_8y8xX9rKUCfA7FweB93yETR4RJE13kwgVIiyUE-rA6bgeEQF83l2K0SW1qSDhfJr0rwlivEQY6w",
+     "id": "01J9ZK00000000000000000003",
+     "prev": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+     "roster_v": 2,
+     "seq": 3,
+     "set": {
+      "grant_hours": 4
+     },
+     "sig": "Koh11TCuu3d4HJcILFvUGzPYHCephSKwWe1vSQB2vI0-jPQZfVg-fap5FCcG3aUlZizQK4LuvljI8jFHcIGvbQ",
+     "type": "settings.changed",
+     "v": 2
+    },
+    "expect": {
+     "accepted": true,
+     "auth": "passphrase",
+     "head": "sha256:b1dc0f86f4418182e3d2c2928138da89c259e0071247f01435e406d09756c4f9"
+    },
+    "name": "passphrase"
+   },
+   {
+    "event": {
+     "actor": {
+      "device": "d_c65032f21d43401cc223b05723c1e5b4",
+      "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "kind": "person"
+     },
+     "at": "2026-10-10T10:00:30Z",
+     "auth": "bogus",
+     "based_on": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+     "hash_v": 1,
+     "host_sig": "cIiG-HTqMehOfYzIWA0_WEabgAlrBUNdjitVefkmBfqkKA8xGDjefXBHsauvUwRuUM69j57QLsY_KYvc_szmzg",
+     "id": "01J9ZK00000000000000000003",
+     "prev": "sha256:90a514d49f67df9d29f1bdc76e0b91d5baedf156a0f222cd8d02338a7179d34e",
+     "roster_v": 2,
+     "seq": 3,
+     "set": {
+      "grant_hours": 4
+     },
+     "sig": "TP7VH2ZydjDl56U9_bDRK4GncBjPgtx_C3pcJ9716eclxV7Qd8Ofk-ooOzhrgWGb1O5GKpAuw8BRRVXzbJU2Dw",
+     "type": "settings.changed",
+     "v": 2
+    },
+    "expect": {
+     "accepted": false,
+     "auth": null,
+     "head": "sha256:5ce12adda1d981937669431dd52629be4ed4e992a27b67d508d803f9e182603e"
+    },
+    "name": "bogus"
+   }
+  ],
+  "context": {
+   "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+   "log": "workspace",
+   "now": "2026-10-10T10:01:30Z",
+   "workspace_id": "0123456789abcdef0123456789abcdef"
+  },
+  "digest": "sha256:70b450df574b6c372005b7504a7f9efe80552cb2841193b960fe538c6aa6fc0e",
+  "fixture": [
+   {
+    "actor": {
+     "device": "d_c65032f21d43401cc223b05723c1e5b4",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:00:10Z",
+    "auth": "passphrase",
+    "based_on": null,
+    "delegation": {
+     "o": {
+      "client_hosted": false,
+      "issued_ms": 1790000000000,
+      "kind": "ws_delegation",
+      "owner_person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+      "suite": 2,
+      "v": 2,
+      "workspace_id": "0123456789abcdef0123456789abcdef",
+      "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+     },
+     "sig": "NwRve78-SgAnF30XOlRhDEb9KlCWIYBu5xXmOkGOE6vn70YeyeOXOcF6liH50gz6SfJNWTgZ2wi_KZc-DWXxMA"
+    },
+    "device_cert": {
+     "o": {
+      "created_ms": 1790000000000,
+      "device_id": "c65032f21d43401cc223b05723c1e5b4",
+      "dk_kx_pub": "BFeVKX_gphRxHCfh2Uw6UQVtj12_1v9LteaSfrwG6oH3QG8yDkYojB0rOpi7i-NDHC0PY47WHle_uYaQHjI534c",
+      "dk_sig_pub": "BEtUkscP1t-MK_B-LkrM8KwbVTJ2kwZBYo-4vnk4QSaltalieRixn4XJf8Z2jR5y10cpdvNZ1i-70-cvOz5Wlwo",
+      "expires_ms": null,
+      "kind": "device_cert",
+      "label_sealed": "bGFiZWwgc2V2MQ",
+      "person_id": "75bf75a3bb50b0c4ac02f8a757b90e23",
+      "scopes_max": [
+       "look",
+       "decide",
+       "operate",
+       "type"
+      ],
+      "suite": 2,
+      "v": 2
+     },
+     "sig": "GMFk6HGDHI919l9dSkUuvlioYdJz-QzNR-qUAQ4kPhZevsgiEZBTlZr2SAIfUiNASTIzsMW_c_8yTbnW8kuMfQ"
+    },
+    "hash_v": 1,
+    "host_id": "h_01J9ZK00000000000000000H01",
+    "host_sig": "gmxYcJawrdR5RQtoujxISFmEW9vXbA_mpXUlFxD1oZi3kdmCMxSGUfLG541ft451incilUCTzJILGo1V056HSA",
+    "id": "01J9ZK00000000000000000001",
+    "owner": {
+     "name": "Sev",
+     "person": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "pk_pub": "BE9dWaAeWZ2MzJFlmbGeznA13dLlTv6B-2J8IC9YY9JFKzQFCcDEj0hVZhaSrJCcxP-1v9g2FRp2zo2eTKSQe94"
+    },
+    "prefix": "DEMO",
+    "prev": null,
+    "roster_v": 0,
+    "seq": 1,
+    "sig": "r5ahD9lncKkFZNVB021B3asYYRDKE8cRMWC2GJofmqLsev3YOf3LT2ZEx4QRhYGGwrcwPRee4pMy8GfA8GctHA",
+    "type": "workspace.created",
+    "v": 2,
+    "workspace_id": "0123456789abcdef0123456789abcdef",
+    "wsk_pub": "BJy4pP7CRCCFIbgVcqF07OgGwnzyG5Mu6nAPOvYZl72rKNxeRWcBwNDpRGc1LBIdbPY6ZrGFuKL1INLjmAeu_Ro"
+   },
+   {
+    "actor": {
+     "device": "d_c65032f21d43401cc223b05723c1e5b4",
+     "id": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "kind": "person"
+    },
+    "at": "2026-10-10T10:00:20Z",
+    "auth": "passphrase",
+    "based_on": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+    "device_cert": {
+     "o": {
+      "created_ms": 1790000000000,
+      "device_id": "7efc1ba896b95f9151978a1dad982e3a",
+      "dk_kx_pub": "BN7s8d4XzDSnOKNlCU8mCWaY3E3S7C3L9iZYzKbWeF222lVSoJyTrFmDFYC_Rk6rKWHos9s8Cf_UE2usnfHJS58",
+      "dk_sig_pub": "BHdTNrzFC_Z_T_TgrLfcnUV66UtadIC1wF-BvBSaejtOtFzCvjiMp43vyt7x9weta7ZyJcxyT4B5ggKsTfdEie8",
+      "expires_ms": null,
+      "kind": "device_cert",
+      "label_sealed": "bGFiZWwgbWFyYTE",
+      "person_id": "6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "scopes_max": [
+       "look",
+       "decide",
+       "operate",
+       "type"
+      ],
+      "suite": 2,
+      "v": 2
+     },
+     "sig": "Ic4FvQ_KyDG9vUYVTp0f2zaZwBZ6HQk304uS9gtGVifSivw9sm187vDcmH5z9ZLnZojl6xeS6jAqBc6iwEF-8g"
+    },
+    "hash_v": 1,
+    "host_sig": "ORQ1vySOd6Anc5kH-dFm6hbdY7fOHLN-Z_Pj3gvy72Zk5SV2vHj2B-77tRXUfkbhSD2gFVRUAsal68yxy6Go1A",
+    "id": "01J9ZK00000000000000000002",
+    "name": "Mara",
+    "person": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+    "pk_pub": "BI14lIzDuy3ZvsMm9bkLZdzvYh9pT6NacDmef4dgenr0c78HIZjtcHf2lvbVlmMxv6lX0LXFgD8rCZLcoL_KJig",
+    "prev": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
+    "role": "maintainer",
+    "roster_v": 1,
+    "seq": 2,
+    "sig": "IZhtFLpjND8rsczvMJrLcn6BZ00jO52rdr4y4Czl0_zyf8KMIzHNswq4qcHwl5bchyiui63b_zu-BZQYBXvPMg",
+    "type": "member.added",
+    "v": 2
+   }
+  ],
+  "how": "for each case independently: the fixture lines (seq 1..k) then the case event (seq k+1), each serialised as cj(event) + LF, read with the production event parser (strict line parse and schema) and replayed with the production verifier under `context` (workspace_id and genesis pinned, log `workspace`, the clock `now`); accepted = the case event is read, verified and authorized (no chain error, no invalid event); result = {head: head(case event), accepted, auth: the event's auth if accepted else null}",
+  "results": [
+   {
+    "accepted": true,
+    "auth": "convenience",
+    "head": "sha256:dfd5bcc450f1b4c597da30b7c11b0ce4f87c48db1d582c7ed5702509364d7e88"
+   },
+   {
+    "accepted": true,
+    "auth": "passphrase",
+    "head": "sha256:b1dc0f86f4418182e3d2c2928138da89c259e0071247f01435e406d09756c4f9"
+   },
+   {
+    "accepted": false,
+    "auth": null,
+    "head": "sha256:5ce12adda1d981937669431dd52629be4ed4e992a27b67d508d803f9e182603e"
+   }
+  ]
+ },
+ "note": "TEST KEYS ONLY. Every private scalar below is derived from the key name as sha256('orch-f1-test-key|' + name) mod (n-1) + 1 and is published on purpose; the signatures are RFC 6979 (deterministic), so consumers verify the stored signature and never re-sign.",
+ "pins": "the reader known-answer test reader_kat_1 (orch-v2-host \u00a70.8.6 item 9.2; F1 \u00a711.5): per surface, three cases that differ only in auth (convenience, passphrase, bogus), in this corpus order; a reader runs its PRODUCTION parser over each case and records a result; the expected results are accepted, accepted, refused with auth null (an unknown auth is refused, never mapped to a known one); the digest of a surface is 'sha256:' + hex(sha256(cj(results))), results in corpus order; `expected` is what a level-1 declaration carries in kat['1'].",
+ "view": {
+  "cases": [
+   {
+    "expect": {
+     "accepted": true,
+     "auth": "convenience",
+     "view": "ticket.get.questions.answer"
+    },
+    "name": "ticket.get.questions.answer/convenience",
+    "object": {
+     "answer": {
+      "at": "2026-10-10T10:10:00Z",
+      "by": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "option": "a",
+      "seq": 3,
+      "signer": {
+       "auth": "convenience",
+       "device": "d_c65032f21d43401cc223b05723c1e5b4"
+      },
+      "text": null
+     },
+     "answered_by": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "answered_seq": 3,
+     "asked_at": "2026-10-10T10:05:00Z",
+     "asked_by": {
+      "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+      "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "kind": "person"
+     },
+     "asked_seq": 2,
+     "blocking": true,
+     "id": "Q1",
+     "options": [
+      {
+       "key": "a",
+       "label": "yes"
+      },
+      {
+       "key": "b",
+       "label": "no"
+      }
+     ],
+     "state": "answered",
+     "text": "Ship the reader handshake first?",
+     "to": [
+      "p_75bf75a3bb50b0c4ac02f8a757b90e23"
+     ]
+    },
+    "view": "ticket.get.questions.answer"
+   },
+   {
+    "expect": {
+     "accepted": true,
+     "auth": "passphrase",
+     "view": "ticket.get.questions.answer"
+    },
+    "name": "ticket.get.questions.answer/passphrase",
+    "object": {
+     "answer": {
+      "at": "2026-10-10T10:10:00Z",
+      "by": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "option": "a",
+      "seq": 3,
+      "signer": {
+       "auth": "passphrase",
+       "device": "d_c65032f21d43401cc223b05723c1e5b4"
+      },
+      "text": null
+     },
+     "answered_by": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "answered_seq": 3,
+     "asked_at": "2026-10-10T10:05:00Z",
+     "asked_by": {
+      "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+      "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "kind": "person"
+     },
+     "asked_seq": 2,
+     "blocking": true,
+     "id": "Q1",
+     "options": [
+      {
+       "key": "a",
+       "label": "yes"
+      },
+      {
+       "key": "b",
+       "label": "no"
+      }
+     ],
+     "state": "answered",
+     "text": "Ship the reader handshake first?",
+     "to": [
+      "p_75bf75a3bb50b0c4ac02f8a757b90e23"
+     ]
+    },
+    "view": "ticket.get.questions.answer"
+   },
+   {
+    "expect": {
+     "accepted": false,
+     "auth": null,
+     "view": "ticket.get.questions.answer"
+    },
+    "name": "ticket.get.questions.answer/bogus",
+    "object": {
+     "answer": {
+      "at": "2026-10-10T10:10:00Z",
+      "by": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+      "option": "a",
+      "seq": 3,
+      "signer": {
+       "auth": "bogus",
+       "device": "d_c65032f21d43401cc223b05723c1e5b4"
+      },
+      "text": null
+     },
+     "answered_by": "p_75bf75a3bb50b0c4ac02f8a757b90e23",
+     "answered_seq": 3,
+     "asked_at": "2026-10-10T10:05:00Z",
+     "asked_by": {
+      "device": "d_7efc1ba896b95f9151978a1dad982e3a",
+      "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd",
+      "kind": "person"
+     },
+     "asked_seq": 2,
+     "blocking": true,
+     "id": "Q1",
+     "options": [
+      {
+       "key": "a",
+       "label": "yes"
+      },
+      {
+       "key": "b",
+       "label": "no"
+      }
+     ],
+     "state": "answered",
+     "text": "Ship the reader handshake first?",
+     "to": [
+      "p_75bf75a3bb50b0c4ac02f8a757b90e23"
+     ]
+    },
+    "view": "ticket.get.questions.answer"
+   }
+  ],
+  "digest": "sha256:d76e4593ec191e91ca2f6bddef570cbfa1af14dae702bb5ded0572eebe1d9085",
+  "how": "for each case: the production view parser reads `object` as an entry of view `view` (READER_VIEWS_1: a ticket.get Question whose answer carries signer); accepted = it parses and answer.signer.auth is a known auth value; result = {view, accepted, auth: answer.signer.auth if accepted else null}",
+  "results": [
+   {
+    "accepted": true,
+    "auth": "convenience",
+    "view": "ticket.get.questions.answer"
+   },
+   {
+    "accepted": true,
+    "auth": "passphrase",
+    "view": "ticket.get.questions.answer"
+   },
+   {
+    "accepted": false,
+    "auth": null,
+    "view": "ticket.get.questions.answer"
+   }
+  ],
+  "views": [
+   "ticket.get.questions.answer"
+  ]
+ }
+}

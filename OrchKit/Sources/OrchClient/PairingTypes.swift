@@ -81,6 +81,8 @@ public struct JoinedWorkspace: Sendable {
     package let dropCard: VerifiedCard
     public var downloadContainer: WorkspaceContainer { session.cfg.container }
     public func makeDropService() throws -> DropService { try DropService(session: session, card: dropCard) }
+    /// Relay push registration and the notification extension's key material for this workspace (P3-D40).
+    public func makePushService() -> PushService { PushService(session: session) }
 }
 
 /// One state per U5 screen. Codes appear only in `comparingHost` and `comparingPrimary`, never together.
@@ -132,10 +134,20 @@ public struct PairingConfig: Sendable {
     public var entropy: any Entropy
     /// The device label the host shows, e.g. "Severin's iPhone".
     public var deviceLabel: String
+    /// H12d: the running build's runtime KAT result and identity (`.production` in the app).
+    public var reader: ReaderRuntime
+    /// C2b: the Demo environment's write grant, handed to every session this coordinator builds (nil in Live).
+    public var processLocalWriteGrant: ProcessLocalWriteGrant?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane's enabler (`DevSandboxLane.swift`): minted by the `OrchDevSandbox` App target only; nil everywhere else.
+    public var devSandboxEnabler: DevSandboxLaneEnabler?
+    #endif
 
     public init(context: RealmContext, transport: any RelayTransport, index: WorkspaceIndex, vault: SecretVault, custody: any DeviceKeyCustody,
-                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), deviceLabel: String) {
+                clock: any Clock<Duration>, wall: any WallClock, entropy: any Entropy = SystemEntropy(), deviceLabel: String,
+                reader: ReaderRuntime = .production, processLocalWriteGrant: ProcessLocalWriteGrant? = nil) {
         self.context = context; self.transport = transport; self.index = index; self.vault = vault; self.custody = custody
-        self.clock = clock; self.wall = wall; self.entropy = entropy; self.deviceLabel = deviceLabel
+        self.clock = clock; self.wall = wall; self.entropy = entropy; self.deviceLabel = deviceLabel; self.reader = reader
+        self.processLocalWriteGrant = processLocalWriteGrant
     }
 }

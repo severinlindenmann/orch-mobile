@@ -47,10 +47,10 @@ final class GateTransport: RelayTransport, @unchecked Sendable {
     func login(_ body: Data) async throws -> WireReply { await loginGate.pass(); return try await inner.login(body) }
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try await inner.pairingPost(envelope, route: route) }
     func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try await inner.pairingPoll(route: route, after: after, wait: wait) }
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply {
         lock.withLock { posted += 1 }
         await postGate.pass()
-        return try await inner.bridgePost(envelope, route: route, session: session)
+        return try await inner.bridgePost(envelope, route: route, session: session, permit: permit)
     }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try await inner.bridgePoll(route: route, after: after, wait: wait, session: session) }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply {
@@ -68,6 +68,7 @@ final class GateTransport: RelayTransport, @unchecked Sendable {
         try await inner.dropPut(objectID: objectID, ifMatch: ifMatch, body: body, session: session)
     }
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await inner.dropList(query, session: session) }
+    func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply { try await inner.dropDescriptors(objectID: objectID, after: after, limit: limit, session: session) }
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply {
         try await inner.dropGet(objectID: objectID, version: version, part: part, session: session)
     }
@@ -143,7 +144,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         let phone = try await w.makePhone()
         let s = phone.session
         faults.enqueue(.disconnect, at: .pollDelivery)
-        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: ["op": "decision", "x": 1]) }
+        await #expect(throws: TransportError.disconnected) { _ = try await s.exchange(meta: ["op": "http", "x": 1]) }
         let p = try await s.pendingRequests()[0]
         _ = try await w.host.pump(relay: w.relay, transport: w.transport, session: w.hostSession)
         #expect(counter.value == 1)
@@ -157,7 +158,7 @@ let unknownRefusal = HostRefusal.alreadyDone(status: "unknown")
         #expect(try await s.pendingRequests().isEmpty)
         let u = try await s.uncertainRequests()
         #expect(u.count == 1 && u[0].logical == p.logical && u[0].rid == p.rid && u[0].seq == p.seq)
-        #expect(try Bridge.unframe(u[0].plaintext).0 == ["op": "decision", "x": 1])
+        #expect(try Bridge.unframe(u[0].plaintext).0 == ["op": "http", "x": 1])
         let again = try await w.makePhone(install: false)
         #expect(try await again.session.uncertainRequests() == u)
         await #expect(throws: SessionError.unknownRequest) { _ = try await again.session.resend(rid: ID16.fresh(9)) }

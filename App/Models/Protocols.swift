@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 // View-model protocols for the screens. They sit next to host-api-v0 §1 names
-// (snapshot, review, decide, pendingDecisions, events) so real wiring replaces only the implementations.
+// (snapshot, review, answer, pendingWrites, events) so real wiring replaces only the implementations.
 
 @MainActor
 protocol HomeModel: AnyObject, Observable {
@@ -14,10 +14,30 @@ protocol HomeModel: AnyObject, Observable {
     var oldestWaiting: (question: Question, workspace: WorkspaceInfo)? { get }
     func waitingCount(in workspaceID: String) -> Int
     var lastChecked: Date { get }
-    /// U8: submissions persisted before send and not yet resolved.
-    var pendingDecisions: [DecisionStatus] { get }
+    /// U8: answers persisted before send and not yet settled (C2b `pendingWrites`).
+    var pendingWrites: [PendingWrite] { get }
     var dropSummary: DropSummary { get }
     func enterDemo()
+    /// A Live install is on record (running, or failed to start): the Home is Live's, never Welcome.
+    var liveInstalled: Bool { get }
+    /// Why the Live runtime is not running (nil when it is, or when Live is not in use).
+    var liveProblem: String? { get }
+    /// Committed workspaces that could not be verified at restore (kept on disk, not shown): "Leave and pair again".
+    var skippedWorkspaceCount: Int { get }
+    /// A transient Live notice (for example "the owner could not be recorded yet").
+    var liveNotice: String? { get }
+    /// B10: the approval requests of every workspace, grouped by workspace (the host's word; none is needed to sign).
+    var approvalGroups: [ApprovalGroup] { get }
+    func refreshApprovals() async
+}
+
+extension HomeModel {
+    var liveInstalled: Bool { false }
+    var liveProblem: String? { nil }
+    var skippedWorkspaceCount: Int { 0 }
+    var liveNotice: String? { nil }
+    var approvalGroups: [ApprovalGroup] { [] }
+    func refreshApprovals() async {}
 }
 
 @MainActor
@@ -30,20 +50,41 @@ protocol WorkspaceModel: AnyObject, Observable {
     func epicProgress(for epicKey: String) -> EpicProgress
     func children(of epicKey: String) -> [Ticket]
     func question(id: String) -> Question?
-    /// Only a workspace this iPhone may operate can take new tickets.
+    /// Open questions this iPhone cannot show or sign (unreadable, failing a check, or free text): they are answered on the Mac.
+    var macOnlyCount: Int { get }
+    /// The ticket list is cut: more tickets exist on the host than are listed.
+    var ticketsIncomplete: Bool { get }
+    /// C2b: new tickets need a usable workspace, `new_ticket` write support, the `decide` scope and an advertised next key.
     var canCreateTickets: Bool { get }
-    /// One `creationID` per exact draft (persisted with it until a verified result): a retry of the same fields creates once.
-    func createTicket(title: String, body: String) async -> TicketCreation
-}
-
-enum TicketCreation: Hashable, Sendable {
-    case created(key: String)
-    case failed(String)
+    /// The saved draft (type, title) and, when a signed creation is still being settled, that it is.
+    func loadCreationDraft() -> (type: String, title: String, pending: Bool)?
+    /// Reviews a new ticket (a fresh next key, the uid made once; nothing is signed). The draft is saved first.
+    func reviewCreation(type: String, title: String) async -> CreationReviewResult
+    /// Signs exactly `review` (the sheet armed with its disclosure) and settles it.
+    func create(_ review: CreationValue) async -> CreationPhase
+    /// Settles the pending creation of the draft again (reads only; never signs).
+    func checkCreation() async -> CreationPhase
+    /// B10: this workspace's open approval requests (unsigned hints from the Mac; the host's word).
+    var approvals: [ApprovalRequest] { get }
+    func refreshApprovals() async
+    /// Reads and RECOMPUTES the gate behind `request` (never from the hint's words). Nothing is signed.
+    func reviewApproval(_ request: ApprovalRequest) async -> ApprovalReviewResult
+    /// Signs (one Face ID per signature) exactly the held review `value` with the person's choice, and settles it.
+    func decide(_ value: ApprovalReviewValue, choice: ApprovalChoice) async -> ApprovalPhase
 }
 
 extension WorkspaceModel {
+    var approvals: [ApprovalRequest] { [] }
+    func refreshApprovals() async {}
+    func reviewApproval(_ request: ApprovalRequest) async -> ApprovalReviewResult { .failed("This workspace does not allow this on the phone.") }
+    func decide(_ value: ApprovalReviewValue, choice: ApprovalChoice) async -> ApprovalPhase { .notAllowed }
+    var macOnlyCount: Int { 0 }
+    var ticketsIncomplete: Bool { false }
     var canCreateTickets: Bool { false }
-    func createTicket(title: String, body: String) async -> TicketCreation { .failed("Not available here.") }
+    func loadCreationDraft() -> (type: String, title: String, pending: Bool)? { nil }
+    func reviewCreation(type: String, title: String) async -> CreationReviewResult { .failed("Not available here.") }
+    func create(_ review: CreationValue) async -> CreationPhase { .notSent("Not available here.") }
+    func checkCreation() async -> CreationPhase { .notSent("Not available here.") }
 }
 
 @MainActor
@@ -58,10 +99,8 @@ protocol QuestionReviewModel: AnyObject, Observable {
     func sign() async
     /// After `question_changed`: re-read and issue a fresh immutable review.
     func reread() async
-    /// After a lost response: reconcile first, never re-sign a changed answer.
+    /// After a lost response: settle first (reads), never re-sign a changed answer.
     func checkWhetherReceived() async
-    /// After delivery ended (`needsRetry`): the person's explicit "Send again" of the same signed answer.
-    func sendAgain() async
     /// Terminal: lock/background/content change. A fresh model (fresh review) is required afterwards.
     func invalidate()
     /// Issues a fresh review (new revision): the old one and its arming are never reused.
@@ -94,6 +133,15 @@ protocol PairingFlowModel: AnyObject, Observable {
     /// Both clocks are model transitions: expiry clears codes and disables approval everywhere.
     func primaryTimeElapses()
     func codeTimeElapses()
+    /// The app left the foreground: codes are hidden and polling is paused; false again on return (the original deadlines still apply).
+    var obscured: Bool { get }
+    /// The verified scopes of the joined workspace (Live ready screen).
+    var joinedScopes: [String] { get }
+}
+
+extension PairingFlowModel {
+    var obscured: Bool { false }
+    var joinedScopes: [String] { [] }
 }
 
 @MainActor
@@ -140,6 +188,15 @@ protocol SettingsModel: AnyObject, Observable {
     func resetThisiPhone()
     func exitDemo()
     func resetDemoData()
+    /// What the active realm is, for Settings (no secrets, no tokens). nil without a realm.
+    var realmSummary: RealmSummary? { get }
+    /// Leave Live: wipes the Live realm from this iPhone, then Welcome (or Demo). The server side is never claimed removed.
+    func leaveLive(thenDemo: Bool)
+}
+
+extension SettingsModel {
+    var realmSummary: RealmSummary? { nil }
+    func leaveLive(thenDemo: Bool) {}
 }
 
 /// Entry point screens receive (A4): never FakeHost or custody.

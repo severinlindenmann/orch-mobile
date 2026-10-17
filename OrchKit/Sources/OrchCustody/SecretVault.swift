@@ -167,12 +167,26 @@ public final class InMemoryVaultBackend: VaultBackend, @unchecked Sendable {
 /// (`$(AppIdentifierPrefix)` at build time); without it there is no backend (fail closed).
 public struct KeychainBackend: VaultBackend {
     let prefix: String?
+    /// The access-group name before the group suffix: `io.severin.orch` for the app, `io.severin.orch.devsandbox` for the Simulator
+    /// dev-sandbox variant (its keys are never in the normal app's keychain group).
+    let base: String
 
     /// `prefix` is the team id with its trailing dot, e.g. `"77D4THRYUN."`.
-    public init(accessGroupPrefix prefix: String) {
+    public init(accessGroupPrefix prefix: String, groupBase base: String = KeychainBackend.defaultBase) {
         precondition(Self.validPrefix(prefix), "access group prefix must look like TEAMID.")
+        precondition(Self.validBase(base), "access group base must be io.severin.orch[.name]")
         self.prefix = prefix
+        self.base = base
     }
+
+    public static let defaultBase = "io.severin.orch"
+
+    static func validBase(_ b: String) -> Bool {
+        guard b == defaultBase || b.hasPrefix(defaultBase + ".") else { return false }
+        return b.utf8.allSatisfy { ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2E }
+    }
+
+    func groupName(_ group: KeychainGroup) -> String { base + "." + group.rawValue }
 
     static func validPrefix(_ p: String) -> Bool {
         let u = Array(p.utf8)
@@ -185,12 +199,17 @@ public struct KeychainBackend: VaultBackend {
     /// custody as unavailable rather than guess a group.
     public static func fromBundle(_ bundle: Bundle = .main) -> KeychainBackend? {
         guard let p = bundle.object(forInfoDictionaryKey: "OrchAppIdentifierPrefix") as? String, validPrefix(p) else { return nil }
+        // optional: the variant's own group base; a malformed one is no backend at all (fail closed), never the default
+        if let b = bundle.object(forInfoDictionaryKey: "OrchKeychainGroupBase") {
+            guard let base = b as? String, validBase(base) else { return nil }
+            return KeychainBackend(accessGroupPrefix: p, groupBase: base)
+        }
         return KeychainBackend(accessGroupPrefix: p)
     }
 
     #if DEBUG
     /// TEST-ONLY: no access group in the query (the app's default group). Not compiled into Release.
-    public init(unscopedForTests: Void) { prefix = nil }
+    public init(unscopedForTests: Void) { prefix = nil; base = Self.defaultBase }
     #endif
 
     /// `errSecInteractionNotAllowed` is the only "locked" status; `errSecItemNotFound` the only "not found".
@@ -212,7 +231,7 @@ public struct KeychainBackend: VaultBackend {
 
     func groupQuery(_ group: KeychainGroup) -> [CFString: Any] {
         var q: [CFString: Any] = [kSecClass: kSecClassGenericPassword]
-        if let p = prefix { q[kSecAttrAccessGroup] = p + group.name }
+        if let p = prefix { q[kSecAttrAccessGroup] = p + groupName(group) }
         #if os(macOS)
         q[kSecUseDataProtectionKeychain] = true
         #endif
@@ -279,7 +298,7 @@ public struct KeychainBackend: VaultBackend {
         let rows = out as? [[String: Any]] ?? []
         return rows.compactMap { row in
             guard let s = row[kSecAttrService as String] as? String, let acc = row[kSecAttrAccount as String] as? String else { return nil }
-            if prefix == nil, let g = row[kSecAttrAccessGroup as String] as? String, !g.hasSuffix(group.name) { return nil }
+            if prefix == nil, let g = row[kSecAttrAccessGroup as String] as? String, !g.hasSuffix(groupName(group)) { return nil }
             return SecretID(service: s, account: acc)
         }
     }

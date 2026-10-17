@@ -158,7 +158,7 @@ private struct OtherTransport: RelayTransport {
     func login(_ body: Data) async throws -> WireReply { try no() }
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply { try no() }
     func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply { try no() }
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply { try no() }
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply { try no() }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply { try no() }
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply { try no() }
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply { try no() }

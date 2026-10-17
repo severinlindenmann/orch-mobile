@@ -22,10 +22,10 @@ final class SafeTextTests: XCTestCase {
     func testRLOVisibleOnQuestionAndSignSheet() {
         let app = launch("question/q3")
         XCTAssertTrue(app.el("question.text").waitForExistence(timeout: 60))
-        XCTAssertTrue(app.el("question.text").label.contains("⟨U+202E⟩"))
+        XCTAssertTrue(app.el("question.text").label.contains("⟨U+200B⟩"))
         app.buttons["question.option.deploy"].tap()
         XCTAssertTrue(app.el("sign.text").waitForExistence(timeout: 5))
-        XCTAssertTrue(app.el("sign.text").label.contains("⟨U+202E⟩"))
+        XCTAssertTrue(app.el("sign.text").label.contains("⟨U+200B⟩"))
     }
 
     @MainActor

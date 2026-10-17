@@ -32,5 +32,16 @@ public enum LiveTransport {
         guard context.realm == .live else { throw TransportError.realm(.wrongTransport) }
         return try RoutedRelayTransport(context: context, origin: context.origin, sender: sender, clientAddress: clientAddress)
     }
+
+    /// TEST-ONLY (DEBUG UI tests): a live transport whose relay never answers, so a pairing stays at "connecting". Same rules as
+    /// `testingTransport`: DEBUG builds of OrchClient only, and `scripts/check-no-test-hooks.sh` keeps it out of shipped targets.
+    public static func unreachableForUITests(context: RealmContext) throws -> some RelayTransport {
+        try testingTransport(context: context, sender: UnreachableSender(origin: context.origin))
+    }
+
+    private struct UnreachableSender: RequestSender {
+        let origin: String
+        func send(_ request: WireRequest) async throws -> WireReply { throw TransportError.disconnected }
+    }
     #endif
 }

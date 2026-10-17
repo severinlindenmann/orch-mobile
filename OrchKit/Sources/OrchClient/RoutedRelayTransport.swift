@@ -13,7 +13,12 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
 
     /// `origin` is the origin this transport talks to; it must be admitted by `context` or construction throws, so a
     /// transport for an external origin cannot exist in a Demo context.
+    ///
+    /// A `.demo` context is refused (`RealmViolation.wrongTransport`) unless the sender is an `InProcessDemoSender` (the in-process FakeRelay
+    /// and the test doubles that stand in for it): no sender that reaches a network can serve a Demo realm, so a Demo key or event can never
+    /// travel over one. The same fact decides which `WritePermit` `bridgePost` takes (see there).
     package init(context: RealmContext, origin: String, sender: Sender, clientAddress: String) throws {
+        if context.realm == .demo, !(sender is any InProcessDemoSender) { throw TransportError.realm(.wrongTransport) }
         try context.admit(origin: origin)
         guard sender.origin == origin else { throw TransportError.realm(.externalOrigin) }
         self.context = context; self.origin = origin; self.sender = sender; self.clientAddress = clientAddress
@@ -22,11 +27,12 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     private var R: String { HostAPI.base }
 
     private func request(_ method: String, _ target: String, body: Data = Data(), contentType: String? = nil,
-                         session: RelaySession? = nil, extra: [String: String] = [:]) throws -> WireRequest {
+                         session: RelaySession? = nil, extra: [String: String] = [:], bodyFile: URL? = nil,
+                         options: RequestOptions = RequestOptions()) throws -> WireRequest {
         var h = extra
         if let ct = contentType { h["content-type"] = ct }
         if let s = session { h["authorization"] = "Bearer " + (try Self.checked(s.token)) }
-        return try WireRequest(method: method, target: target, headers: h, body: body, clientAddress: clientAddress)
+        return try WireRequest(method: method, target: target, headers: h, body: body, clientAddress: clientAddress, bodyFile: bodyFile, options: options)
     }
 
     /// A bearer token is visible ASCII with no space: it goes into a header and must not smuggle another.
@@ -53,8 +59,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         try await send(request(method, target, body: body, contentType: "application/octet-stream", session: session, extra: extra))
     }
 
-    private func get(_ target: String, session: RelaySession? = nil) async throws -> WireReply {
-        try await send(request("GET", target, session: session))
+    private func get(_ target: String, session: RelaySession? = nil, options: RequestOptions = RequestOptions()) async throws -> WireReply {
+        try await send(request("GET", target, session: session, options: options))
     }
 
     public func challenge() async throws -> WireReply { try await json("POST", "/session/challenge", HostAPI.json()) }
@@ -68,8 +74,36 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         try await get("\(R)/workspaces/\(route.workspaceID.hex)/pair/\(route.offerID.hex)/\(route.requestID.hex)" + (try Self.pollQuery(after: after, wait: wait)))
     }
 
-    public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
-        try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
+    /// A write permit is checked before anything is sealed into a request: it must belong to this context's lifetime and realm, and the
+    /// credential it was minted for must be the one this kind of sender may carry. A sender that reaches a network takes only a live,
+    /// `secure-enclave-unlocked` permit; the in-process Demo sender only a Demo `passphrase` one. Anything else is refused and the sender is
+    /// never touched.
+    public func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply {
+        if let permit {
+            guard permit.generation === context.generation, permit.realm == context.realm else { throw TransportError.realm(.wrongStore) }
+            if sender is any InProcessDemoSender {
+                guard context.realm == .demo, permit.auth == .passphrase else { throw TransportError.realm(.wrongTransport) }
+            } else {
+                guard context.realm == .live, permitTravelsOverNetwork(permit, route: route) else { throw TransportError.realm(.wrongTransport) }
+            }
+        }
+        return try await octets("POST", "\(R)/workspaces/\(route.workspaceID.hex)/bridge/\(route.requestID.hex)", envelope, session: session)
+    }
+
+    /// A network sender takes a Secure Enclave permit, and (Debug Simulator build only) a `convenience` permit minted for exactly this route's
+    /// workspace on the dev-sandbox lane, over the variant's origin.
+    private func permitTravelsOverNetwork(_ permit: WritePermit, route: BridgeRoute) -> Bool {
+        if permit.auth == .secureEnclaveUnlocked { return true }
+        #if DEBUG && targetEnvironment(simulator)
+        if permit.auth == .convenience, let ws = permit.devSandboxWorkspace, ws == route.workspaceID, DevSandboxLane.admitsOrigin(origin) { return true }
+        #endif
+        return false
+    }
+
+    /// The sender object's identity when it is an in-process Demo sender of a class type (the FakeRelay actor); otherwise nil.
+    public var processLocalSender: ObjectIdentifier? {
+        guard sender is any InProcessDemoSender, Sender.self is AnyObject.Type else { return nil }
+        return ObjectIdentifier(sender as AnyObject)
     }
 
     public func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply {
@@ -125,11 +159,21 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         return try await get("\(R)/devices/\(deviceID.hex)/revocation" + (items.isEmpty ? "" : "?" + items.joined(separator: "&")))
     }
 
+    /// Drop moves up to 26 MiB: the relay's slowest accepted transfer is 64 KiB/s (10 minutes at most), so the deadline of a Drop body is
+    /// 60 s plus `bytes / 64 KiB/s`, capped at the relay's own 10 minutes plus the same 60 s. Everything else keeps the sender's default.
+    static func dropDeadline(bytes: Int) -> TimeInterval { min(60 + Double(max(bytes, 0)) / 65536.0, 660) }
+    static var dropBlobResponseCap: Int { DropFrame.maxBlobBytes }
+
     public func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply {
-        // TODO(orch-4e): Drop routes are not in protocol-v2 section 19 yet (the relay serves none). All of them sit under /v2 so the
-        // spelling is at least consistent; the final paths are still orch-4e's call.
-        try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", body: body, contentType: "application/json", session: session,
-                               extra: ["if-match": String(ifMatch)]))
+        try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", body: body, contentType: "application/octet-stream", session: session,
+                               extra: ["if-match": String(ifMatch)], options: RequestOptions(resourceTimeout: Self.dropDeadline(bytes: body.count))))
+    }
+
+    public func dropPut(objectID: ID16, ifMatch: UInt32, bodyFile: URL, session: RelaySession) async throws -> WireReply {
+        let size = (try? FileManager.default.attributesOfItem(atPath: bodyFile.path)[.size] as? Int) ?? nil
+        guard let size, size >= DropFrame.prefixLength else { throw TransportError.invalidArgument }
+        return try await send(request("PUT", "\(R)/drop/\(objectID.hex)/versions", contentType: "application/octet-stream", session: session,
+                               extra: ["if-match": String(ifMatch)], bodyFile: bodyFile, options: RequestOptions(resourceTimeout: Self.dropDeadline(bytes: size))))
     }
 
     public func dropList(_ query: Data, session: RelaySession) async throws -> WireReply { try await json("POST", "/drop/list", query, session: session) }
@@ -150,7 +194,19 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
 
     public func createAccount(_ body: Data) async throws -> WireReply { try await json("POST", "/accounts", body) }
 
+    public func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply {
+        var items: [String] = []
+        if let a = after { items.append("after=\(a)") }
+        if let l = limit {
+            guard (1...256).contains(l) else { throw TransportError.invalidArgument }
+            items.append("limit=\(l)")
+        }
+        return try await get("\(R)/drop/\(objectID.hex)/descriptors" + (items.isEmpty ? "" : "?" + items.joined(separator: "&")), session: session)
+    }
+
     public func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply {
-        try await get("\(R)/drop/\(objectID.hex)/versions/\(version)/\(part.rawValue)", session: session)
+        // a blob reply may be a whole 26 MiB ORD2 object: a per-request cap and a body-scaled deadline, nothing else is raised
+        try await get("\(R)/drop/\(objectID.hex)/versions/\(version)/\(part.rawValue)", session: session,
+                      options: part == .blob ? RequestOptions(maxResponseBytes: Self.dropBlobResponseCap, resourceTimeout: Self.dropDeadline(bytes: Self.dropBlobResponseCap)) : RequestOptions())
     }
 }

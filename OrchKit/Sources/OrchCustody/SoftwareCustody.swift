@@ -30,7 +30,7 @@ public struct SoftwareCustody: DeviceKeyCustody {
 
     static func identity(sigBlob: Data, kxBlob: Data, realm: Realm, lock: SimulatedLock) throws -> DeviceIdentity {
         do {
-            return DeviceIdentity(sig: try LockedSigner(raw: sigBlob, lock: lock), kx: try LockedKeyAgreer(raw: kxBlob, lock: lock), realm: realm)
+            return DeviceIdentity(sig: try LockedSigner(raw: sigBlob, lock: lock), kx: try LockedKeyAgreer(raw: kxBlob, lock: lock), realm: realm, custody: .software)
         } catch { throw CustodyError.orphaned }
     }
 

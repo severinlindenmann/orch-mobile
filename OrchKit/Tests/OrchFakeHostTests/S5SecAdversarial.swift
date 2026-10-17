@@ -39,13 +39,13 @@ private func svc(_ w: World, _ phone: Phone) async throws -> DropService {
         let id = ID16.fresh(0x55), data = Data("inbox".utf8)
         let wk = try #require(await w.host.wks[1])
         let card = try Card.verify(await RelayClient(transport: w.transport).card(workspace: w.ws, session: w.phoneSession), ownerKey: w.primary.publicKey)
-        var o = try StrictJSON.parse(DropUpload.seal(data, metadata: DropMetadata(name: "i", mime: "text/plain", size: 5, transcript: nil),
+        var o = try DropTestFrame.json(DropUpload.seal(data, metadata: DropMetadata(name: "i", mime: "text/plain", size: 5, transcript: nil),
             object: id, workspace: w.ws, author: w.ws, authorKind: "workspace", signer: w.host.wsk, wxk: card.wxk, wxkVersion: card.wxkVersion,
-            sender: nil, wk: wk, epoch: 1, now: w.clock.nowMs, expiry: w.clock.nowMs + 60000), maxBytes: 1 << 20).object!
+            sender: nil, wk: wk, epoch: 1, now: w.clock.nowMs, expiry: w.clock.nowMs + 60000))
         var raw = o["descriptor"]!.object!["o"]!.object!; raw["recipients"] = "inbox"
         o["descriptor"] = try SignedObject.sign(raw, kind: .dropObject, signer: w.host.wsk).json
         o["wraps"] = .array(o["wraps"]!.array!.filter { $0.object?["target_kind"] == "wxk" })
-        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: canonicalJSON(.object(o)), session: w.hostSession).status == 201)
+        #expect(try await w.transport.dropPut(objectID: id, ifMatch: 0, body: DropTestFrame.frame(o), session: w.hostSession).status == 201)
         let objects = try await service.list()
         let obj = try #require(objects.first { $0.descriptor.object == id })
         await #expect(throws: DropError.unavailableKey) { _ = try await service.download(obj) }

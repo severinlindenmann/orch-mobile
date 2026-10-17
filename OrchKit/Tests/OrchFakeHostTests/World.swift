@@ -192,14 +192,23 @@ struct Phone {
 extension World {
     /// A phone-side session bound to (demo, ws, generation 1) with real storage. `skewMs` makes the phone's wall clock differ.
     func makePhone(skewMs: Int64 = 0, faultsFree: Bool = true, timeout: Duration = .seconds(30), install: Bool = true,
-                   transport: (any RelayTransport)? = nil, longPollSeconds: Int? = nil) async throws -> Phone {
+                   transport: (any RelayTransport)? = nil, longPollSeconds: Int? = nil,
+                   reader: ReaderRuntime? = nil, sendsReaderDigest: Bool = false, writes: Bool = true) async throws -> Phone {
         let index = env.index
         try await index.addWorkspace(ws: ws.hex, generation: 1)
         let container = try await WorkspaceContainer(index: index, ws: ws.hex, generation: 1)
         let pclock = TestClock(wallStartMs: clock.nowMs + skewMs)
-        let cfg = WorkspaceSessionConfig(context: env.context, workspace: ws, generation: 1, identity: env.device, wsk: host.wskPublic,
+        var cfg = WorkspaceSessionConfig(context: env.context, workspace: ws, generation: 1, identity: env.device, wsk: host.wskPublic,
                                          container: container, vault: vault.scoped(to: .demo), transport: transport ?? env.transport, clock: pclock,
                                          wall: pclock, entropy: SystemEntropy(), pollInterval: .milliseconds(500), responseTimeout: timeout, longPollSeconds: longPollSeconds)
+        if let reader { cfg.reader = reader }
+        cfg.sendsReaderDigest = sendsReaderDigest
+        // C2b: Demo person events (passphrase custody) with the environment's grant, bound to its own transport only
+        if writes && transport == nil { cfg.processLocalWriteGrant = env.processLocalWriteGrant }
+        let scoped = vault.scoped(to: .demo)
+        if (try? scoped.get(purpose: "device.cert")) == nil {
+            try scoped.put(try canonicalJSON(["pk_pub": .string(B64U.encode(await primary.publicKey.x963))]), purpose: "device.cert")
+        }
         let session = try await WorkspaceSession(cfg)
         if install { try await session.refreshGrants() }
         return Phone(session: session, container: container, clock: pclock)

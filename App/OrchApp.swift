@@ -40,12 +40,17 @@ struct OrchApp: App {
 struct AppRoot: View {
     let options: LaunchOptions
     @State private var realm: RealmController
+    /// Scan, paste and `orch://` opens: every one lands on a review screen. Owned here so it outlives the realm's view graph.
+    @State private var intake: LiveIntake
+    @Environment(\.scenePhase) private var scenePhase
     /// Parsed exactly once, after boot: a route's side effects (e.g. the Demo sign outcome) must not repeat on every body pass.
     @State private var initial: InitialRoute?
 
     init(options: LaunchOptions) {
         self.options = options
-        _realm = State(initialValue: RealmController(options: options))
+        let controller = RealmController(options: options)
+        _realm = State(initialValue: controller)
+        _intake = State(initialValue: LiveIntake(realm: controller))
     }
 
     var body: some View {
@@ -65,8 +70,27 @@ struct AppRoot: View {
                     .accessibilityIdentifier("realm.notice")
             }
         }
+        .environment(intake)
+        // Cold launch included: the intake holds an early URL until the realm has booted, then classifies it.
+        .onOpenURL { intake.handle(url: $0) }
+        // Scene and protected-data lifecycle ownership: workspaces and the pairing on screen pause in the background, codes hide.
+        .onChange(of: scenePhase) { _, phase in
+            // C2b: `.inactive` ends every answer's eligibility for an automatic re-sign before anything else runs
+            if phase == .inactive { realm.services.noteInactive() }
+            realm.services.setActive(phase == .active)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+            realm.services.noteProtectedDataUnavailable()
+        }
+        .fullScreenCover(isPresented: Binding(get: { realm.booted && intake.isPresented }, set: { if !$0 { intake.dismiss() } })) {
+            LiveEntryFlow(intake: intake)
+        }
         .task {
             await realm.boot()
+            intake.realmBooted()
+            #if DEBUG
+            if let url = options.openURL { intake.handle(text: url, source: .otherApp) }
+            #endif
             if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: realm.services) }
         }
     }

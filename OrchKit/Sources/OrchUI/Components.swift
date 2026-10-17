@@ -132,8 +132,9 @@ public extension View {
 public struct SignedDetails: View {
     private let rows: [(String, String)]
     @State private var open = false
-    public init(workspaceID: String, questionID: String, optionID: String? = nil, contentHash: String) {
+    public init(workspaceID: String, questionID: String, optionID: String? = nil, contentHash: String, ticketUID: String? = nil) {
         var r = [("Workspace", workspaceID), ("Question id", questionID)]
+        if let ticketUID, !ticketUID.isEmpty { r.append(("Ticket uid", ticketUID)) }
         if let optionID { r.append(("Answer id", optionID)) }
         r.append(("Content hash", contentHash))
         rows = r

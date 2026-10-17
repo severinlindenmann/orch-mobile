@@ -4,7 +4,7 @@ import OrchProtocol
 @testable import OrchClient
 
 /// Counts what reaches the wire and answers 200 `{"host_api":0}`.
-final class RecordingSender: RequestSender, @unchecked Sendable {
+final class RecordingSender: RequestSender, InProcessDemoSender, @unchecked Sendable {
     private let lock = NSLock()
     private var seen: [WireRequest] = []
     private var current: String

@@ -319,11 +319,16 @@ public enum DropDocument {
     /// `versions` are signature-checked descriptor objects.
     /// DropService persists the highest version and head hash in its workspace container; that state lives
     /// outside this pure function.
-    public static func verifyChain(_ versions: [[String: JSONValue]]) throws {
+    public static func verifyChain(_ versions: [[String: JSONValue]]) throws { try verifyChain(versions, firstVersion: 1) }
+
+    /// The same check for a suffix that starts at `firstVersion` (a persisted head makes the walk start there): the first entry is
+    /// only linked to what the caller already holds (its hash is compared to the persisted head), later entries to their parent.
+    public static func verifyChain(_ versions: [[String: JSONValue]], firstVersion: UInt32) throws {
         for (i, o) in versions.enumerated() {
             if i > 0, !sameDocument(o, versions[0]) { throw Fork(at: o["version"]?.int ?? -1) }
             let want: JSONValue = i == 0 ? .null : .string(B64U.encode(try DropDescriptor.parentHash(of: versions[i - 1])))
-            guard o["version"] == .int(Int64(i + 1)), o["parent_hash"] == want else { throw Fork(at: o["version"]?.int ?? -1) }
+            guard o["version"] == .int(Int64(firstVersion) + Int64(i)) else { throw Fork(at: o["version"]?.int ?? -1) }
+            if i > 0 || firstVersion == 1 { guard o["parent_hash"] == want else { throw Fork(at: o["version"]?.int ?? -1) } }
         }
     }
 
@@ -346,6 +351,9 @@ public enum DropDocument {
               s.utf8.count == 1 || s.utf8.first != 0x30 else { return nil }
         return UInt64(s)
     }
+
+    /// Whether `ifMatch` is a spelling section 10.6 accepts (the decimal; the caller has removed any quotes).
+    public static func isValidIfMatch(_ s: String?) -> Bool { parseIfMatch(s) != nil }
 
     /// Section 10.6, as the relay applies it (the descriptor's signature is checked before this): `428` for a missing or
     /// malformed `If-Match`; `409 version_conflict` (with `current`) unless `If-Match == current`, `parent == current`,
@@ -410,5 +418,84 @@ public enum DropClaim {
             stored.wraps = [record]
             return Reply(status: 200, error: nil, claimedBy: ws)
         }
+    }
+}
+
+// MARK: upload frame (protocol 19.9, P3-D39)
+
+/// The streamed `PUT /v2/drop/{o}/versions` body: `"ODU2" || u32be(head_len) || head || blob`, with
+/// `head = cj({"descriptor": <signed drop_object>, "wraps": [<wrap record>, ...]})`. `Content-Length` is `8 + head_len + blob.count`.
+public enum DropFrame {
+    public static let magic = Data("ODU2".utf8)
+    /// Bytes before the head: the magic and `u32be(head_len)`.
+    public static let prefixLength = 8
+    public static let maxHeadBytes = 512 << 10
+    public static let maxDescriptorBytes = 96 << 10
+    /// 26 MiB, the relay's default `ORCH_RELAY_DROP_MAX_BLOB_BYTES`.
+    public static let maxBlobBytes = 26 << 20
+    public static let maxWraps = 1024
+
+    public struct Parts: Sendable, Equatable {
+        public let descriptor: JSONValue
+        public let wraps: [JSONValue]
+        public let headLength: Int
+        public let blobLength: Int
+        /// `8 + head_len + blob`, the request's `Content-Length`.
+        public var total: Int { DropFrame.prefixLength + headLength + blobLength }
+        /// Where the blob starts inside the frame.
+        public var blobOffset: Int { DropFrame.prefixLength + headLength }
+    }
+
+    public enum Failure: Error, Equatable, Sendable { case malformed, headTooLarge, descriptorTooLarge, blobTooLarge }
+
+    public static func head(descriptor: JSONValue, wraps: [JSONValue]) throws -> Data {
+        guard wraps.count <= maxWraps else { throw Failure.malformed }
+        let head = try canonicalJSON(["descriptor": descriptor, "wraps": .array(wraps)])
+        guard head.count <= maxHeadBytes else { throw Failure.headTooLarge }
+        guard try canonicalJSON(descriptor).count <= maxDescriptorBytes else { throw Failure.descriptorTooLarge }
+        return head
+    }
+
+    /// The frame bytes up to (not including) the blob: magic, `u32be(head_len)` and the head.
+    public static func prefix(descriptor: JSONValue, wraps: [JSONValue]) throws -> Data {
+        let head = try head(descriptor: descriptor, wraps: wraps)
+        return magic + Bytes.u32(UInt32(head.count)) + head
+    }
+
+    public static func encode(descriptor: JSONValue, wraps: [JSONValue], blob: Data) throws -> Data {
+        guard blob.count <= maxBlobBytes else { throw Failure.blobTooLarge }
+        return try prefix(descriptor: descriptor, wraps: wraps) + blob
+    }
+
+    /// Parses the head of a frame from its first bytes (at least `8 + head_len`). The blob length is `total - 8 - head_len`
+    /// (the caller passes the real total: `Content-Length`, or the stored frame's size).
+    public static func parseHead(_ bytes: Data, total: Int) throws -> Parts {
+        let b = Data(bytes)
+        guard b.count >= prefixLength, b.prefix(4) == magic else { throw Failure.malformed }
+        let headLength = Int(Bytes.readU32(b, 4))
+        guard headLength <= maxHeadBytes else { throw Failure.headTooLarge }
+        guard headLength > 0, b.count >= prefixLength + headLength, total >= prefixLength + headLength else { throw Failure.malformed }
+        let blobLength = total - prefixLength - headLength
+        guard blobLength <= maxBlobBytes else { throw Failure.blobTooLarge }
+        let headBytes = b.subdata(in: prefixLength..<(prefixLength + headLength))
+        guard let o = try? StrictJSON.parse(headBytes, maxBytes: maxHeadBytes).object, o.hasExactly(["descriptor", "wraps"]),
+              let descriptor = o["descriptor"], let wraps = o["wraps"]?.array, wraps.count <= maxWraps,
+              ((try? canonicalJSON(descriptor).count) ?? .max) <= maxDescriptorBytes,
+              (try? canonicalJSON(.object(o))) == headBytes else { throw Failure.malformed }
+        return Parts(descriptor: descriptor, wraps: wraps, headLength: headLength, blobLength: blobLength)
+    }
+
+    public static func parse(_ frame: Data) throws -> (parts: Parts, blob: Data) {
+        let parts = try parseHead(frame.prefix(prefixLength + maxHeadBytes), total: frame.count)
+        let start = frame.startIndex + parts.blobOffset
+        return (parts, Data(frame[start...]))
+    }
+
+    /// The pre-ODU2 stored form (`cj({descriptor, wraps, blob: b64u})`) of `drop_uploads.body`, or nil when `body` is not that.
+    public static func legacyParts(_ body: Data) -> (descriptor: JSONValue, wraps: [JSONValue], blob: Data)? {
+        guard body.first == UInt8(ascii: "{"), let o = try? StrictJSON.parse(body, maxBytes: 36 << 20).object,
+              o.hasExactly(["descriptor", "wraps", "blob"]), let d = o["descriptor"], let w = o["wraps"]?.array,
+              let blob = o["blob"]?.string.flatMap({ B64U.decode($0) }) else { return nil }
+        return (d, w, blob)
     }
 }
