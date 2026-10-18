@@ -61,9 +61,13 @@ public enum SQLiteError: Error, Equatable, Sendable {
 public struct Migration: Sendable {
     public let version: Int
     public let statements: [String]
-    public init(version: Int, statements: [String]) {
+    /// The migration rebuilds a table that other tables reference (SQLite's 12-step ALTER): foreign keys are switched off for its
+    /// transaction (the pragma is a no-op inside one), `foreign_key_check` must be clean before it commits, and they are switched on again.
+    public let rebuildsTables: Bool
+    public init(version: Int, statements: [String], rebuildsTables: Bool = false) {
         self.version = version
         self.statements = statements
+        self.rebuildsTables = rebuildsTables
     }
 }
 
@@ -337,8 +341,11 @@ public actor SQLiteDatabase {
         }
         for m in migrations where !applied.contains(m.version) {
             do {
+                if m.rebuildsTables { _ = try h.run("PRAGMA foreign_keys=OFF") }
+                defer { if m.rebuildsTables { _ = try? h.run("PRAGMA foreign_keys=ON") } }
                 try h.transaction { tx in
                     for s in m.statements { try tx.execute(s) }
+                    if m.rebuildsTables, !(try tx.query("PRAGMA foreign_key_check")).isEmpty { throw SQLiteError.misuse("foreign_key_check failed after a table rebuild") }
                     try tx.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                                    [.int(Int64(m.version)), .int(Int64(Date().timeIntervalSince1970))])
                 }

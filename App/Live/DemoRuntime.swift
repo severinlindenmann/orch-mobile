@@ -228,7 +228,8 @@ final class DemoRuntime: DemoControls {
 
     func makeCoordinator() throws -> PairingCoordinator {
         PairingCoordinator(PairingConfig(context: env.context, transport: env.transport, index: env.index, vault: keysVault, custody: custody,
-                                         clock: clock, wall: clock, entropy: SystemEntropy(), deviceLabel: deviceLabel))
+                                         clock: clock, wall: clock, entropy: SystemEntropy(), deviceLabel: deviceLabel,
+                                         processLocalWriteGrant: env.processLocalWriteGrant))
     }
 
     func entry(for workspace: ID16) -> Entry? { entries[workspace] }
@@ -287,7 +288,7 @@ final class DemoRuntime: DemoControls {
     /// The Demo host asks a fresh question (the Demo notification needs a real, open question to replace later). Returns its id.
     func askDemoQuestion(workspace: ID16) async -> ID16? {
         guard let entry = entries[workspace] else { return nil }
-        let seed = DemoQuestionSeed(ticket: "DEMO-1", text: "Demo notification: answer this question in orch.",
+        let seed = DemoQuestionSeed(ticket: "DEMO-0001", text: "Demo notification: answer this question in orch.",
                                     options: [DemoOptionSeed("approve", "Approve"), DemoOptionSeed("reject", "Reject")], createdAgoMs: 0)
         return try? await entry.host.demoAskQuestion(seed)
     }

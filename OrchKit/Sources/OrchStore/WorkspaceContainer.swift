@@ -92,6 +92,133 @@ public actor WorkspaceContainer {
             "INSERT OR IGNORE INTO sealing_blocked(epoch) SELECT value FROM meta WHERE key='wk_commit_conflict'",
             "DELETE FROM meta WHERE key='wk_commit_conflict'",
         ]),
+        // P3-D40 (protocol 19.10): the relay push registration of this workspace, one per APNs environment. The id is the device's
+        // (16 random bytes, hex) and is persisted BEFORE the request so a lost reply retries the same body (idempotent 200).
+        // `confirmed_ms` is NULL until the relay answered 200 for exactly this id and token.
+        Migration(version: 14, statements: [
+            "CREATE TABLE push_registrations (env TEXT PRIMARY KEY, registration_id TEXT NOT NULL, token TEXT NOT NULL, confirmed_ms INTEGER)",
+        ]),
+        // C2b (orch-mobile c2b-plan-rev2 3.1): person-event writes. One `pe_reviews` row per signed review (an answer, later a creation)
+        // pointing at its current attempt by compare-and-swap (`current_idem`, `ver`); `pe_attempts` holds every attempt immutably: the
+        // exact signed event bytes (the only bytes ever framed for that idem), the clock facts of the window check, the dispatch marker and
+        // the append-only settlement evidence. Every write row of `bridge_requests` names its attempt. The v0 `decisions` table and its
+        // bridge rows (Demo only) are retired in the same migration.
+        Migration(version: 15, statements: [
+            """
+            CREATE TABLE pe_reviews (review TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('answer','new_ticket')), log TEXT NOT NULL,
+              question TEXT, snapshot BLOB NOT NULL, key_disclosed TEXT, current_idem TEXT NOT NULL, ver INTEGER NOT NULL,
+              resigns INTEGER NOT NULL DEFAULT 0,
+              state TEXT NOT NULL CHECK (state IN ('active','landed','landed_unconfirmed','needs_review','refused','discarded')),
+              landed_idem TEXT, outcome TEXT, created_ms INTEGER NOT NULL)
+            """,
+            """
+            CREATE TABLE pe_attempts (idem TEXT PRIMARY KEY, review TEXT NOT NULL REFERENCES pe_reviews(review), n INTEGER NOT NULL,
+              origin TEXT NOT NULL CHECK (origin IN ('tap','auto')), event BLOB NOT NULL, digest TEXT NOT NULL, key TEXT, auth TEXT NOT NULL,
+              ulid_ms INTEGER NOT NULL, signed_wall_ms INTEGER NOT NULL, signed_offset_ms INTEGER NOT NULL,
+              dispatched INTEGER NOT NULL DEFAULT 0,
+              state TEXT NOT NULL CHECK (state IN ('signed','sent','landed','c_auto','c_review','d','superseded','discarded')),
+              evidence TEXT NOT NULL DEFAULT '[]', UNIQUE (review, n))
+            """,
+            "ALTER TABLE bridge_requests ADD COLUMN attempt TEXT REFERENCES pe_attempts(idem)",
+            "CREATE INDEX bridge_requests_attempt ON bridge_requests(attempt)",
+            // one active review per question, in SQL: a double tap or a second sheet can never hold two signed reviews of one question
+            "CREATE UNIQUE INDEX pe_reviews_one_active ON pe_reviews(question) WHERE state = 'active'",
+            // NOTE: `INSERT OR REPLACE` / `REPLACE INTO` is never used on pe_reviews or pe_attempts (a REPLACE deletes the old row WITHOUT
+            // firing the delete triggers below, recursive_triggers being off). Pinned by `PersonEventTriggerTests.noReplaceOnTheWriteTables`.
+            // immutability: what was signed, and when, never changes
+            """
+            CREATE TRIGGER pe_attempts_immutable BEFORE UPDATE ON pe_attempts
+            WHEN NEW.idem IS NOT OLD.idem OR NEW.review IS NOT OLD.review OR NEW.n IS NOT OLD.n OR NEW.origin IS NOT OLD.origin
+              OR NEW.event IS NOT OLD.event OR NEW.digest IS NOT OLD.digest OR NEW.key IS NOT OLD.key OR NEW.auth IS NOT OLD.auth
+              OR NEW.ulid_ms IS NOT OLD.ulid_ms OR NEW.signed_wall_ms IS NOT OLD.signed_wall_ms OR NEW.signed_offset_ms IS NOT OLD.signed_offset_ms
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: signed fields are immutable'); END
+            """,
+            // the dispatch marker is monotonic: a possibly sent attempt is never declared unsent
+            """
+            CREATE TRIGGER pe_attempts_dispatched BEFORE UPDATE OF dispatched ON pe_attempts WHEN OLD.dispatched = 1 AND NEW.dispatched <> 1
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: dispatched never falls'); END
+            """,
+            // landed is final
+            """
+            CREATE TRIGGER pe_attempts_landed BEFORE UPDATE OF state ON pe_attempts WHEN OLD.state = 'landed' AND NEW.state <> 'landed'
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: landed is final'); END
+            """,
+            "CREATE TRIGGER pe_attempts_keep_landed BEFORE DELETE ON pe_attempts WHEN OLD.state = 'landed' BEGIN SELECT RAISE(ABORT, 'pe_attempts: landed is final'); END",
+            // a possibly sent attempt is kept until it is settled: only a definite refusal (c_review, d) may go
+            """
+            CREATE TRIGGER pe_attempts_keep_dispatched BEFORE DELETE ON pe_attempts WHEN OLD.dispatched = 1 AND OLD.state NOT IN ('landed','c_review','d')
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: a dispatched attempt is kept until settled'); END
+            """,
+            // a possibly sent attempt is never declared unsigned or unsent again
+            """
+            CREATE TRIGGER pe_attempts_sent_stays_sent BEFORE UPDATE ON pe_attempts
+            WHEN NEW.state IN ('signed','discarded') AND NEW.state IS NOT OLD.state AND (OLD.dispatched = 1 OR NEW.dispatched = 1)
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: a dispatched attempt is never signed or discarded again'); END
+            """,
+            // evidence is truly append-only: longer, the old array minus its `]` is a prefix, the first appended character is `,` (or the
+            // first element's `{` after an empty `[]`), and the result is still a valid JSON array
+            """
+            CREATE TRIGGER pe_attempts_evidence BEFORE UPDATE OF evidence ON pe_attempts
+            WHEN NEW.evidence IS NOT OLD.evidence AND NOT (
+              json_valid(NEW.evidence) AND length(NEW.evidence) > length(OLD.evidence) AND substr(OLD.evidence, -1) = ']' AND substr(NEW.evidence, -1) = ']'
+              AND substr(NEW.evidence, 1, length(OLD.evidence) - 1) = substr(OLD.evidence, 1, length(OLD.evidence) - 1)
+              AND substr(NEW.evidence, length(OLD.evidence), 1) = CASE WHEN OLD.evidence = '[]' THEN '{' ELSE ',' END)
+            BEGIN SELECT RAISE(ABORT, 'pe_attempts: evidence is append-only'); END
+            """,
+            // a review that landed stays landed (confirmed or not), with the same landed attempt
+            """
+            CREATE TRIGGER pe_reviews_landed BEFORE UPDATE ON pe_reviews
+            WHEN OLD.state IN ('landed','landed_unconfirmed') AND (NEW.state NOT IN ('landed','landed_unconfirmed') OR NEW.landed_idem IS NOT OLD.landed_idem)
+            BEGIN SELECT RAISE(ABORT, 'pe_reviews: a landing is final'); END
+            """,
+            // retire the Demo v0 decision rows together with their table
+            "DELETE FROM bridge_requests WHERE logical IN (SELECT id FROM decisions)",
+            "DELETE FROM meta WHERE key LIKE 'exhausted:%' AND substr(key, 11) IN (SELECT id FROM decisions)",
+            "DROP TABLE decisions",
+        ]),
+        // C2b increment 3: creation is an R2 person event (`new_ticket` over relay.submit). The interim v0 creation op is gone, so its
+        // leftover bridge rows (no attempt, a v0 `new_ticket` meta with `creation_id`) are retired, with their exhausted markers. Matched on
+        // the framed meta's bytes: canonical JSON escapes every quote inside a string, so `"op":"new_ticket"` and `"creation_id":` only
+        // occur as the meta's own keys. Reads are idempotent and stay.
+        Migration(version: 16, statements: [
+            """
+            DELETE FROM meta WHERE key IN (SELECT 'exhausted:' || logical FROM bridge_requests WHERE attempt IS NULL
+              AND instr(plaintext, CAST('"op":"new_ticket"' AS BLOB)) > 0 AND instr(plaintext, CAST('"creation_id":' AS BLOB)) > 0)
+            """,
+            """
+            DELETE FROM bridge_requests WHERE attempt IS NULL
+              AND instr(plaintext, CAST('"op":"new_ticket"' AS BLOB)) > 0 AND instr(plaintext, CAST('"creation_id":' AS BLOB)) > 0
+            """,
+        ]),
+        // B4: the registration id a token change replaced and the relay may still hold: owed an explicit unregister, kept across a failed
+        // register or a kill, cleared once the unregister was answered.
+        Migration(version: 17, statements: [
+            "ALTER TABLE push_registrations ADD COLUMN supersedes TEXT",
+        ]),
+        // B10 phase 1: gate decisions (`approve` / `changes` over relay.submit) are a third review kind, 'gate'. SQLite cannot change a CHECK,
+        // so `pe_reviews` is rebuilt (the 12-step way: `rebuildsTables` switches foreign keys off for the transaction and checks them before commit). Its index and its trigger go with the old table and are made again.
+        // `question` of a gate row is `gate:<ticket uid>:<gate>`: one active decision per gate, in SQL.
+        Migration(version: 18, statements: [
+            """
+            CREATE TABLE pe_reviews_new (review TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('answer','new_ticket','gate')), log TEXT NOT NULL,
+              question TEXT, snapshot BLOB NOT NULL, key_disclosed TEXT, current_idem TEXT NOT NULL, ver INTEGER NOT NULL,
+              resigns INTEGER NOT NULL DEFAULT 0,
+              state TEXT NOT NULL CHECK (state IN ('active','landed','landed_unconfirmed','needs_review','refused','discarded')),
+              landed_idem TEXT, outcome TEXT, created_ms INTEGER NOT NULL)
+            """,
+            """
+            INSERT INTO pe_reviews_new(review, kind, log, question, snapshot, key_disclosed, current_idem, ver, resigns, state, landed_idem, outcome, created_ms)
+              SELECT review, kind, log, question, snapshot, key_disclosed, current_idem, ver, resigns, state, landed_idem, outcome, created_ms FROM pe_reviews
+            """,
+            "DROP TABLE pe_reviews",
+            "ALTER TABLE pe_reviews_new RENAME TO pe_reviews",
+            "CREATE UNIQUE INDEX pe_reviews_one_active ON pe_reviews(question) WHERE state = 'active'",
+            """
+            CREATE TRIGGER pe_reviews_landed BEFORE UPDATE ON pe_reviews
+            WHEN OLD.state IN ('landed','landed_unconfirmed') AND (NEW.state NOT IN ('landed','landed_unconfirmed') OR NEW.landed_idem IS NOT OLD.landed_idem)
+            BEGIN SELECT RAISE(ABORT, 'pe_reviews: a landing is final'); END
+            """,
+        ], rebuildsTables: true),
     ]
 
     public init(index: WorkspaceIndex, ws: String, generation: Int64, fence: (any WriteFence)? = nil) async throws {
@@ -255,18 +382,32 @@ public actor WorkspaceContainer {
 
 
 extension WorkspaceContainer {
-    public func acceptDropChain(object: String, chain: [Data]) async throws {
+    /// The persisted head version of a Drop object, nil when none was accepted yet. A chain walk starts there, not at version 1.
+    public func dropHeadVersion(object: String) async throws -> UInt32? {
         try StoreLayout.validate(ws: object)
-        guard !chain.isEmpty, chain.count <= 1024 else { throw DropStoreError.rollback }
+        guard let n = try await database().query("SELECT version FROM drop_heads WHERE object=?", [.text(object)]).first?.int("version"),
+              n > 0, n <= Int64(UInt32.max) else { return nil }
+        return UInt32(n)
+    }
+
+    public func acceptDropChain(object: String, chain: [Data]) async throws {
+        try await acceptDropChain(object: object, firstVersion: 1, chain: chain)
+    }
+
+    /// `chain[i]` is the hash of version `firstVersion + i`. A suffix must still contain the persisted head and agree with it.
+    public func acceptDropChain(object: String, firstVersion: UInt32, chain: [Data]) async throws {
+        try StoreLayout.validate(ws: object)
+        guard !chain.isEmpty, chain.count <= 1024, firstVersion >= 1, Int64(firstVersion) + Int64(chain.count) - 1 <= 1024 else { throw DropStoreError.rollback }
+        let first = Int(firstVersion), last = first + chain.count - 1
         let layout = self.layout, ws = self.ws, generation = self.generation
         try await database().transaction { tx in
             try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
                 if let previous = try tx.query("SELECT version,hash FROM drop_heads WHERE object=?", [.text(object)]).first {
-                    guard let n = previous.int("version"), n > 0, n <= chain.count,
-                          previous.blob("hash") == chain[Int(n) - 1] else { throw DropStoreError.rollback }
-                }
+                    guard let n = previous.int("version"), Int(n) >= first, Int(n) <= last,
+                          previous.blob("hash") == chain[Int(n) - first] else { throw DropStoreError.rollback }
+                } else if first > 1 { throw DropStoreError.rollback }
                 try tx.execute("INSERT INTO drop_heads(object,version,hash) VALUES(?,?,?) ON CONFLICT(object) DO UPDATE SET version=excluded.version,hash=excluded.hash",
-                               [.text(object), .int(Int64(chain.count)), .blob(chain.last!)])
+                               [.text(object), .int(Int64(last)), .blob(chain.last!)])
                 try Self.purgeDownloads(tx, directory: directory, nowMs: nil)
             }
         }
@@ -278,6 +419,40 @@ extension WorkspaceContainer {
         try await database().transaction { tx in
             try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
                 try Self.purgeDownloads(tx, directory: directory, nowMs: nowMs)
+            }
+        }
+    }
+
+    /// Removes the local plaintext download of exactly these objects (every version) and clears their retention columns. Every other
+    /// object's file, retention and chain head are untouched; unknown objects are a no-op. Heads stay: a purge never rewinds the chain.
+    public func purgeDownloads(objects: Set<String>) async throws {
+        guard !objects.isEmpty else { return }
+        for object in objects { try StoreLayout.validate(ws: object) }
+        let layout = self.layout, ws = self.ws, generation = self.generation
+        try await database().transaction { tx in
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                for object in objects {
+                    try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL,downloaded_at=NULL WHERE object=?", [.text(object)])
+                }
+                for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                where objects.contains(where: { file.lastPathComponent.hasPrefix($0 + "-") }) { try FileManager.default.removeItem(at: file) }
+            }
+        }
+    }
+
+    /// Removes the local plaintext download of every object NOT in `keep` (the objects a complete verified list walk showed live). Heads
+    /// and signed descriptors stay: a purge never rewinds the chain. Files of objects in `keep` and their retention are untouched.
+    public func purgeDownloads(keeping keep: Set<String>) async throws {
+        for object in keep { try StoreLayout.validate(ws: object) }
+        let layout = self.layout, ws = self.ws, generation = self.generation
+        try await database().transaction { tx in
+            try Self.withDropFiles(layout: layout, ws: ws, generation: generation) { directory in
+                for row in try tx.query("SELECT object FROM drop_heads") {
+                    guard let object = row.text("object"), !keep.contains(object) else { continue }
+                    try tx.execute("UPDATE drop_heads SET file_version=NULL,file_expires_ms=NULL,downloaded_at=NULL WHERE object=?", [.text(object)])
+                }
+                for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                where !keep.contains(where: { file.lastPathComponent.hasPrefix($0 + "-") }) { try FileManager.default.removeItem(at: file) }
             }
         }
     }
@@ -350,3 +525,48 @@ public enum DropStoreError: Error, Sendable { case rollback, expired }
 
 /// A member list that would roll back the one this device last accepted (P3-D6).
 public enum MemberListHeadError: Error, Equatable, Sendable { case rollback, conflict, epochFell, rotationRequired, wkCommitConflict }
+
+
+/// The relay push registration of one workspace (P3-D40). Not a secret (the token is an APNs address, not a credential), but it lives in
+/// the workspace store so the realm fence guards its writes and the workspace wipe removes it.
+public struct PushRegistrationRow: Equatable, Sendable {
+    public let env: String
+    public let registrationID: String
+    public let token: String
+    public let confirmedMs: Int64?
+    /// An earlier registration id (another token) whose unregister is still owed.
+    public let supersedes: String?
+    public init(env: String, registrationID: String, token: String, confirmedMs: Int64?, supersedes: String? = nil) {
+        self.env = env; self.registrationID = registrationID; self.token = token; self.confirmedMs = confirmedMs; self.supersedes = supersedes
+    }
+}
+
+extension WorkspaceContainer {
+    public func pushRegistration(env: String) async throws -> PushRegistrationRow? {
+        try await database().query("SELECT env, registration_id, token, confirmed_ms, supersedes FROM push_registrations WHERE env=?", [.text(env)]).first.flatMap {
+            guard let e = $0.text("env"), let id = $0.text("registration_id"), let t = $0.text("token") else { return nil }
+            return PushRegistrationRow(env: e, registrationID: id, token: t, confirmedMs: $0.int("confirmed_ms"), supersedes: $0.text("supersedes"))
+        }
+    }
+
+    /// Records the id and token about to be sent (unconfirmed). Replaces the row of this environment.
+    /// `supersedes` is the id this one replaces (its unregister is owed until `clearPushSupersedes`).
+    public func savePushRegistration(env: String, registrationID: String, token: String, supersedes: String? = nil) async throws {
+        try await database().execute("INSERT INTO push_registrations(env, registration_id, token, confirmed_ms, supersedes) VALUES(?,?,?,NULL,?) ON CONFLICT(env) DO UPDATE SET registration_id=excluded.registration_id, token=excluded.token, confirmed_ms=NULL, supersedes=excluded.supersedes",
+                                     [.text(env), .text(registrationID), .text(token), supersedes.map { .text($0) } ?? .null])
+    }
+
+    /// The owed unregister of the superseded id was answered.
+    public func clearPushSupersedes(env: String) async throws {
+        try await database().execute("UPDATE push_registrations SET supersedes=NULL WHERE env=?", [.text(env)])
+    }
+
+    /// The relay answered 200 for exactly this id: only then is it confirmed.
+    public func confirmPushRegistration(env: String, registrationID: String, nowMs: Int64) async throws {
+        try await database().execute("UPDATE push_registrations SET confirmed_ms=? WHERE env=? AND registration_id=?", [.int(nowMs), .text(env), .text(registrationID)])
+    }
+
+    public func clearPushRegistrations() async throws {
+        try await database().execute("DELETE FROM push_registrations", [])
+    }
+}

@@ -14,6 +14,21 @@ enum LiveError: Error, Equatable {
     case invalidInstall
     /// The runtime has not finished booting (no index yet).
     case notBooted
+    /// The committed workspaces of this install name more than one owner (or an owner other than the pinned one): one owner per install,
+    /// so the boot is refused and nothing is rebuilt. Leaving Live is the way out.
+    case ownerDisagreement
+    /// The install record could not be written (or did not read back): the flow stops before any Live secret or index row exists.
+    case installNotSaved
+    /// Live entry is not possible in the current state (a realm is active, a wipe is unfinished, or an entry is already running).
+    case entryUnavailable
+    /// The relay could not be reached to remove a push registration; the cleanup stays owed.
+    case pushCleanupFailed(String)
+    /// The invitation names another relay origin than this install's: refused before any network access.
+    case differentOrigin
+    /// Not an `https` relay origin the Live realm accepts (no loopback `http`, no Demo origin).
+    case unsupportedOrigin
+    /// The OrchDevSandbox variant pairs only as a level-1 reader (host 11A.17.4): this build's reader self-test did not pass.
+    case readerRequired
 }
 
 /// The persisted fact that this iPhone is a Live install: the ONE relay origin (taken only from an invitation, B2b) and, once the first
@@ -28,7 +43,14 @@ struct LiveInstallStore {
     static let key = "orch.live.install"
     let defaults: UserDefaults
     func load() -> LiveInstall? { defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(LiveInstall.self, from: $0) } }
-    func save(_ install: LiveInstall) { if let data = try? JSONEncoder().encode(install) { defaults.set(data, forKey: Self.key) } }
+    /// Limits: the read-back goes through the same `UserDefaults` object, so it catches an encoding fault or a store that drops the write,
+    /// not a failed flush to disk after it. Throws when the record cannot be encoded or does not read back: a Live install that is not durably recorded must fail the flow that
+    /// needed it (no silent `try?`).
+    func save(_ install: LiveInstall) throws {
+        let data = try JSONEncoder().encode(install)
+        defaults.set(data, forKey: Self.key)
+        guard defaults.data(forKey: Self.key) == data else { throw LiveError.installNotSaved }
+    }
     func clear() { defaults.removeObject(forKey: Self.key) }
     /// Present but unreadable still counts as an install: a corrupt record must not read as "no Live" (it would let Demo start next to
     /// Live data). `load` is nil then and boot reports a failed start instead.
@@ -53,8 +75,17 @@ struct LiveStorage: Sendable {
     static func production() throws -> LiveStorage {
         guard let backend = KeychainBackend.fromBundle() else { throw LiveError.keychainUnavailable }
         return LiveStorage(layout: try liveLayout(), backend: backend, lock: SimulatedLock(), clock: ContinuousClock(), wall: SystemWallClock(),
-                           entropy: SystemEntropy(), makeTransport: { try LiveTransport.make(context: $0) },
+                           entropy: SystemEntropy(), makeTransport: Self.productionTransport,
                            purgeNotifications: { await LiveNotifications.purge(workspace: $0) })
+    }
+
+    /// The Live transport: `https` only. The OrchDevSandbox variant reaches the dev relay only.
+    @Sendable static func productionTransport(_ context: RealmContext) throws -> any RelayTransport {
+        #if ORCH_DEV_SANDBOX
+        try LiveTransport.makeDevSandbox(context: context, enabler: DevSandboxLaneEnabler())
+        #else
+        try LiveTransport.make(context: context)
+        #endif
     }
 
     /// `<Application Support>/OrchLive/app/orch/live/...`, and the Live realm's subdirectories of both App Groups (push state, share
@@ -63,12 +94,17 @@ struct LiveStorage: Sendable {
         let fm = FileManager.default
         let base = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("OrchLive", isDirectory: true)
+        #if ORCH_DEV_SANDBOX
+        let pushGroup = "group.io.severin.orch.devsandbox", shareGroup = "group.io.severin.orch.devsandbox.share"
+        #else
+        let pushGroup = "group.io.severin.orch", shareGroup = "group.io.severin.orch.share"
+        #endif
         func group(_ id: String, _ fallback: String) -> URL {
             fm.containerURL(forSecurityApplicationGroupIdentifier: id) ?? base.appendingPathComponent(fallback, isDirectory: true)
         }
         return try StoreLayout(appRoot: base.appendingPathComponent("app", isDirectory: true),
-                               pushGroupRoot: group("group.io.severin.orch", "push"),
-                               shareGroupRoot: group("group.io.severin.orch.share", "share"),
+                               pushGroupRoot: group(pushGroup, "push"),
+                               shareGroupRoot: group(shareGroup, "share"),
                                realm: Realm.live.rawValue)
     }
 
@@ -82,6 +118,21 @@ struct LiveStorage: Sendable {
         #else
         DefaultCustody.make(vault: keysVault())
         #endif
+    }
+
+    /// Removes the Live files (realm directory and the Live subdirectories of both App Groups) without the keychain or the index. Tombstone
+    /// coordination files stay (a burnt generation stays burnt).
+    static func removeLiveFiles(layout: StoreLayout) throws {
+        let fm = FileManager.default
+        var first: (any Error)?
+        for dir in [layout.realmDir,
+                    layout.pushDir.appendingPathComponent("state").appendingPathComponent(layout.realm, isDirectory: true),
+                    layout.shareDir.appendingPathComponent("staging").appendingPathComponent(layout.realm, isDirectory: true),
+                    layout.shareDir.appendingPathComponent("quarantine").appendingPathComponent(layout.realm, isDirectory: true)]
+        where fm.fileExists(atPath: dir.path) {
+            do { try fm.removeItem(at: dir) } catch { if first == nil { first = error } }
+        }
+        if let first { throw first }
     }
 
     /// The realm-wide local wipe over UNFENCED vaults: what Leave Live runs, and what a launch runs to finish an interrupted one.
@@ -129,7 +180,7 @@ enum LiveNotifications {
 @MainActor
 final class LiveRuntime: RealmRuntime {
     var realm: Realm { .live }
-    /// Drop, share and push come back when owner-approved relay routes exist; Live starts with all of them off.
+    /// Push is on (per relay: a 404 means that relay has none); Drop and share stay off until their relay routes are approved.
     var capabilities: RealmCapabilities = .live
     var deviceLabel = "iPhone"
     var nowMs: Int64 { storage.wall.nowMs }
@@ -146,6 +197,12 @@ final class LiveRuntime: RealmRuntime {
     private(set) var booted = false
     /// Committed workspaces that could not be rebuilt (stable reason tags). They stay in the index untouched.
     private(set) var skipped: [(ws: String, reason: String)] = []
+    /// The owner key (base64url x963) the committed workspaces agree on, derived at boot when the install record carries no pin yet (the
+    /// record is written after the first commit, so a crash between the two leaves the profiles as the source of truth). The services
+    /// persist it with a throwing save. nil when no workspace is committed or the record already pins one.
+    private(set) var derivedOwner: String?
+    /// The owner key the install record carries (base64url x963); set once it is durably recorded.
+    var recordedOwner: String?
     private var restored: [JoinedHandle] = []
     private var realmWipe: RealmWipe?
     #if DEBUG
@@ -166,13 +223,18 @@ final class LiveRuntime: RealmRuntime {
             guard let bytes = B64U.decode(text), let key = try? SigningPublicKey(x963: bytes) else { throw LiveError.invalidInstall }
             owner = key
         }
+        #if ORCH_DEV_SANDBOX
+        let context = try RealmContext.liveDevSandbox(origin: install.origin, pinnedOwner: owner, enabler: DevSandboxLaneEnabler())
+        #else
         let context = try RealmContext.live(origin: install.origin, pinnedOwner: owner)
+        #endif
         let transport = try storage.makeTransport(context)
         // A runtime owns exactly one RealmContext: a transport on any other generation would not stop when this one is invalidated.
         guard transport.context.sharesLifetime(with: context), transport.context.origin == context.origin, transport.context.realm == .live else {
             throw RealmViolation.wrongTransport
         }
         self.install = install; self.storage = storage; self.context = context; self.transport = transport
+        recordedOwner = install.owner
         keys = storage.keysVault(); push = storage.pushVault(); custody = storage.makeCustody()
     }
 
@@ -197,15 +259,40 @@ final class LiveRuntime: RealmRuntime {
         _ = await recovery.recover()
         await recovery.realmShutdown()                 // the recovery coordinator is not kept: a retried boot builds a fresh one
         try await step("recover")
-        let outcome = try await WorkspaceRestoration.restore(RestoreConfig(
+        derivedOwner = try await Self.agreedOwner(index: idx, pinned: install.owner)
+        var restoreConfig = RestoreConfig(
             context: context, transport: transport, index: idx, vault: keys, custody: custody, clock: storage.clock, wall: storage.wall,
-            entropy: storage.entropy))
+            entropy: storage.entropy)
+        #if ORCH_DEV_SANDBOX
+        restoreConfig.devSandboxEnabler = DevSandboxLaneEnabler()
+        #endif
+        let outcome = try await WorkspaceRestoration.restore(restoreConfig)
         do { try await step("restore") }
         catch { await WorkspaceRestoration.release(outcome.handles); throw error }
         await WorkspaceRestoration.release(restored)   // handles of an earlier, unadopted boot (none normally)
         restored = outcome.handles
         skipped = outcome.skipped
         booted = true
+    }
+
+    /// One owner per install. With no pin yet, the committed profiles must agree with each other: more than one owner refuses the boot
+    /// (nothing is rebuilt, nothing is erased), because the single-owner invariant was broken. Returns the owner to record when exactly one
+    /// is committed. With a pin, a profile naming another owner is not rebuilt by `WorkspaceRestoration` (skipped with reason "owner",
+    /// kept on disk, surfaced in Live Home); it never joins the session set.
+    static func agreedOwner(index: WorkspaceIndex, pinned: String?) async throws -> String? {
+        var owners = Set<String>()
+        for row in try await index.workspaces() {
+            guard let profile = try await index.profile(ws: row.ws) else { continue }
+            // With a pin nothing is recorded: an undecodable row is left to the restore, which skips it ("pins") and Live Home flags it.
+            // Without one, the value that WOULD be recorded must be a real key.
+            if pinned == nil {
+                guard let bytes = B64U.decode(profile.pkPub), (try? SigningPublicKey(x963: bytes)) != nil else { throw LiveError.invalidInstall }
+            }
+            owners.insert(profile.pkPub)
+        }
+        if pinned != nil { return nil }
+        guard owners.count <= 1 else { throw LiveError.ownerDisagreement }
+        return owners.first
     }
 
     private func checkCurrent() throws { guard context.isCurrent else { throw RealmViolation.staleGeneration } }
@@ -216,12 +303,20 @@ final class LiveRuntime: RealmRuntime {
 
     func makeCoordinator() throws -> PairingCoordinator {
         guard booted, let index else { throw LiveError.notBooted }
+        #if ORCH_DEV_SANDBOX
+        // pairing at reader level 1 (the dev host requires it): a build whose reader self-test failed declares nothing
+        guard ReaderRuntime.production.level >= 1 else { throw LiveError.readerRequired }
+        #endif
         return makeBootCoordinator(index)
     }
 
     private func makeBootCoordinator(_ index: WorkspaceIndex) -> PairingCoordinator {
-        PairingCoordinator(PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
-                                         clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel))
+        var config = PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
+                                   clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel)
+        #if ORCH_DEV_SANDBOX
+        config.devSandboxEnabler = DevSandboxLaneEnabler()
+        #endif
+        return PairingCoordinator(config)
     }
 
     /// The workspaces `boot` rebuilt (handed over once).
@@ -285,7 +380,40 @@ final class LiveRuntime: RealmRuntime {
     }
 
     /// Push material for this realm, written through the realm's fence (a successor realm reuses the ids). Not used while `push` is off.
-    func makePushSink() -> VaultPushSink { VaultPushSink(vault: push.scoped(to: .live, fence: context.writeFence)) }
+    func makePushSink() -> VaultPushSink? { VaultPushSink(vault: push.scoped(to: .live, fence: context.writeFence)) }
+
+    /// The owed half of a Leave: the workspace's session is gone, the realm's device key is not (it goes with Leave Live or Reset, which
+    /// unregister before they wipe). `registration_id: null` needs no membership, so it works after the host removed this device.
+    func unregisterPush(workspace: ID16) async throws {
+        // The same classifier as Leave (`PushRegistrationCoordinator.removal(for:)`): only a definite answer is done, everything else stays owed.
+        try Self.requireDone(await unregisterPushOutcome(workspace: workspace))
+    }
+
+    static func requireDone(_ outcome: PushRegistrationOutcome) throws {
+        if PushRegistrationCoordinator.removal(for: outcome) == .owed { throw LiveError.pushCleanupFailed(describe(outcome)) }
+    }
+
+    private static func describe(_ outcome: PushRegistrationOutcome) -> String {
+        switch outcome {
+        case .failed(let why), .refused(let why): why
+        case .rateLimited: "rate_limited"
+        case .registered: "unexpected_registered"
+        case .removed, .pushOff: "none"
+        }
+    }
+
+    func unregisterPushOutcome(workspace: ID16) async -> PushRegistrationOutcome {
+        do {
+            try checkCurrent()
+            let identity = try context.deviceIdentity(custody: custody, createIfMissing: false)
+            return await PushService.unregisterAll(workspace: workspace, identity: identity, transport: transport)
+        } catch { return .failed("\(error)") }
+    }
+
+    func beginWipe(workspace: ID16, generation: Int64) async throws {
+        guard let index else { throw LiveError.notBooted }
+        try await LocalWipe(index: index, hooks: storage.wipeHooks()).begin(ws: workspace.hex, generation: generation)
+    }
 
     /// Completes a Live wipe that an earlier launch started and did not finish. No runtime is built: the wipe works from the layout and
     /// the vaults alone.
@@ -295,6 +423,8 @@ final class LiveRuntime: RealmRuntime {
 }
 
 extension RealmCapabilities {
-    /// Live starts with Drop, share, push and Demo controls off (docs/live-mode.md).
-    static let live = RealmCapabilities(drop: false, share: false, push: false, demoControls: false)
+    /// Live: Drop, share and Demo controls off; push and writes on (C2b increment 4; push since B4, per relay: a 404 from the relay marks push
+    /// unavailable for it and the app asks again at most every 15 minutes). That is only the capability: a Live write also needs a
+    /// Secure Enclave policy and the host's own `whoami.relay` signal (op at version 1 and `r6_ready`), checked per workspace (docs/live-mode.md).
+    static let live = RealmCapabilities(drop: false, share: false, push: true, demoControls: false, writes: true)
 }

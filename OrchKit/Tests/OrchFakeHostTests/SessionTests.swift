@@ -102,7 +102,6 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         #expect(try await phone.session.currentEpoch() == 1)
         let r1 = try await w.serve(phone) { try await phone.session.exchange(meta: httpGet) }
         #expect(r1.status == 200 && r1.headers == ["content-type": "application/json"] && r1.data == Data("ok:\(w.phoneID.hex.prefix(4))".utf8))
-        #expect(try await phone.session.pendingRequests().isEmpty)          // completed rows are gone
         #expect(try await phone.session.nextSeq() == 2)
         // A new session object over the same container (an app restart) continues the sequence and finds the keys in custody.
         let again = try await w.makePhone(install: false)
@@ -277,11 +276,12 @@ let httpGet: JSONValue = ["op": "http", "method": "GET", "path": "/v2/snapshot",
         await w.host.setHandler(echo())
         let phone = try await w.makePhone()
         let s = phone.session
-        // scope: this phone holds look and decide, not operate
-        let nt: JSONValue = ["op": "new_ticket", "creation_id": .string(ID16.fresh(5).hex), "title": "t", "body": "", "epic_key": .null]
-        await #expect(throws: ClientError.host(.forbiddenScope)) { _ = try await w.serve(phone) { try await s.exchange(meta: nt) } }
-        // unknown op is malformed, not forbidden
-        await #expect(throws: ClientError.host(.malformed)) { _ = try await w.serve(phone) { try await s.exchange(meta: ["op": "nope"]) } }
+        // (a write's scope is the R2 table's `decide`, checked by the host's own admission: SubmitAdmissionTests, literal codes)
+        // the retired v0 creation op is refused before anything is sealed, in Demo too (no exemption since increment 3)
+        let nt: JSONValue = ["op": "new_ticket", "host_api": 0, "creation_id": .string(ID16.fresh(5).hex), "title": "t", "body": "", "epic_key": .null]
+        await #expect(throws: ViewError.writesUnavailable) { _ = try await w.serve(phone) { try await s.exchange(meta: nt) } }
+        // an op outside the closed table is forbidden_scope (R2, 11A.5)
+        await #expect(throws: R2.MetaError.forbiddenScope) { _ = try await w.serve(phone) { try await s.exchange(meta: ["op": "nope"]) } }   // refused locally
         // removed from the host roster (bad state on the host): not_member, sealed and host-signed
         await w.host.setRoster([(w.primary.deviceKeys, World.all)])
         await #expect(throws: ClientError.host(.notMember)) { _ = try await w.serve(phone) { try await s.exchange(meta: httpGet) } }

@@ -1,3 +1,5 @@
+> **Superseded (15 Oct 2026) by [host-api-v1.md](host-api-v1.md).** The phone no longer calls `/v2/snapshot`, `/v2/questions/{id}`, `/v2/tickets/{key}` or the bridge `http`, `decision` and `new_ticket` ops: it reads through the core ops over column R (host section 11A.5, orch-52's decision). The `decision` and `new_ticket` paths below still run in Demo until C2b replaces them with `relay.submit`. Kept for the history of the prototype and for the bridge-level tests that still use it as a vehicle.
+
 # orch mobile host API v0
 
 Status: provisional, 10 October 2026. This is an implementation contract for OrchClient and
@@ -179,7 +181,8 @@ handler still runs gets no interim answer. The phone (`WorkspaceSession`):
 - after 409 `retry_exhausted` keeps polling while the relay retains a copy, then marks the attempt `uncertain`
   together with an `exhausted` marker (one transaction) and throws `SessionError.retryExhausted`; nothing
   is re-sent automatically. Such a decision is `needsRetry` (`DecisionOutcome`/`DecisionState`): automatic
-  reconciliation only reads the question; `retry(decisionID:)` ("Send again") is the explicit retry;
+  reconciliation only reads the question; `retry(decisionID:)` ("Send again") was the explicit retry (v0 only:
+  removed with the decision path in C2b, where an answer's `retry_exhausted` is settled by `outcome.get`);
 - on 409 `stale_epoch` never raises the epoch from the hint: it refetches the SIGNED grants and member
   list (only hints count: at most 3 starts per sliding 60 s, then 20/40/60 s, reset after 120 s without a
   hint or on a newer signed epoch; `EpochRefetchLimiter`, `SessionError.epochRefetchDeferred`). If the
@@ -462,7 +465,7 @@ Authenticated read/write scope, recipients and expiry gate access; bad eligibili
 Host-only claim uses existing `POST /drop/{id}/claim` (§10.5), never a phone-generated WSK signature.
 Explicit inbox claim uses bridge meta `{"op":"drop_claim","object_id":"$id","version":1}` with empty data and **operate** scope. It returns status 200 and `{}` after the host's WSK-signed §10.5 claim succeeds. Phones never sign claims. Download refuses an unclaimed inbox (`unavailableKey`); wraps read-back includes `claimed_by` (workspace ID or null).
 Old objects use exact `drop_rewrap` (§7.5), requiring look scope. It refuses an unclaimed inbox; an already-claimed inbox receives a current-WK wrap through ordinary rewrap publication, preserving claim ownership. No historical WK grant is issued to a new device.
-Send/recovery require signed current membership with operate scope and matching epoch grants. An uncommitted stale-epoch upload is resealed with a fresh DEK only after read-back confirms an empty slot. Recovery returns per-upload outcomes and persists terminal conflicts/rejections; retry/discard are explicit.
+Send/recovery require signed current membership with operate scope and matching epoch grants. An uncommitted stale-epoch upload keeps its sealed descriptor and blob: its `wk` wrap (and, after a 409 `bad_wxk_version`, its `wxk` wrap) is re-wrapped under the current epoch with the same DEK, only after read-back confirms an empty slot (never resealed). The upload frame is `ODU2` (protocol 19.9). Recovery returns per-upload outcomes and persists terminal conflicts/rejections; retry/discard are explicit.
 `downloadVerified` exposes authenticated name, MIME, plaintext size and transcript with the plaintext URL through `DropDownload`; keys remain private.
 Native compose chooses destination first, maximum five attachments/25 MiB total plaintext, default seven-day
 expiry. Notes/URLs are immutable file content with suitable MIME; URLs are text, never fetched.

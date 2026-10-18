@@ -67,6 +67,14 @@ public enum PushFixtures {
         return try! JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys])
     }
 
+    /// The APNs body exactly as the relay serialises it (protocol-v2 section 19.10): constant alert text, `mutable-content`, and `o` as a
+    /// JSON string; nothing else.
+    public static func relayBody(outer: String) -> Data {
+        let o = try! JSONSerialization.data(withJSONObject: [outer], options: [])
+        let quoted = String(decoding: o.dropFirst().dropLast(), as: UTF8.self)
+        return Data(("{\"aps\":{\"alert\":{\"title\":\"orch\",\"body\":\"New activity in orch\"},\"mutable-content\":1},\"o\":" + quoted + "}").utf8)
+    }
+
     public struct Fixture: Sendable {
         public let name: String
         public let apns: Data

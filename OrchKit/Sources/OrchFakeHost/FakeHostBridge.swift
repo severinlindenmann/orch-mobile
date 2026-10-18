@@ -14,6 +14,8 @@ public struct HostRequest: Sendable {
 
 public enum HostReply: Sendable {
     case response(status: Int, headers: [String: String], data: Data)
+    /// An R2 success answer: `cj(Result)`, sealed with first-chunk meta exactly `{"status":"ok"}` (11A.5).
+    case r2(Data)
     case refuse(HostRefusal)
 }
 
@@ -264,6 +266,11 @@ extension FakeHost {
             running.insert(h.rid)
             let reply = await run(a)
             running.remove(h.rid)
+            // Demo/test control: the write ran and its answer is kept (a same-rid resend replays it), but this copy is not posted
+            if ["answer", "new_ticket"].contains(a.meta.object?["op"]?.string ?? ""), viewState?.writeControls.loseNextResponse == true {
+                viewState!.writeControls.loseNextResponse = false
+                viewState!.lostRids.insert(h.rid)
+            }
             // A non-stream handler may finish while grants are suspended, with epoch and membership still unchanged.
             // Refuse immediately; streams wait for their terminal stale_epoch chunk and revocation waits for its own rotation.
             if rotationRequired && !isRevocation && !h.flagSet.contains(.stream) {
@@ -280,6 +287,10 @@ extension FakeHost {
             case .refuse(let r):
                 let chunks = (try? respond(to: h, meta: r.meta, data: Data(), refusal: true)) ?? []
                 core.complete(rid: h.rid, with: .refusal(r))
+                return chunks
+            case .r2(let data):
+                guard let chunks = try? respond(to: h, meta: R2.okMeta, data: data, refusal: false) else { return [] }
+                core.complete(rid: h.rid, with: .stored(chunks))
                 return chunks
             case .response(let status, let headers, let data):
                 let meta: JSONValue = ["status": .int(Int64(status)), "headers": .object(headers.mapValues { .string($0) })]
@@ -301,15 +312,14 @@ extension FakeHost {
     private func requiredScope(_ op: String, meta: JSONValue) -> String?? {
         switch op {
         case "http", "drop_rewrap": return .some("look")
-        case "decision": return .some("decide")
-        case "new_ticket", "member_remove", "drop_claim": return .some("operate")
+        case "member_remove", "drop_claim": return .some("operate")
         case "revocation": return .some(nil)           // authority is PK's signature, not a scope
-        default: return nil                            // unknown op
+        default: return R2.allOps[op] != nil ? .some(nil) : nil     // an R2 op checks its own scope in `handleView`; anything else is unknown
         }
     }
 
     private func run(_ a: HostAccepted) async -> HostReply {
-        guard let op = a.meta.object?["op"]?.string, let need = requiredScope(op, meta: a.meta) else { return .refuse(.malformed) }
+        guard let op = a.meta.object?["op"]?.string, let need = requiredScope(op, meta: a.meta) else { return .refuse(.forbiddenScope) }
         if let need, !a.scopes.contains(need) { return .refuse(.forbiddenScope) }
         if op == "revocation" { return await applyRevocation(a) }
         let request = HostRequest(device: a.header.device, scopes: a.scopes, meta: a.meta, data: a.data, epoch: a.header.epoch)
@@ -411,7 +421,8 @@ extension FakeHost {
             // `process` substitutes them only when it answers a known request again, after the §8.6 device checks.
             let answerKey = SentKey(rid: item.rid, request: RidStore.digest(item.envelope))
             if sentAnswers[answerKey] == nil, !chunks.isEmpty { sentAnswers[answerKey] = (chunks, now) }
-            for c in chunks {
+            let lost = viewState?.lostRids.remove(item.rid) != nil
+            for c in chunks where !lost {
                 let r = try await postBridgeChunk(c, rid: item.rid, relay: relay, session: session)
                 guard r.status == 409, case .relay(let refusal) = HostAPI.failure(of: r) else { _ = try HostAPI.expect(r, status: 202); continue }
                 let flags = (try? Bridge.Parts(envelope: c).header.flags) ?? 0

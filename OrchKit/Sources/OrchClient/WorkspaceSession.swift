@@ -30,6 +30,13 @@ public enum SessionError: Error, Equatable, Sendable {
     /// The relay refused a new rid with its unsigned `stale_epoch` hint (P3-D8) and the refetch of the signed list and grants is
     /// rate limited (at most 3 per minute, then 20, 40, 60 s). The request was not queued; it stays pending.
     case epochRefetchDeferred(retryAfterMs: Int64)
+    /// H12d (O3): this build's reader level is below the highest this device declared for the workspace. "Update orch to open this workspace".
+    case readerDowngrade
+    /// H12d: the reader marker exists but cannot be decoded; the workspace is not opened. (A locked or unavailable vault is not this: it is
+    /// `ReaderStoreError.locked` / `.unavailable`, thrown for the caller to retry.)
+    case readerStateUnreadable
+    /// H12d (O5): a new build must `reader.declare` before any other op (enforced while `blocksUntilDeclared` is on; paired sessions send `rd` when they hold a declaration instead).
+    case readerDeclarationRequired
     /// The relay refused a new rid with its unsigned `stale_epoch` hint, but the signed member list and grants do not (yet) confirm a
     /// newer epoch. Nothing was queued; the request stays pending until the signed list arrives. `hint` is unsigned data only.
     case awaitingSignedEpoch(hint: UInt32?)
@@ -40,6 +47,8 @@ public struct BridgeResponse: Equatable, Sendable {
     public let status: Int
     public let headers: [String: String]
     public let data: Data
+    /// The answer carried the R2 framing (first-chunk meta exactly `{"status":"ok"}`), not a v0 `{status, headers}`.
+    public let r2: Bool
 }
 
 public struct PendingRequestInfo: Equatable, Sendable {
@@ -82,16 +91,41 @@ public struct WorkspaceSessionConfig: Sendable {
     /// Seconds (1...25, section 19) a bridge poll asks the relay to hold the request open. nil (the default, and what the in-process
     /// Demo relay gets) sends no `wait` and polls every `pollInterval`; a real relay should get a long poll instead of 2 requests/s.
     public var longPollSeconds: Int?
+    /// H12d: the running build's runtime KAT result and identity.
+    public var reader: ReaderRuntime
+    /// R2 (11A.5): the request meta's `rd` field. On for paired sessions (Live and Demo). While false no request carries `rd` (the injection
+    /// point is `prepare`, via `ReaderRD.inject`).
+    public var sendsReaderDigest: Bool
+    /// O5: with `rd` on, a new build must have declared before any op (`readerDeclarationRequired`). Paired sessions turn this off: a session
+    /// sends `rd` when it holds a declaration and does not wait for one (a host with `required_reader` 0 serves it); one that requires readers
+    /// answers a sealed reader refusal, which is surfaced, and `declaration_unknown` triggers a re-declare (`reader.declare`, a column-R read).
+    public var blocksUntilDeclared: Bool
+    /// Live: every request must be an op of the closed R2 table (`R2.checkMeta`, run in `prepare`, the one choke point). The interim v0
+    /// `decision` and `new_ticket` metas (FakeHost only, until C2b's `relay.submit`) are refused locally, before anything is signed or sealed.
+    public var enforcesOpTable: Bool
+    /// Where `rd` goes in the request meta (protocol 8.6: `metaField`). See `ReaderRD`.
+    public var readerDigestPlacement: ReaderRD.Placement
+    /// C2b: the Demo environment's permission to sign `passphrase` person events (orch-52 Q2), bound to its generation AND to the one
+    /// in-process transport it was minted with. nil everywhere else (Live derives its policy from Secure Enclave custody alone).
+    public var processLocalWriteGrant: ProcessLocalWriteGrant?
+    #if DEBUG && targetEnvironment(simulator)
+    /// The Simulator dev-sandbox lane's enabler (`DevSandboxLane.swift`): minted by the `OrchDevSandbox` App target only; nil everywhere else.
+    public var devSandboxEnabler: DevSandboxLaneEnabler?
+    #endif
 
     public init(context: RealmContext, workspace: ID16, generation: Int64, identity: DeviceIdentity, wsk: SigningPublicKey,
                 container: WorkspaceContainer, vault: RealmVault, transport: any RelayTransport, clock: any Clock<Duration>,
                 wall: any WallClock, entropy: any Entropy = SystemEntropy(), pollInterval: Duration = .milliseconds(500),
-                responseTimeout: Duration = .seconds(30), longPollSeconds: Int? = nil) {
+                responseTimeout: Duration = .seconds(30), longPollSeconds: Int? = nil,
+                reader: ReaderRuntime = .production, sendsReaderDigest: Bool = false, blocksUntilDeclared: Bool = true, enforcesOpTable: Bool = false,
+                readerDigestPlacement: ReaderRD.Placement = .metaField, processLocalWriteGrant: ProcessLocalWriteGrant? = nil) {
         self.context = context; self.workspace = workspace; self.generation = generation
         self.deviceID = Identifiers.deviceID(identity.publicKeys.sig); self.identity = identity; self.wsk = wsk
         self.container = container; self.vault = vault; self.transport = transport; self.clock = clock; self.wall = wall
         self.entropy = entropy; self.pollInterval = pollInterval; self.responseTimeout = responseTimeout
         self.longPollSeconds = longPollSeconds.map { min(max($0, 1), 25) }
+        self.reader = reader; self.sendsReaderDigest = sendsReaderDigest; self.blocksUntilDeclared = blocksUntilDeclared; self.enforcesOpTable = enforcesOpTable; self.readerDigestPlacement = readerDigestPlacement
+        self.processLocalWriteGrant = processLocalWriteGrant
     }
 }
 
@@ -99,22 +133,61 @@ public struct WorkspaceSessionConfig: Sendable {
 /// envelopes, epochs, clock offset and polling. Screens never see it: sending and signing are `package`, and the request
 /// is durable before it is sent (a single synchronous transaction allocates the seq and stores the sealed envelope).
 public actor WorkspaceSession: RealmParticipant {
-    private var reviews: [UUID: QuestionReview] = [:]
-    private var reviewLifecycle: UInt64 = 0
-    private var preparingDecisions: Set<ID16> = []
+    var reviews: [UUID: QuestionReview] = [:]
+    /// Issued creation reviews (C2b increment 3), consumed by `create`; dropped with the question reviews.
+    var creationReviews: [UUID: CreationReview] = [:]
+    /// B10: issued gate-decision reviews, consumed by `decideGate`; dropped with the others.
+    var gateReviews: [UUID: GateReviewSnapshot] = [:]
+    var reviewLifecycle: UInt64 = 0
     private var viewsStarted = false
     /// Set by realm shutdown: nothing is restarted afterwards (no poller, no recovery).
-    private var closed = false
-    private var decisionDrivers: [ID16: Task<DecisionOutcome, Error>] = [:]
+    var closed = false
+    /// C2b: what this session may sign person events as (nil: no writes at all). Derived once, from custody provenance, the realm and the
+    /// Demo grant (`PersonEventPolicy.derive`); callers never pass one.
+    let policy: PersonEventPolicy?
+    /// One driver per review (answer, settle, recovery all join it).
+    var reviewDrivers: [String: Task<WriteOutcome, Error>] = [:]
+    /// The C2b lifecycle invariant's one enforcement point (see `LifecycleFence`): its epoch, its flags and the per-review eligibility
+    /// tokens. Invalidations reach it synchronously, also from outside the actor.
+    nonisolated let lifecycleFence: LifecycleFence
+    /// Monotonic age of attempts signed by this process (the window's third term); absent after a relaunch (counts 0).
+    var attemptMonotonic: [String: () -> Duration] = [:]
+    /// Pending settlement retries (10 s, 60 s, 300 s), per review.
+    var settleRetries: [String: Task<Void, Never>] = [:]
+    var settleStage: [String: Int] = [:]
+    var writeRecovery: Task<Void, Never>?
+    /// What the host's column-R `whoami.relay` said last (nil: unknown, so no Live write). In memory only, never persisted: refreshed at
+    /// `startViews`, on foreground and on an epoch change, and cleared on background, a failed read or an epoch change.
+    var hostSupport: HostWriteSupport?
+    private var hostSupportTask: Task<Void, Never>?
+    private var hostSupportGen = 0
     private var snapshotTask: Task<WorkspaceSnapshot, Error>?
     private var subscribers: [UUID: AsyncStream<WorkspaceEvent>.Continuation] = [:]
     /// Snapshots yielded to subscribers; lets a test harness hold its fake clock while one is unconsumed (`World.serve`).
     package private(set) var snapshotsEmitted = 0
     private var poller: Task<Void, Never>?
     private var hintRefresh: Task<Void, Never>?
-    private var foreground = true
-    private var lastRevision: Int64?
+    var foreground = true
+    private var lastCursor: String?
+    private var snapshotRevision: Int64 = 0
     private var cachedSnapshot: WorkspaceSnapshot?
+    private var questionIndex: [ID16: QuestionLocator] = [:]
+    private var ticketCache: [String: (headSeq: Int64?, cursor: String, get: TicketGet)] = [:]
+    private var deviceLabels: [String: String] = [:]
+    private var personNames: [String: String] = [:]
+    /// The epoch the identity-derived caches (labels, question index, ticket reads) were filled under.
+    private var cacheEpoch: UInt32?
+    private var lastRedeclare: Duration?
+    func redeclareAllowed() -> Bool {
+        guard let last = lastRedeclare else { return true }
+        return sessionAge() - last >= Self.redeclareMinInterval
+    }
+    func noteRedeclare() { lastRedeclare = sessionAge() }
+    /// Drops the attempt rows of one logical READ (never a write's: a write row names its attempt and is deleted only with its
+    /// terminal evidence).
+    func discardRead(logical: ID16) async {
+        _ = try? await cfg.container.database().execute("DELETE FROM bridge_requests WHERE logical=? AND attempt IS NULL", [.text(logical.hex)])
+    }
     private var connectionState: ConnectionState = .offline
     private var hintIdentity: UUID?
     private var recovery: Task<Void, Never>?
@@ -127,6 +200,7 @@ public actor WorkspaceSession: RealmParticipant {
     private var absentKeys: Set<UInt32> = []
     static let maxAbsentKeys = 64
     private var relay: (session: RelaySession, expiresMs: Int64)?
+    private var epochObserver: (@Sendable (UInt32) -> Void)?
     /// A bounded number of re-sends of one logical request within a single call (stale epoch, offset, sequence).
     static let maxAttempts = 4
     static let hostWindowMs: Int64 = 900_000
@@ -149,6 +223,11 @@ public actor WorkspaceSession: RealmParticipant {
     /// Tests only: injects failures inside atomic decision preparation and attempt replacement.
     package var crashHook: (@Sendable (String) throws -> Void)?
     package func setCrashHook(_ h: (@Sendable (String) throws -> Void)?) { crashHook = h }
+    #if DEBUG
+    /// Tests only: runs (and is awaited) right before a write's signing transaction, after `prepare`'s own suspensions.
+    var beforeWriteTransaction: (@Sendable () async -> Void)?
+    package func setBeforeWriteTransaction(_ h: (@Sendable () async -> Void)?) { beforeWriteTransaction = h }
+    #endif
     static let maxResponseBytes = 8 << 20
 
     public init(_ config: WorkspaceSessionConfig) async throws {
@@ -166,8 +245,20 @@ public actor WorkspaceSession: RealmParticipant {
         let fence = c.context.generation
         c.identity = c.context.leased(c.identity)
         c.vault = try c.vault.fenced(by: fence)
+        // H12d (O3): a build below the highest level declared for this workspace never opens it; an unreadable marker fails closed
+        do { guard ReaderGate.opens(try ReaderStore.load(c.vault, ws: c.workspace), runningLevel: c.reader.level) else { throw SessionError.readerDowngrade } }
+        catch ReaderStoreError.corrupt { throw SessionError.readerStateUnreadable }
         try c.container.bind(fence: fence)
+        // MUST 2 (Opus, increment 1): a Demo grant is good only for the transport instance it was minted with, in this lifetime.
+        if let g = c.processLocalWriteGrant, !g.admits(context: c.context, transport: c.transport) { throw RealmViolation.wrongTransport }
+        #if DEBUG && targetEnvironment(simulator)
+        policy = PersonEventPolicy.derive(identity: c.identity, context: c.context, grant: c.processLocalWriteGrant, transport: c.transport,
+                                          enabler: c.devSandboxEnabler, reader: c.reader)
+        #else
+        policy = PersonEventPolicy.derive(identity: c.identity, context: c.context, grant: c.processLocalWriteGrant, transport: c.transport)
+        #endif
         cfg = c
+        lifecycleFence = LifecycleFence(generation: fence)
         sessionAge = Self.marker(c.clock)
         guard fence.register(self) else { throw RealmViolation.staleGeneration }
     }
@@ -176,14 +267,20 @@ public actor WorkspaceSession: RealmParticipant {
     public nonisolated func realmShutdown() async { await closeForShutdown() }
 
     private func closeForShutdown() async {
+        lifecycleFence.invalidate(.realmClosed)
         closed = true
-        reviewLifecycle &+= 1; reviews.removeAll()
-        let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery].compactMap { $0 }
+        dropReviews()
+        hostSupportGen &+= 1; hostSupport = nil
+        let tasks: [Task<Void, Never>] = [poller, hintRefresh, recovery, hostSupportTask].compactMap { $0 }
+        hostSupportTask?.cancel(); hostSupportTask = nil
         poller?.cancel(); poller = nil; hintRefresh?.cancel(); hintRefresh = nil; recovery?.cancel(); recovery = nil
         snapshotTask?.cancel()
-        let drivers = Array(inflight.values), decisions = Array(decisionDrivers.values)
+        let drivers = Array(inflight.values), decisions = Array(reviewDrivers.values)
         cancelAll()
         for t in decisions { t.cancel() }
+        for t in settleRetries.values { t.cancel() }
+        settleRetries.removeAll()
+        writeRecovery?.cancel(); writeRecovery = nil
         for c in subscribers.values { c.yield(.removed); c.finish() }
         subscribers.removeAll()
         for t in tasks { await t.value }
@@ -203,6 +300,8 @@ public actor WorkspaceSession: RealmParticipant {
             try await cfg.container.index.requireNotRemoved(ws: cfg.workspace.hex, generation: cfg.generation)
             _ = try await cfg.container.database()
         } catch {
+            // Any failure ends the lifecycle's tickets: nothing is signed or first sent on a generation that could not be confirmed.
+            lifecycleFence.invalidate(.generationEnded)
             // Availability failures are not authoritative evidence of removal.
             switch error {
             case StoreError.workspaceRemoved, RealmViolation.staleGeneration: break
@@ -328,8 +427,19 @@ public actor WorkspaceSession: RealmParticipant {
     /// Stores `WK_e` (vault first, then the high-water mark, so the mark never runs ahead of its key) and makes `e` current.
     package func install(epoch: UInt32, key: SymmetricKey) async throws {
         try await store(epoch: epoch, key: key)
-        try await cfg.container.raiseEpochHighWater(Int64(epoch))
+        try await raiseEpoch(epoch)
     }
+
+    /// Raises the confirmed epoch and tells the observer when it actually moved up (push material follows the epoch).
+    private func raiseEpoch(_ e: UInt32) async throws {
+        let before = try await currentEpoch()
+        try await cfg.container.raiseEpochHighWater(Int64(e))
+        if e > before { epochObserver?(e); refreshHostSupport() }
+    }
+
+    /// Called (inside the session's isolation, so it must only hand off) after this device's confirmed epoch rose.
+    /// The App republishes push material from it; the observer holds no key.
+    public func setEpochObserver(_ f: (@Sendable (UInt32) -> Void)?) { epochObserver = f }
 
     package func install(_ grant: VerifiedWKGrant) async throws { try await install(epoch: grant.epoch, key: grant.wk) }
 
@@ -370,7 +480,7 @@ public actor WorkspaceSession: RealmParticipant {
         for e in stored.sorted(by: >) where Int64(e) <= head {
             guard let c = try await cfg.container.wkCommit(epoch: Int64(e)), let k = try? cfg.vault.get(ws: cfg.workspace.hex, purpose: wkPurpose(e)),
                   WKCommit.matches(c, workspace: cfg.workspace, epoch: e, wk: SymmetricKey(data: k)) else { continue }
-            try await cfg.container.raiseEpochHighWater(Int64(e))
+            try await raiseEpoch(e)
             break
         }
         let now = try await currentEpoch()
@@ -439,7 +549,7 @@ public actor WorkspaceSession: RealmParticipant {
 
     // MARK: durable requests
 
-    private struct Row {
+    struct Row {
         let rid: ID16, logical: ID16
         let seq: UInt64
         let epoch: UInt32
@@ -448,19 +558,21 @@ public actor WorkspaceSession: RealmParticipant {
         let offsetAdopted: Bool
         let sentMs: Int64, createdMs: Int64
         let uncertain: Bool
+        /// The person-event attempt this row carries (`pe_attempts.idem`); nil for every read.
+        var attempt: String? = nil
     }
 
-    private func row(from r: SQLRow) -> Row? {
+    func row(from r: SQLRow) -> Row? {
         guard let rid = r.text("rid").flatMap({ ID16(hex: $0) }), let logical = r.text("logical").flatMap({ ID16(hex: $0) }),
               let seq = r.int("seq"), let epoch = r.int("epoch"), let env = r.blob("envelope"), let pt = r.blob("plaintext"),
               let stream = r.int("stream"), let off = r.int("offset_adopted"), let sent = r.int("sent_ms"), let created = r.int("created_ms"),
               let state = r.text("state")
         else { return nil }
         return Row(rid: rid, logical: logical, seq: UInt64(seq), epoch: UInt32(epoch), envelope: env, plaintext: pt, stream: stream != 0,
-                   offsetAdopted: off != 0, sentMs: sent, createdMs: created, uncertain: state == "uncertain")
+                   offsetAdopted: off != 0, sentMs: sent, createdMs: created, uncertain: state == "uncertain", attempt: r.text("attempt"))
     }
 
-    private func loadRow(_ rid: ID16) async throws -> Row? {
+    func loadRow(_ rid: ID16) async throws -> Row? {
         let rows = try await cfg.container.database().query("SELECT * FROM bridge_requests WHERE rid=?", [.text(rid.hex)])
         return rows.first.flatMap(row(from:))
     }
@@ -491,7 +603,6 @@ public actor WorkspaceSession: RealmParticipant {
         try await cfg.container.database().transaction { tx in
             try tx.execute("UPDATE bridge_requests SET state='uncertain' WHERE rid=?", [.text(row.rid.hex)])
             try tx.execute("INSERT INTO meta(key,value) VALUES(?,1) ON CONFLICT(key) DO NOTHING", [.text(Self.exhaustedKey(row.logical))])
-            try tx.execute("UPDATE decisions SET state='exhausted' WHERE id=? AND state<>'resolved'", [.text(row.logical.hex)])
         }
     }
 
@@ -518,34 +629,75 @@ public actor WorkspaceSession: RealmParticipant {
     /// sent until this returns, and a crash after it leaves a record that can be re-sent unchanged. With `replacing`, the
     /// refused attempt is deleted in the SAME transaction (and only if it is still there): the logical request is never
     /// without a durable attempt, and two drivers cannot both replace one row.
-    private func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
-                         clearExhausted: Bool = false, reuseRid: Bool = false, decision: (QuestionReview, String)? = nil) async throws -> Row {
-        let lifecycle = reviewLifecycle
+    ///
+    /// C2b write gate, construction side (plan 3.3): a plaintext whose meta is an R2 WRITE is accepted only with an attempt: `write` builds,
+    /// signs and inserts a NEW attempt inside this transaction; with `replacing`, the attempt is read from the OLD row inside the
+    /// transaction (the caller never supplies it) and re-validated there: still `signed`/`sent`, the review's current attempt, the review
+    /// active, the framed meta minus `rd` byte-equal to `cj(R2.writeMeta(stored event))`, and the window holding. Any other write meta is
+    /// `writesUnavailable`, in Live and Demo alike.
+    func prepare(logical: ID16, plaintext: Data, minSeq: UInt64 = 0, replacing old: ID16? = nil, reconciled: Bool = false,
+                 clearExhausted: Bool = false, reuseRid: Bool = false, write: WriteBuild? = nil) async throws -> Row {
         try Task.checkCancellation()
         try await ensureCurrent()
+        // H12d: `reader.declare` is exempt from `rd` (it is how a device gets one); every other op carries it while `sendsReaderDigest` is on
+        let exempt = (try? Bridge.unframe(plaintext).meta.object?["op"]?.string) == "reader.declare"
+        // the attempt a replaced write row names: read here for its window clock, and again inside the transaction
+        let oldAttempt: String? = old == nil ? nil : try await loadRow(old!)?.attempt
+        if write == nil {
+            let meta: JSONValue?
+            if cfg.enforcesOpTable { meta = try Bridge.unframe(plaintext).meta }          // Live: a plaintext that does not unframe is refused, never passed
+            else { meta = try? Bridge.unframe(plaintext).meta }
+            if let meta {
+                let r2Shaped = (meta.object.map { Set($0.keys) } ?? []).isSubset(of: R2.metaKeys)
+                if cfg.enforcesOpTable || r2Shaped {
+                    let checked = try R2.checkMeta(meta)
+                    // the closed op table's ONE write rule: a write travels only with its durable attempt
+                    if checked.spec.kind == .write, oldAttempt == nil { throw ViewError.writesUnavailable }
+                }
+            }
+        }
+        let rd = try readerDigestForRequest(exempt: exempt)      // also the per-request marker check, for every op
+        // a NEW rid replacing a refused attempt carries the current declaration's `rd`; a same-rid re-seal keeps the first
+        let freshRD = old != nil && !reuseRid
         guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
         let (epoch, wk) = try await sealingKeyRecovering()
         let offset = try await clockOffsetMs()
         let now = cfg.wall.nowMs
+        let clock = WriteClock(wallMs: now, offsetMs: offset, monoMs: oldAttempt.map { monotonicMs($0) } ?? 0)
         let (ws, dev, identity, entropy, hook) = (cfg.workspace, cfg.deviceID, cfg.identity, cfg.entropy, crashHook)
+        let placement = cfg.readerDigestPlacement
         // `reuseRid`: the relay refused the old attempt as a NEW rid (unsigned stale_epoch hint); the new seal keeps its rid.
         let rid = reuseRid ? (old ?? entropy.id16()) : entropy.id16(), salt = entropy.bytes(16)
         let db = try await cfg.container.database()
-        if decision != nil { guard foreground, lifecycle == reviewLifecycle else { throw ViewError.offline } }
+        #if DEBUG
+        if write != nil, let h = beforeWriteTransaction { await h() }
+        #endif
         let row = try await db.transaction { tx in
             var plaintext = plaintext
-            if let (review, option) = decision {
-                let op = try Decisions.makeOp(workspace: ws, questionID: review.question.questionID,
-                    contentHash: review.question.contentHash, decisionID: logical,
-                    answer: ["option_id": .string(option)], signer: identity.sig)
-                plaintext = try Bridge.frame(meta: op, data: Data())
-                try tx.execute("INSERT INTO decisions(id,question,option_id,review,operation,dispatched) VALUES(?,?,?,?,?,0)",
-                    [.text(logical.hex), .text(review.question.questionID.hex), .text(option),
-                     .blob(try canonicalJSON(review.question.wire)), .blob(try canonicalJSON(op))])
-                try hook?("decision.inserted")
+            var attempt: String?
+            if let write {
+                let built = try write.body(tx)
+                plaintext = built.plaintext; attempt = built.attempt
             }
-            if let old, try tx.query("SELECT 1 AS x FROM bridge_requests WHERE rid=? AND (state='pending' OR ?=1)", [.text(old.hex), .int(reconciled ? 1 : 0)]).isEmpty {
-                throw SessionError.unknownRequest
+            // H12d: the one injection point of `rd` (protocol 8.6); the size is checked AFTER it
+            plaintext = try ReaderRD.inject(into: plaintext, rd: rd, overwrite: freshRD, placement: placement)
+            guard plaintext.count + Bridge.overhead <= Bridge.maxRequest else { throw SessionError.tooLarge }
+            if let old {
+                guard let o = try tx.query("SELECT state, attempt FROM bridge_requests WHERE rid=?", [.text(old.hex)]).first,
+                      o.text("state") == "pending" || reconciled else { throw SessionError.unknownRequest }
+                if write == nil {
+                    // the attempt is the OLD row's, never the caller's; it must still be the one read before the transaction
+                    guard o.text("attempt") == oldAttempt else { throw WriteGateError.notCurrent }
+                    if let a = oldAttempt {
+                        try Self.revalidate(tx, attempt: a, plaintext: plaintext, clock: clock, workspace: ws)
+                        attempt = a
+                    }
+                }
+            }
+            if attempt != nil {
+                // the host's own meta checks on exactly what is sealed (the `data` argument included: a write carries none)
+                let framed = try Bridge.unframe(plaintext)
+                _ = try R2.checkMeta(framed.meta, data: framed.data)
             }
             var firstCreated = now                       // a same-rid re-seal keeps the first copy's time (the 240 s bound)
             if reuseRid, let old {                       // same key: delete first; a crash anywhere in here rolls both back
@@ -561,9 +713,11 @@ public actor WorkspaceSession: RealmParticipant {
             let h = Bridge.Header(direction: .toHost, workspace: ws, device: dev, rid: rid, seq: seq, tsMs: UInt64(max(ts, 0)), epoch: epoch, salt: salt)
             guard let key = Bridge.channelKey(header: h, wk: wk) else { throw SessionError.noKeyForEpoch(epoch) }
             let env = try Bridge.seal(header: h, channelKey: key, signer: identity.sig, plaintext: plaintext)
-            try tx.execute("INSERT INTO bridge_requests(rid, logical, seq, epoch, envelope, plaintext, stream, offset_adopted, sent_ms, created_ms, state) VALUES(?,?,?,?,?,?,0,0,?,?,'pending')",
-                           [.text(rid.hex), .text(logical.hex), .int(Int64(seq)), .int(Int64(epoch)), .blob(env), .blob(plaintext), .int(now), .int(firstCreated)])
+            try tx.execute("INSERT INTO bridge_requests(rid, logical, seq, epoch, envelope, plaintext, stream, offset_adopted, sent_ms, created_ms, state, attempt) VALUES(?,?,?,?,?,?,0,0,?,?,'pending',?)",
+                           [.text(rid.hex), .text(logical.hex), .int(Int64(seq)), .int(Int64(epoch)), .blob(env), .blob(plaintext), .int(now), .int(firstCreated),
+                            attempt.map { .text($0) } ?? .null])
             try tx.execute("INSERT INTO meta(key,value) VALUES('next_seq', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [.int(Int64(seq) + 1)])
+            if write != nil { try hook?("pe.inserted") }
             if reuseRid { try hook?("replace.inserted") }
             if let old, !reuseRid {
                 try hook?("replace.inserted")
@@ -573,11 +727,12 @@ public actor WorkspaceSession: RealmParticipant {
             // An explicit retry replaces the exhausted attempt and its marker together.
             if clearExhausted { try tx.execute("DELETE FROM meta WHERE key=?", [.text(Self.exhaustedKey(logical))]) }
             return Row(rid: rid, logical: logical, seq: seq, epoch: epoch, envelope: env, plaintext: plaintext, stream: false,
-                       offsetAdopted: false, sentMs: now, createdMs: firstCreated, uncertain: false)
+                       offsetAdopted: false, sentMs: now, createdMs: firstCreated, uncertain: false, attempt: attempt)
         }
         if let old, old != rid { monotonicAge[old] = nil }
         ridLogical[rid] = logical
         if !(reuseRid && monotonicAge[rid] != nil) { monotonicAge[rid] = Self.marker(cfg.clock) }
+        if write != nil, let a = row.attempt { attemptMonotonic[a] = Self.marker(cfg.clock) }
         return row
     }
 
@@ -597,7 +752,7 @@ public actor WorkspaceSession: RealmParticipant {
     package func resolveUncertain(logical: ID16) async throws -> Int {
         try await cfg.container.database().transaction { tx in
             try tx.execute("DELETE FROM meta WHERE key=?", [.text(Self.exhaustedKey(logical))])
-            return try tx.execute("DELETE FROM bridge_requests WHERE logical=? AND state='uncertain'", [.text(logical.hex)])
+            return try tx.execute("DELETE FROM bridge_requests WHERE logical=? AND state='uncertain' AND attempt IS NULL", [.text(logical.hex)])
         }
     }
 
@@ -622,7 +777,11 @@ public actor WorkspaceSession: RealmParticipant {
     }
 
     /// Gives up on a request (the caller decided it no longer matters).
-    package func discard(rid: ID16) async throws { try await deleteRow(rid) }
+    package func discard(rid: ID16) async throws {
+        // a write's row goes only with its attempt's terminal evidence
+        try await cfg.container.database().execute("DELETE FROM bridge_requests WHERE rid=? AND attempt IS NULL", [.text(rid.hex)])
+        monotonicAge[rid] = nil
+    }
 
     // MARK: response validation (protocol 8.8)
 
@@ -690,7 +849,7 @@ public actor WorkspaceSession: RealmParticipant {
 
     /// One driver Task per logical request. The map is read and written without a suspension in between, so two callers can
     /// never both start a driver for the same request.
-    private func runDriver(_ row: Row, isResend: Bool) async throws -> BridgeResponse {
+    func runDriver(_ row: Row, isResend: Bool) async throws -> BridgeResponse {
         let logical = row.logical
         if let t = inflight[logical] { return try await t.value }
         guard !closed else { throw SessionError.staleGeneration }          // closed by realm shutdown: no new drivers
@@ -772,6 +931,9 @@ public actor WorkspaceSession: RealmParticipant {
             case .timeout:
                 switch posted {
                 case .exhausted:
+                    // A write: relay exhaustion says nothing about the host (orch-52 Q5): unknown (B), settled with `outcome.get`, and
+                    // re-sealed (same bytes, new rid) only while the window holds.
+                    if row.attempt != nil { try await markUncertain(row.rid); throw SessionError.uncertain(logical: row.logical) }
                     // Terminal: never reissued under a new rid automatically. Durable `uncertain` keeps the exact bytes for an
                     // explicit, state-checked user retry.
                     try await markExhausted(row); throw SessionError.retryExhausted(logical: row.logical)
@@ -814,7 +976,7 @@ public actor WorkspaceSession: RealmParticipant {
 
     /// The bounded answer to the relay's unsigned `stale_epoch` hint: refetch the signed grants and member list (P3-D8). Returns the
     /// confirmed epoch; never raises it from the hint. A newer confirmed epoch resets the limiter (a relay cannot forge one).
-    private func refetchForEpochHint() async throws -> UInt32 {
+    package func refetchForEpochHint() async throws -> UInt32 {
         let before = try await currentEpoch()          // read before the limiter decides, so no suspension separates admit and fetch
         let now = sessionAge()
         guard epochHintLimiter.admit(at: now) else {
@@ -830,11 +992,9 @@ public actor WorkspaceSession: RealmParticipant {
     /// Tests: the limiter's state.
     package func epochHintLimiterState() -> EpochRefetchLimiter { epochHintLimiter }
 
-    /// Decision attempts stay durable until their validated outcome commits in finishDecision.
+    /// A read's row goes once it is answered. A write's row stays until the transaction that records its attempt's terminal evidence.
     private func retireCompletedAttempt(_ row: Row) async throws {
-        let deleted = try await cfg.container.database().execute(
-            "DELETE FROM bridge_requests WHERE rid=? AND NOT EXISTS (SELECT 1 FROM decisions WHERE id=?)",
-            [.text(row.rid.hex), .text(row.logical.hex)])
+        let deleted = try await cfg.container.database().execute("DELETE FROM bridge_requests WHERE rid=? AND attempt IS NULL", [.text(row.rid.hex)])
         if deleted > 0 { monotonicAge[row.rid] = nil }
     }
 
@@ -842,22 +1002,41 @@ public actor WorkspaceSession: RealmParticipant {
         let route = BridgeRoute(workspaceID: cfg.workspace, requestID: row.rid)
         let reply = try await withRelay { s in
             let db = try await cfg.container.database()
-            let decision = try await db.query("SELECT dispatched FROM decisions WHERE id=?", [.text(row.logical.hex)]).first
-            if decision != nil { guard foreground else { throw ViewError.offline } }
-            // Charge resends too. Mark the dispatch boundary durably before handing bytes to transport.
-            // A crash at this boundary is conservatively an attempted send, never a detached signature.
+            // MUST 1 (Opus, increment 1): the permit follows the row's kind. A write row (it names its attempt) passes the write gate and
+            // gets a permit; a row without an attempt must not carry a write meta at all. No write reaches `bridgePost` with a nil permit.
+            let permit: WritePermit?
+            // the lifecycle ticket of a FIRST dispatch (nil for a resend of a dispatched attempt and for reads)
+            var ticket: LifecycleFence.Ticket?
+            if let attempt = row.attempt {
+                do { (permit, ticket) = try await writeGate(row, attempt: attempt) }
+                catch { noteIfLocked(error); throw error }
+            }
+            else { try refuseUnattachedWrite(row.plaintext); permit = nil }
+            let attempt = row.attempt
+            if attempt != nil { try crashHook?("post.precharge") }
+            // Charge resends too. Mark the dispatch boundary durably before handing bytes to transport. A write's `dispatched` is set
+            // in the same transaction and never falls again (trigger): a crash or cancellation after it is settled, never discarded.
+            let hook = crashHook, fence = lifecycleFence, firstTicket = ticket
             try await db.transaction { tx in
                 try tx.execute("INSERT INTO bridge_charges(rid,created_ms) VALUES(?,?)", [.text(UUID().uuidString), .int(cfg.wall.nowMs)])
-                if decision != nil { try tx.execute("UPDATE decisions SET dispatched=1 WHERE id=?", [.text(row.logical.hex)]) }
-            }
-            try await ensureCurrent()
-            if Task.isCancelled || (decision != nil && !foreground) {
-                if decision?.int("dispatched") == 0 {
-                    try await db.execute("UPDATE decisions SET dispatched=0 WHERE id=?", [.text(row.logical.hex)])
+                if let attempt {
+                    try hook?("post.charging")
+                    // the invariant's check inside the charge transaction, right before `dispatched=1`: a lifecycle that ended in any
+                    // window up to here rolls the charge back and leaves the attempt dispatched=0 (never sent: discarded, `notSent`)
+                    if let firstTicket, !fence.valid(firstTicket) { throw WriteGateError.lifecycleEnded }
+                    let n = try tx.execute("UPDATE pe_attempts SET dispatched=1, state=CASE state WHEN 'signed' THEN 'sent' ELSE state END WHERE idem=? AND state IN ('signed','sent')",
+                                           [.text(attempt)])
+                    guard n == 1 else { throw WriteGateError.notCurrent }
                 }
-                throw CancellationError()
             }
-            return try await cfg.transport.bridgePost(row.envelope, route: route, session: s)
+            if attempt != nil { try crashHook?("post.charged") }
+            try await ensureCurrent()
+            if Task.isCancelled { throw CancellationError() }
+            // the invariant's last check, after the last suspension (`ensureCurrent`): a first dispatch only while the lifecycle is still
+            // the one the gate saw. Failing here leaves the attempt dispatched=1 (charged above): the accepted crash-after-charge case,
+            // settled later, never discarded.
+            if let ticket, !lifecycleFence.valid(ticket) { throw WriteGateError.lifecycleEnded }
+            return try await cfg.transport.bridgePost(row.envelope, route: route, session: s, permit: permit)
         }
         if reply.status == 202 { _ = try HostAPI.expect(reply, status: 202); return .accepted }
         let failure = HostAPI.failure(of: reply)
@@ -877,6 +1056,7 @@ public actor WorkspaceSession: RealmParticipant {
         var progress = Bridge.PendingRequest(next: 0, stream: row.stream, epoch: row.epoch, offsetAdopted: row.offsetAdopted)
         var table: [ID16: Bridge.PendingRequest] = [row.rid: progress]
         var first: (status: Int, headers: [String: String])?
+        var r2Framed = false
         var body = Data()
         var waited = Duration.zero
         var counted = Set<UInt64>()       // one pin failure per chunk, however often a poll shows it again
@@ -936,16 +1116,21 @@ public actor WorkspaceSession: RealmParticipant {
                         return .refusal(refusal, fetchGrants: a.fetchGrants, offsetAdopted: a.offsetMs != nil)
                     }
                     if first == nil {
-                        guard let m = a.meta.object, Set(m.keys) == ["status", "headers"], let st = m["status"]?.int, (100...599).contains(st),
-                              let hs = m["headers"]?.object else { throw SessionError.badResponse }
-                        var headers: [String: String] = [:]
-                        for (k, v) in hs { guard let s = v.string else { throw SessionError.badResponse }; headers[k] = s }
-                        first = (Int(st), headers)
+                        if R2.isOKMeta(a.meta) {
+                            // R2 (host 11A.5): chunk 0 meta exactly {"status":"ok"}, the data across the chunks is cj(Result)
+                            first = (200, [:]); r2Framed = true
+                        } else {
+                            guard let m = a.meta.object, Set(m.keys) == ["status", "headers"], let st = m["status"]?.int, (100...599).contains(st),
+                                  let hs = m["headers"]?.object else { throw SessionError.badResponse }
+                            var headers: [String: String] = [:]
+                            for (k, v) in hs { guard let s = v.string else { throw SessionError.badResponse }; headers[k] = s }
+                            first = (Int(st), headers)
+                        }
                     } else if a.meta.object?.isEmpty != true { throw SessionError.badResponse }
                     body.append(a.data)
                     if body.count > Self.maxResponseBytes { throw SessionError.tooLarge }
                     _ = current
-                    if a.last, let f = first { return .response(BridgeResponse(status: f.status, headers: f.headers, data: body)) }
+                    if a.last, let f = first { return .response(BridgeResponse(status: f.status, headers: f.headers, data: body, r2: r2Framed)) }
                 }
                 progress = table[row.rid] ?? progress
             }
@@ -960,7 +1145,7 @@ public actor WorkspaceSession: RealmParticipant {
     }
 }
 
-private func saturatingAddMs(_ a: Int64, _ b: Int64) -> Int64 {
+func saturatingAddMs(_ a: Int64, _ b: Int64) -> Int64 {
     let (r, o) = a.addingReportingOverflow(b); return o ? (b > 0 ? .max : .min) : r
 }
 
@@ -986,16 +1171,150 @@ extension WorkspaceSession {
         }
         return v
     }
-    private func getView(_ path: String) async throws -> JSONValue {
-        try viewJSON(await exchange(meta: ["op": "http", "method": "GET", "path": .string(path), "headers": [:]]))
+    // MARK: reads over column R (host 11A.5): needs + ticket.query + member.list + workspace.show + ticket.get + activity.list
+
+    /// Where a question lives on the host: its ticket (key for display and as the `ticket.get` ref, uid for what is bound) and its id
+    /// on that ticket (`Q1`).
+    package struct QuestionLocator: Equatable, Sendable { package let key: String, uid: String, number: String }
+
+    private func label(forDevice device: String?, person: String) -> String {
+        if let device, let l = deviceLabels[device] { return l }
+        if let n = personNames[person] { return n }
+        return "Unknown device"
     }
+
+    private func absorb(_ m: MemberListResult) {
+        var devices: [String: String] = [:], people: [String: String] = [:]
+        for member in m.members {
+            people[member.person] = member.name
+            for d in member.devices { devices[d.id] = d.label ?? member.name }
+        }
+        deviceLabels = devices; personNames = people
+    }
+
+    /// Per-snapshot caps (documented in host-api-v1.md): at most `maxTicketPages` pages of `ticket.query`, `maxTicketGets` `ticket.get` reads
+    /// (tickets with open questions first, then the newest answers of the feed), and 50 feed items. Anything beyond is not read, and a
+    /// truncated list says so (`ticketsIncomplete`).
+    static var maxTicketPages: Int { 5 }
+    static var maxTicketGets: Int { 30 }
+
+    /// The questions of one ticket this phone may show, and the ones it cannot (`macOnly`): unreadable entries, a label or hash check that
+    /// fails, and free-text questions (no options: nothing to choose from, C2b). Those are counted, never dropped silently; none is signable.
+    private func questions(of t: TicketGet, askedByNeeds since: [String: Int64], openIn needs: Set<String>) -> (shown: [Question], macOnly: Set<String>) {
+        var out: [Question] = [], mac: Set<String> = []
+        for entry in t.questions {
+            guard case .question(let q) = entry else {
+                if case .unreadable(let id?) = entry, needs.contains(id) { mac.insert(id) }
+                continue
+            }
+            guard q.state != .stale else { continue }
+            if q.state == .open, !needs.contains(q.id) { continue }       // open for someone else: not this person's to answer
+            let created = since[q.id] ?? q.askedAt.flatMap(HostTime.ms) ?? q.answer.flatMap { HostTime.ms($0.at) } ?? 0
+            if let made = try? Question(q, ticketKey: t.key, ticketUID: t.uid, workspace: workspace, createdMs: created,
+                                        deviceLabel: { self.label(forDevice: $0, person: $1) }), !(made.options.isEmpty && made.state == "open") {
+                out.append(made)
+            } else if q.state == .open { mac.insert(q.id) }
+        }
+        return (out, mac)
+    }
+
+    /// Everything derived from host views about who is who (labels, the question index, ticket reads that carry `members_v`) belongs to one
+    /// verified member-list epoch: a new epoch (a rotation, a revocation, a re-pair) drops it, and so does any failed read.
+    private func dropIdentityCaches() {
+        deviceLabels = [:]; personNames = [:]; questionIndex = [:]; ticketCache = [:]; lastCursor = nil
+    }
+    private func checkCacheEpoch() async throws {
+        let e = try await currentEpoch()
+        if cacheEpoch != e { dropIdentityCaches(); cacheEpoch = e }
+    }
+    /// Fail closed, ONCE for every read path (`callRead`'s error exit): after a failed read nothing identity-derived survives. A host reader
+    /// refusal also ends the cached view (it must not keep being served as current) and is announced to subscribers.
+    func noteReadFailure(_ error: Error) {
+        if error is CancellationError { return }
+        dropIdentityCaches()
+        if case ClientError.host(let r) = error, r.isReaderRefusal {
+            cachedSnapshot = nil
+            emit(.readerRefused)
+        }
+    }
+    #if DEBUG
+    package func identityCacheState() -> (epoch: UInt32?, labels: Int, indexed: Int, tickets: Int, cursor: String?) {
+        (cacheEpoch, deviceLabels.count + personNames.count, questionIndex.count, ticketCache.count, lastCursor)
+    }
+    #endif
+
+    private func assembleSnapshot() async throws -> WorkspaceSnapshot {
+        try await checkCacheEpoch()
+        // The activity feed first: its cursor is what the poller compares, and an answer seen here is fetched below.
+        let answered = try await activityList(limit: 50, types: ["question.answered"])
+        let show = try await workspaceShow()
+        let members = try await memberList()
+        absorb(members)
+        let needs = try await needs()
+        var rows: [TicketRow] = [], page: String?, pages = 0, total: Int64 = 0
+        repeat {
+            guard try await readBudgetAvailable() else { throw ViewError.readDeferred }       // never eat the mutation reserve between steps
+            let p = try await ticketQuery(page: page)
+            if pages == 0 { total = p.total }
+            rows += p.rows; page = p.nextPage; pages += 1
+        } while page != nil && pages < Self.maxTicketPages
+        let rowsByKey = Dictionary(rows.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        guard rowsByKey.count == rows.count else { throw ViewError.malformed }
+        let incomplete = page != nil || Int64(rows.count) < total
+        let now = cfg.wall.nowMs
+        var openByTicket: [String: Set<String>] = [:], since: [String: [String: Int64]] = [:], needed: [(key: String, ref: String)] = []
+        for n in needs.items where n.kind == .question {
+            guard let key = n.key, let ref = n.ref else { continue }
+            openByTicket[key, default: []].insert(ref)
+            needed.append((key, ref))
+            if let s = n.sinceMs { since[key, default: [:]][ref] = s }
+        }
+        var keys: [String] = []
+        for k in openByTicket.keys.sorted() + answered.items.compactMap(\.key) where !keys.contains(k) && keys.count < Self.maxTicketGets { keys.append(k) }
+        var questions: [Question] = [], index: [ID16: QuestionLocator] = [:], macOnly: Set<String> = []
+        for key in keys {
+            let row = rowsByKey[key]
+            let get: TicketGet
+            // a cached read is valid while its ticket's head did not move (a listed ticket), or while the feed did not move (an unlisted one)
+            if let c = ticketCache[key], (row.map { c.headSeq == $0.headSeq && c.get.uid == $0.uid } ?? (c.cursor == answered.subCursor)) { get = c.get }
+            else {
+                guard try await readBudgetAvailable() else { throw ViewError.readDeferred }
+                get = try await ticketGet(key)
+                ticketCache[key] = (row?.headSeq, answered.subCursor, get)
+            }
+            let (shown, mac) = self.questions(of: get, askedByNeeds: since[key] ?? [:], openIn: openByTicket[key] ?? [])
+            for q in shown { questions.append(q); index[q.questionID] = QuestionLocator(key: key, uid: get.uid, number: q.number) }
+            for n in mac { macOnly.insert(key + "#" + n) }
+        }
+        // a needed question whose ticket was not read (cap) is also one this phone cannot show
+        for n in needed where !keys.contains(n.key) { macOnly.insert(n.key + "#" + n.ref) }
+        ticketCache = ticketCache.filter { keys.contains($0.key) }
+        questionIndex = index
+        let tickets = rows.map { Ticket(row: $0) }
+        let people: [WorkspaceMember] = members.members.flatMap { m in
+            m.devices.filter(\.valid).compactMap { d in
+                ID16(hex: String(d.id.dropFirst(2))).map { WorkspaceMember(deviceID: $0, label: d.label ?? m.name) }
+            }
+        }
+        let sorted = questions.sorted { $0.createdMs != $1.createdMs ? $0.createdMs < $1.createdMs : $0.questionID.hex < $1.questionID.hex }
+        // monotonic: a dropped cache (a failed read, a reader refusal) never lowers it
+        let previous = cachedSnapshot
+        let same = previous.map {
+            $0.questions == sorted && $0.tickets == tickets && $0.members == people && $0.name == show.name && $0.nextKey == show.nextKey
+                && $0.macOnlyCount == macOnly.count && $0.ticketsIncomplete == incomplete
+        } ?? false
+        snapshotRevision = same ? snapshotRevision : snapshotRevision + 1
+        lastCursor = answered.subCursor
+        return try WorkspaceSnapshot(workspace: workspace, revision: max(snapshotRevision, 1), checkedMs: now, questions: sorted, tickets: tickets, members: people,
+                                     name: show.name, nextKey: show.nextKey, macOnlyCount: macOnly.count, ticketsIncomplete: incomplete)
+    }
+
     package func snapshotView() async throws -> WorkspaceSnapshot {
         try await ensureCurrent()
         if let snapshotTask { return try await snapshotTask.value }
         let task = Task { () throws -> WorkspaceSnapshot in
             guard try await self.readBudgetAvailable() else { throw ViewError.readDeferred }
-            let v = try await self.getView("/v2/snapshot")
-            let snapshot = try WorkspaceSnapshot(v, workspace: self.workspace)
+            let snapshot = try await self.assembleSnapshot()
             try await self.ensureCurrent()
             self.verifiedReceiptMs = self.cfg.wall.nowMs
             self.cachedSnapshot = snapshot
@@ -1006,258 +1325,149 @@ extension WorkspaceSession {
         defer { snapshotTask = nil }
         return try await task.value
     }
-    private func readQuestion(_ id: ID16) async throws -> Question {
-        let m = try fields(await getView("/v2/questions/" + id.hex), ["host_api", "workspace_id", "question"])
-        guard m["host_api"] == 0, m.idField("workspace_id") == workspace else { throw ViewError.malformed }
-        let q = try Question(m["question"]!)
+
+    /// One question read afresh from its ticket (`ticket.get`), the F1 gate included: an OPEN question comes back with `reviewed`, the
+    /// recomputed `qid` and `hash` bound to the `doc.head` and `members_v` of the same read (what a person event will sign, C2b).
+    func readQuestion(_ id: ID16, hint: QuestionLocator? = nil) async throws -> (question: Question, reviewed: F1Question.Reviewed?) {
+        try await checkCacheEpoch()
+        var locator = hint ?? questionIndex[id]
+        if locator == nil {
+            _ = try await snapshotView()                     // a fresh process knows no question yet: one snapshot fills the index
+            locator = questionIndex[id]
+        }
+        guard let locator else { throw ViewError.malformed }
+        let get = try await ticketGet(locator.key)
+        guard get.uid.utf8Equal(locator.uid), let entry = get.questions.first(where: { $0.question?.id.utf8Equal(locator.number) == true }),
+              let f1 = entry.question, f1.state != .stale else { throw ViewError.malformed }
+        if let signer = f1.answer?.signerDevice, deviceLabels[signer] == nil { absorb(try await memberList()) }   // a device that joined since the last snapshot
+        let created = f1.askedAt.flatMap(HostTime.ms) ?? 0
+        let q = try Question(f1, ticketKey: get.key, ticketUID: get.uid, workspace: workspace, createdMs: created,
+                             deviceLabel: { self.label(forDevice: $0, person: $1) })
         guard q.questionID == id else { throw ViewError.malformed }
-        return q
+        let reviewed = f1.state == .open ? try f1.reviewed(ticketUID: get.uid, workspace: workspace, basedOn: get.headHash, rosterV: get.membersV) : nil
+        return (q, reviewed)
     }
     package func reviewQuestion(_ id: ID16) async throws -> QuestionReview {
         try await ensureCurrent()
         let lifecycle = reviewLifecycle
-        let q = try await readQuestion(id)
+        let (q, reviewed) = try await readQuestion(id)
         try await ensureCurrent()
         guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+        #if DEBUG && targetEnvironment(simulator)
+        // dev-sandbox lane: a signable (open) question needs a `whoami` read of its own, never the cache (O6): no `relay.dev` in it, nothing is
+        // offered. A closed question is shown as ever.
+        var devGrant: DevSandboxGrant?
+        if policy?.lane == .devSandbox, reviewed != nil {
+            guard let g = await freshDevGrant() else { throw ViewError.hostRefusesSimulator }
+            try await ensureCurrent()
+            guard foreground, lifecycle == reviewLifecycle else { throw ViewError.invalidReview }
+            devGrant = g
+        }
+        #endif
+        lifecycleFence.reviewedAgain()
         reviews = reviews.filter { $0.value.question.questionID != id || $0.value.question.contentHash == q.contentHash }
         if reviews.count >= 128 { reviews.removeAll() }
-        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID())
+        #if DEBUG && targetEnvironment(simulator)
+        var review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
+        review.devGrant = devGrant
+        #else
+        let review = QuestionReview(question: q, realm: cfg.context.realm, workspaceID: workspace, generation: generation, token: UUID(), reviewed: reviewed)
+        #endif
         reviews[review.token] = review
         return review
     }
     package func startViews() {
         guard !viewsStarted, !closed else { return }
         viewsStarted = true
-        recoverDecisions()
+        refreshHostSupport()
+        recoverWrites()
         startPoller()
     }
 
     /// Call on lock/background, even if there are no stream subscribers.
     public func setForeground(_ value: Bool) {
+        if value { lifecycleFence.foregrounded() } else { lifecycleFence.invalidate(.background) }
         foreground = value
         if value {
+            refreshHostSupport()
             startPoller()
-            recoverDecisions()
+            recoverWrites()
         } else {
-            reviewLifecycle &+= 1
-            reviews.removeAll()
+            clearHostSupport()
+            for t in settleRetries.values { t.cancel() }
+            settleRetries.removeAll()
+            writeRecovery?.cancel(); writeRecovery = nil
+            dropReviews()
             poller?.cancel(); poller = nil
             snapshotTask?.cancel()
             cancelAll()
             hintRefresh?.cancel(); hintRefresh = nil; hintIdentity = nil
             recovery?.cancel(); recovery = nil; recoveryIdentity = nil
-            for t in decisionDrivers.values { t.cancel() }
+            for t in reviewDrivers.values { t.cancel() }
         }
     }
-    public func invalidateReviews() { reviewLifecycle &+= 1; reviews.removeAll(); emit(.invalidated) }
-
-    package func submit(_ review: QuestionReview, optionID: String) async throws -> DecisionOutcome {
-        try await ensureCurrent()
-        guard foreground, reviews[review.token] == review, review.workspaceID == workspace,
-              review.generation == generation, review.realm == cfg.context.realm else { throw ViewError.invalidReview }
-        guard review.question.options.contains(where: { $0.id.utf8Equal(optionID) }) else { throw ViewError.invalidOption }
-        // Offline work remains unsigned. Reconfirm reachability/open state before entering custody;
-        // the host still performs CAS because it can change again after this read.
-        let current: Question
-        do { current = try await readQuestion(review.question.questionID) }
-        catch { try await ensureCurrent(); throw ViewError.offline }
-        try await ensureCurrent()
-        guard foreground, reviews[review.token] == review else { throw ViewError.invalidReview }
-        if let r = current.resolution {
-            reviews[review.token] = nil
-            return .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
-        }
-        guard current.contentHash == review.question.contentHash else {
-            invalidateReviews(); return .questionChanged(hash: current.contentHash)
-        }
-        // Consume before any suspension: double-tapping can never mint a second signature.
-        reviews[review.token] = nil
-        let id = cfg.entropy.id16()
-        preparingDecisions.insert(id)
-        defer { preparingDecisions.remove(id) }
-        let first: Row
-        do { first = try await prepare(logical: id, plaintext: Data(), decision: (review, optionID)) }
-        catch { try await ensureCurrent(); throw ViewError.offline }
-        return try await driveDecision(id, first: first)
+    /// Drops the host's write signal (fail closed) and any read of it in flight.
+    private func clearHostSupport() {
+        hostSupportGen &+= 1
+        hostSupportTask?.cancel(); hostSupportTask = nil
+        if hostSupport != nil { hostSupport = nil; emit(.writeSupportChanged) }
     }
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    ///   Retry when coordination is available; this error does not confirm removal.
-    public func pendingDecisions() async throws -> [DecisionStatus] {
-        try await ensureCurrent()
-        return try await cfg.container.database().query(
-            "SELECT d.*, EXISTS(SELECT 1 FROM meta WHERE key='exhausted:'||d.id) AS exhausted FROM decisions d WHERE d.state <> 'resolved' ORDER BY d.rowid").compactMap { r in
-            guard let id = r.text("id").flatMap(ID16.init(hex:)), let q = r.text("question").flatMap(ID16.init(hex:)), let o = r.text("option_id") else { return nil }
-            // The relay's terminal retry_exhausted: only the user's explicit retry (`retryDecision`) sends it again.
-            if r.int("exhausted") == 1 || r.text("state") == "exhausted" {
-                return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: .needsRetry)
-            }
-            return DecisionStatus(decisionID: id, questionID: q, optionID: o, state: r.text("state") == "uncertain" ? .uncertain : .pending)
+    /// Clears the signal, then reads `whoami.relay` again. A failed or malformed read leaves it nil (no Live write); a read that
+    /// finishes after a newer refresh, a background or a close is dropped.
+    func refreshHostSupport() {
+        clearHostSupport()
+        // a session whose views were never started (pairing, a test harness) asks nothing: `startViews` reads it
+        guard foreground, !closed, viewsStarted else { return }
+        let gen = hostSupportGen
+        hostSupportTask = Task { [weak self] in
+            let got = try? await self?.whoami().relay
+            guard let self, !Task.isCancelled else { return }
+            await self.applyHostSupport(got, gen: gen)
         }
     }
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    ///   Retry when coordination is available; this error does not confirm removal.
-    public func reconcileDecision(_ id: ID16) async throws -> DecisionOutcome {
-        guard foreground, !preparingDecisions.contains(id) || decisionDrivers[id] != nil else { throw ViewError.offline }
-        return try await driveDecision(id)
+    private func applyHostSupport(_ value: HostWriteSupport?, gen: Int) {
+        guard gen == hostSupportGen, foreground, !closed, hostSupport != value else { return }
+        hostSupport = value
+        emit(.writeSupportChanged)
     }
-    /// The explicit user retry of a decision whose bridge delivery ended in the relay's terminal 409 `retry_exhausted` (protocol-v2
-    /// section 19.6). Like reconciliation it reads the question first (an answer already recorded is final) and only while the
-    /// question is still open with the same content does it send the SAME signed decision again, under a new rid. Automatic
-    /// reconciliation (`reconcileDecision`, `recoverDecisions`) never does this for an exhausted decision.
-    /// - Throws: `StoreError.removalStateUnknown` if removal status cannot be verified.
-    public func retryDecision(_ id: ID16) async throws -> DecisionOutcome {
-        guard foreground, !preparingDecisions.contains(id) || decisionDrivers[id] != nil else { throw ViewError.offline }
-        return try await driveDecision(id, explicit: true)
-    }
-    private func recoverDecisions() {
-        guard foreground, !closed, recovery == nil else { return }
-        let identity = UUID(); recoveryIdentity = identity
-        recovery = Task {
-            defer { if self.recoveryIdentity == identity { self.recovery = nil; self.recoveryIdentity = nil } }
-            do {
-                for row in try await self.pendingDecisions() {
-                    guard self.foreground, !Task.isCancelled else { return }
-                    _ = try? await self.reconcileDecision(row.decisionID)       // read-only for an exhausted decision
-                }
-            } catch { self.emit(.connection(.offline)) }
-        }
+    #if DEBUG && targetEnvironment(simulator)
+    /// One `whoami` call, made now: the lane's only source of "the host takes Simulator answers" (host 11A.17.6, O6). The grant exists only when
+    /// that same reply says `relay.dev.sim_convenience == true`, `ops.answer == 1` and `r6_ready == true`. A failed read, or one without
+    /// `relay.dev`, gives nil. The cached `hostSupport` follows the result (UI), failing closed on a failed read.
+    func freshDevGrant() async -> DevSandboxGrant? {
+        guard policy?.lane == .devSandbox, foreground, !closed else { return nil }
+        let support: HostWriteSupport?
+        let gen = hostSupportGen
+        do { support = try await whoami().relay } catch { clearHostSupport(); return nil }
+        // a refresh, a background or a close that began during the read supersedes it: no grant, nothing written
+        guard foreground, !closed, gen == hostSupportGen else { return nil }
+        hostSupportGen &+= 1
+        if hostSupport != support { hostSupport = support; emit(.writeSupportChanged) }
+        guard let support, let dev = support.dev, support.allows("answer") else { return nil }
+        return DevSandboxGrant(sandbox: dev.sandbox, readAtMs: cfg.wall.nowMs)
     }
 
-    private func driveDecision(_ id: ID16, first: Row? = nil, explicit: Bool = false) async throws -> DecisionOutcome {
-        if let t = decisionDrivers[id] { return try await t.value }
-        guard !closed else { throw SessionError.staleGeneration }
-        let t = Task { try await self.performDecision(id, first: first, explicit: explicit) }
-        decisionDrivers[id] = t
-        defer { decisionDrivers[id] = nil }
-        return try await t.value
+    /// Owner note 4: a read of its own, right after a join. `relay.dev` absent in a successful read means this is not a dev sandbox.
+    public func devSandboxCheck() async -> DevSandboxCheck {
+        guard foreground, !closed, let w = try? await whoami() else { return .unknown }
+        guard let dev = w.relay?.dev else { return .notASandbox }
+        return .sandbox(dev.sandbox)
     }
-    private func performDecision(_ id: ID16, first: Row?, explicit: Bool) async throws -> DecisionOutcome {
-        try await ensureCurrent()
-        guard let record = try await cfg.container.database().query("SELECT * FROM decisions WHERE id=?", [.text(id.hex)]).first,
-              let bytes = record.blob("operation"), let qid = record.text("question").flatMap(ID16.init(hex:)) else { throw SessionError.unknownRequest }
-        let op = try StrictJSON.parse(bytes)
-        if let outcome = record.blob("outcome") { return try decodeOutcome(StrictJSON.parse(outcome)) }
-        let attempts = try await cfg.container.database().query("SELECT * FROM bridge_requests WHERE logical=? ORDER BY seq DESC", [.text(id.hex)])
-        let old = attempts.first.flatMap(row(from:))
-        guard foreground else { throw ViewError.offline }
-        guard old != nil, first != nil || record.int("dispatched") == 1 else {
-            try await cfg.container.database().transaction { tx in
-                try tx.execute("DELETE FROM decisions WHERE id=?", [.text(id.hex)])
-                try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
-            }
-            throw ViewError.offline
-        }
-        let result: DecisionOutcome
-        // Derived from the marker written atomically with the attempt's state, not from `decisions.state` alone (written with it).
-        let exhausted = try await isExhausted(id) || record.text("state") == "exhausted"
-        do {
-            result = try await decisionNetwork(id, qid: qid, op: op, old: old, first: first, reissue: explicit || !exhausted)
-        } catch {
-            try await ensureCurrent()
-            let db = try await cfg.container.database()
-            if try await db.query("SELECT dispatched FROM decisions WHERE id=?", [.text(id.hex)]).first?.int("dispatched") == 0 {
-                try await db.transaction { tx in
-                    try tx.execute("DELETE FROM decisions WHERE id=?", [.text(id.hex)])
-                    try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
-                }
-                throw ViewError.offline
-            }
-            // A terminal relay retry_exhausted stays `exhausted` until an explicit retry; anything else is `uncertain`.
-            let needsRetry = try await isExhausted(id)
-            try await db.execute("UPDATE decisions SET state=? WHERE id=?", [.text(needsRetry ? "exhausted" : "uncertain"), .text(id.hex)])
-            return needsRetry ? .needsRetry : .uncertain
-        }
-        return try await finishDecision(id, result)
+
+    /// What the App shows: the lane is on for this session, and the sandbox id of the last `whoami` that carried `relay.dev`.
+    public func devSandboxStatus() -> DevSandboxStatus {
+        DevSandboxStatus(laneActive: policy?.lane == .devSandbox, sandbox: hostSupport?.dev?.sandbox)
     }
-    private func decisionNetwork(_ id: ID16, qid: ID16, op: JSONValue, old: Row?, first: Row?, reissue: Bool) async throws -> DecisionOutcome {
-        var response: BridgeResponse?
-        do {
-            if let first { response = try await runDriver(first, isResend: false) }
-            if response == nil, let old, !old.uncertain {
-                do { response = try await resend(rid: old.rid) }
-                catch SessionError.uncertain { /* authoritative re-read below */ }
-            }
-            if response == nil {
-                // Only previously dispatched decisions can reach authoritative reconciliation.
-                emit(.connection(.reconciling))
-                let q = try await readQuestion(qid)
-                if let r = q.resolution {
-                    let result: DecisionOutcome = r.decisionID == id && r.answer == op.object?["answer"]
-                        ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
-                    return result
-                }
-                guard q.contentHash == op.object?["content_hash"]?.string.flatMap({ B64U.decode($0) }) else {
-                    return .questionChanged(hash: q.contentHash)
-                }
-                // After the relay's terminal retry_exhausted only the user's explicit retry may reissue (section 19.6).
-                guard reissue else { throw SessionError.retryExhausted(logical: id) }
-                // Only this authoritative open-state reconciliation can replace an uncertain row.
-                // The old row and its state survive until the replacement commits atomically.
-                let next = try await prepare(logical: id, plaintext: Bridge.frame(meta: op, data: Data()), replacing: old?.rid, reconciled: true,
-                                             clearExhausted: true)
-                response = try await runDriver(next, isResend: false)
-            }
-            let m = try fields(viewJSON(response!), ["host_api", "decision_id", "question"])
-            guard m["host_api"] == 0, m.idField("decision_id") == id else { throw ViewError.malformed }
-            let closed = try Question(m["question"]!)
-            guard closed.questionID == qid, let r = closed.resolution, r.decisionID == id, r.answer == op.object?["answer"] else { throw ViewError.malformed }
-            return .accepted
-        } catch ClientError.host(.alreadyAnswered) {
-            let q = try await readQuestion(qid)
-            guard let r = q.resolution else { throw ViewError.malformed }
-            return r.decisionID == id && r.answer == op.object?["answer"]
-                ? .accepted : .alreadyAnswered(label: r.byDeviceLabel, at: r.atMs)
-        } catch ClientError.host(.questionChanged(let hash)) {
-            return .questionChanged(hash: hash)
-        } catch ClientError.host(.notVisible) {
-            return .notApplied           // sealed, terminal and definite: recorded, did not apply (orch-29 Q2)
-        }
-    }
-    private func finishDecision(_ id: ID16, _ result: DecisionOutcome) async throws -> DecisionOutcome {
-        try await ensureCurrent()
-        let attempts = try await cfg.container.database().query("SELECT rid FROM bridge_requests WHERE logical=?", [.text(id.hex)])
-        let encoded = try canonicalJSON(encodeOutcome(result))
-        try await cfg.container.database().transaction { tx in
-            try tx.execute("UPDATE decisions SET state='resolved',outcome=? WHERE id=?", [.blob(encoded), .text(id.hex)])
-            try tx.execute("DELETE FROM bridge_requests WHERE logical=?", [.text(id.hex)])
-            try tx.execute("DELETE FROM meta WHERE key=?", [.text(Self.exhaustedKey(id))])
-        }
-        for attempt in attempts {
-            if let rid = attempt.text("rid").flatMap(ID16.init(hex:)) { monotonicAge[rid] = nil }
-        }
-        if case .questionChanged = result { invalidateReviews() }
-        emit(.invalidated)
-        return result
-    }
-    package func createTicket(_ draft: NewTicketSubmission) async throws -> Ticket {
-        try draft.validate()
-        try await ensureCurrent()
-        guard foreground else { throw ViewError.offline }
-        let plaintext = try Bridge.frame(meta: draft.meta, data: Data())
-        let db = try await cfg.container.database()
-        let old = try await db.query("SELECT * FROM bridge_requests WHERE logical=? ORDER BY seq DESC", [.text(draft.creationID.hex)]).first.flatMap(row(from:))
-        if let old, old.plaintext != plaintext { throw ViewError.invalidDraft }
-        let response: BridgeResponse
-        if let old {
-            do { response = try await resend(rid: old.rid) }
-            catch SessionError.uncertain {
-                // new_ticket is idempotent by (device, creationID); preserve exact draft bytes.
-                let next = try await prepare(logical: draft.creationID, plaintext: plaintext, replacing: old.rid, reconciled: true, clearExhausted: true)
-                response = try await runDriver(next, isResend: false)
-            }
-        } else {
-            let first = try await prepare(logical: draft.creationID, plaintext: plaintext)
-            response = try await runDriver(first, isResend: false)
-        }
-        let m = try fields(viewJSON(response, status: 201), ["host_api", "creation_id", "ticket"])
-        guard m["host_api"] == 0, m.idField("creation_id") == draft.creationID else { throw ViewError.malformed }
-        let ticket = try Ticket(m["ticket"]!)
-        guard ticket.title.utf8Equal(draft.title), ticket.body.utf8Equal(draft.body),
-              ticket.epicKey.map({ Data($0.utf8) }) == draft.epicKey.map({ Data($0.utf8) }) else { throw ViewError.malformed }
-        emit(.invalidated)
-        return ticket
-    }
-    private func emit(_ event: WorkspaceEvent) {
+    #endif
+
+    /// Test seam-free read for the checks in this module.
+    var currentHostSupport: HostWriteSupport? { hostSupport }
+    public func invalidateReviews() { lifecycleFence.invalidate(.reviewsInvalidated); dropReviews(); emit(.invalidated) }
+    /// Every held review goes, and a review read in flight is refused (`reviewQuestion` compares the counter). The fence is separate: it
+    /// also ends on `.inactive` and a lock, which must not refuse the new review that is the way back from them.
+    private func dropReviews() { reviewLifecycle &+= 1; reviews.removeAll(); creationReviews.removeAll(); gateReviews.removeAll() }
+
+    func emit(_ event: WorkspaceEvent) {
         if case .connection(let state) = event { connectionState = state }
         if case .snapshot = event, !subscribers.isEmpty { snapshotsEmitted += 1 }
         for c in subscribers.values { c.yield(event) }
@@ -1304,45 +1514,30 @@ extension WorkspaceSession {
         let charged = try await cfg.container.database().query("SELECT COUNT(*) AS n FROM bridge_charges WHERE created_ms > ?", [.int(cfg.wall.nowMs - Self.hostWindowMs)]).first?.int("n") ?? 0
         return charged < 960
     }
+    /// Change detection by polling (`wait` is not served on the relay): one `activity.list {limit: 1}` per interval; its `sub_cursor` is the
+    /// journal position. The snapshot is read again only when that cursor moved (or no snapshot is held), and the interval backs off while
+    /// nothing changes (15 s doubling to 60 s).
     private func pollViews() async {
         var delay: Int64 = 15
         while !Task.isCancelled && foreground && !subscribers.isEmpty {
-
             // Imported host v1 defaults: 1024 per device, 16384 global. Reserve 64 slots for mutations.
             if (try? await readBudgetAvailable()) == true {
                 do {
-                    let s = try await snapshotView()
+                    let cursor = try await activityList(limit: 1).subCursor
                     if Task.isCancelled { return }
-                    delay = lastRevision == s.revision ? min(delay * 2, 60) : 15
-                    lastRevision = s.revision
-                    emit(.snapshot(s)); emit(.connection(.online))
+                    if cachedSnapshot == nil || lastCursor != cursor {
+                        let s = try await snapshotView()
+                        if Task.isCancelled { return }
+                        delay = 15
+                        emit(.snapshot(s))
+                    } else { delay = min(delay * 2, 60) }
+                    emit(.connection(.online))
                 } catch ClientError.relay(let r) where r.status == 429 || r.status == 503 {
                     delay = max(min(delay * 2, 60), Int64(r.retryAfter ?? 0)); emit(.connection(.offline))
                 } catch { if Task.isCancelled { return }; delay = min(delay * 2, 60); emit(.connection(.offline)) }
             } else { delay = 60 }
             do { try await cfg.clock.sleep(for: .seconds(delay)) } catch { return }
         }
-    }
-}
-
-private func encodeOutcome(_ o: DecisionOutcome) -> JSONValue {
-    switch o {
-    case .accepted: ["kind": "accepted"]
-    case .uncertain: ["kind": "uncertain"]
-    case .needsRetry: ["kind": "needs_retry"]
-    case .notApplied: ["kind": "not_applied"]
-    case .alreadyAnswered(let label, let at): ["kind": "already_answered", "label": .string(label), "at": .int(at)]
-    case .questionChanged(let hash): ["kind": "question_changed", "hash": .string(B64U.encode(hash))]
-    }
-}
-private func decodeOutcome(_ v: JSONValue) throws -> DecisionOutcome {
-    guard let m = v.object else { throw ViewError.malformed }
-    switch m["kind"]?.string {
-    case "accepted": return .accepted
-    case "not_applied": return .notApplied
-    case "already_answered": guard let l = m["label"]?.string, let a = m["at"]?.int else { throw ViewError.malformed }; return .alreadyAnswered(label: l, at: a)
-    case "question_changed": guard let h = m.b64uField("hash", length: 32) else { throw ViewError.malformed }; return .questionChanged(hash: h)
-    default: throw ViewError.malformed
     }
 }
 
@@ -1366,5 +1561,139 @@ extension WorkspaceSession {
         let s = try await sealingKeyRecovering()
         guard s.epoch == epoch else { throw SessionError.noKeyForEpoch(epoch) }
         return s.key
+    }
+}
+
+extension WorkspaceSession {
+    /// A device relay session for a push call, with the one re-login on 401 every session call has.
+    package func pushRelay<T: Sendable>(_ body: (RelaySession) async throws -> T) async throws -> T {
+        try await ensureCurrent()
+        return try await withRelay(body)
+    }
+
+    package func pushEntropy() -> any Entropy { cfg.entropy }
+    package func pushWallMs() -> Int64 { cfg.wall.nowMs }
+    package var pushTransport: any RelayTransport { cfg.transport }
+    package var pushContainer: WorkspaceContainer { cfg.container }
+
+    /// What the notification extension needs for this workspace: the pinned `WSK` and `K_push(e)` for the newest epochs this device holds
+    /// a committed key for (at most `maxEpochs`; `WK` itself never leaves the session). Epochs without a usable key are left out.
+    package func pushKeyMaterial(maxEpochs: Int) async throws -> (wsk: SigningPublicKey, kPush: [UInt32: Data]) {
+        try await ensureCurrent()
+        let head = try await currentEpoch()
+        var out: [UInt32: Data] = [:]
+        var e = head
+        var steps = 0
+        while e >= 1, out.count < maxEpochs, steps < 32 {
+            steps += 1
+            if let k = try? await readKey(e) {
+                out[e] = KDF.kPush(wk: k, workspace: cfg.workspace, epoch: e).withUnsafeBytes { Data($0) }
+            }
+            e -= 1
+        }
+        return (cfg.wsk, out)
+    }
+}
+
+// MARK: H12d reader declaration (host 9.5, 9.11; orch-f1 O3, O5)
+
+extension WorkspaceSession {
+    /// `rd` for the next column-R request: the host's digest of this device's declaration (the `reader.declare` answer's, else the pair
+    /// declaration's own). nil with `sendsReaderDigest` off or before any declaration. The downgrade marker and the stored record are
+    /// checked on EVERY call (`exempt` only skips the `rd` itself, for `reader.declare`).
+    package func readerDigestForRequest(exempt: Bool = false) throws -> String? {
+        // The downgrade marker (the level never falls) and the stored record are checked before EVERY request, `rd` or not.
+        let state: ReaderStateRecord?
+        do { state = try ReaderStore.load(cfg.vault, ws: cfg.workspace) } catch ReaderStoreError.corrupt { throw SessionError.readerStateUnreadable }
+        guard ReaderGate.opens(state, runningLevel: cfg.reader.level) else { throw SessionError.readerDowngrade }
+        guard cfg.sendsReaderDigest, !exempt else { return nil }
+        if cfg.blocksUntilDeclared, ReaderGate.needsDeclare(state, runtime: cfg.reader) { throw SessionError.readerDeclarationRequired }
+        // No declaration: no `rd` at all (never an empty or invented one). A host that requires readers refuses, and that is surfaced.
+        guard let decl = state?.decl else { return nil }
+        // A declaration claims a level: it must be this device's, for this workspace, and not above what this build proved (KAT).
+        guard let o = decl.json.object?["o"]?.object, o["workspace_id"]?.string == cfg.workspace.hex,
+              o["device_id"]?.string == cfg.deviceID.hex else { throw SessionError.readerStateUnreadable }
+        guard decl.level <= cfg.reader.level else { throw SessionError.readerDowngrade }
+        return ReaderGate.rd(state)       // the host's digest once a declare answer exists, else the pair declaration's own
+    }
+
+    /// Tests: the session's configuration.
+    package nonisolated var configuration: WorkspaceSessionConfig { cfg }
+
+    /// The stored reader state of this workspace (nil: none).
+    package func readerState() throws -> ReaderStateRecord? { try ReaderStore.load(cfg.vault, ws: cfg.workspace) }
+
+    /// The `rd` this device would send now (the digest of its current stored declaration), regardless of the R2 switch.
+    package func currentReaderDigest() throws -> String? { ReaderGate.rd(try readerState()) }
+
+    /// O5: on the first launch of a new build (or when the host never confirmed the last declaration) builds, signs through the leased
+    /// signer and persists the `reader.declare` request, before any other op. nil when nothing is due (same build, acknowledged) or the
+    /// build declares nothing. A retry within the host's window re-sends the stored declaration byte for byte.
+    package func readerDeclareRequest(force: Bool = false) async throws -> ReaderDeclareRequest? {
+        try await ensureCurrent()
+        let state = try readerState()
+        guard force || ReaderGate.needsDeclare(state, runtime: cfg.reader), let cap = cfg.reader.capability else { return nil }
+        // host time as this phone knows it: `created_ms` is judged against the HOST clock (+-300 s), so both the reuse test and a new
+        // declaration use the wall clock plus the adopted offset
+        let offset = try await clockOffsetMs()
+        let now = saturatingAddMs(cfg.wall.nowMs, offset)
+        let rid = cfg.entropy.id16().hex
+        if let s = state, !s.acked, s.build == cfg.reader.build, let d = s.decl, d.via == "declare", abs(now - d.createdMs) <= Self.declareReuseMs {
+            return ReaderDeclareRequest(declaration: d, id: rid)
+        }
+        guard let person = try? storedPerson() else { throw SessionError.badResponse }
+        let sig = cfg.identity.publicKeys
+        let decl = try ReaderDeclaration.make(workspace: cfg.workspace, dkSig: sig.sig, dkKx: sig.kx, who: .person(person), level: cap.level, kat: cap.kat,
+                                              bind: .declare, createdMs: now, signer: cfg.identity.sig)
+        let base = state ?? ReaderStateRecord(decl: nil, highest: 0, build: cfg.reader.build, acked: false)
+        try await ensureCurrent()           // after the awaits above: a finished realm writes nothing into its successor's vault
+        try ReaderStore.save(cfg.vault, ws: cfg.workspace, base.recording(decl, build: cfg.reader.build, acked: false))
+        return ReaderDeclareRequest(declaration: decl, id: rid)
+    }
+
+    /// The host answered the `reader.declare` with `digest`: acknowledged only if that is the stored declaration's digest (an answer for
+    /// an older declaration, or another device's, changes nothing). Returns whether it was.
+    @discardableResult
+    package func readerDeclareAcknowledged(digest: String, level: Int? = nil) async throws -> Bool {
+        try await ensureCurrent()
+        guard var s = try readerState(), let d = s.decl, R2.isDigest(digest) else { return false }
+        if d.digest.utf8.elementsEqual(digest.utf8) { s.hostDigest = nil }
+        else if let level, level == d.level { s.hostDigest = digest }      // the host kept the bytes it already held for this body: its digest is the one `rd` carries
+        else { return false }                                              // an answer for another (older) declaration changes nothing
+        s.acked = true
+        try ReaderStore.save(cfg.vault, ws: cfg.workspace, s)
+        return true
+    }
+
+    /// Sends the `reader.declare` (a read, exempt from `rd`) and takes the answer's digest into the reader state. `force` declares again even
+    /// when nothing is due (the host answered `declaration_unknown`). False when this build declares nothing.
+    @discardableResult
+    package func declareReader(force: Bool = false) async throws -> Bool {
+        guard let req = try await readerDeclareRequest(force: force) else { return false }
+        let logical = cfg.entropy.id16()
+        let outcome: Result<HostResult, Error>
+        do {
+            let first = try await prepare(logical: logical, plaintext: Bridge.frame(meta: try req.meta()))
+            outcome = .success(try Self.result(of: try await runDriver(first, isResend: false)))
+        } catch { outcome = .failure(error) }
+        await discardRead(logical: logical)            // a read leaves nothing to settle, whatever the outcome
+        let r = try outcome.get()
+        // The answer is accepted only for THIS device and the level that was declared. Its digest is the host's (it keeps the bytes it
+        // already held for the same body under another signature, H12d-3), so it may differ from the sent one; it is persisted as `rd`
+        // only after these checks, and a wrong answer fails the declare (the next request then surfaces the host's own refusal).
+        guard let answer = ReaderDeclareResult(r.data), answer.device == "d_" + cfg.deviceID.hex, answer.reader == req.declaration.level,
+              answer.level == req.declaration.level,
+              try await readerDeclareAcknowledged(digest: answer.digest, level: answer.level) else { throw ViewError.malformed }
+        return true
+    }
+
+    /// A stored declaration stays reusable for a resend while the host's +-300 s window surely holds.
+    static var declareReuseMs: Int64 { 240_000 }
+
+    /// The person this device is certified for (the `device.cert` of the realm: `{cert, pk_pub}`), the `who` of a `reader.declare`.
+    func storedPerson() throws -> ID16 {
+        let data = try cfg.vault.get(purpose: "device.cert")
+        guard let o = try StrictJSON.parse(data).object, let pk = o.sigKeyField("pk_pub") else { throw Refusal.malformed }
+        return Identifiers.personID(pk)
     }
 }

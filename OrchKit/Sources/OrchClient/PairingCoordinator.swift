@@ -247,6 +247,7 @@ public actor PairingCoordinator: RealmParticipant {
         identity = id
         // an existing certificate must belong to the owner the link pins; otherwise nothing is sent
         var existing: JSONValue?
+        var existingOwner: SigningPublicKey?
         switch storedCertificate() {
         case .missing: break
         case .unreadable, .corrupt:
@@ -254,7 +255,8 @@ public actor PairingCoordinator: RealmParticipant {
         case .violation(let v): await dropNewKeys(created); return fail(.realm(v), mine)
         case .present(let owner, let cert, let valid):
             if Identifiers.pkPin(owner) != link.pkPin { await dropNewKeys(created); return fail(.otherPerson, mine) }
-            existing = valid ? cert : nil          // an expired certificate keeps the owner binding but is not presented
+            existing = valid ? cert : nil
+            existingOwner = valid ? owner : nil    // an expired certificate keeps the owner binding but is not presented
         }
         if existing == nil && !created {
             // uncertified with keys of an earlier attempt: replace them, but only when nothing else uses them (no workspace, no other
@@ -286,8 +288,22 @@ public actor PairingCoordinator: RealmParticipant {
             try await crashPoint("start.keys")
         } catch is PairingCrash { dead = true; return self.current } catch { await dropNewKeys(created); return fail(.custody, mine) }
         guard mine == token else { await dropNewKeys(created); return self.current }
+        // H12d (host 9.3, 9.4; 11A.15.6 step 4): the reader declaration of this attempt, signed through the leased signer before anything is
+        // sent and persisted with the attempt. `who` is the presented certificate's person, else the link's `pk_pin`. No capability (the
+        // runtime KAT failed): no declaration, the six-field meta.
+        var decl: ReaderDeclaration?
+        if let cap = cfg.reader.capability {
+            do {
+                decl = try perform {
+                    try ReaderDeclaration.make(workspace: ws, dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx,
+                                               who: existingOwner.map { .person(Identifiers.personID($0)) } ?? .pkPin(link.pkPin),
+                                               level: cap.level, kat: cap.kat, bind: .pair(offer: link.offer, attempt: attempt), createdMs: now,
+                                               signer: id.sig)
+                }
+            } catch { await dropNewKeys(created); return fail(violation(error), mine) }
+        }
         var r = PairingRecord(generation: generation, origin: link.origin, ws: ws, offer: link.offer, secret: link.secret, wskPin: link.wskPin,
-                              pkPin: link.pkPin, deviceID: deviceID, label: cfg.deviceLabel, attempt: attempt, dkHash: dkHash,
+                              pkPin: link.pkPin, deviceID: deviceID, label: cfg.deviceLabel, attempt: attempt, dkHash: dkHash, readerDecl: decl, readerBuild: decl == nil ? nil : cfg.reader.build,
                               createdKeys: created, existingCert: existing,
                               startedMs: now, lastProgressMs: now)
         r.seq = 1
@@ -556,7 +572,7 @@ public actor PairingCoordinator: RealmParticipant {
         // `pair` until a `pending` was accepted (that is what pins the host's nonce); a clock correction, which also teaches the
         // host's key, must be answered with another `pair`, not a `pair_status` for a pairing the host never saw
         let isPair = r.sasNonce == nil
-        let op: PairingWire.Op = isPair ? .pair(label: r.label, cert: r.existingCert) : .status
+        let op: PairingWire.Op = isPair ? .pair(label: r.label, cert: r.existingCert, readerDecl: r.readerDecl) : .status
         let rid = cfg.entropy.id16()
         do {
             let env = try PairingWire.request(op, context: c, signer: id.sig, rid: rid, seq: r.seq, tsMs: saturatingAdd(now, r.offsetMs), salt: cfg.entropy.bytes(16))
@@ -667,7 +683,16 @@ public actor PairingCoordinator: RealmParticipant {
         case .refusal(let code, _):
             if code == "stale_timestamp" {
                 if a.clockWrong { _ = await finish(.failed(.clockWrong), mine); return }
-                if let off = a.offsetMs, (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(off) { r.offsetMs = off; record = r; pinDeadlines(); nextPostMs = now; _ = await persist(mine); return }
+                if let off = a.offsetMs, (-Bridge.maxOffsetMs...Bridge.maxOffsetMs).contains(off) { r.offsetMs = off
+                    // H12d: a `stale_timestamp` refusal is checked before the host stores anything (protocol 8.3 step 3), so it PROVES no host
+                    // holds a declaration for this attempt. Only then is the pair declaration signed again with host time: `created_ms` is
+                    // ordered by the host clock and never accepted more than 300 s ahead. No clock heuristic decides this anywhere else,
+                    // because once a host stored one the first stored declaration wins and a different one would never match its `rd`.
+                    if r.sasNonce == nil, let d = r.readerDecl, let id = identity {
+                        do { r.readerDecl = try d.resigned(createdMs: max(saturatingAdd(now, off), 0), dkSig: id.publicKeys.sig, dkKx: id.publicKeys.kx, signer: id.sig) }
+                        catch { _ = await finish(.failed(violation(error)), mine); return }
+                    }
+                    record = r; pinDeadlines(); nextPostMs = now; _ = await persist(mine); return }
                 _ = await finish(.failed(.clockWrong), mine); return
             }
             switch code {
@@ -1300,6 +1325,8 @@ extension PairingCoordinator {
         let vault = self.vault()
         let priorCert: Data? = try? vault.get(purpose: "device.cert")
         var wroteCert = false
+        // a marker that existed before this join (a leftover of an earlier membership) survives a rollback: the highest level never falls
+        var priorReader: ReaderStateRecord?
         var container: WorkspaceContainer?
         func restoreCert() {
             guard wroteCert else { return }
@@ -1312,6 +1339,7 @@ extension PairingCoordinator {
             for item in (try? cfg.vault.ids()) ?? [] where item.realm == cfg.context.realm && item.ws == wsHex && item.purpose != "pairing" {
                 try? vault.delete(item: item)
             }
+            if let p = priorReader { try? ReaderStore.save(vault, ws: r.ws, p) }
             await cfg.index.containers.suspendAll(ws: wsHex)
             if let dir = try? cfg.index.layout.wsDir(wsHex) { try? FileManager.default.removeItem(at: dir) }
         }
@@ -1321,13 +1349,28 @@ extension PairingCoordinator {
             guard mine == token else { return }
             try storeCertificate(approved.cert, owner: pk)
             wroteCert = true
+            // H12d (O3): the declaration the host accepted at its gate and the highest-level marker, in the device-key realm, before the
+            // commit (a rollback deletes every workspace item with the rest)
+            let prior = try ReaderStore.load(vault, ws: r.ws)
+            priorReader = prior
+            let declBuild = r.readerBuild ?? cfg.reader.build
+            let base = prior ?? ReaderStateRecord(decl: nil, highest: 0, build: declBuild, acked: false)
+            if let d = r.readerDecl { try ReaderStore.save(vault, ws: r.ws, base.recording(d, build: declBuild, acked: true)) }
+            else if prior == nil { try ReaderStore.save(vault, ws: r.ws, base) }
             let c = try await WorkspaceContainer(index: cfg.index, ws: wsHex, generation: r.generation, fence: cfg.context.generation)
             container = c
             try await crashPoint("install.container")
             guard mine == token else { await rollback(); return }
             let wcfg = WorkspaceSessionConfig(context: cfg.context, workspace: r.ws, generation: r.generation, identity: id, wsk: wsk, container: c,
-                                              vault: vault, transport: cfg.transport, clock: cfg.clock, wall: cfg.wall, entropy: cfg.entropy)
-            let session = try await WorkspaceSession(wcfg)
+                                              vault: vault, transport: cfg.transport, clock: cfg.clock, wall: cfg.wall, entropy: cfg.entropy,
+                                              reader: cfg.reader, sendsReaderDigest: true, blocksUntilDeclared: false,
+                                         enforcesOpTable: cfg.context.realm == .live, processLocalWriteGrant: cfg.processLocalWriteGrant)
+            #if DEBUG && targetEnvironment(simulator)
+            let sessionCfg = wcfg.carrying(cfg.devSandboxEnabler)
+            #else
+            let sessionCfg = wcfg
+            #endif
+            let session = try await WorkspaceSession(sessionCfg)
             // the verified list becomes the device's head (rollback protection, Q10 `wk_commit`) before any key is kept
             _ = try await session.acceptMemberList(v.listJSON)
             for g in v.grants.sorted(by: { $0.epoch < $1.epoch }) {

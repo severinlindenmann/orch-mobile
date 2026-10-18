@@ -19,6 +19,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         /// The Live realm's own gate: set at the start of a Live Leave/Reset, cleared only after the realm-wide wipe succeeded. A launch that
         /// finds it set completes the wipe BEFORE any realm starts, so no Live successor ever runs next to unwiped Live data.
         static let liveResetPending = "orch.live.resetPending"
+        /// A Live pairing got as far as the host's comparison or beyond (the Mac may hold a device entry). Cleared with the install.
+        static let pairingProgressed = "orch.live.pairingProgressed"
     }
 
     let options: LaunchOptions
@@ -33,7 +35,25 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// untouched; foregrounding retries.
     private(set) var liveBootError: String?
     private(set) var live: [LiveWorkspace] = []
-    private(set) var pendingDecisions: [DecisionStatus] = []
+    /// Committed Live workspaces `LiveRuntime` could not rebuild at restore (kept on disk): surfaced in Live Home.
+    private(set) var skippedWorkspaceCount = 0
+    private(set) var liveNotice: String?
+    @ObservationIgnored private var lastLiveBootError: (any Error)?
+    /// True once this Live install ever had a join: a workspace on screen or kept, or a recorded owner. Decides whether a Leave says
+    /// "finish removing it on your Mac" (there may be a device entry there) or only "Removed from this iPhone."
+    /// UNKNOWN counts as yes: an install whose runtime did not boot (owner disagreement, bad record, no runtime) cannot say what the Mac
+    /// saw, and a pairing that reached the host's approval is remembered in a flag even if nothing committed.
+    var liveHadJoin: Bool {
+        guard hasLiveInstall else { return false }
+        if resetFlags.bool(forKey: Keys.pairingProgressed) { return true }
+        guard let rt = runtime as? LiveRuntime, rt.booted else { return true }
+        return rt.recordedOwner != nil || rt.install.owner != nil || !live.isEmpty || !rt.skipped.isEmpty || rt.derivedOwner != nil
+    }
+    /// Observed by the views: the install record lives in `UserDefaults`, which SwiftUI cannot track, so every change of it bumps this.
+    private var installRevision = 0
+    var liveInstalled: Bool { _ = installRevision; return hasLiveInstall }
+    var liveProblem: String? { liveBootError }
+    private(set) var pendingWrites: [PendingWrite] = []
     private(set) var lastChecked = Date()
     private var heldDropItems: [DropItem] = []
     var dropItems: [DropItem] { live.flatMap { $0.drop?.rows ?? [] } + heldDropItems }
@@ -46,7 +66,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     private(set) var pendingServerCleanups: [PendingServerCleanup] = []
     /// What the attached realm offers (Drop, share, push, Demo controls), derived from its runtime. A graph with no realm (Welcome,
     /// recovery) offers nothing: no push registration, no share destinations, no Drop. Features are gated on these, never on `isDemo`.
+    #if DEBUG
+    /// Tests exercise the write machinery (drafts, key alarm) that C2b will reuse while Live's `writes` capability is off.
+    @ObservationIgnored var capabilitiesOverride: RealmCapabilities?
+    var capabilities: RealmCapabilities { capabilitiesOverride ?? runtime?.capabilities ?? .none }
+    #else
     var capabilities: RealmCapabilities { runtime?.capabilities ?? .none }
+    #endif
     /// The realm of the attached runtime; nil while no realm is attached.
     var realm: Realm? { runtime?.realm }
     /// nil without an attached realm: such a graph has no share bridge.
@@ -89,12 +115,24 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     @ObservationIgnored var wipeWorkspace: (any RealmRuntime, LiveWorkspace) async throws -> Void = { runtime, ws in
         try await runtime.wipe(workspace: ws.workspaceID, generation: ws.generation)
     }
+    /// Writes the workspace wipe's tombstone (intent) without wiping. A test seam.
+    @ObservationIgnored var beginWorkspaceWipe: (any RealmRuntime, LiveWorkspace) async throws -> Void = { runtime, ws in
+        try await runtime.beginWipe(workspace: ws.workspaceID, generation: ws.generation)
+    }
     @ObservationIgnored var resetRuntime: (any RealmRuntime) async throws -> Void = { try await $0.shutdown() }
 
     @ObservationIgnored var finishInterruptedReset: () async throws -> Void = { try await DemoRuntime.finishInterruptedReset() }
     /// Everything Live stands on (layout, keychain, clocks, transport). Production fails closed without a keychain configuration.
     @ObservationIgnored var liveStorage: () throws -> LiveStorage = { try LiveStorage.production() }
     /// Completes an interrupted Live wipe from storage alone (no runtime).
+    /// Writes the install record. The default is the throwing `LiveInstallStore.save`; a failure fails the Live entry (a test seam).
+    @ObservationIgnored var persistInstall: ((LiveInstall) throws -> Void)?
+    /// Removes the Live files without touching the keychain (the stuck-wipe escape). Keychain leftovers go at the next Live entry.
+    /// (DEBUG `--live-test-relay` points it at the test layout.)
+    @ObservationIgnored var removeLiveFiles: () throws -> Void = { try LiveStorage.removeLiveFiles(layout: try LiveStorage.liveLayout()) }
+    @ObservationIgnored private var enteringLive = false
+    /// The Live pairing on screen, if any (scene changes pause and resume it).
+    @ObservationIgnored weak var livePairing: LivePairingModel?
     @ObservationIgnored var finishInterruptedLiveReset: (LiveStorage) async throws -> Void = { try await LiveRuntime.finishInterruptedReset(storage: $0) }
     #if DEBUG
     /// Tests: installed on the Live runtime at creation so a teardown can be raced against a boot in progress.
@@ -117,7 +155,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         live.append(ws)
     }
     func waitForLifecycle() async { await lifecycleTask?.value }
-    func waitForReset() async { await resetTask?.value }
+    func waitForReset() async { await leaveTask?.value; await resetTask?.value }
+    /// Leave without a controller (unit tests): the registration drain, then the teardown.
+    @ObservationIgnored private var leaveTask: Task<Void, Never>?
 
     func transition(_ id: String, to state: WorkspaceLifecycle) {
         if state != .live { live.first { $0.info.id == id }?.drop?.cancelUI(clear: true) }
@@ -131,6 +171,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         self.resetFlags = resetFlags ?? (options.uiTesting
             ? UserDefaults(suiteName: "orch.tests.\(UUID().uuidString)")! : .standard)
         self.options = options
+        #if DEBUG
+        if options.uiTesting, options.liveTestRelay {
+            let storage = LiveUITestSupport.makeStorage()
+            liveStorage = storage
+            removeLiveFiles = { try LiveStorage.removeLiveFiles(layout: try storage().layout) }
+        }
+        #endif
         if let runtime { attach(runtime) }
     }
 
@@ -140,6 +187,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let store = ServerCleanupStore(defaults: resetFlags, realm: r.realm)
         cleanupStore = store
         pendingServerCleanups = store.load()
+        // Live's owed cleanup is the push unsubscribe (the Mac-side removal is finished on the Mac). Demo simulates it.
+        if r.realm == .live {
+            serverCleanup = { [weak r] item in
+                // A runtime that is gone cannot clean anything: the item stays owed, it is not reported as done.
+                guard let r else { throw LiveError.notBooted }
+                guard let id = ID16(hex: item.ws) else { return }          // an unreadable id can never be cleaned: drop it
+                try await r.unregisterPush(workspace: id)
+            }
+        }
     }
 
     // MARK: Boot
@@ -203,6 +259,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// What a successful Live wipe also removes: the install record and the realm's pending server cleanups.
     private func clearLiveRealmRecords() {
         installStore.clear()
+        resetFlags.removeObject(forKey: Keys.pairingProgressed)
+        installRevision += 1
         ServerCleanupStore(defaults: resetFlags, realm: .live).clear()
     }
 
@@ -210,7 +268,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// synchronously, BEFORE the boot task starts, so `teardown` can invalidate a boot in progress (M3). A start that fails keeps the
     /// runtime attached and Live data untouched; the failure is visible as `liveBootError` and foregrounding retries.
     private func startLive() async {
-        guard runtime == nil else { return }
+        guard !retired, runtime == nil else { return }
         guard let install = installStore.load() else { liveBootError = "The Live record on this iPhone is unreadable."; PresentationGate.requireRebuild(); return }
         let runtime: LiveRuntime
         do { runtime = try LiveRuntime(install: install, storage: try liveStorage()) }
@@ -232,20 +290,125 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let bootTask { _ = await bootTask.value; return }
         let revision = resetRevision
         let task = Task { () -> (any RealmRuntime)? in
-            do { try await runtime.boot(); return runtime } catch { return nil }
+            do { try await runtime.boot(); return runtime } catch { self.lastLiveBootError = error; return nil }
         }
         bootTask = task
         let result = await task.value
         guard revision == resetRevision, self.runtime === runtime else { return }     // a teardown replaced this boot
         bootTask = nil
         guard result != nil else {
+            if let e = lastLiveBootError as? LiveError, e == .ownerDisagreement {
+                liveBootError = "This iPhone holds workspaces from two different owners, which one Live install never allows, so nothing was opened. Leave Live to start over; your Macs are not changed."
+            } else {
             liveBootError = "Live could not start. It will try again when you return to orch."
+            }
             PresentationGate.requireRebuild()
             return
         }
         liveBootError = nil
+        skippedWorkspaceCount = runtime.skipped.count
+        // The owner pin is derived from the committed profiles when the record has none yet (a crash between the first commit and the
+        // record write): recorded with a throwing save, so a failure is visible and retried at the next launch.
+        recordOwner(runtime.derivedOwner, runtime: runtime)
         await runtime.rebuildPresentationGate()
         for handle in (try? await runtime.restoreWorkspaces()) ?? [] { workspaceJoined(handle, lifetime: lifetime) }
+    }
+
+    func notePairingProgress() { if hasLiveInstall { resetFlags.set(true, forKey: Keys.pairingProgressed) } }
+
+    private func save(_ install: LiveInstall) throws {
+        if let persistInstall { try persistInstall(install) } else { try installStore.save(install) }
+    }
+
+    /// Records the single owner of this Live install (once). A failed write keeps the join and says so; the next boot derives it again.
+    /// Only for the runtime it was started for, in a graph that is still alive: a Leave that ran meanwhile must not be partly undone by
+    /// re-saving the install record.
+    func recordOwner(_ owner: String?, runtime: LiveRuntime) {
+        guard let owner, runtime.recordedOwner == nil, !retired, lifetime.isActive, (self.runtime as AnyObject?) === runtime else { return }
+        do {
+            try save(LiveInstall(origin: runtime.install.origin, owner: owner))
+            runtime.recordedOwner = owner
+            liveNotice = nil
+        } catch {
+            liveNotice = "orch could not record the owner of this workspace yet. It will try again the next time orch starts."
+        }
+    }
+
+    // MARK: Live entry (B2b)
+
+    /// The runtime a Live pairing for an invitation at `origin` runs on. Everything that must not happen before the person said "Connect"
+    /// has not: this is called by the Connect action only.
+    ///
+    /// Order for a first entry (each step completes before the next):
+    ///   1. the origin must be an `https` Live origin (no loopback `http`, no Demo origin), and no other realm may be active;
+    ///   2. orphans are wiped: the keychain survives an uninstall, so leftover Live items and device keys are removed first
+    ///      (`wipe(realm: .live)` on both vault groups, `custody.delete(realm: .live)`, the Live files) and a keychain that cannot be
+    ///      read stops the entry here, before anything is written;
+    ///   3. the install record is persisted (throwing); a failure fails the entry with nothing left behind;
+    ///   4. only then the runtime is created and booted, so no Live keychain item or index row can exist without an install record.
+    /// An existing install is reused only for its own origin; any other origin is refused before any network access.
+    func liveRuntimeForPairing(origin: String) async throws -> LiveRuntime {
+        guard !retired, lifetime.isActive else { throw LiveError.entryUnavailable }
+        guard Self.isLiveOrigin(origin) else { throw LiveError.unsupportedOrigin }
+        if let existing = runtime as? LiveRuntime {
+            guard existing.install.origin == origin else { throw LiveError.differentOrigin }
+            guard existing.booted else { throw LiveError.notBooted }
+            return existing
+        }
+        if let install = installStore.load() {
+            guard install.origin == origin else { throw LiveError.differentOrigin }
+            throw LiveError.entryUnavailable           // Live is installed but not running: it recovers or is left, never re-entered
+        }
+        guard runtime == nil, !hasLiveInstall, !resetIncomplete, !enteringLive else { throw LiveError.entryUnavailable }
+        enteringLive = true
+        defer { enteringLive = false }
+        let storage = try liveStorage()
+        // 2. orphans
+        try await storage.realmWipe(hooks: storage.wipeHooks()).run(index: nil)
+        guard !retired, lifetime.isActive, runtime == nil, !hasLiveInstall else { throw LiveError.entryUnavailable }
+        // 3. the record
+        let install = LiveInstall(origin: origin, owner: nil)
+        do { try save(install) } catch { installStore.clear(); throw error }
+        // 4. the runtime
+        let created: LiveRuntime
+        do { created = try LiveRuntime(install: install, storage: storage) }
+        catch { installStore.clear(); throw error }
+        attach(created)
+        installRevision += 1
+        created.deviceLabel = deviceLabel
+        #if DEBUG
+        created.bootGate = liveBootGate
+        #endif
+        transitions?.realmEnteredLive()
+        await bootLive(created)
+        guard created.booted else { throw LiveError.notBooted }
+        return created
+    }
+
+    /// `https` only and not the Demo origin: what `RealmContext.live` accepts, checked here too so a refusal happens before anything else.
+    static func isLiveOrigin(_ origin: String) -> Bool {
+        #if ORCH_DEV_SANDBOX
+        // the variant: the dev relay only (owner ruling 15 Oct: no http loopback in the app)
+        return (try? RealmContext.liveDevSandbox(origin: origin, enabler: DevSandboxLaneEnabler())) != nil
+        #else
+        return origin.hasPrefix("https://") && (try? RealmContext.live(origin: origin)) != nil
+        #endif
+    }
+
+    /// The reviewed origin of the active or recorded Live install (nil without one).
+    var liveOrigin: String? { (runtime as? LiveRuntime)?.install.origin ?? installStore.load()?.origin }
+
+    /// The stuck-wipe escape: erases the Live files on this iPhone without waiting for the keychain or the index. Keychain items that
+    /// cannot be removed now are removed at the next Live entry (the orphan wipe). Used only from the recovery card, after a confirmation.
+    func forceEraseLive() async throws {
+        retire()
+        await waitForRetire()
+        try removeLiveFiles()
+        clearLiveRealmRecords()
+        resetFlags.set(false, forKey: Keys.liveResetPending)
+        resetIncomplete = false
+        liveBootError = nil
+        PresentationGate.openWithoutIndex()
     }
 
     /// Opens the foreground-presentation gate once the workspace index has been read. The app has one index, the runtime's
@@ -336,11 +499,13 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     func review(workspaceID: String, questionID: String, optionID: String) -> any QuestionReviewModel {
-        guard canUse(workspaceID), let ws = live.first(where: { $0.info.id == workspaceID }) else { return UnavailableReviewModel() }
+        guard capabilities.writes, canUse(workspaceID), let ws = live.first(where: { $0.info.id == workspaceID }) else { return UnavailableReviewModel() }
         return LiveReviewModel(services: self, workspace: ws, questionID: questionID, optionID: optionID)
     }
 
     func makePairing(start: PairingState?) -> any PairingFlowModel { LivePairingModel(services: self, start: start) }
+    /// A Live pairing for a reviewed invitation; started by the person's explicit "Connect".
+    func makeLivePairing(link: PairingLink) -> any PairingFlowModel { LivePairingModel(services: self, link: link) }
 
     func workspaceID(forQuestion id: String) -> String? { resolveQuestion(id)?.workspaceID }
 
@@ -386,12 +551,20 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         // No Drop capability, no Drop: the service is never constructed, not merely hidden.
         if capabilities.drop, let service = try? j.makeDropService() { ws.drop = LiveDrop(service: service, workspace: ws) }
         register(ws)
+        if isLive, capabilities.push { startPush(for: ws, joined: j) }
         Task {
             if let drop = ws.drop { await demo?.seedDropFixture(into: drop, workspace: j.workspace) }
             await ws.drop?.refresh()
         }
         ws.start()
         Task { await refreshPending() }
+        if let live = runtime as? LiveRuntime, live.recordedOwner == nil {
+            let hex = j.workspace.hex
+            Task { [weak self, weak live] in
+                guard let live, let owner = try? await live.index?.profile(ws: hex)?.pkPub else { return }
+                self?.recordOwner(owner, runtime: live)
+            }
+        }
     }
 
     func workspaceRemoved(_ ws: LiveWorkspace) {
@@ -436,11 +609,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     /// Lock/background: reviews and arming are dropped; return to foreground reads afresh and re-drives stored submissions.
     func setActive(_ active: Bool) {
+        // C2b: the background ends every ticket synchronously, before the lifecycle task below reaches each session
+        if !active { for ws in live { ws.api.noteBackground() } }
         self.active = active
+        livePairing?.setActive(active)
         if active, ready, liveBootError != nil {
             if let live = runtime as? LiveRuntime { if !live.booted { Task { await bootLive(live) } } }
             else if runtime == nil, hasLiveInstall { Task { await startLive() } }      // the runtime could not even be built: try again
         }
+        if active, isLive, capabilities.push, !pendingServerCleanups.isEmpty { Task { await retryServerCleanup() } }
         if active, ready, !PresentationGate.isRebuilt { Task { await ensurePresentationGate(intendedDemo: wantsDemo || hasLiveInstall) } }
         if !active { for ws in live { ws.drop?.cancelUI(clear: false) } }
         refreshTasks.values.forEach { $0.cancel() }
@@ -490,6 +667,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     var needsYouCount: Int { live.reduce(0) { $0 + $1.waiting.count } }
 
+    var approvalGroups: [ApprovalGroup] {
+        live.compactMap { ws in ws.usable && !ws.approvals.isEmpty ? ApprovalGroup(workspace: ws.info, requests: ws.approvals) : nil }
+    }
+
+    func refreshApprovals() async { for ws in live { await ws.refreshApprovals() } }
+
     var oldestWaiting: (question: Question, workspace: WorkspaceInfo)? {
         live.flatMap { ws in ws.waiting.map { ($0, ws.info) } }.min { $0.0.created < $1.0.created }
     }
@@ -505,50 +688,52 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let transitions { transitions.realmEnterDemo() } else { Task { await startDemo() } }
     }
 
-    // MARK: Pending decisions (U8)
+    // MARK: Pending answers (U8, C2b)
 
     func recordSubmission(_ review: ReviewValue) {
         guard lifetime.isActive else { return }
         submitted[review.questionID + "/" + review.optionID] = review
     }
 
-    func storedDecision(workspace: LiveWorkspace, questionID: String) async -> ID16? {
-        guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return nil }
-        return (try? await workspace.api.pendingDecisions())?.first { $0.questionID == qid }?.decisionID
+    /// The review id of this question's answer still being sent or settled, if any.
+    func storedWrite(workspace: LiveWorkspace, questionID: String) async -> String? {
+        if case .found(let id) = await storedWriteLookup(workspace: workspace, questionID: questionID) { return id }
+        return nil
+    }
+
+    /// Whether this question has an answer still being sent or settled: `unknown` when the store could not be read (never "none").
+    func storedWriteLookup(workspace: LiveWorkspace, questionID: String) async -> StoredWriteLookup {
+        guard canUse(workspace.info.id), let qid = ID16(hex: questionID) else { return .unknown }
+        guard let all = try? await workspace.api.pendingWrites() else { return .unknown }
+        return all.first { $0.questionID == qid }.map { .found($0.reviewID) } ?? .none
     }
 
     func refreshPending(reconcile: Bool = false) async {
         guard lifetime.isActive else { return }
-        var out: [DecisionStatus] = []
+        var out: [PendingWrite] = []
         for ws in live where canUse(ws.info.id) {
             // A store error is not an empty list: keep what is shown until the next read succeeds.
-            guard let statuses = try? await ws.api.pendingDecisions(), canUse(ws.info.id), !Task.isCancelled else { return }
+            guard let statuses = try? await ws.api.pendingWrites(), canUse(ws.info.id), !Task.isCancelled else { return }
             for d in statuses {
-                let q = ws.question(id: d.questionID.hex)
-                let key = d.questionID.hex + "/" + d.optionID
-                let review = submitted[key] ?? ReviewValue(
-                    workspaceID: ws.info.id, workspaceName: ws.info.name, hue: ws.info.hue, clientHosted: ws.info.clientHosted,
-                    hostedBy: ws.info.hostedBy, questionID: d.questionID.hex, ticket: q?.ticket ?? "", text: q?.text ?? "",
-                    optionID: d.optionID, optionLabel: q?.options.first { $0.id == d.optionID }?.label ?? d.optionID,
-                    options: q?.options ?? [], contentHash: q?.contentHash ?? "", revision: 0, isDemo: isDemo)
-                let outcome: DecisionOutcomeState = switch d.state {
-                case .uncertain: .uncertain
-                case .needsRetry: .needsRetry
-                case .pending: .pending
-                }
-                out.append(DecisionStatus(decisionID: d.decisionID.hex, questionID: d.questionID.hex, workspaceID: ws.info.id,
-                                          optionID: d.optionID, optionLabel: review.optionLabel, review: review, outcome: outcome))
-                if reconcile { startReconcile(workspace: ws, decisionID: d.decisionID) }
+                guard let qid = d.questionID?.hex, let option = d.option else { continue }
+                // SH5: what was signed, from the stored snapshot (never the current cached question); this run's own review if the
+                // stored one no longer checks
+                guard let review = d.review.map({ Mapping.reviewValue($0, questionID: qid, info: ws.info, isDemo: isDemo) })
+                        ?? submitted[qid + "/" + option] else { continue }
+                out.append(PendingWrite(reviewID: d.reviewID, questionID: qid, workspaceID: ws.info.id, optionID: option,
+                                        optionLabel: review.optionLabel, review: review, state: d.state == .sending ? .sending : .checking))
+                if reconcile { startReconcile(workspace: ws, reviewID: d.reviewID) }
             }
         }
-        pendingDecisions = out.filter { $0.outcome != .resolved }
+        pendingWrites = out
     }
 
-    /// Bounded background reconciliation while the app runs; the state stays visible on Home. It reconciles the stored decision only.
-    func startReconcile(workspace: LiveWorkspace, decisionID: ID16) {
+    /// Bounded background settlement while the app runs; the state stays visible on Home. It settles the stored answer only (reads first,
+    /// never a new signature from here).
+    func startReconcile(workspace: LiveWorkspace, reviewID: String) {
         guard canUse(workspace.info.id) else { return }
         if options.holdReconcile { Task { await refreshPending() }; return }
-        let key = workspace.workspaceID.hex + "/" + decisionID.hex
+        let key = workspace.workspaceID.hex + "/" + reviewID
         reconcileTasks[key]?.cancel()
         reconcileSerial += 1
         let serial = reconcileSerial
@@ -559,8 +744,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             for _ in 0..<6 {
                 do { try await Task.sleep(for: .seconds(self?.options.uiTesting == true ? 20 : 4)) } catch { return }
                 guard let self, self.canUse(workspace.info.id) else { return }
-                if let outcome = try? await workspace.api.reconcile(decisionID: decisionID), outcome != .uncertain {
-                    await self.decisionSettled(workspace: workspace)
+                if let outcome = try? await workspace.api.settle(reviewID: reviewID), outcome != .checking {
+                    await self.answerSettled(workspace: workspace)
                     return
                 }
             }
@@ -574,10 +759,20 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         reconcileSerials[key] = nil
     }
 
-    func decisionSettled(workspace: LiveWorkspace) async {
+    func answerSettled(workspace: LiveWorkspace) async {
         guard lifetime.isActive else { return }
         await workspace.refresh()
         await refreshPending()
+    }
+
+    /// scenePhase `.inactive` and protected-data loss end every review's eligibility for an automatic re-sign (C2b codex 11).
+    /// Synchronous: each session's lifecycle fence is bumped before this returns (no Task hop).
+    func noteInactive() {
+        for ws in live { ws.api.noteInactive() }
+    }
+
+    func noteProtectedDataUnavailable() {
+        for ws in live { ws.api.noteProtectedDataUnavailable() }
     }
 
     // MARK: Demo controls (real host behaviour, one shot)
@@ -588,6 +783,31 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         signOutcome = .accepted
         return true
     }
+
+    #if DEBUG
+    /// UI tests: `--demo-key-race` makes the Demo host give the next key away before the first creation is sent (one key race).
+    /// `--demo-hold-creation` makes the Demo host hold the first creation admitted and not run (it stays "checking") until the next
+    /// "Check again" (`releaseDemoHeldCreation`).
+    @ObservationIgnored private var demoKeyRaceUsed = false
+    @ObservationIgnored private var demoHoldCreationUsed = false
+    func applyDemoCreationControl(workspace: LiveWorkspace) async {
+        let args = ProcessInfo.processInfo.arguments
+        guard workspace.usable, let runtime = demo, let host = runtime.entry(for: workspace.workspaceID)?.host else { return }
+        if args.contains("--demo-key-race"), !demoKeyRaceUsed {
+            demoKeyRaceUsed = true
+            await host.demoTakeNextKey()
+        }
+        if args.contains("--demo-hold-creation"), !demoHoldCreationUsed {
+            demoHoldCreationUsed = true
+            await host.demoHoldNextWrite()
+        }
+    }
+    func releaseDemoHeldCreation(workspace: LiveWorkspace) async {
+        guard ProcessInfo.processInfo.arguments.contains("--demo-hold-creation"), workspace.usable, let runtime = demo,
+              let host = runtime.entry(for: workspace.workspaceID)?.host else { return }
+        await host.demoRecoverWrites()
+    }
+    #endif
 
     func applyDemoSignControl(workspace: LiveWorkspace, questionID: String, optionID: String) async {
         let outcome = signOutcome
@@ -602,10 +822,15 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
             let text = workspace.question(id: questionID)?.text ?? ""
             try? await host.demoEditQuestion(qid, text: text + "\nEdited at the Mac.")
         case .uncertain:
-            await host.demoLoseNextDecisionResponse(faults: runtime.faults)
+            await host.demoLoseNextWriteResponse()
+        case .workspaceChanged:
+            await host.demoBumpMembersV()
+        case .held:
+            await host.demoHoldNextWrite()
         case .locked:
             // The simulated phone is locked for this attempt; it unlocks by itself a few seconds later (the person unlocking it).
             runtime.lock.isLocked = true
+            workspace.api.noteCustodyLocked()
             demoLockRelease?.cancel()
             demoLockRelease = Task { [weak runtime] in
                 try? await Task.sleep(for: .seconds(2))
@@ -711,6 +936,21 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 
     var custody: String { DefaultCustody.isSecureEnclave ? "Secure Enclave" : "Software key (Simulator)" }
 
+    var realmSummary: RealmSummary? {
+        guard let realm else { return nil }
+        let build = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") + " ("
+            + (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") + ")"
+        let connection: String
+        if realm == .demo { connection = "Simulated on this iPhone" }
+        else if live.isEmpty { connection = "No workspace yet" }
+        else if live.allSatisfy({ if case .online = $0.info.connection { true } else { false } }) { connection = "Connected" }
+        else { connection = "Offline" }
+        return RealmSummary(name: realm == .live ? "Live" : "Demo", origin: realm == .live ? liveOrigin : nil, custody: custody,
+                            connection: connection, lastChecked: live.isEmpty ? nil : lastChecked, build: build)
+    }
+
+    func leaveLive(thenDemo: Bool) { leaveRealm(thenDemo: thenDemo) }
+
     func setNotifications(_ on: Bool, workspaceID: String) {
         guard capabilities.push, isLive(workspaceID) else { return }
         live.first { $0.info.id == workspaceID }?.setNotifications(on)
@@ -732,8 +972,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         guard capabilities.push else { notificationStatus = .notAsked; pushDiagnostics = ""; return }
         let state = await currentPermission()
         notificationStatus = map(state)
-        if !isDemo, notificationStatus == .allowed { registerForAPNs() }
-        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
+        if !isDemo, notificationStatus == .allowed { registerForAPNs(); Task { await registerPushAll() } }
+        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue, relay: pushCoordinator?.summary)
     }
 
     /// Asks the system once (never at launch) and waits for the answer.
@@ -743,8 +983,8 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let notificationPermissionOverride { return await notificationPermissionOverride() }
         let state = await PushPermission.requestIfNeeded()
         notificationStatus = map(state)
-        if !isDemo, notificationStatus == .allowed { registerForAPNs() }
-        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue)
+        if !isDemo, notificationStatus == .allowed { registerForAPNs(); Task { await registerPushAll() } }
+        pushDiagnostics = PushDiagnostics.summary(isDemo: isDemo, permission: notificationStatus.rawValue, relay: pushCoordinator?.summary)
         return notificationStatus
     }
 
@@ -802,21 +1042,133 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         }
     }
 
+    // MARK: Relay push (P3-D40)
+
+    /// The Live realm's push coordinator; nil in Demo (which only simulates push) and while the realm offers no push capability.
+    @ObservationIgnored private(set) var pushCoordinator: PushRegistrationCoordinator?
+    /// The APNs environment and token as this build has them. Seams for tests; production reads the provisioning profile and the token store.
+    @ObservationIgnored var pushEnvironment: () -> PushEnvironment? = { APNsEnvironment.current }
+    /// The stored token, only if it was issued for the environment this build resolves now (a token from another environment is not ours).
+    @ObservationIgnored var pushToken: () -> String? = {
+        guard let stored = APNsTokenStore().stored, stored.environment == APNsEnvironment.current else { return nil }
+        return stored.token
+    }
+    /// Tests: replaces the realm transport for the detached unregister.
+    @ObservationIgnored var pushUnregister: ((ID16) async -> PushRegistrationOutcome)?
+
+    /// When a relay 404 last said push is off (see `PushRegistrationCoordinator.pushOffRetry`). Per install; cleared by a Reset.
+    var pushOffSinceStored: Date? {
+        get { resetFlags.object(forKey: Self.pushOffKey) as? Date }
+        set { if let newValue { resetFlags.set(newValue, forKey: Self.pushOffKey) } else { resetFlags.removeObject(forKey: Self.pushOffKey) } }
+    }
+    static let pushOffKey = "orch.push.relayOffSince"
+
+    func pushCoordinatorForLive() -> PushRegistrationCoordinator? {
+        guard isLive, capabilities.push, let runtime else { return nil }
+        if let pushCoordinator { return pushCoordinator }
+        let c = PushRegistrationCoordinator(.init(
+            realm: runtime.realm.rawValue,
+            enabled: { [weak self] in guard let self else { return false }; return self.capabilities.push && self.lifetime.isActive && !self.retired },
+            environment: { [weak self] in self?.pushEnvironment() },
+            token: { [weak self] in self?.pushToken() },
+            permissionAllowed: { [weak self] in self?.notificationStatus == .allowed },
+            sink: { [weak self] in self?.runtime?.makePushSink() },
+            isActive: { [weak self, weak runtime] id in
+                guard let self, let runtime, self.runtime === runtime else { return false }
+                return self.canUse(id.hex)
+            },
+            unregisterDetached: { [weak self, weak runtime] id in
+                if let f = self?.pushUnregister { return await f(id) }
+                guard let runtime else { return .failed("runtime gone") }
+                return await runtime.unregisterPushOutcome(workspace: id)
+            },
+            pushOffSince: { [weak self] in self?.pushOffSinceStored },
+            setPushOffSince: { [weak self] in self?.pushOffSinceStored = $0 }))
+        pushCoordinator = c
+        // iOS hands the token over at every launch that registers: refresh the relay registrations then (a changed token gets a new id).
+        OrchAppDelegate.onTokenReceived = { [weak self] _ in Task { @MainActor in await self?.registerPushAll() } }
+        return c
+    }
+
+    /// A Live workspace is ready (joined now or restored at launch): keep the notification extension's material current, follow the epoch,
+    /// and register with the relay if the permission and token allow. Nothing here runs without the push capability.
+    private func startPush(for ws: LiveWorkspace, joined j: JoinedWorkspace) {
+        guard let c = pushCoordinatorForLive() else { return }
+        let service: any PushRegistering = makePushService(j)
+        ws.push = service
+        c.workspaceStarted(j.workspace)
+        let observer: @Sendable (UInt32) -> Void = { [weak self, weak ws] _ in
+            Task { @MainActor in
+                guard let self, let ws, let c = self.pushCoordinator, let s = ws.push, self.canUse(ws.info.id) else { return }
+                await c.publishMaterial(s, name: ws.info.name, generation: ws.generation)
+            }
+        }
+        Task { [weak self, weak ws] in
+            await j.session.setEpochObserver(observer)
+            guard let self, let ws else { return }
+            await c.publishMaterial(service, name: ws.info.name, generation: ws.generation)
+            await self.refreshNotificationStatus()         // reads the permission; allowed -> asks iOS for the token (never prompts)
+            // Owed cleanups first: a removal still owed for an earlier membership must reach the relay before this device registers anew.
+            await self.retryServerCleanup(within: self.registrationCleanupBound)
+            await c.register(service)
+        }
+    }
+
+    @ObservationIgnored var makePushService: (JoinedWorkspace) -> any PushRegistering = { $0.makePushService() }
+
+    /// Every Live workspace, in turn: at launch with a token, and when iOS hands over a new one.
+    func registerPushAll() async {
+        guard let c = pushCoordinator, isLive else { return }
+        await c.registerAll(live.filter { isLive($0.info.id) }.compactMap(\.push))
+    }
+
     // MARK: Pending server cleanup (U9)
 
     private func enqueueServerCleanup(ws: String, generation: Int64) {
         pendingServerCleanups = cleanupStore?.add(PendingServerCleanup(ws: ws, generation: generation, since: Date())) ?? []
     }
 
-    /// Back online: tries each pending server-side cleanup once. Successes leave the list; failures stay for the next try.
-    func retryServerCleanup() async {
+    /// An owed push cleanup older than this is dropped: the relay deletes an unrefreshed registration after 60 days anyway.
+    static let owedCleanupLifetime: TimeInterval = 60 * 86_400
+    @ObservationIgnored private var cleanupRun: Task<Void, Never>?
+
+    /// Back online (a start, a foreground, "Retry now"): tries each pending server-side cleanup once, one run at a time. Successes leave the
+    /// list; failures stay for the next try. An item whose workspace is joined again (a re-pair is a new membership) is dropped without
+    /// being sent, so an old cleanup can never remove a fresh registration; one older than `owedCleanupLifetime` is dropped too.
+    ///
+    /// `within` bounds how long THIS caller waits (an unreachable relay must not hold a registration for the transport timeout); the run itself
+    /// is not cancelled and finishes in the background, and a later call joins it.
+    func retryServerCleanup() async { await retryServerCleanup(within: nil) }
+
+    func retryServerCleanup(within seconds: Double?) async {
+        if let running = cleanupRun { await waitBounded(running, seconds); return }
         guard let cleanupStore else { return }
-        for item in cleanupStore.load() {
-            do { try await serverCleanup(item); pendingServerCleanups = cleanupStore.remove(ws: item.ws, generation: item.generation) }
-            catch { continue }
+        let run = Task { @MainActor [self] in
+            defer { cleanupRun = nil }
+            for item in cleanupStore.load() {
+                // The workspace still listed with the item's own generation is a Leave in progress or one whose wipe failed
+                // (`.removing`, `.removalIncomplete`): it owns the item (removed on a definite done), so it is neither sent nor dropped here.
+                // Listed with ANOTHER generation it is a re-pair, a new membership: the old item is dropped unsent.
+                if live.contains(where: { $0.workspaceID.hex == item.ws && $0.generation == item.generation }) { continue }
+                if live.contains(where: { $0.workspaceID.hex == item.ws }) || Date().timeIntervalSince(item.since) > Self.owedCleanupLifetime {
+                    _ = cleanupStore.remove(ws: item.ws, generation: item.generation); continue
+                }
+                do { try await serverCleanup(item); _ = cleanupStore.remove(ws: item.ws, generation: item.generation) }
+                catch { continue }
+            }
+            pendingServerCleanups = cleanupStore.load()
         }
-        pendingServerCleanups = cleanupStore.load()
+        cleanupRun = run
+        await waitBounded(run, seconds)
     }
+
+    private func waitBounded(_ run: Task<Void, Never>, _ seconds: Double?) async {
+        guard let seconds else { await run.value; return }
+        _ = await racing(seconds: seconds) { await run.value }
+    }
+
+    /// How long a registration waits for owed cleanups before it goes ahead (they continue in the background).
+    @ObservationIgnored var registrationCleanupBound: Double = 3
 
     /// Leave = "Remove from this iPhone": the real local wipe first and network-independent; server cleanup is reported separately (U9).
     func leave(workspaceID: String, simulateOffline: Bool) async -> LeaveReport {
@@ -837,6 +1189,21 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         let canDeregister = ws.info.scopes.contains(.operate)
         await waitForLifecycle()
         await ws.stop()
+        // Relay push, best effort and bounded. The wipe's tombstone is written FIRST (the intent is durable: a kill in the window below is
+        // finished at relaunch), then the registration is removed through the realm transport and device key (the workspace session is
+        // stopped and its store carries the tombstone). If the relay cannot be reached the cleanup is recorded as owed (below); it never
+        // blocks or changes the local wipe beyond the bound.
+        var pushOwed = false
+        if let c = pushCoordinator, ws.push != nil {
+            do {
+                try await beginWorkspaceWipe(runtime, ws)
+                // The tombstone is durable, so this workspace can never reopen: only now is the cleanup recorded as owed, before the
+                // unregister window (a kill inside it must not lose it), and removed only on a definite `.done`.
+                enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation)
+                pushOwed = await c.unregister(workspace: ws.workspaceID) == .owed
+                if !pushOwed { pendingServerCleanups = cleanupStore?.remove(ws: ws.workspaceID.hex, generation: ws.generation) ?? [] }
+            } catch { pushOwed = true }       // the wipe below writes the tombstone itself; the cleanup stays owed
+        }
         let prefix = ws.workspaceID.hex + "/"
         for (key, task) in reconcileTasks where key.hasPrefix(prefix) { task.cancel(); reconcileTasks[key] = nil; reconcileSerials[key] = nil }
         do { try await wipeWorkspace(runtime, ws) }
@@ -853,24 +1220,82 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         transition(workspaceID, to: .removed)
         live.removeAll { $0.info.id == workspaceID }
         heldDropItems.removeAll { $0.workspaceID == workspaceID }
-        pendingDecisions.removeAll { $0.workspaceID == workspaceID }
+        pendingWrites.removeAll { $0.workspaceID == workspaceID }
         // Only Demo can acknowledge a server-side removal; Live has no implemented, acknowledged operation yet, so it never claims one.
         let server: LeaveServerStatus = (!canDeregister || runtime.realm == .live) ? .finishOnMac : (simulateOffline ? .pendingOffline : .done)
-        if server == .pendingOffline { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
+        if server == .pendingOffline || pushOwed { enqueueServerCleanup(ws: ws.workspaceID.hex, generation: ws.generation) }
         return LeaveReport(workspaceName: name, server: server)
     }
 
     /// Wipes the Demo realm through the real reset path and leaves Demo.
-    func resetThisiPhone() { leaveRealm(thenDemo: false) }
+    func resetThisiPhone() { pushOffSinceStored = nil; leaveRealm(thenDemo: false) }
     func exitDemo() { leaveRealm(thenDemo: false) }
     /// "Reset Demo data" is leave-then-Demo: only a `RealmController` can do the second half, so without one it is a no-op.
     func resetDemoData() { leaveRealm(thenDemo: true) }
 
     private func leaveRealm(thenDemo: Bool) {
         guard !retired else { return }
-        if let transitions { transitions.realmLeave(thenDemo: thenDemo) }
-        else if !thenDemo { teardown() }
+        if let transitions { transitions.realmLeave(thenDemo: thenDemo); return }
+        // Without a controller (unit tests): the same two halves.
+        guard !thenDemo else { return }
+        if beginLeave() { leaveTask = Task { await drainPushRegistrations(); teardown() } } else { teardown() }
     }
+
+    /// True while Leave Live / Reset is removing the relay registrations (the realm is already marked for removal and cut off from the UI).
+    @ObservationIgnored private(set) var leavingRealm = false
+    @ObservationIgnored private var drainTargets: [(ws: ID16, workspace: LiveWorkspace)] = []
+
+    /// First half of Leave Live / Reset, synchronous: the intent is made durable BEFORE anything is awaited (the Live reset gate is persisted,
+    /// so a kill from here on is finished at relaunch, which skips the relay and completes the wipe), the push coordinator refuses every
+    /// further register and publish, and every workspace stops being usable (`removing`, never presented). Returns true when the relay
+    /// registrations still have to be removed (`drainPushRegistrations`) before `teardown`; false means `teardown` can run now.
+    func beginLeave() -> Bool {
+        guard !leavingRealm, !retired, isLive, capabilities.push, lifetime.isActive, let c = pushCoordinator, !live.isEmpty else { return false }
+        leavingRealm = true
+        c.beginClosing()
+        resetFlags.set(true, forKey: Keys.liveResetPending)
+        drainTargets = live.map { ($0.workspaceID, $0) }
+        for ws in live { transition(ws.info.id, to: .removing) }
+        PresentationGate.blockAll(live.map { $0.workspaceID.hex })
+        // Only after every durable gate above: nothing reconciles in the background any more (all synchronous, no await before this point).
+        reconcileTasks.values.forEach { $0.cancel() }; reconcileTasks = [:]; reconcileSerials = [:]
+        return true
+    }
+
+    /// Second half, bounded (a few seconds): sessions stop, then every registration of this device is removed through the realm transport
+    /// and device key, all workspaces at once. If the relay cannot be reached nothing can be owed afterwards (the device key goes with the
+    /// wipe): the registration ends by the host's removal of the device, an APNs 410, revocation, or 60 days without a refresh.
+    ///
+    /// One deadline (`drainBound`) covers the whole drain: stopping every session, every in-flight registration and every unregister. When it
+    /// passes the drain returns (the teardown that follows stops what is left); nothing here can hold the wipe past it.
+    func drainPushRegistrations() async {
+        defer { leavingRealm = false }
+        guard let c = pushCoordinator else { return }
+        let targets = drainTargets
+        drainTargets = []
+        let bound = drainBound
+        let started = Date()
+        #if DEBUG
+        let beforeStop = drainBeforeStop
+        #endif
+        _ = await racing(seconds: bound) {
+            #if DEBUG
+            await beforeStop?()
+            #endif
+            // Sessions first: from here no workspace write or send can race the unregister.
+            for t in targets { await t.workspace.drop?.service.invalidate(); await t.workspace.stop() }
+            let left = max(bound - Date().timeIntervalSince(started), 0.05)
+            let running = targets.map { t in Task { @MainActor in _ = await c.unregister(workspace: t.ws, seconds: left) } }
+            for r in running { await r.value }
+        }
+    }
+
+    /// The one bound of the realm drain, in seconds.
+    @ObservationIgnored var drainBound: Double = 3
+    #if DEBUG
+    @ObservationIgnored var drainBeforeStop: (@Sendable () async -> Void)?
+    var reconcileTaskCount: Int { reconcileTasks.count }
+    #endif
 
     /// True once a transition replaced this graph: a stray call into it must not touch the active realm's storage.
     @ObservationIgnored private(set) var retired = false
@@ -928,7 +1353,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         for ws in live { transition(ws.info.id, to: .removing) }
         let workspaces = live
         PresentationGate.blockAll(workspaces.map { $0.workspaceID.hex })
-        runtime = nil; live = []; heldDropItems = []; pendingDecisions = []; submitted = [:]
+        runtime = nil; live = []; heldDropItems = []; pendingWrites = []; submitted = [:]
         reconcileTasks.values.forEach { $0.cancel() }
         reconcileTasks = [:]; reconcileSerials = [:]
         refreshTasks.values.forEach { $0.cancel() }; refreshTasks = [:]
@@ -978,6 +1403,10 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
 protocol RealmTransitions: AnyObject {
     func realmEnterDemo()
     func realmLeave(thenDemo: Bool)
+    /// A Live entry attached its runtime to the current (Welcome) graph.
+    func realmEnteredLive()
+    /// The stuck-wipe escape for Live (see `LiveServices.forceEraseLive`).
+    func realmForceEraseLive()
 }
 
 /// A review for a workspace that is no longer on this iPhone: it can load nothing.
@@ -990,7 +1419,6 @@ final class UnavailableReviewModel: QuestionReviewModel {
     func sign() async {}
     func reread() async {}
     func checkWhetherReceived() async {}
-    func sendAgain() async {}
     func invalidate() {}
     func retryAfterUnlock() {}
 }

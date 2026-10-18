@@ -49,6 +49,10 @@ package struct HostPendingPair: Equatable, Sendable {
     /// Bumped by every transition (and by every reservation of one): an await in the host's approval path may continue only if the
     /// version it reserved is still the pairing's, so a concurrent rejection or expiry is never overwritten.
     package var version = 0
+    /// H12d: the `reader_decl` of the pair meta, kept verbatim (the FIRST stored declaration wins on a resend) and the gate's verdict on it
+    /// (nil: the meta had none). The fake host records the verdict; it has no `required_reader` to refuse with.
+    package var readerDecl: JSONValue?
+    package var readerVerdict: Result<Int, ReaderDecl.Reason>?
     package init(offer: ID16, dkSig: SigningPublicKey, dkKx: AgreementPublicKey, label: String, attempt: String, sasNonce: Data, cert: JSONValue?, certState: String,
                  state: String = "pending", certPendingSince: Int64? = nil, primaryLabel: String? = nil, challenge: JSONValue? = nil,
                  scopes: [String]? = nil, requestID: ID16? = nil) {
@@ -103,7 +107,9 @@ extension HostBridgeCore {
             if p.state == "cert_pending", let since = p.certPendingSince, now >= since + Self.certPendingLifeMs { p.state = "expired"; p.version += 1; pendingPairs[h.device] = p }
             return .pair(.status(answer: answer(p, wsk: wsk, owner: owner)), h)
         }
-        guard op.utf8Equal("pair"), m.exactly(["op", "dk_sig_pub", "dk_kx_pub", "label", "cert", "attempt"]), let sig = m.sigKeyField("dk_sig_pub"),
+        // meta v2 (protocol 8.3, H12d): the six fields, or the six plus the optional seventh `reader_decl`
+        let metaFields: Set<String> = ["op", "dk_sig_pub", "dk_kx_pub", "label", "cert", "attempt"]
+        guard op.utf8Equal("pair"), m.exactly(metaFields) || m.exactly(metaFields.union(["reader_decl"])), let sig = m.sigKeyField("dk_sig_pub"),
               let kx = m.kxKeyField("dk_kx_pub"), let label = m["label"]?.string, let cert = m["cert"], cert.isNull || cert.object != nil,
               let attempt = m["attempt"]?.string, Identifiers.isAttempt(attempt)
         else { return refuse("malformed") }
@@ -139,6 +145,12 @@ extension HostBridgeCore {
         var used = offer; used.used = true; offers[h.stream] = used
         var p = HostPendingPair(offer: h.stream, dkSig: sig, dkKx: kx, label: PersonText.clean(label), attempt: attempt, sasNonce: offer.sasNonce,
                                 cert: presented, certState: presented == nil ? "needed" : "present", scopes: offer.scopes)
+        if let decl = m["reader_decl"] {
+            p.readerDecl = decl
+            let who: ReaderDeclaration.Who = presented == nil ? .pkPin(Identifiers.pkPin(owner)) : .person(Identifiers.personID(owner))
+            p.readerVerdict = ReaderDecl.check(decl, ReaderDecl.Context(workspace: workspace, dkSig: sig, dkKx: kx, who: who,
+                                                                         bind: .pair(offer: h.stream, attempt: attempt)))
+        }
         p.scopesMax = offer.scopes
         pendingPairs[h.device] = p
         let code = (try? Identifiers.pairingCode(workspace: workspace, offer: h.stream, dkSig: sig, dkKx: kx, wsk: wsk, sasNonce: p.sasNonce)) ?? ""

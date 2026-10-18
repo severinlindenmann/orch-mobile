@@ -1,3 +1,4 @@
+#if os(macOS)   // Process: the iOS Simulator run of the package tests (dev-sandbox lane) skips the real-relay suites
 import Foundation
 
 /// Starts a local orch-relay (`uv run orch-relay serve`) for the integration suites.
@@ -129,3 +130,5 @@ final class RunningRelay: @unchecked Sendable {
         return UInt16(bigEndian: out.sin_port)
     }
 }
+
+#endif

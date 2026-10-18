@@ -1,3 +1,4 @@
+#if os(macOS)   // Process: the iOS Simulator run of the package tests (dev-sandbox lane) skips the real-relay suites
 import Foundation
 import Network
 import Testing
@@ -103,3 +104,5 @@ struct TLSLiveTests {
         }
     }
 }
+
+#endif

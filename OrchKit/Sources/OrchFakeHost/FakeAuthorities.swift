@@ -108,7 +108,7 @@ public actor FakeHost {
     let entropy: any Entropy
     let origin: String
     private let clientHosted: Bool
-    private let name: String
+    let name: String
     private let hostedBy: String?
     var wks: [UInt32: SymmetricKey] = [:]
     var cks: [UInt32: SymmetricKey] = [:]
@@ -291,13 +291,26 @@ public actor FakeHost {
                                      kind: .memberList, signer: wsk).json
     }
 
+    #if DEBUG
+    /// TEST-ONLY (package scope, Debug builds): the one Live origin a test host may log in to, so a Live-realm phone can be tested against the
+    /// FakeHost (the dev-sandbox lane tests). Never set by the app.
+    package var testingLiveOrigin: String?
+    package func setTestingLiveOrigin(_ origin: String?) { testingLiveOrigin = origin }
+    #endif
+
     /// Workspace session with the relay (section 12.2, signed with `WSK`). The login is bound to the transport's own context:
     /// it must be this Demo lifetime's context at this host's origin, or nothing is sent (a forwarding wrapper that reports another
     /// context cannot make `WSK` sign a foreign origin; `RelayClient` signs `transport.context.origin`).
     public func openSession(transport: any RelayTransport) async throws -> RelaySession {
         try capability.generation.check()
         let c = transport.context
-        guard c.realm == .demo, c.origin == origin, c.generation === capability.generation else { throw RealmViolation.wrongTransport }
+        let demoOK = c.realm == .demo && c.origin == origin && c.generation === capability.generation
+        #if DEBUG
+        let liveOK = c.realm == .live && c.origin == testingLiveOrigin
+        #else
+        let liveOK = false
+        #endif
+        guard demoOK || liveOK else { throw RealmViolation.wrongTransport }
         let opened = try await RelayClient(transport: transport).openSession(kind: .workspace, id: workspace, signer: wsk)
         relaySession = (opened.session, opened.expiresMs)
         return opened.session

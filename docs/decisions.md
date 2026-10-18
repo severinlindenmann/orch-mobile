@@ -94,8 +94,21 @@ owner-approved). Where this file and a proposal differ, this file wins. Spec gap
   workspace and person, own device and dk_hash, attempt and offer, the accepted challenge's request id, expiry), attributed to
   the pinned owner key, never to `primary_label`. Anything else is the unattributed "The pairing was refused"; a rejection naming
   a foreign device raises the alarm. An uncertified phone uses fresh keys per attempt; join is gated by the `approved` anchor.
-- D-3 The QR always carries the universal link (relay origin included); `orch://` only as compatibility with an
-  explicit relay origin, otherwise rejected.
+- D-3 (amended 15 Oct 2026, owner decision) The QR carries `orch://pair?relay=<origin>#v2.…` (the relay origin is always
+  explicit; an `orch://` link without exactly one `relay` parameter is rejected). There are no universal links yet, so a
+  pairing invitation arrives by QR or paste only, and a pasted `https://<relay>/app/pair#v2.…` link is accepted too.
+  Mitigations for the custom scheme (any app can register it, and a link can be opened by anything): (1) the in-app scanner
+  is the primary path (the system camera would hand the link to whatever claims `orch://`); (2) an `orch://` open ALWAYS lands
+  on a review screen showing the reviewed origin read-only (ASCII/punycode), never connects by itself and never silently
+  leaves Demo (while Demo is active the link is held in memory and the person is offered "Leave Demo and pair your Mac" with
+  a destructive confirmation); (3) the origin must be `https` (no http loopback in the app; a shipped build cannot reach
+  plaintext), one relay origin and one owner per Live install, and a different origin is refused before any network access;
+  (4) the pairing still needs the host's comparison-code approval, but that is NOT a barrier against a hostile invitation: an
+  attacker's `orch://` link names the attacker's relay and host, and that host approves its own pairing. The only barrier is the
+  review screen and the person: it shows the relay prominently, says where the link came from ("Opened from another app" /
+  "Scanned in orch" / "Pasted into orch"), never calls the unverified host "your Mac", and warns "Only continue if you just
+  started pairing on your Mac and this relay is yours." Residual risk: one careless Connect tap pairs this iPhone with a hostile
+  host (it can then show that host's questions); universal links or a relay allow-list would reduce it and are PR C.
 - D-4 No `apns-collapse-id` in the prototype (S2's safer default); replacement via the NSE + delivered-item removal.
 - D-5 Type scope (terminal) is out of P4 on the phone.
 - D-6 Workspace display name comes from the signed card, opened with the device's sealed `CK` via a provisional

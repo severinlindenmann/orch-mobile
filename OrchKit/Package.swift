@@ -21,7 +21,7 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         // Test-only: the single copy of the protocol vectors. Not a product, never linked into the app.
         .target(name: "OrchTestVectors", path: "Tests/OrchTestVectors", exclude: ["PROVENANCE.md"],
-                resources: [.copy("vectors_v2.json"), .copy("http_fixtures")]),
+                resources: [.copy("vectors_v2.json"), .copy("reader_decl_vectors.json"), .copy("http_fixtures"), .copy("push_fixtures"), .copy("f1"), .copy("r2")]),
         .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
         // Relay HTTP v2 examples (orch-relay tests/http_fixtures): schema, pure-wire checks and the PR2..PR5 skip list.
         .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),
@@ -46,7 +46,7 @@ let package = Package(
         .target(name: "OrchPushFixtures", dependencies: ["OrchProtocol"], path: "Tests/OrchPushFixtures"),
         .target(name: "OrchClient", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore", "OrchShareStaging"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchClientTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore"]),
+        .testTarget(name: "OrchClientTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore", "OrchTestVectors"]),
         .target(name: "OrchFakeHost", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore", "OrchClient"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchFakeHostTests",

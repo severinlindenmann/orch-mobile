@@ -29,6 +29,12 @@ public struct DevicePublicKeys: Equatable, Sendable {
     public let kx: AgreementPublicKey
 }
 
+/// Where a device key lives: in the Secure Enclave, or in software (Simulator and macOS builds only).
+public enum CustodyKind: String, Sendable, Equatable {
+    case secureEnclave
+    case software
+}
+
 /// `dk_sig` (signing) and `dk_kx` (key agreement): two P-256 keys, one device identity (decision A6).
 ///
 /// An identity is tagged with the realm of the custody that produced it. Only in-package custodies set the tag (the
@@ -38,7 +44,12 @@ public struct DeviceIdentity: Sendable {
     package let sig: any Signer
     package let kx: any KeyAgreer
     package let realm: Realm
-    package init(sig: any Signer, kx: any KeyAgreer, realm: Realm) { self.sig = sig; self.kx = kx; self.realm = realm }
+    /// Which in-package custody produced the keys. Set only by `SecureEnclaveCustody` and `SoftwareCustody` (and copied by the realm lease),
+    /// so code outside the package cannot relabel a software identity as a Secure Enclave one: person-event policy follows this tag.
+    package let custody: CustodyKind
+    package init(sig: any Signer, kx: any KeyAgreer, realm: Realm, custody: CustodyKind) {
+        self.sig = sig; self.kx = kx; self.realm = realm; self.custody = custody
+    }
     public var publicKeys: DevicePublicKeys { DevicePublicKeys(sig: sig.publicKey, kx: kx.publicKey) }
 }
 

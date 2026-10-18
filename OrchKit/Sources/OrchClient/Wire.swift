@@ -58,6 +58,18 @@ public struct WireReply: Sendable, Equatable {
     }
 }
 
+/// Per-request overrides of a sender's defaults. The Drop routes need them: a 26 MiB blob reply is far above the 4 MiB default cap and a
+/// 26 MiB upload cannot finish inside the 120 s default deadline. nil keeps the sender's own value.
+public struct RequestOptions: Sendable, Equatable {
+    /// The most response body bytes the sender reads before it gives up with `.responseTooLarge`.
+    public var maxResponseBytes: Int?
+    /// The absolute deadline for the whole exchange (trickled bytes do not extend it).
+    public var resourceTimeout: TimeInterval?
+    public init(maxResponseBytes: Int? = nil, resourceTimeout: TimeInterval? = nil) {
+        self.maxResponseBytes = maxResponseBytes; self.resourceTimeout = resourceTimeout
+    }
+}
+
 /// One request as HTTP carries it. The in-process relay parses the target itself, exactly as a server would.
 public struct WireRequest: Sendable, Equatable, CustomStringConvertible {
     public let method: String
@@ -65,12 +77,24 @@ public struct WireRequest: Sendable, Equatable, CustomStringConvertible {
     public let target: String
     public let headers: [String: String]
     public let body: Data
+    /// A request body streamed from this file (then `body` is empty). The sender sends it in small pieces, so it never holds the
+    /// whole file in memory; `Content-Length` is the file's size.
+    public let bodyFile: URL?
+    public let options: RequestOptions
     /// The peer address as the relay sees it (rate limits are per address).
     public let clientAddress: String
 
-    public init(method: String, target: String, headers: [String: String] = [:], body: Data = Data(), clientAddress: String) throws {
+    public init(method: String, target: String, headers: [String: String] = [:], body: Data = Data(), clientAddress: String,
+                bodyFile: URL? = nil, options: RequestOptions = RequestOptions()) throws {
         self.method = method; self.target = target; self.body = body; self.clientAddress = clientAddress
+        self.bodyFile = bodyFile; self.options = options
         self.headers = try HeaderMap.normalize(headers.map { (name: $0.key, value: $0.value) })
+    }
+
+    /// The same request with a file body read into `body` (the in-process relay has no socket to stream to).
+    public func materialized() throws -> WireRequest {
+        guard let f = bodyFile else { return self }
+        return try WireRequest(method: method, target: target, headers: headers, body: Data(contentsOf: f), clientAddress: clientAddress, options: options)
     }
 
     public func header(_ name: String) -> String? {
@@ -113,7 +137,11 @@ public protocol RelayTransport: Sendable {
     func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
     /// `wait` is the long-poll seconds (0...25, section 19); nil sends no `wait` (an immediate answer).
     func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply
+    /// `permit` is non-nil exactly for a person-event write (C2b); a transport that carries it to a relay refuses one that is not a
+    /// live Secure Enclave permit, and the in-process Demo transport refuses any that is not a Demo one. Reads pass nil.
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply
+    /// See the extension: nil unless the transport is the in-process Demo one.
+    var processLocalSender: ObjectIdentifier? { get }
     func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply
     func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply
     func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply
@@ -127,8 +155,12 @@ public protocol RelayTransport: Sendable {
     /// Ends a session (`POST /v2/session/logout`). Best effort: callers ignore failure. Transports without the route keep the default.
     func logout(session: RelaySession) async throws -> WireReply
     func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
+    /// The same `PUT` with the frame streamed from `bodyFile` (the sender never holds it whole). Transports without streaming read it.
+    func dropPut(objectID: ID16, ifMatch: UInt32, bodyFile: URL, session: RelaySession) async throws -> WireReply
     func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
     func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply
+    /// `GET /v2/drop/{o}/descriptors?after=&limit=` (protocol 19.9): signed descriptors ascending by version, `after` exclusive.
+    func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply
 
     // The primary device's side of the cert_pending queues and the account route (section 19.1, 19.3).
     /// `GET /v2/persons/{person}/cert-requests[?wait=s]` with the primary's device session (D(p), addressee only).
@@ -148,9 +180,20 @@ extension RelayTransport {
     public func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
     public func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
     public func createAccount(_ body: Data) async throws -> WireReply { throw TransportError.invalidArgument }
+    public func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
+    public func dropPut(objectID: ID16, ifMatch: UInt32, bodyFile: URL, session: RelaySession) async throws -> WireReply {
+        try await dropPut(objectID: objectID, ifMatch: ifMatch, body: Data(contentsOf: bodyFile), session: session)
+    }
 }
 
 public extension RelayTransport {
+    /// The identity of the in-process sender behind this transport (the FakeRelay object), nil for any transport that is not one. A
+    /// `ProcessLocalWriteGrant` admits only the transport whose sender it was minted with.
+    var processLocalSender: ObjectIdentifier? { nil }
+    /// A post that is not a write (a read, a declaration).
+    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
+        try await bridgePost(envelope, route: route, session: session, permit: nil)
+    }
     func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await pairingPoll(route: route, after: after, wait: nil) }
     func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply {
         try await bridgePoll(route: route, after: after, wait: nil, session: session)
@@ -168,6 +211,10 @@ public protocol RequestSender: Sendable {
     var origin: String { get }
     func send(_ request: WireRequest) async throws -> WireReply
 }
+
+/// A sender that stays inside this process (the FakeRelay, or a test double standing in for it): the only kind a Demo realm may use.
+/// Package-scoped on purpose: conformance is an in-package decision, and no sender that opens a socket conforms.
+package protocol InProcessDemoSender: RequestSender {}
 
 /// Thrown by a transport. HTTP failures are not here: they are `WireReply` values.
 public enum TransportError: Error, Equatable, Sendable {

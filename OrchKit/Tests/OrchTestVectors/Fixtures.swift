@@ -83,4 +83,13 @@ public enum Fixtures {
     }
 
     public static func loadAll() throws -> [File] { try fileNames().map(load) }
+
+    /// The push registration fixtures (orch-relay 4a9f954, see PROVENANCE.md "push_fixtures"): kept apart from `http_fixtures`, which is
+    /// pinned to an older manifest revision.
+    public static func loadPush(_ fileName: String) throws -> File {
+        let dir = (Bundle.module.resourceURL ?? URL(fileURLWithPath: "/nonexistent")).appendingPathComponent("push_fixtures", isDirectory: true)
+        var f = try JSONDecoder().decode(File.self, from: Data(contentsOf: dir.appendingPathComponent(fileName)))
+        f.fileName = fileName
+        return f
+    }
 }

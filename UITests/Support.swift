@@ -46,6 +46,19 @@ extension XCUIElement {
 }
 
 extension XCUIApplication {
+    /// Arms the sign sheet the way a person does: the sheet lists every signed option, so Sign stays disabled until the end of the
+    /// content has been scrolled to (and the arming delay has passed). Swipes until the button is enabled.
+    func arm(_ confirm: XCUIElement, timeout: TimeInterval = 40) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        var swipes = 0
+        while Date() < end {
+            if confirm.exists && confirm.isEnabled { return true }
+            if swipes < 12 { swipeUp(velocity: .fast); swipes += 1 }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return confirm.exists && confirm.isEnabled
+    }
+
     /// Panels are lazy lists: rows below the fold do not exist until scrolled to.
     @discardableResult
     func reveal(_ element: XCUIElement, timeout: TimeInterval = 60) -> Bool {

@@ -53,7 +53,8 @@ package enum PairingWire {
     // MARK: requests
 
     package enum Op: Sendable {
-        case pair(label: String, cert: JSONValue?)
+        /// `readerDecl`: protocol 8.3 meta v2, the optional seventh field (H12d); nil sends the six-field meta of a build without a declaration.
+        case pair(label: String, cert: JSONValue?, readerDecl: ReaderDeclaration? = nil)
         case status
     }
 
@@ -61,9 +62,11 @@ package enum PairingWire {
     package static func request(_ op: Op, context c: Context, signer: some Signer, rid: ID16, seq: UInt64, tsMs: Int64, salt: Data) throws -> Data {
         let meta: JSONValue
         switch op {
-        case .pair(let label, let cert):
-            meta = ["op": "pair", "dk_sig_pub": .string(B64U.encode(c.dkSig.x963)), "dk_kx_pub": .string(B64U.encode(c.dkKx.x963)),
-                    "label": .string(label), "cert": cert ?? .null, "attempt": .string(c.attempt)]
+        case .pair(let label, let cert, let readerDecl):
+            var m: [String: JSONValue] = ["op": "pair", "dk_sig_pub": .string(B64U.encode(c.dkSig.x963)), "dk_kx_pub": .string(B64U.encode(c.dkKx.x963)),
+                                          "label": .string(label), "cert": cert ?? .null, "attempt": .string(c.attempt)]
+            if let readerDecl { m["reader_decl"] = readerDecl.json }
+            meta = .object(m)
         case .status: meta = ["op": "pair_status"]
         }
         let h = Bridge.Header(direction: .toHost, workspace: c.workspace, device: c.device, rid: rid, stream: c.offer, seq: seq,

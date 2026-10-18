@@ -32,6 +32,9 @@ final class LiveDropTests: XCTestCase {
         let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while drop.loading && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         guard !drop.loading else { throw Deadline() }
+        // Boot's foreground resumes the seeded uploads and only then refreshes, so `loading` can be false while an upload is still
+        // confirming. Settle them first: a test that counts confirmed uploads needs a quiet baseline (this raced on slow runners).
+        _ = try await drop.service.resumeUploads()
         await drop.refresh()
         XCTAssertFalse(drop.rows.isEmpty)
         return (services, drop)
@@ -91,6 +94,142 @@ final class LiveDropTests: XCTestCase {
             services.resetThisiPhone(); await services.waitForReset()
         }
     }
+
+    func testBlockedObjectPurgesOnlyItsOwnDownload() async throws {
+        let (services, drop) = try await fixture()
+        var files: [String: DropDownload] = [:]
+        for name in ["one", "two"] {
+            let object = try await drop.service.send(Data(name.utf8), name: name)
+            await drop.refresh()
+            let id = object.descriptor.object.hex
+            await drop.open(id)
+            files[id] = try XCTUnwrap(drop.downloads[id])
+        }
+        let ids = files.keys.sorted(), gone = ids[0], kept = ids[1]
+        try await drop.purgeLocal(objects: [gone])
+        XCTAssertNil(drop.downloads[gone])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[gone]!.url.path))
+        XCTAssertNotNil(drop.downloads[kept])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[kept]!.url.path))
+        try await drop.purgeLocal(objects: [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[kept]!.url.path))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    private func strayCache(_ drop: LiveDrop) async throws -> URL {
+        let stray = String(repeating: "e", count: 32), container = drop.service.downloadContainer
+        try await container.acceptDropChain(object: stray, chain: [Data([1])])
+        let now = drop.nowMs
+        return try await container.writeDropVerified(Data("stale".utf8), object: stray, version: 1, expiresMs: nil, now: { now }).url
+    }
+
+    func testCompleteWalkPurgesEveryUnlistedCacheAndKeepsTheLiveOnes() async throws {
+        let (services, drop) = try await fixture()
+        let object = try await drop.service.send(Data("keep".utf8), name: "keep")
+        await drop.refresh()
+        let id = object.descriptor.object.hex
+        await drop.open(id)
+        let live = try XCTUnwrap(drop.downloads[id])
+        let stray = try await strayCache(drop)       // an object blocked, tombstoned or absent in the walk is not in the live set
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+        await drop.refresh()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+        XCTAssertNotNil(drop.downloads[id]); XCTAssertFalse(drop.outdated)
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    #if DEBUG
+    func testIncompleteWalkPurgesNothingButCachedCopiesAreNotCurrentAndCannotBeOpened() async throws {
+        let (services, drop) = try await fixture()
+        let first = try await drop.service.send(Data("one".utf8), name: "one")
+        let second = try await drop.service.send(Data("two".utf8), name: "two")
+        let note = try await drop.service.send(Data("note body".utf8), name: "note.txt", mime: "text/plain")
+        await drop.refresh()
+        let noteID = note.descriptor.object.hex
+        await drop.open(noteID)
+        XCTAssertEqual(drop.rows.first { $0.id == noteID }?.text, "note body")
+        let id = first.descriptor.object.hex, other = second.descriptor.object.hex
+        await drop.open(id)
+        let live = try XCTUnwrap(drop.downloads[id])
+        let stray = try await strayCache(drop)
+        drop.listHook = { throw URLError(.notConnectedToInternet) }
+        await drop.refresh()
+        XCTAssertTrue(drop.outdated)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+        let row = try XCTUnwrap(drop.rows.first { $0.id == id })
+        XCTAssertTrue(row.outdated); XCTAssertNil(drop.previewURL)
+        XCTAssertNil(drop.rows.first { $0.id == noteID }?.text, "a note's text is not shown while outdated")
+        await drop.open(other)
+        XCTAssertNil(drop.downloads[other], "no open until a complete walk succeeds")
+        XCTAssertEqual(drop.status, "List may be outdated: refresh first")
+        drop.listHook = nil
+        await drop.refresh()
+        XCTAssertFalse(drop.outdated)
+        XCTAssertTrue(drop.rows.allSatisfy { !$0.outdated }, "rows are rebuilt without the stale flag")
+        XCTAssertEqual(drop.rows.first { $0.id == noteID }?.text, "note body")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stray.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+        await drop.open(other)
+        XCTAssertNotNil(drop.downloads[other])
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+    #endif
+
+    #if DEBUG
+    func testOpenRacingAWalkThatDropsTheObjectKeepsNothing() async throws {
+        let (services, drop) = try await fixture()
+        let object = try await drop.service.send(Data("x".utf8), name: "x")
+        await drop.refresh()
+        let id = object.descriptor.object.hex
+        drop.afterDownload = { drop.objects[id] = nil }          // a complete walk no longer shows it
+        await drop.open(id)
+        XCTAssertNil(drop.downloads[id]); XCTAssertNil(drop.previewURL)
+        XCTAssertEqual(drop.status, "No longer available")
+        let heads = try await drop.service.downloadContainer.database().query("SELECT file_version FROM drop_heads WHERE object=?", [.text(id)])
+        XCTAssertNil(heads.first?.int("file_version"), "the file written after the purge is removed too")
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+
+    func testOpenRacingAFailedWalkKeepsNothingAndTheOthersCachesStay() async throws {
+        let (services, drop) = try await fixture()
+        let a = try await drop.service.send(Data("a".utf8), name: "a"), b = try await drop.service.send(Data("b".utf8), name: "b")
+        await drop.refresh()
+        let idA = a.descriptor.object.hex, idB = b.descriptor.object.hex
+        await drop.open(idB)
+        let kept = try XCTUnwrap(drop.downloads[idB])
+        drop.afterDownload = {
+            drop.listHook = { throw URLError(.notConnectedToInternet) }
+            await drop.refresh()
+            drop.listHook = nil
+        }
+        await drop.open(idA)
+        XCTAssertTrue(drop.outdated)
+        XCTAssertNil(drop.downloads[idA]); XCTAssertNil(drop.previewURL)
+        XCTAssertEqual(drop.status, "List may be outdated: refresh first")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.url.path), "a failed walk purges no other object")
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+    #endif
+
+    #if DEBUG
+    func testCompleteWalkDroppingTheObjectClosesItsOpenPreview() async throws {
+        let (services, drop) = try await fixture()
+        let object = try await drop.service.send(Data("preview me".utf8), name: "doc.bin")
+        await drop.refresh()
+        let id = object.descriptor.object.hex
+        await drop.open(id)
+        let file = try XCTUnwrap(drop.downloads[id])
+        XCTAssertEqual(drop.previewURL, file.url)
+        drop.walkOmits = [id]
+        await drop.refresh()
+        XCTAssertNil(drop.previewURL, "the open preview of a dropped object closes")
+        XCTAssertNil(drop.downloads[id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+        services.resetThisiPhone(); await services.waitForReset()
+    }
+    #endif
 
     func testBusyAndUnknownRemovalPreserveRowsAndAlarmBlocksContent() async throws {
         let (services, drop) = try await fixture()

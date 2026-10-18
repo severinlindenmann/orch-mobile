@@ -28,7 +28,7 @@ struct PairingScreen: View {
                 if !typeSize.isAccessibilitySize { demoBar }
             }
             .background(isAlarm ? OC.danger.opacity(0.12) : OC.bg)
-            .navigationTitle("Pair a workspace")
+            .navigationTitle(model.isDemo ? "Pair a workspace" : "Pair with a Mac")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -73,8 +73,26 @@ struct PairingScreen: View {
 
     private var isAlarm: Bool { if case .alarm = model.state { true } else { false } }
 
+    private var showsCode: Bool {
+        switch model.state {
+        case .comparingHost, .comparingPrimary, .waitingPrimary: true
+        default: false
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
+        if model.obscured && showsCode {
+            // Backgrounded or inactive: no comparison code stays on screen (the app switcher snapshot, a shoulder surfer).
+            step(icon: "eye.slash", title: "Codes hidden",
+                 text: "Return to orch to continue. Polling is paused; the original time limits still apply.", id: "pair.obscured")
+        } else {
+            stateContent
+        }
+    }
+
+    @ViewBuilder
+    private var stateContent: some View {
         switch model.state {
         case .entry: entry
         case .connecting:
@@ -134,7 +152,17 @@ struct PairingScreen: View {
                     .accessibilityHidden(true)
                 Text(verbatim: "Added \(name)").font(OF.display).multilineTextAlignment(.center)
                     .accessibilityIdentifier("pair.ready")
-                Text("You can turn on notifications next.").font(OF.body).foregroundStyle(OC.textMuted)
+                if model.isDemo {
+                    Text("You can turn on notifications next.").font(OF.body).foregroundStyle(OC.textMuted)
+                } else {
+                    // Verified by the Mac's signed card and member list, not by anything the relay said.
+                    if !model.joinedScopes.isEmpty {
+                        Text(verbatim: "This iPhone may: " + model.joinedScopes.sorted().joined(separator: ", "))
+                            .font(OF.body).multilineTextAlignment(.center).accessibilityIdentifier("pair.scopes")
+                    }
+                    Text("Updates arrive while orch is open.").font(OF.body).foregroundStyle(OC.textMuted)
+                        .accessibilityIdentifier("pair.updates")
+                }
                 Button { onClose() } label: { Text("Done") }
                     .buttonStyle(.orchProminent).accessibilityIdentifier("pair.done")
             }
@@ -276,6 +304,8 @@ struct PairingScreen: View {
         case .couldNotVerify: "The workspace could not be verified"
         case .keysInUse: "This iPhone's keys may be in use"
         case .keysUnavailable: "This iPhone's keys are not available"
+        case .liveNotPrepared: "Live could not be prepared"
+        case .originRefused: "This invitation can't be used"
         }
     }
 
@@ -294,6 +324,8 @@ struct PairingScreen: View {
         case .couldNotVerify: "Nothing was added. Make a new link on your Mac and try again."
         case .keysInUse: "orch couldn't confirm that no other pairing is using these keys. Finish or cancel any other pairing, then try again."
         case .keysUnavailable: "Nothing was added. Unlock this iPhone and try again."
+        case .liveNotPrepared: "Nothing was added and nothing was sent. orch could not record this install or reach the keychain. Unlock this iPhone and try again."
+        case .originRefused: "Nothing was sent. This iPhone uses another relay, or the relay is not a secure (https) one."
         }
     }
 

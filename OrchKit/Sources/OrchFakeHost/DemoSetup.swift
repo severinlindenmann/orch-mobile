@@ -41,6 +41,9 @@ public final class DemoEnvironment: Sendable {
     public let index: WorkspaceIndex
     public let relay: FakeRelay
     public let transport: InProcessRelayTransport
+    /// Permission for this process to sign Demo person events under `passphrase` custody, bound to this environment's lifetime. Minted
+    /// here, in `DemoSetup.setup`, and nowhere else.
+    public let processLocalWriteGrant: ProcessLocalWriteGrant
     /// This iPhone's Demo keys as custody holds them now: `Realm.demo` entries, distinct from any live keys, leased to `generation`
     /// (they stop signing when the environment is reset). An uncertified phone draws fresh keys for every pairing attempt (G3b), so
     /// this is read from custody each time; while custody holds none (keys removed after a pairing ended) the last identity seen is
@@ -61,10 +64,10 @@ public final class DemoEnvironment: Sendable {
     let resetState = ResetState()
 
     init(context: RealmContext, capability: DemoCapability, layout: StoreLayout, index: WorkspaceIndex, relay: FakeRelay,
-         transport: InProcessRelayTransport, device: DeviceIdentity, custody: any DeviceKeyCustody, clock: any Clock<Duration>, wall: any WallClock,
+         transport: InProcessRelayTransport, grant: ProcessLocalWriteGrant, device: DeviceIdentity, custody: any DeviceKeyCustody, clock: any Clock<Duration>, wall: any WallClock,
          entropy: any Entropy) {
         self.context = context; self.capability = capability; self.layout = layout; self.index = index; self.relay = relay
-        self.transport = transport; self.clock = clock; self.wall = wall; self.entropy = entropy
+        self.transport = transport; self.processLocalWriteGrant = grant; self.clock = clock; self.wall = wall; self.entropy = entropy
         self.lastDevice = LockedBox(device)        // already leased to the generation by RealmContext.deviceIdentity
         self.custody = custody
     }
@@ -83,8 +86,9 @@ public enum DemoSetup {
         let index = try await WorkspaceIndex(layout: layout, fence: context.generation)   // commit-type index writes are fenced from construction
         let relay = try FakeRelay(capability: capability, context: context, clock: clock, wall: wall, entropy: entropy, faults: faults, limits: limits)
         let transport = try InProcessRelayTransport(context: context, relay: relay)
+        let grant = ProcessLocalWriteGrant(generation: context.generation, sender: relay)       // the only place a grant is minted
         return DemoEnvironment(context: context, capability: capability, layout: layout, index: index, relay: relay, transport: transport,
-                               device: device, custody: custody, clock: clock, wall: wall, entropy: entropy)
+                               grant: grant, device: device, custody: custody, clock: clock, wall: wall, entropy: entropy)
     }
 
     /// "Reset Demo": ends this environment's lifetime and erases the Demo realm, and only the Demo realm.

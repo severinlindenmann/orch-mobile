@@ -38,8 +38,8 @@ enum Mapping {
     static func question(_ q: OrchClient.Question, workspaceID: String) -> Question {
         let r = q.resolution
         return question(id: q.questionID.hex, workspaceID: workspaceID, ticket: q.ticket, text: q.text,
-                        options: q.options.map { QuestionOption(id: $0.id, label: $0.label) }, contentHash: hex(q.contentHash),
-                        createdMs: q.createdMs, state: q.state, decisionID: r?.decisionID.hex, optionID: answerOptionID(r?.answer),
+                        options: q.options.map { QuestionOption(id: $0.id, label: $0.label, cost: $0.cost) }, contentHash: hex(q.contentHash),
+                        createdMs: q.createdMs, state: q.state, decisionID: r?.decisionID, optionID: answerOptionID(r?.answer),
                         byLabel: r?.byDeviceLabel, atMs: r?.atMs)
     }
 
@@ -66,8 +66,38 @@ enum Mapping {
         Set(names.compactMap { Scope(rawValue: $0) })
     }
 
-    static func reviewValue(_ review: QuestionReview, info: WorkspaceInfo, optionID: String, revision: Int, isDemo: Bool) -> ReviewValue {
-        reviewValue(question(review.question, workspaceID: info.id), info: info, optionID: optionID, revision: revision, isDemo: isDemo)
+    /// C2b: the sheet's projection of ONE reviewed snapshot (codex 14): every option in hash order with its cost, the unbound context
+    /// and the signed details, all from the same immutable value the session signs. Strings pass unchanged (SheetProjectionTests).
+    static func reviewValue(_ s: ReviewedSnapshot, info: WorkspaceInfo, optionID: String, revision: Int, isDemo: Bool) -> ReviewValue {
+        let options = s.options.map { QuestionOption(id: $0.id, label: $0.label, cost: $0.cost) }
+        #if ORCH_DEV_SANDBOX
+        var value = ReviewValue(
+            workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
+            questionID: s.question.questionID.hex, ticket: s.ticketKey, text: s.text, optionID: optionID,
+            optionLabel: options.first { $0.id == optionID }?.label ?? optionID, options: options,
+            contentHash: hex(s.question.contentHash), revision: revision, isDemo: isDemo,
+            why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
+        value.devSandbox = s.devSandbox
+        return value
+        #else
+        return ReviewValue(
+            workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
+            questionID: s.question.questionID.hex, ticket: s.ticketKey, text: s.text, optionID: optionID,
+            optionLabel: options.first { $0.id == optionID }?.label ?? optionID, options: options,
+            contentHash: hex(s.question.contentHash), revision: revision, isDemo: isDemo,
+            why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
+        #endif
+    }
+
+    /// SH5: a stored answer's review, exactly as signed (from `pe_reviews.snapshot`).
+    static func reviewValue(_ s: StoredReview, questionID: String, info: WorkspaceInfo, isDemo: Bool) -> ReviewValue {
+        let options = s.options.map { QuestionOption(id: $0.id, label: $0.label, cost: $0.cost) }
+        return ReviewValue(
+            workspaceID: info.id, workspaceName: info.name, hue: info.hue, clientHosted: info.clientHosted, hostedBy: info.hostedBy,
+            questionID: questionID, ticket: s.ticketKey, text: s.text, optionID: s.option,
+            optionLabel: options.first { $0.id == s.option }?.label ?? s.option, options: options,
+            contentHash: s.contentHashHex, revision: 0, isDemo: isDemo,
+            why: s.why, recommended: s.recommended, to: s.to, blocking: s.blocking, qid: s.qid, hash: s.hash, ticketUID: s.ticketUID)
     }
 
     static func reviewValue(_ q: Question, info: WorkspaceInfo, optionID: String, revision: Int, isDemo: Bool) -> ReviewValue {
