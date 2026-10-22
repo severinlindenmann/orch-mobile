@@ -185,6 +185,11 @@ run_scenario() {
       sleep 3
       kill -0 "$up_pid" 2>/dev/null && { step_fail "up (the UI test ended first; see $work/xcodebuild.log)"; return 1; }
     fi
+    # xcodebuild can linger after a failed test (simulator teardown): its own verdict in the log ends the wait too, instead of the 900 s deadline.
+    if grep -aqE "Executed 1 test, with [1-9][0-9]* failures?" "$work/xcodebuild.log" 2>/dev/null; then
+      sleep 3
+      kill -0 "$up_pid" 2>/dev/null && { step_fail "up (the UI test failed first; see $work/xcodebuild.log)"; grep -a "error:" "$work/xcodebuild.log" | tail -n 3 >&2; return 1; }
+    fi
     sleep 1
   done
   wait "$up_pid" && rc=0 || rc=$?
