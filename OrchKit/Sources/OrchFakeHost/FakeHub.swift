@@ -31,6 +31,9 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var wrongDigest = false
         /// Signing: build the event for another workspace / another channel than the one asked for.
         public var buildWorkspace: String?
+        /// Signing: build another verdict outcome than asked; add a field the phone does not know.
+        public var buildOutcome: String?
+        public var extraField = false
         public var buildChannel: String?
         /// Signing: seconds the prepared request lives (default 120).
         public var preparedTTLMs: Int64 = 120_000
@@ -239,13 +242,14 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
                 e["source_sha"] = .array([.object(["repo": "orch-core", "ref": "main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"])])
             }
         case "verdict.given":
-            e["outcome"] = action["outcome"] ?? "pass"; e["hash"] = action["hash"] ?? "sha256:x"; e["gate_gen"] = 1; e["policy_hash"] = .string(Self.policyHash)
+            e["outcome"] = faults.buildOutcome.map { .string($0) } ?? action["outcome"] ?? "pass"; e["hash"] = action["hash"] ?? "sha256:x"; e["gate_gen"] = 1; e["policy_hash"] = .string(Self.policyHash)
             e["source_sha"] = .array([.object(["repo": "orch-core", "ref": "main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"]),
                                       .object(["repo": "orch-mobile", "ref": "main", "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"])])
             if let t = action["text"] { e["text"] = t }
         case "ticket.moved": e["to"] = "backlog"; e["from"] = "open"; e["reason"] = "moved"
         default: break
         }
+        if faults.extraField { e["sections"] = "smuggled" }
         let ctx: JSONValue = .object(["contract": 1, "suite": 2, "workspace_id": .string(faults.buildWorkspace ?? ws), "log": .string(log), "event": .object(e)])
         guard var digest = try? HubSign.digest(ofContext: ctx) else { return err(500, "unavailable") }
         if faults.wrongDigest { digest = Data(SHA256Fake.hash(digest)) }

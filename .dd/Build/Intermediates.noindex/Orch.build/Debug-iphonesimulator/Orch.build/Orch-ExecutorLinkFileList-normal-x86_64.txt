@@ -1,1 +1,0 @@
-/Applications/Xcode-27.1.0.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/lib/libPreviewsJITStubExecutor.a

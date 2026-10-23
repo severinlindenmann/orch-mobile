@@ -1,4 +1,0 @@
-module OrchPush {
-header "OrchPush-Swift.h"
-export *
-}

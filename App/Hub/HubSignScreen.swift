@@ -31,7 +31,7 @@ struct HubSignScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     switch model.state {
-                    case .signed, .failed: EmptyView()
+                    case .signed, .failed, .signing: EmptyView()   // no Cancel once Face ID and the proof are under way (L2-B3-1)
                     default: Button("Cancel") { model.dismiss(); dismiss() }.accessibilityIdentifier("hubsign.cancel")
                     }
                 }
@@ -71,13 +71,13 @@ struct HubSignScreen: View {
                 if let n = p.facts.gateGen { row("Round", String(n)) }
                 ForEach(Array(p.facts.sources.enumerated()), id: \.offset) { _, s in row("Commit in \(s.repo)", s.sha, machine: true) }
                 if let url = p.contentLink {
-                    Link(destination: url) { Label("Open the content in \(p.hubLabel)", systemImage: "arrow.up.right.square") }
+                    Link(destination: url) { Label("Open \(p.hubLabel)", systemImage: "arrow.up.right.square") }
                         .font(OF.body).accessibilityIdentifier("hubsign.link")
                 }
             }
             .padding(OS.s4).orchCard()
             if p.facts.shortHash != nil {
-                Text("Check that the content reference matches the one next to the content in your hub.").font(OF.meta).foregroundStyle(OC.textMuted)
+                Text("Check that this matches the content reference in Mission Control. Your hub cannot vouch for itself.").font(OF.meta).foregroundStyle(OC.textMuted)
             }
             DisclosureGroup("Signed details") {
                 VStack(alignment: .leading, spacing: OS.s2) {
@@ -150,7 +150,7 @@ struct HubSignScreen: View {
             case .cancelled, .failed: "Face ID did not confirm it was you."
             case .changed: "Face ID changed since this iPhone was paired. Sign in to your hub again."
             }
-        case .hub(let code): code == "channel_revoked" ? "Your hub no longer accepts this iPhone." : "Your hub refused this request. (\(code))"
+        case .hub(let code): code == "channel_revoked" ? "Your hub no longer accepts this iPhone." : "Your hub refused this request."
         case .unknownOutcome: "The answer from your hub was lost. Do not sign again yet: check the item list to see whether it went through."
         case .custody: "This iPhone could not read its key. Is it unlocked?"
         case .notLive: "This request is no longer open. Ask for it again."

@@ -144,7 +144,9 @@ public enum HubSign {
         guard let c = ctx.object, let ws = c["workspace_id"]?.string, let log = c["log"]?.string, let e = c["event"]?.object,
               let type = e["type"]?.string, isDecisionType(type), isULID(log) else { throw Refusal.malformed }
         let known = envelope.union(payload.first { $0.key.bytesEqual(type) }?.value ?? [])
-        let unknown = e.keys.contains { !known.contains($0) }
+        // a field the phone does not know is refused (L2-B3-6): the host refuses any extra field as well
+        guard !e.keys.contains(where: { !known.contains($0) }) else { throw Refusal.malformed }
+        let unknown = false
         func str(_ k: String) -> String? { e[k]?.string }
         guard let hash = str("hash"), let short = shortHash(hash) else { throw Refusal.malformed }
         var gate: String?, gen: Int64?, sources: [Source] = []
@@ -170,7 +172,9 @@ public enum HubSign {
         case "question.answered":
             guard let q = str("question"), q.hasPrefix("Q"), q.dropFirst().allSatisfy(\.isASCII), q.dropFirst().allSatisfy(\.isNumber), q.count > 1,
                   str("option") != nil || str("text") != nil else { throw Refusal.malformed }
-            sentence = "Answer question \(renderText(q)): \(renderText(str("option") ?? str("text") ?? ""))"
+            // every signed field is visible in the main prompt (L2-B3-2): both the option and the text when both are present
+            let answer = [str("option"), str("text")].compactMap { $0 }.map(renderText).joined(separator: " — ")
+            sentence = "Answer question \(renderText(q)): \(answer)"
         case "gate.approved":
             sentence = "Approve the \(renderText(gate ?? "")) gate"
         case "gate.changes_requested":

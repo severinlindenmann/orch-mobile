@@ -7,6 +7,9 @@ import OrchCustody
 import OrchFakeHost
 import OrchProtocol
 
+/// Stand-in link: the hub's browser home (no item deep link yet). The independent check is Mission Control's content reference.
+@Sendable func hubHome(_ origin: String, _ ws: String, _ log: String) -> URL? { URL(string: origin + "/") }
+
 /// The sign prompt's model (design B3; V3 dev builds only, like the pairing screen). Every check and every key is in `HubSignSession`; this
 /// holds what the screen shows. It never holds a ctx or a digest: `confirm` hands the session the prepared id and nothing else.
 ///
@@ -37,7 +40,7 @@ final class HubSignModel: Identifiable {
         let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         guard let hubID = try? custody.pairedHubs().first else { return nil }
-        return HubSignModel(session: HubSignSession(HubSignConfig(custody: custody, isMyWorkspace: workspaces), hubID: hubID))
+        return HubSignModel(session: HubSignSession(HubSignConfig(custody: custody, isMyWorkspace: workspaces, contentLink: hubHome), hubID: hubID))
     }
 
     var busy: Bool { switch state { case .loading, .signing: true; default: false } }
@@ -131,7 +134,7 @@ extension HubSignModel {
                   case .paired(let s) = await coordinator.complete(password: hub.password, totp: hub.totp, label: "Dev hub") else {
                 m.state = .failed(.notPaired); return
             }
-            m.session = HubSignSession(HubSignConfig(custody: custody, makeSender: make, biometry: BiometricGate(makeContext: { ScriptedBiometry() })),
+            m.session = HubSignSession(HubSignConfig(custody: custody, makeSender: make, biometry: BiometricGate(makeContext: { ScriptedBiometry() }), contentLink: hubHome),
                                        hubID: s.hubID)
             await m.play(script, hub: hub, link: link)
         }

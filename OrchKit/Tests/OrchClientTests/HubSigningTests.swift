@@ -41,7 +41,8 @@ private final class MockLA: BiometricContext, @unchecked Sendable {
     nonisolated(unsafe) static var evalError: LAError.Code?
     nonisolated(unsafe) static var evaluations = 0
     nonisolated(unsafe) static var onEvaluate: (() -> Void)?
-    static func reset() { policies = []; fallbackTitles = []; domainState = Data("faces-1".utf8); canError = nil; evalError = nil; evaluations = 0; onEvaluate = nil }
+    nonisolated(unsafe) static var onEvaluateAsync: (() async -> Void)?
+    static func reset() { policies = []; fallbackTitles = []; domainState = Data("faces-1".utf8); canError = nil; evalError = nil; evaluations = 0; onEvaluate = nil; onEvaluateAsync = nil }
 
     var localizedFallbackTitle: String? { didSet { Self.fallbackTitles.append(localizedFallbackTitle) } }
     var evaluatedPolicyDomainState: Data? { Self.domainState }
@@ -51,7 +52,7 @@ private final class MockLA: BiometricContext, @unchecked Sendable {
         return true
     }
     func evaluatePolicy(_ policy: LAPolicy, localizedReason: String) async throws -> Bool {
-        Self.policies.append(policy); Self.evaluations += 1; Self.onEvaluate?()
+        Self.policies.append(policy); Self.evaluations += 1; Self.onEvaluate?(); await Self.onEvaluateAsync?()
         if let c = Self.evalError { throw NSError(domain: LAError.errorDomain, code: c.rawValue) }
         return true
     }
@@ -284,6 +285,57 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         #expect(try rig.custody.biometryBaseline(hubID: rig.hubID) == Rig.faces)
         try rig.custody.deleteAll(hubID: rig.hubID)
         #expect(try rig.custody.biometryBaseline(hubID: rig.hubID) == nil)
+    }
+
+    @Test func aCancelDuringFaceIDMeansNoProofAndNoPost() async throws {
+        let rig = try await Rig()
+        let p = try await rig.prepare()
+        let session = rig.session
+        MockLA.onEvaluateAsync = { await session.discard(preparedID: p.preparedID) }   // Cancel tapped while the Face ID sheet is up
+        #expect(await failure { try await rig.session.confirm(preparedID: p.preparedID) } == .notLive)
+        #expect(MockLA.evaluations == 1 && rig.hub.signedEvents.isEmpty)
+        #expect(!rig.hub.log.contains("POST /api/v1/sign/sign"))
+        MockLA.onEvaluateAsync = nil
+        #expect(await failure { try await rig.session.confirm(preparedID: p.preparedID) } == .notLive)
+    }
+
+    @Test func aCancelledTaskDuringFaceIDSignsNothing() async throws {
+        let rig = try await Rig()
+        let p = try await rig.prepare()
+        let session = rig.session
+        let t = Task { await failure { try await session.confirm(preparedID: p.preparedID) } }
+        MockLA.onEvaluateAsync = { t.cancel() }
+        #expect(await t.value == .notLive)
+        #expect(rig.hub.signedEvents.isEmpty && !rig.hub.log.contains("POST /api/v1/sign/sign"))
+    }
+
+    @Test func aCancelDuringTheRefetchNeverReachesFaceID() async throws {
+        let rig = try await Rig()
+        let p = try await rig.prepare()
+        await rig.session.discard(preparedID: p.preparedID)
+        #expect(await failure { try await rig.session.confirm(preparedID: p.preparedID) } == .notLive)
+        #expect(MockLA.evaluations == 0)
+    }
+
+    @Test func aQuestionWithOptionAndTextShowsBothInTheSentence() async throws {
+        let rig = try await Rig()
+        let p = try await rig.prepare(.answerQuestion(log: rig.hub.ticketLog, question: "Q1", hash: FakeHub.contentHash, option: "approve", text: "but only for EU"))
+        #expect(p.facts.sentence == "Answer question Q1: approve — but only for EU")
+    }
+
+    @Test func aFlippedOutcomeOrAnUnknownFieldIsRefused() async throws {
+        let rig = try await Rig()
+        var f = FakeHub.Faults(); f.buildOutcome = "fail"
+        rig.hub.faults = f
+        #expect(await failure { try await rig.prepare(.giveVerdict(log: rig.hub.ticketLog, outcome: "pass", hash: FakeHub.contentHash, text: nil)) } == .changed(code: "event_changed"))
+        var g = FakeHub.Faults(); g.extraField = true
+        rig.hub.faults = g
+        #expect(await failure { try await rig.prepare() } == .changed(code: "malformed"))
+    }
+
+    @Test func withoutAConfiguredLinkContentBoundDecisionsAreNotOffered() async throws {
+        let cfg = HubSignConfig(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())))
+        #expect(cfg.contentLink("https://h", "w", "l") == nil)
     }
 
     // MARK: offline, expiry, lost answers

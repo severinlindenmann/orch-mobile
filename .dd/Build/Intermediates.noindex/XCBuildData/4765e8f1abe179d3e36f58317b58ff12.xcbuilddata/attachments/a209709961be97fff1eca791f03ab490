@@ -1,4 +1,0 @@
-module OrchStore {
-header "OrchStore-Swift.h"
-export *
-}

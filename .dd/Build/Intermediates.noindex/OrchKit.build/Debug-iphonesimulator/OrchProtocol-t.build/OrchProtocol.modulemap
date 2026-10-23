@@ -1,4 +1,0 @@
-module OrchProtocol {
-header "OrchProtocol-Swift.h"
-export *
-}

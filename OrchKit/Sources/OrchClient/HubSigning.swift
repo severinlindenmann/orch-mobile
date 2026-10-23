@@ -94,14 +94,15 @@ public struct HubSignConfig: Sendable {
     /// Whether a workspace is one of this user's (the list of B2). Closed by default: a pushed request for a workspace nobody vouched for is
     /// refused.
     public let isMyWorkspace: @Sendable (String) async -> Bool
-    /// Where the reviewed content of a decision can be read, in the hub's browser home. nil: content-bound decisions are not offered.
+    /// A link for the person to look at the reviewed content (the hub's browser home is a stand-in; the independent check is Mission Control's
+    /// content reference, L2-B3-3). Explicit on purpose: nil (the default) means content-bound decisions are not offered, questions still are.
     public let contentLink: @Sendable (_ origin: String, _ workspaceID: String, _ log: String) -> URL?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
                 makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
                 biometry: BiometricGate = BiometricGate(),
                 isMyWorkspace: @escaping @Sendable (String) async -> Bool = { _ in false },
-                contentLink: @escaping @Sendable (String, String, String) -> URL? = { origin, _, _ in URL(string: origin + "/") }) {
+                contentLink: @escaping @Sendable (String, String, String) -> URL? = { _, _, _ in nil }) {
         self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometry = biometry
         self.isMyWorkspace = isMyWorkspace; self.contentLink = contentLink
     }
@@ -170,10 +171,14 @@ public actor HubSignSession {
         let (b, api, bearer) = try context()
         // 1. the hub still answers and still holds exactly this request (a proof is made only while the hub is answering)
         let again = try await call { try await api.prepared(bearer: bearer, preparedID: preparedID) }
+        if live[preparedID] == nil || Task.isCancelled { throw HubSignFailure.notLive }
         guard again.preparedID == preparedID, again.ctx == held.ctx, again.digestHex == Hex.encode(held.digest) else {
             live[preparedID] = nil
             throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue)
         }
+        // Cancel is structural (L2-B3-1): every step re-checks that this attempt is still live (not discarded) and not cancelled.
+        func stillLive() throws { if live[preparedID] == nil || Task.isCancelled { throw HubSignFailure.notLive } }
+        try stillLive()
         // 2. Face ID, biometry only; a changed set of faces drops the session
         do {
             let baseline = try? cfg.custody.biometryBaseline(hubID: hubID)
@@ -182,6 +187,7 @@ public actor HubSignSession {
             if f == .changed { try? cfg.custody.deleteSessionToken(hubID: hubID); live[preparedID] = nil; throw HubSignFailure.signInAgain }
             throw HubSignFailure.biometry(f)
         }
+        try stillLive()                         // a Cancel during the Face ID sheet means no proof and no POST
         try notExpired(held.prompt.expiresMs)   // the prompt took time
         // 3. the proof, over the digest computed here from the held ctx
         let signer: HubChannelSigner
@@ -189,6 +195,7 @@ public actor HubSignSession {
         do {
             signer = try cfg.custody.loadChannelKey(hubID: hubID)
             guard signer.channelID == b.channelID, signer.publicKey.x963 == (B64U.decode(b.keyPub) ?? Data()) else { throw HubSignFailure.custody }
+            try stillLive()
             proof = try signer.proof(context: held.ctx)
             guard proof.digest == held.digest else { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
         } catch let f as HubSignFailure { throw f } catch { throw HubSignFailure.custody }
@@ -223,6 +230,12 @@ public actor HubSignSession {
         if let started {
             do { try HubSign.checkBuilt(action: started.json, log: log, event: event) }
             catch let r as Refusal { throw HubSignFailure.changed(code: r.rawValue) }
+            // beyond check_built (L2-B3-5): every action field the person chose is exactly what the hub built (a flipped outcome is refused)
+            if let a = started.json.object, let e = event.object {
+                for k in ["gate", "outcome", "question", "option", "text"] where !(a[k]?.string).bytesOptEqual(e[k]?.string) {
+                    throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue)
+                }
+            }
             if let requested, !requested.bytesEqual(ws) { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
         }
         // 4. the phone's own bindings; a pushed request names a workspace nobody here asked for, so it must be one of this user's
@@ -302,5 +315,11 @@ public actor HubSignSession {
             default: return .hub(code: code)
             }
         }
+    }
+}
+
+private extension Optional where Wrapped == String {
+    func bytesOptEqual(_ o: String?) -> Bool {
+        switch (self, o) { case (nil, nil): true; case let (a?, b?): a.bytesEqual(b); default: false }
     }
 }

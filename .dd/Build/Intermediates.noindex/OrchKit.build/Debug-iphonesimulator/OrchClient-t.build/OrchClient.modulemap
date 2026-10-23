@@ -1,4 +1,0 @@
-module OrchClient {
-header "OrchClient-Swift.h"
-export *
-}

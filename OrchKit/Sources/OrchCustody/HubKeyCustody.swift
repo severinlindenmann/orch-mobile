@@ -97,7 +97,7 @@ public struct HubKeyCustody: Sendable {
     // MARK: the biometry baseline (design B3, R2): `evaluatedPolicyDomainState` at pairing. It is not a secret, but it is what makes a
     // changed set of faces mean "sign in again", so it lives with the session token in the app-only `.keys` group.
 
-    public func putBiometryBaseline(_ state: Data, hubID: String) throws { try map { try keys.put(state, for: try id(hubID, .biometry)) } }
+    package func putBiometryBaseline(_ state: Data, hubID: String) throws { try map { try keys.put(state, for: try id(hubID, .biometry)) } }
     public func biometryBaseline(hubID: String) throws -> Data? { try read(keys, hubID, .biometry) }
     public func deleteBiometryBaseline(hubID: String) throws { try map { try keys.delete(try id(hubID, .biometry)) } }
 
