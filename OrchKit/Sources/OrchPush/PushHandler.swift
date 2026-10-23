@@ -1,5 +1,6 @@
 import Foundation
 import OrchCoordination
+import OrchCustody
 import OrchProtocol
 
 /// The notification extension's whole decision, minus UserNotifications: material in, presentation out. Pure of
@@ -30,6 +31,7 @@ public struct PushHandler: Sendable {
     }
 
     let material: any PushMaterialSource
+    let hubMaterial: (any HubPushMaterialSource)?
     let coordination: TombstoneCoordination
     let store: ReplayStore
     let realm: String
@@ -37,8 +39,9 @@ public struct PushHandler: Sendable {
     let now: @Sendable () -> Date
 
     /// - Parameter pushDir: `<group.io.severin.orch>/push`, the same directory `StoreLayout.pushDir` names.
-    public init(material: any PushMaterialSource, pushDir: URL, realm: String = Realm.live, now: @escaping @Sendable () -> Date = { Date() }) {
-        self.material = material; self.pushDir = pushDir; self.realm = realm; self.now = now
+    public init(material: any PushMaterialSource, hubMaterial: (any HubPushMaterialSource)? = nil, pushDir: URL, realm: String = Realm.live,
+                now: @escaping @Sendable () -> Date = { Date() }) {
+        self.material = material; self.hubMaterial = hubMaterial; self.pushDir = pushDir; self.realm = realm; self.now = now
         coordination = TombstoneCoordination(directories: [pushDir])
         store = ReplayStore(pushDir: pushDir, realm: realm)
     }
@@ -93,6 +96,7 @@ public struct PushHandler: Sendable {
         func generic(_ why: NSEMarker.Outcome) -> Result { Result(presentation: .generic, outcome: why) }
         guard let o else { return generic(.droppedVerification) }
         let raw = Data(o.utf8)
+        if HubPushOuter.isHub(raw) { return decideHub(raw) }
         guard let ws = PushProcessor.workspace(ofOuter: raw) else { return generic(.droppedVerification) }
         let all: [ID16: PushMaterial]
         do { all = try material.loadAll(realm: realm) } catch { return generic(.droppedNoMaterial) }
@@ -117,5 +121,21 @@ public struct PushHandler: Sendable {
             }
             return ran ?? generic(.droppedRemoved)
         } catch { return generic(.droppedState) }
+    }
+
+    /// A hub push (design B4): the push key only, the person's own hub label as the title, fixed body text. Replay is recorded durably before
+    /// anything is returned. Any failure is the generic text and a marker outcome; nothing here signs or reaches the network.
+    func decideHub(_ raw: Data) -> Result {
+        func generic(_ why: NSEMarker.Outcome) -> Result { Result(presentation: .generic, outcome: why) }
+        guard let outer = HubPushOuter.parse(raw) else { return generic(.droppedVerification) }
+        guard let source = hubMaterial else { return generic(.droppedNoMaterial) }
+        let mat: HubPushMaterial
+        do { guard let m = try source.load() else { return generic(.droppedNoMaterial) }; mat = m } catch { return generic(.droppedNoMaterial) }
+        let verdict = HubPushIntake(pushDir: pushDir).accept(material: mat, hubID: outer.hubID, channelID: outer.channelID,
+                                                             messageID: outer.messageID, sealed: outer.sealed, nowMs: nowMs)
+        switch verdict {
+        case .hint(let hint): return Result(presentation: .hubHint(hint.type, label: mat.label), outcome: .shown)
+        case .dropped(let why): return generic(NSEMarker.Outcome(drop: why))
+        }
     }
 }
