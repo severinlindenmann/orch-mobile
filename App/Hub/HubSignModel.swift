@@ -45,10 +45,11 @@ final class HubSignModel: Identifiable {
 
     /// The sign model for the one paired hub of this runtime. `workspaces` is B2's list at the moment the person opened the item: a request
     /// for any other workspace is refused (`isMyWorkspace`).
-    static func make(runtime: HubRuntime, workspaces: Set<String>) -> HubSignModel? {
+    static func make(runtime: HubRuntime, workspaces: Set<String>, selective: Set<String> = []) -> HubSignModel? {
         guard let hubID = try? runtime.custody.pairedHubs().first else { return nil }
         let cfg = HubSignConfig(custody: runtime.custody, makeSender: runtime.makeSender, biometry: runtime.biometry,
-                                isMyWorkspace: { workspaces.contains($0) }, contentLink: hubHome)
+                                isMyWorkspace: { workspaces.contains($0) }, contentLink: hubHome,
+                                workspaceMode: { selective.contains($0) ? .selective : (workspaces.contains($0) ? .full : nil) })
         return HubSignModel(session: HubSignSession(cfg, hubID: hubID))
     }
 
@@ -100,7 +101,7 @@ final class HubSignModel: Identifiable {
     fileprivate static func failure(_ e: Error) -> HubSignFailure { (e as? HubSignFailure) ?? .custody }
 }
 
-// MARK: DEBUG scripted states (screenshots, UI tests): `--hub-sign [review|code|question|signed|type|changed|expired|offline]`
+// MARK: DEBUG scripted states (screenshots, UI tests): `--hub-sign [review|code|question|selective|selective-stale|signed|type|changed|expired|offline]`
 
 /// Face ID stand-in for the in-process hub (the Simulator has no enrolled face unless the tester sets it up): matches the recorded state.
 final class ScriptedBiometry: BiometricContext, @unchecked Sendable {
@@ -157,16 +158,21 @@ extension HubSignModel {
         case "type": f.buildType = "ticket.moved"
         case "changed": f.wrongDigest = true
         case "expired": f.preparedTTLMs = 3_000
+        case "selective", "selective-stale": f.staleGateGen = name == "selective-stale"
         default: break
         }
         hub.faults = f
+        if name?.hasPrefix("selective") == true { hub.seedSelective() }
         let action: HubSignAction = switch name {
+        case "selective", "selective-stale":
+            .shared(bound: .init(item: FakeHub.sharedQuestionItem, itemHash: FakeHub.sharedItemHash, rosterV: 4, gateGen: nil, policyHash: nil, sourceSha: nil),
+                    .answerQuestion(log: log, question: "Q2", hash: FakeHub.sharedQuestionHash, text: "Go with EU West"))
         case "code": .approveGate(log: log, gate: "code", hash: h)
         case "question": .answerQuestion(log: log, question: "Q2", hash: h, option: "yes-ship-it", text: nil)
         default: .approveGate(log: log, gate: "plan", hash: h)
         }
         state = .idle   // `start` refuses while busy
-        start(workspaceID: hub.workspaceID, action: action)
+        start(workspaceID: name?.hasPrefix("selective") == true ? FakeHub.wsShared : hub.workspaceID, action: action)
         await task?.value
         if name == "offline" { link.goOffline(); confirm(); await task?.value }
         if name == "signed" { confirm() }

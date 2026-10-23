@@ -39,6 +39,15 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var preparedTTLMs: Int64 = 120_000
         /// Signing: answer `/sign/sign` with this error code instead of signing.
         public var signError: String?
+        /// Selective signing: leave `item_hash` out of the built event; add an `option` to a built answer; build with another `gate_gen` than the
+        /// item's `f1` shows (a stale value); build with another item's hash.
+        public var dropItemHash = false
+        public var selectiveOption = false
+        public var staleGateGen = false
+        /// Selective signing: put `source_sha` on every gate event (a hub that does not follow 8.5), or leave it off a code approval.
+        public var sourceOnEveryGate = false
+        public var dropSource = false
+        public var otherItemHash = false
         /// The hub is unreachable (every request fails at the transport).
         public var down = false
         /// Answer every channel-session request with this error code instead (`no_session`, `channel_revoked`, `cert_expired`, ...).
@@ -63,6 +72,11 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     /// The data behind `GET /me/workspaces`, `GET /me/needs-you` and the item route (raw rows, as the hub's web API sends them).
     public var workspaceRows: [JSONValue] = []
     public var needsYouRows: [JSONValue] = []
+    /// Shared items of a selective workspace the fake can build on (protocol 8.6), by item id: the signed item's members the build reads.
+    public struct SharedItem: Sendable {
+        public let log: String, head: String, itemHash: String, f1: JSONValue?
+    }
+    public var sharedItems: [String: SharedItem] = [:]
     public var offlineIDs: [String] = []
     public var unavailableIDs: [String] = []
     /// `workspace_id/item_id` -> the item answer.
@@ -268,6 +282,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     private func prepare(_ body: [String: JSONValue], token: String, now: Int64) -> (Int, [String: JSONValue]) {
         guard let ws = body["workspace_id"]?.string, let cid = body["channel_id"]?.string, let action = body["action"]?.object,
               let type = action["type"]?.string, let log = action["log"]?.string, let ch = channels[cid] else { return err(400, "malformed") }
+        if let item = action["item"] { return prepareSelective(body, item: item, ws: ws, cid: cid, token: token, now: now) }
         guard ws == workspaceID else { return err(403, "unknown_workspace") }
         let builtType = faults.buildType ?? type
         var e: [String: JSONValue] = ["v": 2, "id": .string(SystemEntropy().id16().hex), "type": .string(builtType),
@@ -284,7 +299,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         case "gate.approved", "gate.changes_requested":
             e["gate"] = action["gate"] ?? "plan"; e["hash"] = action["hash"] ?? "sha256:x"; e["gate_gen"] = 2; e["policy_hash"] = .string(Self.policyHash)
             if let t = action["text"] { e["text"] = t }
-            if e["gate"] == "code" {
+            if e["gate"] == "code", builtType == "gate.approved" {
                 e["source_sha"] = .array([.object(["repo": "orch-core", "ref": "main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"])])
             }
         case "verdict.given":
@@ -304,6 +319,43 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         let entry = (ctx: ctx, digest: digest, expires: now + faults.preparedTTLMs, channel: cid)
         prepared[id] = entry; lastPreparedID = id
         return (200, reply(id, entry))
+    }
+
+    /// protocol 8.6 `build_selective`: the event core from one shared item and its `f1`, no option, `item_hash` in the event.
+    private func prepareSelective(_ body: [String: JSONValue], item: JSONValue, ws: String, cid: String, token: String, now: Int64) -> (Int, [String: JSONValue]) {
+        guard ws == Self.wsShared, let ch = channels[cid], let action = body["action"]?.object, let type = action["type"]?.string,
+              let log = action["log"]?.string, let id = item.string else { return err(400, "malformed") }
+        guard let it = sharedItems[id], it.log == log else { return err(404, "unknown_item") }
+        guard let f1 = it.f1?.object else { return err(409, "unavailable") }
+        guard ["question.answered", "gate.approved", "gate.changes_requested", "verdict.given"].contains(type) else { return err(400, "not_custodial") }
+        var e: [String: JSONValue] = ["v": 2, "id": .string("01J9ZP0000000000000000EVT\(counter % 10)"), "type": .string(type),
+                                      "actor": .object(["kind": "person", "id": .string("u_" + userID), "via": .string(cid)]),
+                                      "based_on": .string(it.head), "roster_v": f1["roster_v"] ?? 0, "hash_v": 1, "auth": "hub",
+                                      "channel": .string(cid), "channel_factor": "se-unlocked", "hub_id": .string(hubID),
+                                      "snapshot_version": 3, "channel_cert": ch.cert, "uk_cert": ukCert()]
+        if !faults.dropItemHash { e["item_hash"] = .string(faults.otherItemHash ? Self.contentHash : it.itemHash) }
+        if type == "question.answered" {
+            if action["option"] != nil { return err(400, "malformed") }
+            guard let q = action["question"]?.string, let entry = f1["questions"]?.object?[q]?.object else { return err(404, "unknown_item") }
+            guard entry["hash"] == action["hash"] else { return err(409, "event_changed") }
+            e["question"] = .string(q); e["hash"] = entry["hash"]; e["text"] = action["text"]
+            if faults.selectiveOption { e["option"] = "yes" }
+        } else {
+            let gate = type == "verdict.given" ? "verify" : (action["gate"]?.string ?? "")
+            guard let g = f1["gates"]?.object?[gate]?.object else { return err(404, "unknown_item") }
+            guard g["hash"] == action["hash"] else { return err(409, "event_changed") }
+            e["hash"] = g["hash"]; e["gate_gen"] = faults.staleGateGen ? .int((g["gen"]?.int ?? 0) + 1) : g["gen"]; e["policy_hash"] = g["policy_hash"]
+            if type == "verdict.given" { e["outcome"] = action["outcome"] } else { e["gate"] = .string(gate) }
+            if let t = action["text"] { e["text"] = t }
+            if (type == "verdict.given" || (type == "gate.approved" && gate == "code") || faults.sourceOnEveryGate) && !faults.dropSource { e["source_sha"] = g["source_sha"] }
+        }
+        let ctx: JSONValue = .object(["contract": 1, "suite": 2, "workspace_id": .string(ws), "log": .string(log), "event": .object(e)])
+        guard let digest = try? HubSign.digest(ofContext: ctx) else { return err(500, "unavailable") }
+        counter += 1
+        let pid = "prep-\(counter)"
+        let entry = (ctx: ctx, digest: digest, expires: now + faults.preparedTTLMs, channel: cid)
+        prepared[pid] = entry; lastPreparedID = pid
+        return (200, reply(pid, entry))
     }
 
     private func sign(_ body: [String: JSONValue], now: Int64) -> (Int, [String: JSONValue]) {
@@ -402,9 +454,9 @@ extension FakeHub {
     }
 
     public static func needsRow(ws: String, mode: String = "full", item: String, kind: String, title: String, signable: Bool = false,
-                                summaryOnly: Bool = false) -> JSONValue {
+                                summaryOnly: Bool = false, key: String? = nil) -> JSONValue {
         var o: [String: JSONValue] = ["workspace_id": .string(ws), "mode": .string(mode), "item_id": .string(item), "kind": .string(kind),
-                                      "type": .string(kind), "key": .string("T-" + item), "title": .string(title), "deadline": .null,
+                                      "type": .string(kind), "key": .string(key ?? "T-" + item), "title": .string(title), "deadline": .null,
                                       "signable": .bool(signable)]
         if mode == "selective" { o["item_version"] = 1; o["summary_only"] = .bool(summaryOnly) }
         return .object(o)
@@ -438,5 +490,54 @@ extension FakeHub {
                                             "content": .object(["title": "Review the launch checklist", "body": "Shared with the hub by the workspace owner."]),
                                             "item_hash": "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"]),
         ]
+    }
+}
+
+// MARK: shared items with `f1` (B5; protocol 8.6, 10.2b)
+
+extension FakeHub {
+    public static let sharedQuestionItem = String(repeating: "d4", count: 16)
+    public static let sharedGateItem = String(repeating: "e5", count: 16)
+    public static let sharedCodeItem = String(repeating: "f6", count: 16)
+    public static let sharedNoF1Item = String(repeating: "a7", count: 16)
+    public static let sharedItemHash = "sha256:" + String(repeating: "5a", count: 32)
+    public static let sharedQuestionHash = "sha256:" + String(repeating: "7b", count: 32)
+    public static let sharedGateHash = "sha256:" + String(repeating: "9c", count: 32)
+    static let sharedHead = "sha256:" + String(repeating: "1d", count: 32)
+    static let sharedSource: JSONValue = .array([.object(["repo": "orch-core", "ref": "refs/heads/main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"])])
+
+    /// Adds four shared items to the selective workspace: a question and a plan gate with an `f1` that names them, a code gate (with its source
+    /// list) and a ticket the host shared WITHOUT `f1` (visible, never signable). Call after `seedHome()`.
+    public func seedSelective() {
+        func answer(_ item: String, kind: String, key: String, title: String, content: JSONValue, f1: JSONValue?, hash: String) -> JSONValue {
+            var o: [String: JSONValue] = ["workspace_id": .string(Self.wsShared), "mode": "selective", "item_id": .string(item), "kind": .string(kind),
+                                          "type": .string(kind), "key": .string(key), "title": .string(title), "deadline": .null, "item_version": 1,
+                                          "summary_only": false, "signable": false, "content": content, "item_hash": .string(hash),
+                                          "chain": .object(["log": .string(ticketLog), "seq": 7, "head": .string(Self.sharedHead)])]
+            if let f1 { o["f1"] = f1 }
+            return .object(o)
+        }
+        func f1(gates: [String: JSONValue] = [:], questions: [String: JSONValue] = [:]) -> JSONValue {
+            .object(["roster_v": 4, "gates": .object(gates), "questions": .object(questions)])
+        }
+        let policy = "sha256:" + String(repeating: "3e", count: 32)
+        let plan = f1(gates: ["plan": .object(["gen": 2, "hash": .string(Self.sharedGateHash), "policy_hash": .string(policy)])])
+        let code = f1(gates: ["code": .object(["gen": 1, "hash": .string(Self.sharedGateHash), "policy_hash": .string(policy), "source_sha": Self.sharedSource])])
+        let question = f1(questions: ["Q2": .object(["hash": .string(Self.sharedQuestionHash)])])
+        let items: [(String, String, String, String, JSONValue, JSONValue?)] = [
+            (Self.sharedQuestionItem, "question", "T-q2", "Which region should the pilot run in?",
+             .object(["key": "T-q2", "type": "feature", "id": "Q2", "title": "Export", "text": "Which region should the pilot run in?", "deadline": .null]), question),
+            (Self.sharedGateItem, "ticket", "T-g2", "Approve the plan for the export feature",
+             .object(["key": "T-g2", "type": "feature", "title": "Export", "status": "plan", "labels": .array([]), "deadline": .null]), plan),
+            (Self.sharedCodeItem, "ticket", "T-c2", "Approve the code for the export feature",
+             .object(["key": "T-c2", "type": "feature", "title": "Export", "status": "review", "labels": .array([]), "deadline": .null]), code),
+            (Self.sharedNoF1Item, "ticket", "T-n2", "Shared without decision values",
+             .object(["key": "T-n2", "type": "feature", "title": "Export", "status": "plan", "labels": .array([]), "deadline": .null]), nil),
+        ]
+        for (item, kind, key, title, content, f) in items {
+            needsYouRows.append(Self.needsRow(ws: Self.wsShared, mode: "selective", item: item, kind: kind, title: title, key: key))
+            itemAnswers[Self.wsShared + "/" + item] = answer(item, kind: kind, key: key, title: title, content: content, f1: f, hash: Self.sharedItemHash)
+            sharedItems[item] = SharedItem(log: ticketLog, head: Self.sharedHead, itemHash: Self.sharedItemHash, f1: f)
+        }
     }
 }
