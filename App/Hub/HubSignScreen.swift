@@ -76,6 +76,10 @@ struct HubSignScreen: View {
                 }
             }
             .padding(OS.s4).orchCard()
+            if p.facts.selective {
+                Label("Selective: the hub sees only what was shared", systemImage: "eye").font(OF.meta).foregroundStyle(OC.info)
+                    .accessibilityIdentifier("hubsign.selective")
+            }
             if p.facts.shortHash != nil {
                 Text("Check that this matches the content reference in Mission Control. Your hub cannot vouch for itself.").font(OF.meta).foregroundStyle(OC.textMuted)
             }

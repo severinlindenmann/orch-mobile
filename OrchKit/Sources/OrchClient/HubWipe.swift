@@ -82,9 +82,14 @@ public final class HubWipe: Sendable {
     private actor Running {
         var task: Task<Void, Error>?
         func join(_ make: @Sendable () -> Task<Void, Error>) async throws {
-            if let t = task { return try await t.value }
+            // Whoever finishes waiting clears the slot (if it is still this task), so a caller that arrives after the task ended but before the
+            // first waiter resumed cannot find a finished task and spin on it (L2-B6e-1).
+            if let t = task {
+                defer { if task == t { task = nil } }
+                return try await t.value
+            }
             let t = make(); task = t
-            defer { task = nil }
+            defer { if task == t { task = nil } }
             try await t.value
         }
     }

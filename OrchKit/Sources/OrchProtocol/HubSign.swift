@@ -61,6 +61,24 @@ public enum HubSign {
         guard at.bytesEqual(et), al.bytesEqual(log) else { throw Refusal.eventChanged }
     }
 
+    /// `item` of a selective action (protocol 8.6): the shared item's id, 32 hex.
+    public static func isItemID(_ s: String) -> Bool { Hex.decode(s, length: 16) != nil }
+
+    /// The selective half of `check_built` (protocol 8.6), for an action that names `item`. Selective mode is decided by the ACTION the person
+    /// started, never by the event: the event must carry `item_hash` (a hash) and no `item`, and a question answer carries `text` only (V3 shares
+    /// no options, so an `option` is `malformed`). A full-mode action (no `item`) must not come back with an `item_hash`.
+    public static func checkSelectiveBuilt(action: JSONValue, event: JSONValue) throws {
+        guard let a = action.object, let e = event.object else { throw Refusal.malformed }
+        if let item = a["item"] {
+            guard let id = item.string, isItemID(id) else { throw Refusal.malformed }
+            guard let h = e["item_hash"]?.string, isHash(h), e["item"] == nil else { throw Refusal.eventChanged }
+            if let t = e["type"]?.string, "question.answered".bytesEqual(t) {
+                if a["option"] != nil || e["option"] != nil { throw Refusal.malformed }
+                guard e["text"]?.string != nil else { throw Refusal.malformed }
+            }
+        } else if e["item_hash"] != nil { throw Refusal.eventChanged }
+    }
+
     // MARK: render_text
 
     /// `render_text` (protocol 8.4, L2P4-2d): every character the 8.5 text rule refuses, other than LF, is shown as `<U+XXXX>` (at least four
@@ -123,6 +141,8 @@ public enum HubSign {
         public let shortHash: String?
         public let gateGen: Int64?
         public let sources: [Source]
+        /// The event came from one shared item of a selective workspace (`item_hash` is in the signed event): "the hub sees only what was shared".
+        public let selective: Bool
         /// Every field of the event, by name, each string through `renderText`: the "Signed details".
         public let fields: [Field]
     }
@@ -147,6 +167,10 @@ public enum HubSign {
         guard !e.keys.contains(where: { !known.contains($0) }) else { throw Refusal.malformed }
         func str(_ k: String) -> String? { e[k]?.string }
         guard let hash = str("hash"), let short = shortHash(hash) else { throw Refusal.malformed }
+        // selective mode is marked by `item_hash` in the signed event (protocol 8.6): a hash, and no `option` on an answer (V3 shares no options)
+        let selective = e["item_hash"] != nil
+        if selective, !(str("item_hash").map(isHash) ?? false) { throw Refusal.malformed }
+        if selective, "question.answered".bytesEqual(type), e["option"] != nil || str("text") == nil { throw Refusal.malformed }
         var gate: String?, gen: Int64?, sources: [Source] = []
         if !"question.answered".bytesEqual(type) {
             // a verdict is on the verify gate (it has no `gate` field); the two gate decisions name one of the three gates
@@ -154,7 +178,8 @@ public enum HubSign {
             guard type == "verdict.given" || gates.contains(g), let n = e["gate_gen"]?.int, n >= 0, let p = str("policy_hash"), isHash(p)
             else { throw Refusal.malformed }
             gate = g; gen = n
-            let needsSource = type == "verdict.given" || g == "code"
+            // protocol 8.5: `source_sha` only on a verdict and on a `code` approval, never on a change request
+            let needsSource = type == "verdict.given" || (type == "gate.approved" && g == "code")
             if needsSource {
                 guard let list = e["source_sha"]?.array, !list.isEmpty else { throw Refusal.malformed }
                 for item in list {
@@ -184,7 +209,7 @@ public enum HubSign {
         }
         let fields = e.keys.sorted().map { k in Field(name: renderText(k), value: render(e[k]!, key: k)) }
         return Facts(type: type, log: log, workspaceID: ws, sentence: sentence, gate: gate, shortHash: short, gateGen: gen,
-                     sources: sources, fields: fields)
+                     sources: sources, selective: selective, fields: fields)
     }
 
     static func render(_ v: JSONValue, key: String) -> String {

@@ -5,7 +5,7 @@ import Testing
 /// write of hub-scoped state takes a `HubWorkToken`. The compiler enforces it for the custody writes and the replay record (the token is a
 /// required parameter); these scans keep it from being defeated: no `.unguarded` outside the allowed files, no write that bypasses the custody
 /// methods, no new `func put/create/publish` in the custody without a token.
-@Suite struct HubWorkBarrierGuardTests {
+@Suite(.timeLimit(.minutes(2))) struct HubWorkBarrierGuardTests {
     /// OrchKit/Tests/OrchClientTests/<this file> -> the repo root.
     static let root: URL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent()

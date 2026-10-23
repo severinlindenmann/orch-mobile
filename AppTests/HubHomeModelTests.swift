@@ -31,12 +31,24 @@ final class HubHomeModelTests: XCTestCase {
         let (m, _, hub) = try await opened()
         let q = try XCTUnwrap(m.rows.first { $0.itemID == "q1" })
         XCTAssertTrue(m.signEnabled(q))
-        XCTAssertFalse(m.signEnabled(try XCTUnwrap(m.rows.first { $0.itemID == "s1" })), "selective: never in B2")
+        // B5: a selective summary is never signable; a shared item is signable only when its own f1 names exactly one target
+        hub.seedSelective()
+        await m.refresh()
+        XCTAssertFalse(m.signEnabled(try XCTUnwrap(m.rows.first { $0.itemID == "s2" })), "a summary is never signable")
+        let shared = try XCTUnwrap(m.rows.first { $0.itemID == FakeHub.sharedQuestionItem })
+        XCTAssertTrue(m.signEnabled(shared))
+        await m.load(shared)
+        guard case .detail(let d) = m.item else { return XCTFail("no detail: \(m.item)") }
+        XCTAssertEqual(d.decision?.shared?.item, FakeHub.sharedQuestionItem)
+        await m.load(try XCTUnwrap(m.rows.first { $0.itemID == FakeHub.sharedNoF1Item }))
+        guard case .detail(let n) = m.item else { return XCTFail("no detail: \(m.item)") }
+        XCTAssertNil(n.decision, "shared without f1: nothing to sign")
         hub.faults.down = true
         await m.refresh()
         XCTAssertFalse(m.isLive)
         XCTAssertEqual(m.snapshot?.workspaces.count, 3, "the cache is shown")
         XCTAssertFalse(m.signEnabled(q), "a cached row never enables signing")
+        XCTAssertFalse(m.signEnabled(shared), "nor a cached shared item")
     }
 
     func testAnItemLoadsOnlyWhileTheHubAnswers() async throws {

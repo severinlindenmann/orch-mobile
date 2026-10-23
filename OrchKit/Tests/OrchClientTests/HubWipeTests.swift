@@ -42,7 +42,7 @@ private struct WipeRig {
 
 private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s { return x }; return nil }
 
-@Suite struct HubWipeTests {
+@Suite(.timeLimit(.minutes(2))) struct HubWipeTests {
     // MARK: Leave
 
     @Test func leaveRevokesAtTheHubFirstThenWipesEverything() async throws {

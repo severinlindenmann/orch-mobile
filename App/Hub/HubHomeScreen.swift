@@ -2,6 +2,7 @@
 import SwiftUI
 import OrchClient
 import OrchFakeHost
+import OrchProtocol
 import OrchUI
 
 /// The hub home (V3 dev; design B2): the workspaces the hub lists, a switcher, and what needs the person. Deliberately minimal: the mockup
@@ -9,16 +10,19 @@ import OrchUI
 /// `SafeTextView`; rows are display only.
 struct HubHomeScreen: View {
     @State private var model: HubHomeModel
+    @State private var path: [HubNeedsYouRow] = []
+    /// DEBUG launch helper: an item to open once the lists are there (`--hub-fake home-selective-question`).
+    private let openItem: String?
     @State private var password = ""
     @State private var totp = ""
     @State private var pairing: HubPairingModel?
     @State private var confirmLeave = false
     @Environment(\.dismiss) private var dismiss
 
-    init(model: HubHomeModel = HubHomeModel()) { _model = State(initialValue: model) }
+    init(model: HubHomeModel = HubHomeModel(), openItem: String? = nil) { _model = State(initialValue: model); self.openItem = openItem }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: OS.s4) {
                     banner
@@ -45,7 +49,10 @@ struct HubHomeScreen: View {
             .sheet(item: $pairing, onDismiss: { Task { await model.refresh() } }) { HubPairingScreen(model: $0) }
             .navigationDestination(for: HubNeedsYouRow.self) { HubItemScreen(model: model, row: $0) }
         }
-        .task { await model.open() }
+        .task {
+            await model.open()
+            if let openItem, path.isEmpty, let row = model.rows.first(where: { $0.itemID == openItem }) { path = [row] }
+        }
         .onChange(of: HubPushDriver.shared.hintTick) { Task { await model.refresh() } }   // a handled push hint: read the lists from the hub (B4)
     }
 
@@ -256,15 +263,26 @@ struct HubItemScreen: View {
 
     /// B3: start a decision on this item. The sign model refuses anything the hub's prepared event does not match.
     private func sign(_ d: HubItemDecision, _ make: (String) -> HubSignAction) {
-        let ids = Set(model.snapshot?.workspaces.map(\.id) ?? [])
-        guard let m = HubSignModel.make(runtime: HubRuntime.shared, workspaces: ids) else { return }
+        start(make(d.log))
+    }
+
+    /// A decision on a shared item of a selective workspace (protocol 8.6): the action names the item and the values the person was shown.
+    private func signShared(_ d: HubItemDecision, _ s: HubItemDecision.Shared, _ make: (String) -> HubSignAction.Selective) {
+        start(.shared(bound: s, make(d.log)))
+    }
+
+    private func start(_ action: HubSignAction) {
+        let all = model.snapshot?.workspaces ?? []
+        guard let m = HubSignModel.make(runtime: HubRuntime.shared, workspaces: Set(all.map(\.id)), selective: Set(all.filter { $0.mode == .selective }.map(\.id)))
+        else { return }
         signModel = m
-        m.start(workspaceID: row.workspaceID, action: make(d.log))
+        m.start(workspaceID: row.workspaceID, action: action)
     }
 
     @ViewBuilder private func decisionButtons(_ d: HubItemDecision) -> some View {
         let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         VStack(alignment: .leading, spacing: OS.s3) {
+            if let sh = d.shared { sharedButtons(d, sh, text: text) } else {
             switch d.kind {
             case .question(let q, let options):
                 ForEach(options, id: \.key) { o in
@@ -282,6 +300,27 @@ struct HubItemScreen: View {
                 Button("Fail") { sign(d) { .giveVerdict(log: $0, outcome: "fail", hash: d.hash, text: text) } }
                     .buttonStyle(.orchSoftBrand).disabled(text.isEmpty).accessibilityIdentifier("hubitem.fail")
             }
+            }
+        }
+    }
+
+    /// The same four decisions on a shared item: an answer is text only (options are not shared), and the sign prompt says what the hub sees.
+    @ViewBuilder private func sharedButtons(_ d: HubItemDecision, _ sh: HubItemDecision.Shared, text: String) -> some View {
+        switch d.kind {
+        case .question(let q, _):
+            TextField("Your answer", text: $reason, axis: .vertical).lineLimit(1...4).padding(OS.s3).orchCard().accessibilityIdentifier("hubitem.answer")
+            Button { signShared(d, sh) { .answerQuestion(log: $0, question: q, hash: d.hash, text: text) } } label: { Text("Review answer").frame(maxWidth: .infinity) }
+                .buttonStyle(.orchProminent).disabled(text.isEmpty).accessibilityIdentifier("hubitem.send")
+        case .gate(let g):
+            Button("Approve") { signShared(d, sh) { .approveGate(log: $0, gate: g, hash: d.hash) } }.buttonStyle(.orchProminent).accessibilityIdentifier("hubitem.approve")
+            reasonField
+            Button("Ask for changes") { signShared(d, sh) { .requestChanges(log: $0, gate: g, hash: d.hash, text: text) } }
+                .buttonStyle(.orchSoftBrand).disabled(text.isEmpty).accessibilityIdentifier("hubitem.changes")
+        case .verdict:
+            Button("Pass") { signShared(d, sh) { .giveVerdict(log: $0, outcome: "pass", hash: d.hash, text: nil) } }.buttonStyle(.orchProminent).accessibilityIdentifier("hubitem.pass")
+            reasonField
+            Button("Fail") { signShared(d, sh) { .giveVerdict(log: $0, outcome: "fail", hash: d.hash, text: text) } }
+                .buttonStyle(.orchSoftBrand).disabled(text.isEmpty).accessibilityIdentifier("hubitem.fail")
         }
     }
 
@@ -307,9 +346,9 @@ struct HubItemScreen: View {
                 }
             }
             .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
-            if let h = d.itemHash { Text(HubHomeScreen.safe("Shared content fingerprint: " + h)).font(OF.machine).foregroundStyle(OC.textMuted) }
+            if let h = d.itemHash { Text(HubHomeScreen.safe("Shared content reference: " + (HubSign.shortHash(h) ?? h))).font(OF.machine).foregroundStyle(OC.textMuted) }
             if let dec = d.decision, model.signEnabled(d.row) { decisionButtons(dec) }
-            else { Text("Handled where it lives.").font(OF.meta).foregroundStyle(OC.textMuted) }
+            else { Text("Handled where it lives.").font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("hubitem.handled") }
         }
         .accessibilityIdentifier("hubitem.detail")
     }
@@ -335,7 +374,7 @@ struct HubEntryScreen: View {
     }
 }
 
-/// `--hub-fake home|home-offline|home-signedout|home-revoked|home-selective`: the home against the in-process hub, paired without a screen.
+/// `--hub-fake home|home-offline|home-signedout|home-revoked|home-selective|home-selective-question`: the home against the in-process hub, paired without a screen.
 struct HubHomeLaunchRoot: View {
     let script: String
     @State private var model = HubHomeModel()
@@ -343,10 +382,11 @@ struct HubHomeLaunchRoot: View {
 
     var body: some View {
         Group {
-            if ready { HubHomeScreen(model: model) } else { ProgressView() }
+            if ready { HubHomeScreen(model: model, openItem: script == "home-selective-question" ? FakeHub.sharedQuestionItem : nil) } else { ProgressView() }
         }
         .task {
             let rt = HubRuntime.shared
+            if script.hasPrefix("home-selective") { rt.fake?.seedSelective() }
             await rt.pairFake()
             _ = await rt.home.refresh()
             if let hub = rt.fake {
@@ -357,7 +397,7 @@ struct HubHomeLaunchRoot: View {
                 default: break
                 }
             }
-            if script == "home-selective" { model.selected = FakeHub.wsShared }
+            if script.hasPrefix("home-selective") { model.selected = FakeHub.wsShared }
             ready = true
         }
     }

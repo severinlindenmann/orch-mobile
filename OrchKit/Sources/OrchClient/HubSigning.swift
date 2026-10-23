@@ -19,9 +19,36 @@ public enum HubSignAction: Sendable, Equatable {
     case approveGate(log: String, gate: String, hash: String)
     case requestChanges(log: String, gate: String, hash: String, text: String)
     case giveVerdict(log: String, outcome: String, hash: String, text: String?)
+    /// The same four decisions on ONE shared item of a selective workspace (protocol 8.6): the action names `item`, `hash` is the one the item's `f1`
+    /// shows, and a question answer is text only (V3 shares no options, so there is no `option` to send). `bound` is what the person was shown; it
+    /// is compared with the prepared event on the phone and never sent. The item named in the action is `bound.item`.
+    case shared(bound: HubItemDecision.Shared, Selective)
+
+    public enum Selective: Sendable, Equatable {
+        case answerQuestion(log: String, question: String, hash: String, text: String)
+        case approveGate(log: String, gate: String, hash: String)
+        case requestChanges(log: String, gate: String, hash: String, text: String)
+        case giveVerdict(log: String, outcome: String, hash: String, text: String?)
+
+        var plain: HubSignAction {
+            switch self {
+            case let .answerQuestion(l, q, h, t): .answerQuestion(log: l, question: q, hash: h, option: nil, text: t)
+            case let .approveGate(l, g, h): .approveGate(log: l, gate: g, hash: h)
+            case let .requestChanges(l, g, h, t): .requestChanges(log: l, gate: g, hash: h, text: t)
+            case let .giveVerdict(l, o, h, t): .giveVerdict(log: l, outcome: o, hash: h, text: t)
+            }
+        }
+    }
+
+    /// The shared item a selective action names (nil for a full-mode action).
+    var sharedBinding: HubItemDecision.Shared? { if case let .shared(b, _) = self { b } else { nil } }
 
     var json: JSONValue {
         switch self {
+        case let .shared(bound, inner):
+            guard var o = inner.plain.json.object else { return .null }
+            o["item"] = .string(bound.item)   // the item named is the item compared: one value
+            return .object(o)
         case let .answerQuestion(log, q, hash, option, text):
             var o: [String: JSONValue] = ["type": "question.answered", "log": .string(log), "question": .string(q), "hash": .string(hash)]
             if let option { o["option"] = .string(option) }
@@ -99,15 +126,19 @@ public struct HubSignConfig: Sendable {
     public let contentLink: @Sendable (_ origin: String, _ workspaceID: String, _ log: String) -> URL?
     /// The hub wipe (B6): while one is pending nothing is prepared, proved or sent, and a wipe drops every open request first.
     public let wipe: HubWipe
+    /// The mode the hub's list gave a workspace (B2), when known. A pushed request has no action to tell selective from full, so `item_hash` is
+    /// held against this: present exactly in a selective workspace. nil (unknown) leaves the event's own shape to decide.
+    public let workspaceMode: @Sendable (String) async -> HubWorkspace.Mode?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
                 makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
                 biometry: BiometricGate = BiometricGate(),
                 isMyWorkspace: @escaping @Sendable (String) async -> Bool = { _ in false },
-                contentLink: @escaping @Sendable (String, String, String) -> URL? = { _, _, _ in nil }, wipe: HubWipe) {
+                contentLink: @escaping @Sendable (String, String, String) -> URL? = { _, _, _ in nil },
+                workspaceMode: @escaping @Sendable (String) async -> HubWorkspace.Mode? = { _ in nil }, wipe: HubWipe) {
         self.wipe = wipe
         self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometry = biometry
-        self.isMyWorkspace = isMyWorkspace; self.contentLink = contentLink
+        self.isMyWorkspace = isMyWorkspace; self.contentLink = contentLink; self.workspaceMode = workspaceMode
     }
 }
 
@@ -247,6 +278,15 @@ public actor HubSignSession {
                 }
             }
             if let requested, !requested.bytesEqual(ws) { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
+            // selective (protocol 8.6): decided by the action; `item_hash` required, no option, and the event holds exactly the values shown
+            do { try HubSign.checkSelectiveBuilt(action: started.json, event: event) }
+            catch let r as Refusal { throw HubSignFailure.changed(code: r.rawValue) }
+            if let bound = started.sharedBinding, let e = event.object, !Self.matches(e, bound, type: started.json.object?["type"]?.string ?? "") { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
+        }
+        // a pushed request: `item_hash` is there exactly (nil mode = a workspace not in the list, which `isMyWorkspace` above already refused)
+        //  in a selective workspace (when the list tells the mode)
+        if started == nil, let e = event.object, let mode = await cfg.workspaceMode(ws) {
+            if (e["item_hash"] != nil) != (mode == .selective) { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
         }
         // 4. the phone's own bindings; a pushed request names a workspace nobody here asked for, so it must be one of this user's
         if started == nil, !(await cfg.isMyWorkspace(ws)) { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
@@ -262,6 +302,19 @@ public actor HubSignSession {
                                    contentLink: HubSign.isContentBound(type) ? link : nil)
         live[reply.preparedID] = Live(prompt: prompt, ctx: reply.ctx, digest: digest, started: started)
         return prompt
+    }
+
+    /// A selective event holds exactly the values the person saw on the shared item (protocol 8.6 step 4): the item's hash, `roster_v`, and on a
+    /// gate decision `gate_gen`, `policy_hash` and `source_sha`. A stale or swapped value is `event_changed` before any Confirm exists.
+    static func matches(_ e: [String: JSONValue], _ b: HubItemDecision.Shared, type: String) -> Bool {
+        guard e["item_hash"]?.string?.bytesEqual(b.itemHash) == true, e["roster_v"] == .int(b.rosterV) else { return false }
+        if let gen = b.gateGen {
+            // `source_sha` exactly where protocol 8.5/8.6 puts it: a `code` approval and a verdict; never on a change request or another gate
+            let needsSource = "verdict.given".bytesEqual(type) || ("gate.approved".bytesEqual(type) && e["gate"]?.string?.bytesEqual("code") == true)
+            guard e["gate_gen"] == .int(gen), e["policy_hash"]?.string?.bytesEqual(b.policyHash ?? "") == true,
+                  e["source_sha"] == (needsSource ? b.sourceSha : nil) else { return false }
+        } else if e["gate_gen"] != nil || e["policy_hash"] != nil || e["source_sha"] != nil { return false }
+        return true
     }
 
     /// The event is for THIS phone, user and hub (protocol 8.4 step 3 plus design B3 step 2). Anything else is `event_changed`.

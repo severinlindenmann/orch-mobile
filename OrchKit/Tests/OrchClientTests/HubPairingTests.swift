@@ -215,7 +215,7 @@ private final class GateSender: RequestSender, @unchecked Sendable {
         #expect(rig.hub.log.last == "DELETE /api/v1/session" || fault == "long_session")
     }
 
-    @Test(arguments: 1...5)
+    @Test(.timeLimit(.minutes(2)), arguments: 1...5)
     func aNetworkFailureAtAnyStepLeavesNothing(step: Int) async {
         let rig = Rig(sender: { hub in { @Sendable _ in FlakySender(hub, failAt: step) } })
         let first = await rig.coordinator.begin(link: rig.hub.pairingLink)
@@ -224,6 +224,27 @@ private final class GateSender: RequestSender, @unchecked Sendable {
         let r = await rig.coordinator.complete(password: rig.hub.password, totp: rig.hub.totp, label: "Dev hub")
         #expect(r == .failed(.network), "step \(step)")
         #expect(rig.stored.isEmpty, "step \(step)")
+    }
+
+    /// The five failure steps, many pairings at once (L2-B6e-1: CI hung in this test on the B6 branch; every pairing now also takes the wipe
+    /// barrier, and its rollback revokes at the hub). Each case must finish, leave nothing, and never block another.
+    @Test(.timeLimit(.minutes(2))) func theFailureStepsRunConcurrentlyAndAllFinish() async {
+        await withTaskGroup(of: Bool.self) { group in
+            for round in 0..<200 {
+                group.addTask {
+                    let step = round % 5 + 1
+                    let rig = Rig(sender: { hub in { @Sendable _ in FlakySender(hub, failAt: step) } })
+                    let first = await rig.coordinator.begin(link: rig.hub.pairingLink)
+                    if step == 1 { return first == .failed(.network) }
+                    guard case .confirm = first else { return false }
+                    let r = await rig.coordinator.complete(password: rig.hub.password, totp: rig.hub.totp, label: "Dev hub")
+                    return r == .failed(.network) && rig.stored.isEmpty
+                }
+            }
+            var ok = 0
+            for await good in group where good { ok += 1 }
+            #expect(ok == 200)
+        }
     }
 
     @Test func cancelForgetsTheStagedPairing() async throws {
