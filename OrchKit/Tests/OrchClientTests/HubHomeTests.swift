@@ -106,12 +106,12 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         let snap = try #require(live(await r.home.refresh()))
         #expect(snap.workspaces.map(\.name) == ["Platform", "Billing", "Acme (shared)"])
         #expect(snap.workspaces[1].online == false && snap.workspaces[2].mode == .selective && snap.workspaces[2].hubReads == "shared items and summaries")
-        #expect(snap.needsYou.rows.count == 4 && snap.needsYou.offline == [FakeHub.wsBilling])
+        #expect(snap.needsYou.rows.count == 5 && snap.needsYou.offline == [FakeHub.wsBilling])
         #expect(Array(r.hub.log.dropFirst(before)) == ["GET /api/v1/me/workspaces", "GET /api/v1/me/needs-you"])
         // the bearer is the channel session's, and every request went to the hub the pairing named
         let auth = r.hub.seenAuthorizations.suffix(2)
         #expect(auth.allSatisfy { $0 == "Bearer FAKE-HUB-CHANNEL-3" || $0.hasPrefix("Bearer FAKE-HUB-CHANNEL-") })
-        #expect(snap.rows(in: FakeHub.wsPlatform).count == 2)
+        #expect(snap.rows(in: FakeHub.wsPlatform).count == 3)
         #expect(r.cache.hubIDs == [r.hub.hubID])
     }
 
@@ -133,7 +133,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: FakeHub.wsBilling, item: "b1", kind: "gate", title: "Approve", signable: true))
         let snap = try #require(live(await r.home.refresh()))
         #expect(snap.rows(in: FakeHub.wsBilling).map(\.signable) == [false])
-        #expect(snap.rows(in: FakeHub.wsPlatform).map(\.signable) == [true, true])   // the hub's hint, enabling only
+        #expect(snap.rows(in: FakeHub.wsPlatform).map(\.signable) == [true, true, true])   // the hub's hint, enabling only
     }
 
     @Test func rowsOfUnknownWorkspacesOrOtherModesAreDropped() async throws {
@@ -142,12 +142,12 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: FakeHub.wsPlatform, mode: "selective", item: "x2", kind: "ticket", title: "wrong mode"))
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: FakeHub.wsShared, mode: "selective", item: "x3", kind: "gate", title: "not a shared kind"))
         let snap = try #require(live(await r.home.refresh()))
-        #expect(snap.needsYou.rows.count == 4)
+        #expect(snap.needsYou.rows.count == 5)
     }
 
     @Test func textFromTheHubIsRenderedAgain() async throws {
         let r = await HomeRig()
-        r.hub.needsYouRows[0] = FakeHub.needsRow(ws: FakeHub.wsPlatform, item: "q1", kind: "question", title: "Approve \u{202E}payroll\u{202C} now")
+        r.hub.needsYouRows[0] = FakeHub.needsRow(ws: FakeHub.wsPlatform, item: FakeHub.q1Item, kind: "question", title: "Approve \u{202E}payroll\u{202C} now")
         r.hub.workspaceRows[0] = FakeHub.workspaceRow(id: FakeHub.wsPlatform, name: "Plat\u{3164}form", mode: "full", role: "edit", online: true)
         let snap = try #require(live(await r.home.refresh()))
         #expect(snap.needsYou.rows[0].title == "Approve <U+202E>payroll<U+202C> now")
@@ -166,7 +166,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         let again = HomeRig.makeHome(r.custody, r.cache, r.clock, r.hub)
         #expect(await again.restore() == .offline(snap))
         // an item is not shown from the cache
-        #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") == .offline)
+        #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: FakeHub.q1Item) == .offline)
     }
 
     @Test func offlineWithoutACacheIsEmptyAndReadOnly() async {
@@ -268,12 +268,14 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         #expect(d.row.title == "Review the launch checklist" && d.row.signable == false)
         #expect(d.lines.map(\.label) == ["body", "title"])
         #expect(d.itemHash?.hasPrefix("sha256:") == true)
-        guard case .detail(let q) = await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") else { Issue.record("no detail"); return }
-        #expect(q.lines.map(\.label) == ["options [1] / key", "options [1] / label", "options [2] / key", "options [2] / label", "question", "text"])
-        // design #1123 rev 4: the phone offers a decision only for a question it verified by hashing the raw text, options and spec; the fake
-        // hub's `q1` carries neither a spec nor a 32-hex item id, so it offers none (shown, answered on the Mac). The verified path is
-        // covered by HubQuestionDecisionTests against the frozen core fixtures.
-        #expect(q.decision == nil)
+        guard case .detail(let q) = await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: FakeHub.q1Item) else { Issue.record("no detail"); return }
+        #expect(q.lines.map(\.label) == ["options [1] / key", "options [1] / label", "options [2] / key", "options [2] / label", "question", "spec / kind", "text"])
+        // design #1123 rev 4: a plain verified choice question is offered (options with their bound fields); one with a hash-bound part the buttons
+        // do not show (here `recommended`) is answered on the Mac
+        guard let dec = q.decision, case .question(let id, let options) = dec.kind else { Issue.record("no decision"); return }
+        #expect(id == "Q1" && options.map(\.key) == ["eu_west", "us_east"] && dec.log == "01J9ZP0000000000000000TKT1")
+        guard case .detail(let q2) = await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: FakeHub.q2Item) else { Issue.record("no detail"); return }
+        #expect(q2.decision == nil)
         #expect(d.decision == nil)                       // a selective item is never decided on the phone
         #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "nope") == .refused(code: "unknown_item"))
     }
@@ -285,7 +287,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         for bad in ["../me/workspaces", "a/b", "a?x=1", "", String(repeating: "a", count: 65), "a b"] {
             #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: bad) == .refused(code: "malformed"))
         }
-        #expect(await r.home.item(workspaceID: "../x", itemID: "q1") == .refused(code: "malformed"))
+        #expect(await r.home.item(workspaceID: "../x", itemID: FakeHub.q1Item) == .refused(code: "malformed"))
         #expect(r.hub.log.count == n)
     }
 
@@ -293,7 +295,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         let r = await HomeRig()
         _ = await r.home.refresh()
         let n = r.hub.log.count
-        #expect(await r.home.item(workspaceID: String(repeating: "ee", count: 16), itemID: "q1") == .refused(code: "unknown_workspace"))
+        #expect(await r.home.item(workspaceID: String(repeating: "ee", count: 16), itemID: FakeHub.q1Item) == .refused(code: "unknown_workspace"))
         #expect(r.hub.log.count == n)
     }
 
@@ -302,7 +304,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         let s = await r.home.refresh()
         _ = try #require(live(s))
         r.hub.faults.channelAnswer = "channel_revoked"
-        #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") == .ended(.revoked))
+        #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: FakeHub.q1Item) == .ended(.revoked))
         #expect(await r.home.state == .revoked && r.cache.hubIDs.isEmpty)
     }
 

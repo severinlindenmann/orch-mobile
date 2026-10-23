@@ -145,34 +145,6 @@ public enum PhoneEvents {
         do { return PreparedText(value: try F1Text.normalize(s, oneLine: oneLine), oneLine: oneLine) } catch let v as F1Text.Violation { throw Failure.text(v) }
     }
 
-    // MARK: question.answered
-
-    /// `question.answered` (F1 section 5.4.1): exact fields `question`, `hash`, then `option?` and/or `text?`. `basedOn` is
-    /// `ticket.get` -> `doc.head.head`, `rosterV` is `members_v`. `reviewed` must come from `F1Question.reviewed` (recomputed hash).
-    package static func answer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
-                               actor: PhoneActor, workspace: ID16, signer: some Signer) throws -> SignedPhoneEvent {
-        try sign(try unsignedAnswer(r, option: option, text: text, id: id, actor: actor, workspace: workspace), signer: signer)
-    }
-
-    /// The unsigned `question.answered` (same checks as `answer`), for the auto re-sign decision and for `sign`.
-    package static func unsignedAnswer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
-                                       actor: PhoneActor, workspace: ID16) throws -> UnsignedPhoneEvent {
-        guard ULID.isValid(id) else { throw Failure.badID }
-        guard r.question.state == .open else { throw Failure.notOpen }
-        try r.question.content.checkAnswer(option: option, text: text?.value)
-        var e: [String: JSONValue] = envelope(actor: actor, id: id, rosterV: r.rosterV, type: "question.answered", basedOn: .string(r.basedOn))
-        e["question"] = .string(r.question.id)
-        e["hash"] = .string(r.hash)
-        if let option {
-            guard let match = r.question.options.first(where: { $0.key.bytesEqual(option) }) else { throw Failure.unknownOption }
-            e["option"] = .string(match.key)
-        }
-        if let text {
-            e["text"] = .string(text.value)
-        }
-        return UnsignedPhoneEvent(kind: .questionAnswered, log: r.ticketUID, id: id, event: e, workspace: workspace)
-    }
-
     // MARK: ticket.created
 
     /// `ticket.created` (title-only, R2): exact fields `key`, `ticket_type`, `title`, `owner`; `based_on` null; log = the new ticket's

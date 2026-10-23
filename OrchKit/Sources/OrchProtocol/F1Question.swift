@@ -318,20 +318,6 @@ public struct F1Question: Equatable, Sendable {
         guard (state == .answered) == (answer != nil) else { throw Refusal.malformed }
     }
 
-    /// The stored form of an OPEN question as reviewed (C2b `pe_reviews.snapshot`): exactly the fields this parser reads back, with `text`,
-    /// `options` and `spec` as received (no normalisation). `F1Question(wire)` reproduces an equal question, byte for byte.
-    public var openWire: JSONValue {
-        var o: [String: JSONValue] = ["id": .string(id), "state": "open", "to": .array(to.map(JSONValue.string)), "blocking": .bool(blocking),
-                                      "answered_by": .null, "answered_seq": .null, "text": .string(content.text), "spec": content.specWire]
-        if content.kind == .choice { o["options"] = content.optionsWire }
-        if let toRef { o["to_ref"] = .string(toRef) }
-        if let askedAt { o["asked_at"] = .string(askedAt) }
-        if let askedSeq { o["asked_seq"] = .int(askedSeq) }
-        if let qid { o["qid"] = .string(qid) }
-        if let hash { o["hash"] = .string(hash) }
-        return .object(o)
-    }
-
     // MARK: parsing helpers
 
     /// `closed: false` ignores unknown keys (known keys are still checked by the callers); `closed: true` refuses them.
@@ -402,24 +388,6 @@ public struct F1Question: Equatable, Sendable {
         try questionHash(qid: qid, ticketUID: ticketUID, content: Content(text: text, options: options, spec: spec))
     }
 
-    /// What the phone shows and signs for a question: both values recomputed from the uid, the paired workspace id and the displayed
-    /// content, and equal to the host's `qid` and `hash` (14.5). Anything else is refused: no sign sheet for a question the phone cannot
-    /// reproduce. Requires `state == open`.
-    public struct Reviewed: Equatable, Sendable {
-        public let question: F1Question
-        public let ticketUID: String
-        public let qid: String
-        public let hash: String
-        public let text: String
-        /// `ticket.get` -> `doc.head.head` (`based_on`) and `members_v` (`roster_v`), from the same snapshot as the question.
-        public let basedOn: String
-        public let rosterV: Int64
-        fileprivate init(question: F1Question, ticketUID: String, qid: String, hash: String, text: String, basedOn: String, rosterV: Int64) {
-            self.question = question; self.ticketUID = ticketUID; self.qid = qid; self.hash = hash; self.text = text
-            self.basedOn = basedOn; self.rosterV = rosterV
-        }
-    }
-
     /// The recomputed `qid` and `hash`, each compared byte-exactly with the host's. Throws `F1QuestionRefusal(.hashMismatch)` when the host
     /// hash is not the phone's, so the caller can say why the question cannot be verified.
     package func verified(ticketUID: String, workspace: ID16) throws -> (qid: String, hash: String) {
@@ -428,12 +396,5 @@ public struct F1Question: Equatable, Sendable {
         let myHash = try F1Question.questionHash(qid: myQid, ticketUID: ticketUID, content: content)
         guard myQid.bytesEqual(hostQid), myHash.bytesEqual(hostHash) else { throw F1QuestionRefusal(.hashMismatch, "the host's hash is not the one this iPhone computes") }
         return (myQid, myHash)
-    }
-
-    public func reviewed(ticketUID: String, workspace: ID16, basedOn: String, rosterV: Int64) throws -> Reviewed {
-        guard F1ASCII.isHash(basedOn), rosterV >= 0, rosterV <= maxSafeInt else { throw Refusal.malformed }
-        guard state == .open else { throw Refusal.malformed }
-        let (myQid, myHash) = try verified(ticketUID: ticketUID, workspace: workspace)
-        return Reviewed(question: self, ticketUID: ticketUID, qid: myQid, hash: myHash, text: text, basedOn: basedOn, rosterV: rosterV)
     }
 }

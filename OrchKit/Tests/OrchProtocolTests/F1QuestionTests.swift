@@ -299,38 +299,21 @@ import Testing
         #expect((try? F1Question(item { $0["state"] = "answered"; $0["answer"] = a })) == nil)
     }
 
-    // MARK: stored form
+    // MARK: verified (recomputed qid and hash)
 
-    @Test func openWireReproducesTheQuestionByteForByte() throws {
-        for form in 0...1 {
-            let q = try F1Question(item(form: form))
-            let again = try F1Question(q.openWire)
-            #expect(again == q)
-            #expect(try canonicalJSON(again.openWire) == canonicalJSON(q.openWire))
-            // `options` and `spec` are stored as received, so the stored form still reproduces the host's hash
-            #expect(try again.verified(ticketUID: ticket, workspace: wsid).hash == q.hash)
-        }
-    }
-
-    // MARK: reviewed (recomputed qid and hash)
-
-    @Test func reviewedRecomputesAndComparesToTheHost() throws {
+    @Test func verifiedRecomputesAndComparesToTheHost() throws {
         let good = try F1Question(item())
-        let r = try good.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)
+        let r = try good.verified(ticketUID: ticket, workspace: wsid)
         #expect(r.hash == good.hash && r.qid == good.qid)
-        #expect(r.basedOn == base && r.rosterV == 3)
-        #expect((try? good.reviewed(ticketUID: ticket, workspace: wsid, basedOn: "sha256:abc", rosterV: 3)) == nil)
-        #expect((try? good.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: -1)) == nil)
         // another workspace or another ticket: no sign sheet
-        #expect((try? good.reviewed(ticketUID: ticket, workspace: ID16(hex: String(repeating: "1", count: 32))!, basedOn: base, rosterV: 3)) == nil)
-        #expect((try? good.reviewed(ticketUID: "01J9ZK4Q7M3R8T2V6X0B5N1C9E", workspace: wsid, basedOn: base, rosterV: 3)) == nil)
+        #expect((try? good.verified(ticketUID: ticket, workspace: ID16(hex: String(repeating: "1", count: 32))!)) == nil)
+        #expect((try? good.verified(ticketUID: "01J9ZK4Q7M3R8T2V6X0B5N1C9E", workspace: wsid)) == nil)
         // a missing hash, or a hash for other content
-        #expect((try? F1Question(item { $0["hash"] = nil }).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
+        #expect((try? F1Question(item { $0["hash"] = nil }).verified(ticketUID: ticket, workspace: wsid)) == nil)
         let other: JSONValue = .string("sha256:" + String(repeating: "0", count: 64))
-        #expect((try? F1Question(item { $0["hash"] = other }).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
-        // a text question reviews too
-        let t = try F1Question(item(form: 1)).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)
-        #expect(t.question.kind == .text)
+        #expect((try? F1Question(item { $0["hash"] = other }).verified(ticketUID: ticket, workspace: wsid)) == nil)
+        // a text question verifies too
+        _ = try F1Question(item(form: 1)).verified(ticketUID: ticket, workspace: wsid)
     }
 
     /// Every bound field changes the hash (the tamper variants of the oracle): a host cannot change a fact, a title, the order, the
@@ -338,7 +321,7 @@ import Testing
     @Test func everyBoundFieldBreaksTheHostHash() {
         func cannotVerify(_ v: JSONValue) -> Bool {
             guard let q = try? F1Question(v) else { return true }       // refused outright is also not answerable
-            do { _ = try q.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3); return false } catch let e as F1QuestionRefusal { return e.code == .hashMismatch } catch { return false }
+            do { _ = try q.verified(ticketUID: ticket, workspace: wsid); return false } catch let e as F1QuestionRefusal { return e.code == .hashMismatch } catch { return false }
         }
         #expect(!cannotVerify(item()))
         #expect(cannotVerify(item { $0["text"] = "Which export should feed the tariff tables?" }))

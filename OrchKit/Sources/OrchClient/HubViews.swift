@@ -179,12 +179,10 @@ enum HubViewParse {
         func shared(_ g: (gen: Int64, policy: String, source: JSONValue?)?) -> HubItemDecision.Shared {
             .init(item: item, itemHash: ih, rosterV: roster, gateGen: g?.gen, policyHash: g?.policy, sourceSha: g?.source)
         }
-        if let (qid, v) = questions.first {
-            // a question answer on a `question` item, about the question the item is about; options are not shared, so there are none
-            guard kind == "question", c["id"]?.string == qid, qid.hasPrefix("Q"), qid.count > 1, qid.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
-                  let h = v.object?["hash"]?.string, HubSign.isHash(h) else { return nil }
-            return HubItemDecision(log: log, hash: h, kind: .question(id: qid, options: []), shared: shared(nil))
-        }
+        // A shared question offers nothing: the answer would be signed over the hub's `f1.questions[Q].hash`, which binds options and spec that a
+        // shared item never carries, so the phone could neither show nor check them ("Handled where it lives"). It becomes answerable only when
+        // a shared item carries the raw text, options and spec and the phone runs the same checks as `decision()`.
+        if !questions.isEmpty { return nil }
         guard kind == "ticket", let (gate, v) = gates.first, let e = v.object, let h = e["hash"]?.string, HubSign.isHash(h), let gen = e["gen"]?.int, gen >= 0,
               let pol = e["policy_hash"]?.string, HubSign.isHash(pol) else { return nil }
         let src = e["source_sha"]

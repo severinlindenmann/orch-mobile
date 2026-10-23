@@ -19,16 +19,6 @@ import Testing
         var o = s.object!; o["sig"] = nil; return o
     }
 
-    /// The question as `ticket.get` would send it, rebuilt from the vector's hashed values.
-    func questionView(_ c: JSONValue) -> JSONValue {
-        let h = c["question"]["hashed"]
-        var q: [String: JSONValue] = ["id": c["submitted"]["question"], "state": "open", "to": [], "blocking": false,
-                                      "answered_by": .null, "answered_seq": .null, "text": h["text"], "spec": h["spec"],
-                                      "qid": c["question"]["qid"], "hash": c["question"]["hash"]]
-        if !h["options"].items.isEmpty { q["options"] = h["options"] }
-        return .object(q)
-    }
-
     func build(_ c: JSONValue, signer: SoftwareSigner) throws -> SignedPhoneEvent {
         let s = c["submitted"]
         let a = try actor(s)
@@ -37,10 +27,7 @@ import Testing
                                           title: PhoneEvents.prepareText(s["title"].str, oneLine: true),
                                           id: s["id"].str, rosterV: s["roster_v"].i64, actor: a, workspace: wsid, signer: signer)
         }
-        let q = try F1Question(questionView(c))
-        let r = try q.reviewed(ticketUID: c["log"].str, workspace: wsid, basedOn: s["based_on"].str, rosterV: s["roster_v"].i64)
-        let text = try s["text"].string.map { try PhoneEvents.prepareText($0, oneLine: false) }
-        return try PhoneEvents.answer(r, option: s["option"].string, text: text, id: s["id"].str, actor: a, workspace: wsid, signer: signer)
+        throw PhoneEvents.Failure.noAnswer      // the phone builds no `question.answered` (hub-only: the hub path signs answers); core's accepted answers are validated, not rebuilt
     }
 
     @Test func acceptedCasesReproduceCoreBytes() throws {
@@ -48,7 +35,7 @@ import Testing
         #expect(signer.publicKey == phoneKey)
         let cases = v["accepted"].items
         #expect(cases.count == 7)
-        for c in cases {
+        for c in cases where c["submitted"]["type"].str == "ticket.created" {
             let name = c["name"].str
             let e = try build(c, signer: signer)
             #expect(e.event["sig"] != nil, "\(name)")
@@ -101,10 +88,6 @@ import Testing
     // MARK: builder rules
 
     let base = "sha256:" + String(repeating: "a", count: 64)
-    func reviewedQuestion(base: String? = nil, roster: Int64 = 3) throws -> F1Question.Reviewed {
-        let c = v["accepted"][0]
-        return try F1Question(questionView(c)).reviewed(ticketUID: c["log"].str, workspace: wsid, basedOn: base ?? self.base, rosterV: roster)
-    }
     func pt(_ s: String, oneLine: Bool = false) throws -> PhoneEvents.PreparedText { try PhoneEvents.prepareText(s, oneLine: oneLine) }
     let id = "01M4JM4RKG79RG3QTWCP60NNNG"
 
@@ -118,44 +101,8 @@ import Testing
         #expect((try? PhoneActor(person: p, device: p, auth: .passphrase)) != nil)
     }
 
-    @Test func answerValidation() throws {
-        let r = try reviewedQuestion()
-        let s = SoftwareSigner()
-        let a = try me()
-        func go(option: String? = "csv", text: PhoneEvents.PreparedText? = nil, id: String = id) throws -> SignedPhoneEvent {
-            try PhoneEvents.answer(r, option: option, text: text, id: id, actor: a, workspace: wsid, signer: s)
-        }
-        #expect((try? go()) != nil)
-        #expect((try? go(option: "nope")) == nil)
-        #expect((try? go(option: nil, text: nil)) == nil)
-        #expect((try? go(option: nil, text: pt("free"))) == nil)           // Other only when allow_other is bound (this question has none)
-        #expect((try? go(option: "csv", text: pt("both"))) != nil)
-        #expect((try? go(option: nil, text: pt(""))) == nil)
-        #expect((try? go(option: "csv", text: pt(String(repeating: "x", count: 1000)))) != nil)
-        #expect((try? go(option: "csv", text: pt(String(repeating: "x", count: 1001)))) == nil)       // 1000 scalars (core ANSWER_MAX)
-        #expect((try? go(option: "csv", text: pt(String(repeating: "\u{1F600}", count: 1000)))) != nil)  // counted in scalars: 4000 bytes
-        #expect((try? go(id: "01m4jm4rkg79rg3qtwcp60nnng")) == nil)
-        #expect((try? go(id: "81M4JM4RKG79RG3QTWCP60NNNG")) == nil)
-        let ev = try go(option: "csv", text: pt("ok\tfine"))
-        #expect(Set(ev.event.keys) == ["actor", "auth", "based_on", "hash", "hash_v", "id", "option", "question", "roster_v", "sig", "text", "type", "v"])
-        #expect(ev.event["based_on"] == .string(base))
-        #expect(ev.event["roster_v"] == .int(3))
-    }
-
     @Test func workspaceLogIsNotATicketEventLog() {
         #expect(throws: PhoneEvents.Failure.badTicketUID) { try PhoneEvents.signingBytes(event: [:], log: "workspace", workspace: wsid) }
-    }
-
-    @Test func displayOptionMustBeOneOfTheQuestionsOptions() throws {
-        let r = try reviewedQuestion()
-        #expect((try? AnswerDisplay(r, option: "csv", text: nil)) != nil)
-        #expect((try? AnswerDisplay(r, option: nil, text: pt("t"))) != nil)
-        #expect((try? AnswerDisplay(r, option: "nope", text: nil)) == nil)
-    }
-
-    @Test func snapshotValuesTravelInsideReviewed() {
-        #expect((try? reviewedQuestion(base: "sha256:abc")) == nil)
-        #expect((try? reviewedQuestion(roster: -1)) == nil)
     }
 
     @Test func phoneAuthoredTextMustGoThroughPrepareText() {

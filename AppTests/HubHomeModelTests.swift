@@ -19,9 +19,9 @@ final class HubHomeModelTests: XCTestCase {
         let (m, _, _) = try await opened()
         XCTAssertTrue(m.isLive)
         XCTAssertEqual(m.snapshot?.workspaces.count, 3)
-        XCTAssertEqual(m.rows.count, 4)
+        XCTAssertEqual(m.rows.count, 5)
         m.selected = FakeHub.wsPlatform
-        XCTAssertEqual(m.rows.map(\.itemID), ["q1", "g1"])
+        XCTAssertEqual(m.rows.map(\.itemID), [FakeHub.q1Item, "g1", FakeHub.q2Item])
         XCTAssertEqual(m.selectedWorkspace?.name, "Platform")
         m.selected = FakeHub.wsShared
         XCTAssertEqual(m.rows.map(\.summaryOnly), [false, true])
@@ -29,17 +29,16 @@ final class HubHomeModelTests: XCTestCase {
 
     func testSigningCanBeEnabledOnlyFromALiveAnswerForAnOnlineWorkspace() async throws {
         let (m, _, hub) = try await opened()
-        let q = try XCTUnwrap(m.rows.first { $0.itemID == "q1" })
+        let q = try XCTUnwrap(m.rows.first { $0.itemID == FakeHub.q1Item })
         XCTAssertTrue(m.signEnabled(q))
         // B5: a selective summary is never signable; a shared item is signable only when its own f1 names exactly one target
         hub.seedSelective()
         await m.refresh()
         XCTAssertFalse(m.signEnabled(try XCTUnwrap(m.rows.first { $0.itemID == "s2" })), "a summary is never signable")
         let shared = try XCTUnwrap(m.rows.first { $0.itemID == FakeHub.sharedQuestionItem })
-        XCTAssertTrue(m.signEnabled(shared))
         await m.load(shared)
         guard case .detail(let d) = m.item else { return XCTFail("no detail: \(m.item)") }
-        XCTAssertEqual(d.decision?.shared?.item, FakeHub.sharedQuestionItem)
+        XCTAssertNil(d.decision, "a shared question is answered where it lives")
         await m.load(try XCTUnwrap(m.rows.first { $0.itemID == FakeHub.sharedNoF1Item }))
         guard case .detail(let n) = m.item else { return XCTFail("no detail: \(m.item)") }
         XCTAssertNil(n.decision, "shared without f1: nothing to sign")
@@ -53,10 +52,10 @@ final class HubHomeModelTests: XCTestCase {
 
     func testAnItemLoadsOnlyWhileTheHubAnswers() async throws {
         let (m, _, hub) = try await opened()
-        let q = try XCTUnwrap(m.rows.first { $0.itemID == "q1" })
+        let q = try XCTUnwrap(m.rows.first { $0.itemID == FakeHub.q1Item })
         await m.load(q)
         guard case .detail(let d) = m.item else { return XCTFail("no detail: \(m.item)") }
-        XCTAssertEqual(d.row.itemID, "q1")
+        XCTAssertEqual(d.row.itemID, FakeHub.q1Item)
         hub.faults.down = true
         await m.refresh()
         await m.load(q)
