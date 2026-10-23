@@ -269,7 +269,11 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         #expect(d.lines.map(\.label) == ["body", "title"])
         #expect(d.itemHash?.hasPrefix("sha256:") == true)
         guard case .detail(let q) = await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") else { Issue.record("no detail"); return }
-        #expect(q.lines.map(\.label) == ["options [1]", "options [2]", "text"])
+        #expect(q.lines.map(\.label) == ["options [1] / key", "options [1] / label", "options [2] / key", "options [2] / label", "question", "text"])
+        // B3: the item offers a decision (display data; the hub's prepare and check_built are the authority)
+        #expect(q.decision == HubItemDecision(log: "01J9ZP0000000000000000TKT1", hash: FakeHub.contentHash,
+                                              kind: .question(id: "Q1", options: [.init(key: "eu-west", label: "EU West"), .init(key: "us-east", label: "US East")])))
+        #expect(d.decision == nil)                       // a selective item is never decided on the phone
         #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "nope") == .refused(code: "unknown_item"))
     }
 

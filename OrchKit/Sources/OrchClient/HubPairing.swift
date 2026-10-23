@@ -113,10 +113,15 @@ public struct HubPairingConfig: Sendable {
     public let makeSender: @Sendable (String) throws -> any RequestSender
     /// The hub wipe (B6): while one is unfinished no pairing starts (a new key would be deleted by the resuming wipe).
     public let wipe: HubWipe?
+    /// The device's biometry state at pairing (`BiometricGate.currentDomainState`), recorded with the pairing so that a later change of the
+    /// enrolled faces or fingers means "sign in again" (design B3, R2). Nil: none recorded, and the phone will not sign until one is.
+    public let biometryBaseline: (@Sendable () -> Data?)?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
-                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make, wipe: HubWipe? = nil) {
-        self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.wipe = wipe
+                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
+                biometryBaseline: (@Sendable () -> Data?)? = nil, wipe: HubWipe? = nil) {
+        self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometryBaseline = biometryBaseline
+        self.wipe = wipe
     }
 }
 
@@ -266,6 +271,7 @@ public actor HubPairingCoordinator {
                       try cfg.custody.record(hubID: hubID) == nil
                 else { throw HubPairingFailure.custody }
                 try cfg.custody.putSessionToken(bound.bearer.token, hubID: hubID)
+                if let state = cfg.biometryBaseline?() { try cfg.custody.putBiometryBaseline(state, hubID: hubID) }
                 try cfg.custody.putRecord(try canonicalJSON(record.json), hubID: hubID)
             } catch { throw HubPairingFailure.custody }
             pending = nil
