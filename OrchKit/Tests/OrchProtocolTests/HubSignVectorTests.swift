@@ -52,7 +52,7 @@ import Testing
     }
 
     @Test func shortHashIsTwelveHexInGroupsOfFour() {
-        #expect(HubSign.shortHash("sha256:3d3f5e93357cf4b89511c728d2d7995ebc233f435574ef9b95de0259f3247987") == "3d3f 5e93 3574")
+        #expect(HubSign.shortHash("sha256:3d3f5e93357cf4b89511c728d2d7995ebc233f435574ef9b95de0259f3247987") == "3d3f 5e93 357c")
         #expect(HubSign.shortHash("sha256:3D3F") == nil)
         #expect(HubSign.shortHash("md5:3d3f5e93357cf4b89511c728d2d7995ebc233f435574ef9b95de0259f3247987") == nil)
     }
