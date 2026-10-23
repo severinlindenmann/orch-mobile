@@ -43,6 +43,15 @@ final class HubSignModel: Identifiable {
         return HubSignModel(session: HubSignSession(HubSignConfig(custody: custody, isMyWorkspace: workspaces, contentLink: hubHome), hubID: hubID))
     }
 
+    /// The sign model for the one paired hub of this runtime. `workspaces` is B2's list at the moment the person opened the item: a request
+    /// for any other workspace is refused (`isMyWorkspace`).
+    static func make(runtime: HubRuntime, workspaces: Set<String>) -> HubSignModel? {
+        guard let hubID = try? runtime.custody.pairedHubs().first else { return nil }
+        let cfg = HubSignConfig(custody: runtime.custody, makeSender: runtime.makeSender, biometry: runtime.biometry,
+                                isMyWorkspace: { workspaces.contains($0) }, contentLink: hubHome)
+        return HubSignModel(session: HubSignSession(cfg, hubID: hubID))
+    }
+
     var busy: Bool { switch state { case .loading, .signing: true; default: false } }
 
     /// Start a decision the person chose on an item (self-started): the hub prepares it and the prompt follows.

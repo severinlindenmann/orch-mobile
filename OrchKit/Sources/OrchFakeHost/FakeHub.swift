@@ -39,6 +39,14 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var preparedTTLMs: Int64 = 120_000
         /// Signing: answer `/sign/sign` with this error code instead of signing.
         public var signError: String?
+        /// The hub is unreachable (every request fails at the transport).
+        public var down = false
+        /// Answer every channel-session request with this error code instead (`no_session`, `channel_revoked`, `cert_expired`, ...).
+        public var channelAnswer: String?
+        /// Answer `POST /session/channel` with this error code (a revoked channel cannot bind again).
+        public var bindAnswer: String?
+        /// Answer the lists with a body of the wrong shape.
+        public var garbledLists = false
         public init() {}
     }
 
@@ -51,6 +59,14 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     public var faults = Faults()
     public private(set) var hubID = ""
     public let cardJSON: JSONValue
+
+    /// The data behind `GET /me/workspaces`, `GET /me/needs-you` and the item route (raw rows, as the hub's web API sends them).
+    public var workspaceRows: [JSONValue] = []
+    public var needsYouRows: [JSONValue] = []
+    public var offlineIDs: [String] = []
+    public var unavailableIDs: [String] = []
+    /// `workspace_id/item_id` -> the item answer.
+    public var itemAnswers: [String: JSONValue] = [:]
 
     private let lock = NSLock()
     private let root = SoftwareSigner(), op = SoftwareSigner(), rogueRoot = SoftwareSigner(), rogueOp = SoftwareSigner()
@@ -67,7 +83,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     public private(set) var lastPreparedID: String?
     public private(set) var signedEvents: [(type: String, log: String, preparedID: String)] = []
     /// The workspace and the ticket the fake serves, and the hash of the content under review.
-    public let workspaceID = SystemEntropy().id16().hex
+    public let workspaceID = FakeHub.wsPlatform
     public let ticketLog = "01J9ZP0000000000000000TKT1"
     public static let contentHash = "sha256:3d3f5e93357cf4b89511c728d2d7995ebc233f435574ef9b95de0259f3247987"
     public static let policyHash = "sha256:508506355d0c369c4bfc20c05048e111cf0dd1747def9bbd4076d3d9a46e55e1"
@@ -129,8 +145,15 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     // MARK: RequestSender
 
     public func send(_ request: WireRequest) async throws -> WireReply {
+        if lock.withLock({ faults.down }) { throw TransportError.disconnected }
         let (status, body) = lock.withLock { handle(request) }
         return try WireReply(status: status, headers: ["content-type": "application/json"], body: try canonicalJSON(.object(body)))
+    }
+
+    /// A channel-session route: the configured fault, else `no_session` without a live channel session.
+    private func channelFault(_ token: String?) -> (Int, [String: JSONValue])? {
+        if let c = faults.channelAnswer { return err(403, c) }
+        return token == nil ? err(403, "no_session") : nil
     }
 
     private func err(_ status: Int, _ code: String) -> (Int, [String: JSONValue]) { (status, ["error": .string(code)]) }
@@ -182,6 +205,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             return (200, ["channel_cert": cert])
         case ("POST", "/api/v1/session/channel"):
             guard let t = session("pairing") else { return err(403, "no_session") }
+            if let c = faults.bindAnswer { return err(403, c) }
             guard let auth = body["auth"], let ao = auth.at("o")?.object, let cid = ao["channel_id"]?.string, let ch = channels[cid],
                   let sig = auth.at("sig")?.string.flatMap({ B64U.decode($0, length: 64) }),
                   Signature.verify(ch.key, signature: sig, label: Label.sigHubChannelAuth, message: (try? canonicalJSON(.object(ao))) ?? Data())
@@ -206,6 +230,17 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             guard let p = prepared[String(r.target.dropFirst("/api/v1/sign/prepared/".count))] else { return err(404, "unknown_prepared") }
             if p.expires <= now { return err(410, "prepared_expired") }
             return (200, reply(String(r.target.dropFirst("/api/v1/sign/prepared/".count)), p))
+        case ("GET", "/api/v1/me/workspaces"), ("GET", "/api/v1/me/needs-you"):
+            if let e = channelFault(session("channel")) { return e }
+            if faults.garbledLists { return (200, ["workspaces": "nope", "items": 7]) }
+            if r.target.hasSuffix("workspaces") { return (200, ["workspaces": .array(workspaceRows)]) }
+            return (200, ["items": .array(needsYouRows), "offline": .array(offlineIDs.map { .string($0) }),
+                          "unavailable": .array(unavailableIDs.map { .string($0) })])
+        case ("GET", _) where r.target.hasPrefix("/api/v1/workspaces/") && r.target.contains("/items/"):
+            if let e = channelFault(session("channel")) { return e }
+            let parts = r.target.dropFirst("/api/v1/workspaces/".count).components(separatedBy: "/items/")
+            guard parts.count == 2, let a = itemAnswers[parts[0] + "/" + parts[1]] else { return err(404, "unknown_item") }
+            return (200, a.object ?? [:])
         default:
             return err(404, "unknown_op")
         }
@@ -287,3 +322,55 @@ private extension JSONValue {
 }
 
 private enum SHA256Fake { static func hash(_ d: Data) -> [UInt8] { Array(SHA256.hash(data: d + Data("other".utf8))) } }
+// MARK: sample data for the phone's home (B2)
+
+extension FakeHub {
+    public static let wsPlatform = String(repeating: "a1", count: 16)
+    public static let wsBilling = String(repeating: "b2", count: 16)
+    public static let wsShared = String(repeating: "c3", count: 16)
+
+    public static func workspaceRow(id: String, name: String, mode: String, role: String, online: Bool) -> JSONValue {
+        .object(["workspace_id": .string(id), "name": .string(name), "mode": .string(mode), "role": .string(role), "online": .bool(online),
+                 "hub_reads": .string(mode == "full" ? "everything" : "shared items and summaries"),
+                 "can_start": .bool(mode == "full" && role != "read")])
+    }
+
+    public static func needsRow(ws: String, mode: String = "full", item: String, kind: String, title: String, signable: Bool = false,
+                                summaryOnly: Bool = false) -> JSONValue {
+        var o: [String: JSONValue] = ["workspace_id": .string(ws), "mode": .string(mode), "item_id": .string(item), "kind": .string(kind),
+                                      "type": .string(kind), "key": .string("T-" + item), "title": .string(title), "deadline": .null,
+                                      "signable": .bool(signable)]
+        if mode == "selective" { o["item_version"] = 1; o["summary_only"] = .bool(summaryOnly) }
+        return .object(o)
+    }
+
+    /// Three workspaces (full and online, full and paused, selective) with a few needs-you rows and one item answer each.
+    public func seedHome() {
+        workspaceRows = [Self.workspaceRow(id: Self.wsPlatform, name: "Platform", mode: "full", role: "edit", online: true),
+                         Self.workspaceRow(id: Self.wsBilling, name: "Billing", mode: "full", role: "read", online: false),
+                         Self.workspaceRow(id: Self.wsShared, name: "Acme (shared)", mode: "selective", role: "owner", online: true)]
+        needsYouRows = [Self.needsRow(ws: Self.wsPlatform, item: "q1", kind: "question", title: "Which region should the pilot run in?", signable: true),
+                        Self.needsRow(ws: Self.wsPlatform, item: "g1", kind: "gate", title: "Approve the plan for the export feature", signable: true),
+                        Self.needsRow(ws: Self.wsShared, mode: "selective", item: "s1", kind: "ticket", title: "Review the launch checklist"),
+                        Self.needsRow(ws: Self.wsShared, mode: "selective", item: "s2", kind: "needs_you", title: "A decision is waiting in the workspace",
+                                      summaryOnly: true)]
+        offlineIDs = [Self.wsBilling]
+        itemAnswers = [
+            Self.wsPlatform + "/q1": .object(["workspace_id": .string(Self.wsPlatform), "mode": "full", "item_id": "q1", "kind": "question",
+                                              "type": "question", "key": "T-q1", "title": "Which region should the pilot run in?", "deadline": .null,
+                                              "signable": true, "log": "01J9ZP0000000000000000TKT1", "hash": .string(Self.contentHash),
+                                              "content": .object(["text": "Which region should the pilot run in?", "question": "Q1",
+                                                                  "options": .array([.object(["key": "eu-west", "label": "EU West"]),
+                                                                                     .object(["key": "us-east", "label": "US East"])])])]),
+            Self.wsPlatform + "/g1": .object(["workspace_id": .string(Self.wsPlatform), "mode": "full", "item_id": "g1", "kind": "gate",
+                                              "type": "gate", "key": "T-g1", "title": "Approve the plan for the export feature", "deadline": .null,
+                                              "signable": true, "log": "01J9ZP0000000000000000TKT1", "hash": .string(Self.contentHash),
+                                              "content": .object(["gate": "plan", "gate_gen": 2])]),
+            Self.wsShared + "/s1": .object(["workspace_id": .string(Self.wsShared), "mode": "selective", "item_id": "s1", "kind": "ticket",
+                                            "type": "ticket", "key": "T-s1", "title": "Review the launch checklist", "deadline": .null,
+                                            "item_version": 1, "summary_only": false, "signable": false,
+                                            "content": .object(["title": "Review the launch checklist", "body": "Shared with the hub by the workspace owner."]),
+                                            "item_hash": "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"]),
+        ]
+    }
+}

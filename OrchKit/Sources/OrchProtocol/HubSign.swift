@@ -25,11 +25,11 @@ public enum HubSign {
         return Data(SHA256.hash(data: Data(Label.hHubEventDigest.utf8) + (try canonicalJSON(.object(c)))))
     }
 
-    static func isULID(_ s: String) -> Bool {
+    package static func isULID(_ s: String) -> Bool {
         s.utf8.count == 26 && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) }
     }
 
-    static func isHash(_ s: String) -> Bool {
+    package static func isHash(_ s: String) -> Bool {
         s.hasPrefix("sha256:") && Hex.decode(String(s.dropFirst(7)), length: 32) != nil
     }
 
@@ -117,7 +117,7 @@ public enum HubSign {
         public let type: String
         public let log: String
         public let workspaceID: String
-        /// A plain sentence for a known shape; nil when the event carries a field the phone does not know (then only `fields` is shown).
+        /// A plain sentence for a known shape (an event with a field the phone does not know is refused, never shown).
         public let sentence: String?
         public let gate: String?
         public let shortHash: String?
@@ -125,7 +125,6 @@ public enum HubSign {
         public let sources: [Source]
         /// Every field of the event, by name, each string through `renderText`: the "Signed details".
         public let fields: [Field]
-        public let hasUnknownField: Bool
     }
 
     static let envelope: Set<String> = ["v", "id", "type", "actor", "based_on", "roster_v", "hash_v", "auth", "channel", "channel_factor", "hub_id",
@@ -146,7 +145,6 @@ public enum HubSign {
         let known = envelope.union(payload.first { $0.key.bytesEqual(type) }?.value ?? [])
         // a field the phone does not know is refused (L2-B3-6): the host refuses any extra field as well
         guard !e.keys.contains(where: { !known.contains($0) }) else { throw Refusal.malformed }
-        let unknown = false
         func str(_ k: String) -> String? { e[k]?.string }
         guard let hash = str("hash"), let short = shortHash(hash) else { throw Refusal.malformed }
         var gate: String?, gen: Int64?, sources: [Source] = []
@@ -185,8 +183,8 @@ public enum HubSign {
             sentence = "Give the verdict “\(renderText(o))”" + (str("text").map { ": " + renderText($0) } ?? "")
         }
         let fields = e.keys.sorted().map { k in Field(name: renderText(k), value: render(e[k]!, key: k)) }
-        return Facts(type: type, log: log, workspaceID: ws, sentence: unknown ? nil : sentence, gate: gate, shortHash: short, gateGen: gen,
-                     sources: sources, fields: fields, hasUnknownField: unknown)
+        return Facts(type: type, log: log, workspaceID: ws, sentence: sentence, gate: gate, shortHash: short, gateGen: gen,
+                     sources: sources, fields: fields)
     }
 
     static func render(_ v: JSONValue, key: String) -> String {
