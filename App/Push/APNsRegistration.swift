@@ -170,6 +170,10 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         if PresentationGate.isBlocked(thread: notification.request.content.threadIdentifier, identifier: notification.request.identifier) {
             return []
         }
+        #if DEBUG
+        // A hub push (V3 dev): read the channel's mailbox now. The notification itself is the extension's verified, generic text.
+        await MainActor.run { HubPushDriver.shared.pushArrived() }
+        #endif
         return [.banner, .list, .sound]
     }
 
@@ -192,6 +196,9 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         guard let environment = APNsEnvironment.current else { return }
         store.save(deviceToken: deviceToken, environment: environment)
         if let s = store.stored { Self.onTokenReceived?(s) }
+        #if DEBUG
+        Task { @MainActor in await HubPushDriver.shared.registerPush() }   // the hub channel's target follows the token (V3 dev)
+        #endif
         Self.lastRegistrationError = nil
     }
 

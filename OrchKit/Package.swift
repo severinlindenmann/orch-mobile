@@ -21,13 +21,13 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         // Test-only: the single copy of the protocol vectors. Not a product, never linked into the app.
         .target(name: "OrchTestVectors", path: "Tests/OrchTestVectors", exclude: ["PROVENANCE.md"],
-                resources: [.copy("vectors_v2.json"), .copy("reader_decl_vectors.json"), .copy("http_fixtures"), .copy("push_fixtures"), .copy("f1"), .copy("r2")]),
+                resources: [.copy("vectors_v2.json"), .copy("vectors_hub.json"), .copy("reader_decl_vectors.json"), .copy("http_fixtures"), .copy("push_fixtures"), .copy("f1"), .copy("r2")]),
         .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
         // Relay HTTP v2 examples (orch-relay tests/http_fixtures): schema, pure-wire checks and the PR2..PR5 skip list.
         .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),
-        .target(name: "OrchCustody", dependencies: ["OrchProtocol"],
+        .target(name: "OrchCustody", dependencies: ["OrchProtocol", "OrchPush"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody"]),
+        .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody", "OrchPush", "OrchProtocol", "OrchTestVectors"]),
         // Foundation only: tombstone coordination files, atomic writes, flock. The only non-protocol module an extension needs to honour removal.
         .target(name: "OrchCoordination", dependencies: [],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
@@ -44,9 +44,9 @@ let package = Package(
         .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchStore", "OrchCoordination", "OrchCustody", "OrchTestVectors", "OrchPushFixtures"]),
         // Test-only: seals push fixtures from test keys. Not a product; the script and the UI tests compile this one file.
         .target(name: "OrchPushFixtures", dependencies: ["OrchProtocol"], path: "Tests/OrchPushFixtures"),
-        .target(name: "OrchClient", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore", "OrchShareStaging"],
+        .target(name: "OrchClient", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore", "OrchShareStaging", "OrchPush"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchClientTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore", "OrchTestVectors"]),
+        .testTarget(name: "OrchClientTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore", "OrchTestVectors", "OrchFakeHost"]),
         .target(name: "OrchFakeHost", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore", "OrchClient"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchFakeHostTests",

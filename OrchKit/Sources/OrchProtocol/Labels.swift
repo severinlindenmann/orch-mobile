@@ -77,6 +77,24 @@ public enum Label {
     public static let macEnroll = "orch/v2/enroll|"
 }
 
+/// Labels of the orch hub contract (orch-hub `docs/protocol.md` section 3). Every one ends in `|`; the union with the v2 labels is
+/// prefix-free (checked against the hub vectors' label table by `HubVectorTests`).
+public extension Label {
+    static let sigHubOpCert = "orch/v2/hub-op-cert|"
+    static let sigHubCard = "orch/v2/hub-card|"
+    static let sigHubChannelCert = "orch/v2/hub-channel-cert|"
+    static let sigHubChannelProof = "orch/v2/hub-channel-proof|"
+    static let sigHubChannelRegister = "orch/v2/hub-channel-reg|"
+    static let sigHubAPIOrigin = "orch/v2/hub-api-origin|"
+    static let sigHubChannelAuth = "orch/v2/hub-channel-auth|"
+    static let sigHubChannelPush = "orch/v2/hub-channel-push|"
+    static let sigHubChannelRelayReq = "orch/v2/hub-channel-relay-req|"
+    static let hHubSessionRef = "orch/v2/hub-session-ref|"
+    static let hHubID = "orch/v2/id/hub|"
+    static let hHubChannelID = "orch/v2/id/channel|"
+    static let hHubEventDigest = "orch/v2/hub-event-digest|"
+}
+
 /// Suite 2 (`p256`) constants, section 1.1. This module implements no other suite (decision: suite 2 only).
 public enum Suite2 {
     public static let id: UInt8 = 2

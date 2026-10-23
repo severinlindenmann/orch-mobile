@@ -112,14 +112,50 @@ public enum SealPurpose: String, Sendable, CaseIterable {
 /// Wherever the sender matters, the blob sits inside something the sender signs.
 public enum Sealing {
     static func aad(purpose: SealPurpose, object: ID16, epoch: UInt32, extra: Data) -> Data {
-        let p = Data(purpose.rawValue.utf8)
+        aad(purposeName: purpose.rawValue, object: object, epoch: epoch, extra: extra)
+    }
+
+    /// The purpose of a hub push hint (orch-hub protocol 10.8.2). It is not in `SealPurpose` (the closed list of direct-mode purposes).
+    static let hubPushPurpose = "hub-push"
+
+    static func aad(purposeName: String, object: ID16, epoch: UInt32, extra: Data) -> Data {
+        let p = Data(purposeName.utf8)
         return Data(Label.aadSeal.utf8) + Bytes.u8(Suite2.id) + Bytes.u8(UInt8(p.count)) + p + object.bytes
             + Bytes.u32(epoch) + extra
     }
 
     static func key(sharedSecret: Data, ephPub: Data, recipientPub: Data, purpose: SealPurpose, recipientID: ID16) -> SymmetricKey {
+        key(sharedSecret: sharedSecret, ephPub: ephPub, recipientPub: recipientPub, purposeName: purpose.rawValue, recipientID: recipientID)
+    }
+
+    static func key(sharedSecret: Data, ephPub: Data, recipientPub: Data, purposeName: String, recipientID: ID16) -> SymmetricKey {
         KDF.hkdf(ikm: SymmetricKey(data: sharedSecret), salt: ephPub + recipientPub,
-                 info: KDF.info(Label.kdfSeal, [purpose.rawValue, recipientID.hex]))
+                 info: KDF.info(Label.kdfSeal, [purposeName, recipientID.hex]))
+    }
+
+    /// Opens a hub push hint sealed to a channel's push key (protocol 10.8.2): purpose `hub-push`, recipient id = the channel id, object id =
+    /// the message id, epoch 0, extra = the 16-byte hub id.
+    package static func openHubPush(with recipient: some KeyAgreer, channel: ID16, message: ID16, hub: ID16, sealed: Data) throws -> Data {
+        guard sealed.count >= Suite2.publicKeyLength + 16 else { throw CryptoFailure.authenticationFailed }
+        let blob = Data(sealed)
+        let ephPub = blob.prefix(Suite2.publicKeyLength)
+        let eph = try AgreementPublicKey(x963: ephPub)
+        let ss = try recipient.sharedSecret(with: eph)
+        guard ss.contains(where: { $0 != 0 }) else { throw CryptoFailure.degenerateSharedSecret }
+        let k = key(sharedSecret: ss, ephPub: Data(ephPub), recipientPub: recipient.publicKey.x963, purposeName: hubPushPurpose, recipientID: channel)
+        return try ZeroNonceGCM.open(key: k, blob: blob.dropFirst(Suite2.publicKeyLength),
+                                     aad: aad(purposeName: hubPushPurpose, object: message, epoch: 0, extra: hub.bytes))
+    }
+
+    /// Seals a hub push hint to a channel's push key (protocol 10.8.2). Only the HUB seals; the phone never does. Package-level for the fake hub and
+    /// the tests (the ephemeral key is generated here and used once).
+    package static func sealHubPush(to recipient: AgreementPublicKey, channel: ID16, message: ID16, hub: ID16, plaintext: Data) throws -> Data {
+        let eph = SoftwareKeyAgreer()
+        let ss = try eph.sharedSecret(with: recipient)
+        guard ss.contains(where: { $0 != 0 }) else { throw CryptoFailure.degenerateSharedSecret }
+        let k = key(sharedSecret: ss, ephPub: eph.publicKey.x963, recipientPub: recipient.x963, purposeName: hubPushPurpose, recipientID: channel)
+        return eph.publicKey.x963 + (try ZeroNonceGCM.seal(key: k, plaintext: plaintext,
+                                                           aad: aad(purposeName: hubPushPurpose, object: message, epoch: 0, extra: hub.bytes)))
     }
 
     /// Product seal. The ephemeral key is generated here, used once and dropped; it is deliberately not a

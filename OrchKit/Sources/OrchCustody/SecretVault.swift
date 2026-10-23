@@ -62,9 +62,19 @@ public struct SecretVault: Sendable {
         for id in try ids() where id.realm == realm && id.ws == ws { try delete(id) }
     }
 
-    /// Remove everything of a realm in this group, device keys included.
+    /// Remove everything of a realm in this group, device keys included, EXCEPT the hub pairing (`hub.<hub_id>.*`, D-B1): a direct-mode
+    /// wipe (first Live entry, Leave Live, an interrupted reset) never removes it. Only `HubKeyCustody.deleteAll` and
+    /// `wipeHubItems` (Reset this iPhone) do.
     public func wipe(realm: Realm) throws {
-        for id in try ids() where id.realm == realm { try delete(id) }
+        for id in try ids() where id.realm == realm && !Self.isHubItem(id) { try delete(id) }
+    }
+
+    /// Items of the hub pairing namespace.
+    public static func isHubItem(_ id: SecretID) -> Bool { id.ws == nil && id.purpose.hasPrefix("hub.") }
+
+    /// Remove every hub pairing item of a realm in this group ("Reset this iPhone" only).
+    public func wipeHubItems(realm: Realm) throws {
+        for id in try ids() where id.realm == realm && Self.isHubItem(id) { try delete(id) }
     }
 
     /// Launch cleanup (U9): remove workspace items whose workspace is not in the realm index (left over after a
@@ -97,23 +107,31 @@ public struct RealmVault: Sendable {
         return RealmVault(realm: realm, vault: vault, fence: f)
     }
 
+    /// The `hub.` name prefix belongs to the hub pairing (P3, B6): the direct-mode views refuse it, so no direct item can be mistaken
+    /// for a hub item, or removed with one. Only `HubKeyCustody` (which holds the unscoped vault) names `hub.*` items.
+    static func reserved(_ purpose: String) -> Bool { purpose.hasPrefix("hub.") }
+    private func tag(ws: String?, purpose: String) throws -> SecretID {
+        guard !Self.reserved(purpose) else { throw VaultError.badName }
+        return try SecretID(realm: realm, ws: ws, purpose: purpose)
+    }
+
     public func put(_ data: Data, ws: String? = nil, purpose: String) throws {
-        let id = try SecretID(realm: realm, ws: ws, purpose: purpose)
+        let id = try tag(ws: ws, purpose: purpose)
         try fenced { try vault.put(data, for: id) }
     }
     public func get(ws: String? = nil, purpose: String) throws -> Data {
-        try vault.get(SecretID(realm: realm, ws: ws, purpose: purpose))
+        try vault.get(try tag(ws: ws, purpose: purpose))
     }
     /// Deletes and wipes are fenced like puts: a participant (session, coordinator) that outlives its realm, for example past the shutdown
     /// deadline, must not remove a successor realm's items, whose ids (the device certificate, a re-paired workspace) are the same.
     /// Only the reset/teardown path, which holds an unfenced view (`SecretVault.scoped(to:)`), removes after invalidation.
     public func delete(ws: String? = nil, purpose: String) throws {
-        let id = try SecretID(realm: realm, ws: ws, purpose: purpose)
+        let id = try tag(ws: ws, purpose: purpose)
         try fenced { try vault.delete(id) }
     }
     /// Deletes one listed item (it must belong to this realm).
     public func delete(item: SecretID) throws {
-        guard item.realm == realm else { throw VaultError.badName }
+        guard item.realm == realm, !Self.reserved(item.purpose) else { throw VaultError.badName }
         try fenced { try vault.delete(item) }
     }
     public func wipe(ws: String) throws { try fenced { try vault.wipe(realm: realm, ws: ws) } }
