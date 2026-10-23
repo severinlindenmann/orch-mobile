@@ -237,12 +237,18 @@ public enum F1Text {
         try check(text, oneLine: oneLine)
         if isBlank(text) { throw PlainViolation.blank }
         if oneLine && text.unicodeScalars.contains(where: { $0.value == 0x09 }) { throw PlainViolation.tabInOneLine }
+        // a one-line field never starts or ends with White_Space (two titles differing only there must not look the same)
+        if oneLine, let f = text.unicodeScalars.first, let l = text.unicodeScalars.last, whiteSpace.contains(f.value) || whiteSpace.contains(l.value) { throw PlainViolation.edgeSpace }
         if hasSuspicious(text) { throw PlainViolation.invisible }
+        // no line starts with a combining mark (not only the whole text)
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if let f = line.unicodeScalars.first, inRanges(tables.marks, f.value) { throw PlainViolation.lineStartsWithMark }
+        }
         if text.unicodeScalars.count > limit { throw PlainViolation.tooLong }
         if text.utf8.count > 4096 { throw PlainViolation.tooManyBytes }
     }
 
-    public enum PlainViolation: Error, Equatable, Sendable { case blank, tabInOneLine, invisible, tooLong, tooManyBytes }
+    public enum PlainViolation: Error, Equatable, Sendable { case blank, tabInOneLine, edgeSpace, lineStartsWithMark, invisible, tooLong, tooManyBytes }
 
     public static func isPlain(_ text: String, oneLine: Bool, limit: Int) -> Bool { (try? checkPlain(text, oneLine: oneLine, limit: limit)) != nil }
 }

@@ -468,6 +468,55 @@
    }
   },
   {
+   "name": "choice_option_not_text",
+   "ok": false,
+   "option": 1,
+   "question": {
+    "allow_other": true,
+    "blocking": true,
+    "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "\u00bd day"
+       ],
+       [
+        "Cost",
+        "CHF 400"
+       ]
+      ],
+      "key": "csv",
+      "label": "Monthly CSV",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "recommended": "csv",
+    "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+    "to": "ticket_owner",
+    "why": "The seeds are stale."
+   }
+  },
+  {
    "name": "choice_note_whitespace_only",
    "ok": false,
    "option": "csv",
@@ -950,6 +999,10 @@
   {
    "folded": "\ud801\udc28",
    "text": "\ud801\udc00"
+  },
+  {
+   "folded": "\u01c6",
+   "text": "\u01c5"
   }
  ],
  "question_hash": [
@@ -5622,7 +5675,7 @@
    }
   },
   {
-   "name": "titles_fold_kelvin",
+   "name": "titles_kelvin_sign_is_not_nfc",
    "question": {
     "blocking": true,
     "id": "Q1",
@@ -5639,6 +5692,257 @@
     ],
     "text": "Which tariff export is the source of truth?",
     "to": "ticket_owner"
+   }
+  },
+  {
+   "name": "titles_fold_titlecase_dz",
+   "question": {
+    "blocking": true,
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "key": "a",
+      "label": "\u01c5ivo"
+     },
+     {
+      "key": "b",
+      "label": "\u01c6ivo"
+     }
+    ],
+    "text": "Which tariff export is the source of truth?",
+    "to": "ticket_owner"
+   }
+  },
+  {
+   "name": "option_title_leading_space",
+   "question": {
+    "allow_other": true,
+    "blocking": true,
+    "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "\u00bd day"
+       ],
+       [
+        "Cost",
+        "CHF 400"
+       ]
+      ],
+      "key": "csv",
+      "label": " Monthly CSV",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "recommended": "csv",
+    "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+    "to": "ticket_owner",
+    "why": "The seeds are stale."
+   }
+  },
+  {
+   "name": "option_title_trailing_nbsp",
+   "question": {
+    "allow_other": true,
+    "blocking": true,
+    "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "\u00bd day"
+       ],
+       [
+        "Cost",
+        "CHF 400"
+       ]
+      ],
+      "key": "csv",
+      "label": "Monthly CSV\u00a0",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "recommended": "csv",
+    "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+    "to": "ticket_owner",
+    "why": "The seeds are stale."
+   }
+  },
+  {
+   "name": "fact_value_trailing_ideographic_space",
+   "question": {
+    "allow_other": true,
+    "blocking": true,
+    "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "1 day\u3000"
+       ]
+      ],
+      "key": "csv",
+      "label": "Monthly CSV",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "recommended": "csv",
+    "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+    "to": "ticket_owner",
+    "why": "The seeds are stale."
+   }
+  },
+  {
+   "name": "details_line_starts_with_combining_mark",
+   "question": {
+    "allow_other": true,
+    "blocking": true,
+    "details": "first line\n\u0301second",
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "\u00bd day"
+       ],
+       [
+        "Cost",
+        "CHF 400"
+       ]
+      ],
+      "key": "csv",
+      "label": "Monthly CSV",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "recommended": "csv",
+    "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+    "to": "ticket_owner",
+    "why": "The seeds are stale."
+   }
+  },
+  {
+   "name": "question_line_starts_with_combining_mark",
+   "question": {
+    "allow_other": true,
+    "blocking": true,
+    "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+    "id": "Q1",
+    "kind": "choice",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "\u00bd day"
+       ],
+       [
+        "Cost",
+        "CHF 400"
+       ]
+      ],
+      "key": "csv",
+      "label": "Monthly CSV",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "recommended": "csv",
+    "text": "Pick one\n\u0308ok?",
+    "to": "ticket_owner",
+    "why": "The seeds are stale."
    }
   },
   {

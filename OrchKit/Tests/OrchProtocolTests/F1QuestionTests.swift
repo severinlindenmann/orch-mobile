@@ -65,7 +65,7 @@ import Testing
     @Test func refusedQuestionShapesDoNotParse() {
         let routingOnly: Set<String> = ["missing_blocking"]
         let cases = hashes["question_hash_refused"].items
-        #expect(cases.count == 63)
+        #expect(cases.count == 69)
         for c in cases {
             let name = c["name"].str
             guard c["question"].object != nil else { continue }              // "not_an_object": nothing to read
@@ -76,7 +76,7 @@ import Testing
 
     @Test func foldVectorsAreThePinnedUnicode16Table() {
         let cases = hashes["question_fold"].items
-        #expect(cases.count == 10)
+        #expect(cases.count == 11)
         for c in cases { #expect(F1Text.fold(c["text"].str).utf8.elementsEqual(c["folded"].str.utf8), "\(c["text"].str.unicodeScalars.map(\.value))") }
     }
 
@@ -88,7 +88,7 @@ import Testing
 
     @Test func answerRulesPerKind() throws {
         let cases = hashes["question_answers"].items
-        #expect(cases.count == 19)
+        #expect(cases.count == 20)
         for c in cases {
             let name = c["name"].str
             let content = try content(c["question"])

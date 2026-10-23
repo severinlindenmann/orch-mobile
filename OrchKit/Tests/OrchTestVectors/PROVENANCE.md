@@ -86,11 +86,11 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
 
 ## f1/ question vectors re-vendored (orch-core #1123, D-mob-1: raw-question hash, kinds choice and text)
 
-- Source: orch-core PR #1135 (branch `feat/1123-a-question-contract`), commit `e05255030cddc3717087a0f0f2883c26a00fd5d5` ("canon: one question shape with kinds
+- Source: orch-core PR #1135 (branch `feat/1123-a-question-contract`), commit `917f0a9c3a2327d92b77a233ced8312743eacf59` (head of #1135 after the Opus delta, rules L2 and L3; earlier e0525503) ("canon: one question shape with kinds
   (choice, text), question_hash over the raw question, frozen fixtures (#1123 A)"), `plugins/orch-core/tests/vectors/f1/`. Copied 2026-10-23 with `git show <commit>:<path>`, unmodified.
   The fixtures are FROZEN there; if #1135 merges with another commit, re-copy and update this note (never edit by hand).
 - `hashes.json` [shared: core, orch-hub (D-hub), dashboard (C), this phone]: `question_hash` (29 cases: raw question, `hashed` object, hash; 2 routing-only re-asks with `same_as`),
-  `question_hash_refused` (63 raw shapes core refuses), `question_answers` (19), `question_fold` (10, the pinned Unicode 16 C+F fold), `question_blank` (9, White_Space);
+  `question_hash_refused` (69 raw shapes core refuses), `question_answers` (20), `question_fold` (11, the pinned Unicode 16 C+F fold), `question_blank` (9, White_Space);
   the other groups are unchanged in meaning and already consumed (`question_id`).
 - `questions.json` [shared]: `forms` (`choice_full`, `text_with_why_and_details`, each in the three forms raw_event / read_item / hub_needs) plus the core model scenarios
   (not replayed here). The phone reads the `read_item` form (`F1Question`) and checks the hub form on the hub path (`HubItemDecision`).
@@ -98,7 +98,7 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
   (gate scenarios of core, not read by a test yet); `index.json` is core's index for the directory at that commit.
 - `oracle_f1_questions.py` is core's independent oracle (`tests/canon/oracle_f1_questions.py`), copied for reference: it states the recipe and builds every vector above.
   It is not run here.
-- `Sources/OrchProtocol/Unicode16Data.swift` is regenerated from core `canon/_unicode16.py` at the same commit and now also holds `cf`, `marks` (for `suspicious`) and `casefold`
+- `Sources/OrchProtocol/Unicode16Data.swift` is regenerated from core `canon/_unicode16.py` at the same commit (917f0a9c) and now also holds `cf`, `marks` (for `suspicious`) and `casefold`
   (the CaseFolding C+F table for `F1Text.fold`); `Scripts/gen_unicode16_swift.py --check` still guards drift.
 - `f1/core_unicode16.py` is core's `plugins/orch-core/src/orch/canon/_unicode16.py` at the same commit, unmodified (sha256 `94cad1ffe3988fd11270dc3c4dfac00680acd470c9443d875c56579295856616`). `FieldRules.unicodeTablesEqualCoresBundledTables`
   compares every block of `Unicode16Data.swift` with it, so the test fails when the phone drifts from core, not only on a hand edit. Re-copy it together with the vectors.

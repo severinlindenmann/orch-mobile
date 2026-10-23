@@ -267,7 +267,13 @@ def refused_questions() -> list[tuple[str, Any]]:
         ("titles_fold_sharp_s", titles("Stra\u00dfe", "STRASSE")),
         ("titles_fold_capital_sharp_s", titles("\u1e9e", "ss")),
         ("titles_fold_long_s", titles("\u017fun", "sun")),
-        ("titles_fold_kelvin", titles("\u212aelvin", "kelvin")),
+        ("titles_kelvin_sign_is_not_nfc", titles("\u212aelvin", "kelvin")),  # refused by NFC (check_plain), not by fold
+        ("titles_fold_titlecase_dz", titles("\u01c5ivo", "\u01c6ivo")),
+        ("option_title_leading_space", m(opt0(label=" Monthly CSV"))),
+        ("option_title_trailing_nbsp", m(opt0(label="Monthly CSV\u00a0"))),
+        ("fact_value_trailing_ideographic_space", m(opt0(facts=[["Effort", "1 day\u3000"]]))),
+        ("details_line_starts_with_combining_mark", m(lambda q: q.update(details="first line\n\u0301second"))),
+        ("question_line_starts_with_combining_mark", m(lambda q: q.update(text="Pick one\n\u0308ok?"))),
         ("titles_fold_fi_ligature", titles("\ufb01le", "FILE")),
         ("titles_fold_final_sigma", titles("\u03c3\u03c2", "\u03a3\u03a3")),
         ("titles_fold_dotted_capital_i", titles("\u0130stanbul", "i\u0307stanbul")),
@@ -286,6 +292,7 @@ def answers() -> list[dict[str, Any]]:
         ("choice_other_text_without_allow_other", choice_no_other, {"text": "Ask the bank first"}, False),
         ("choice_neither", FULL, {}, False),
         ("choice_unknown_option", FULL, {"option": "pdf"}, False),
+        ("choice_option_not_text", FULL, {"option": 1}, False),
         ("choice_note_whitespace_only", FULL, {"option": "csv", "text": " \u00a0\u3000"}, False),
         ("choice_other_1000", FULL, {"text": "a" * 1000}, True),
         ("choice_other_1001", FULL, {"text": "a" * 1001}, False),
@@ -303,7 +310,9 @@ def answers() -> list[dict[str, Any]]:
 
 
 def fold_pairs() -> list[dict[str, Any]]:
-    """Pinned ``fold = NFC(full case fold C+F, Unicode 16.0 (NFC(s)))``; ``folded`` is the literal result."""
+    """Pinned ``fold = NFC(full case fold C+F, Unicode 16.0 (NFC(s)))``; ``folded`` is the literal result. Two inputs
+    (U+212A KELVIN SIGN, ``Cafe`` + U+0301) are not NFC: they pin the NFC steps of the fold; stored text is NFC, so
+    for stored titles only the case-fold rows matter."""
     rows = [
         ("Stra\u00dfe", "strasse"),
         ("\u1e9e", "ss"),
@@ -315,6 +324,7 @@ def fold_pairs() -> list[dict[str, Any]]:
         ("\u0130", "i\u0307"),
         ("Cafe\u0301", "caf\u00e9"),
         ("\U00010400", "\U00010428"),
+        ("\u01c5", "\u01c6"),
     ]
     return [{"text": a, "folded": b} for a, b in rows]
 
