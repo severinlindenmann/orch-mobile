@@ -110,7 +110,7 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         let r = await WipeRig()
         _ = try #require(live(await r.home.refresh()))
         r.hub.faults.channelAnswer = "channel_revoked"
-        #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") == .ended(.revoked))
+        #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: FakeHub.q1Item) == .ended(.revoked))
         #expect(try r.vaultEmpty() && r.rig.cache.hubIDs.isEmpty)
     }
 

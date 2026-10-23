@@ -25,14 +25,12 @@ public enum HubSignAction: Sendable, Equatable {
     case shared(bound: HubItemDecision.Shared, Selective)
 
     public enum Selective: Sendable, Equatable {
-        case answerQuestion(log: String, question: String, hash: String, text: String)
         case approveGate(log: String, gate: String, hash: String)
         case requestChanges(log: String, gate: String, hash: String, text: String)
         case giveVerdict(log: String, outcome: String, hash: String, text: String?)
 
         var plain: HubSignAction {
             switch self {
-            case let .answerQuestion(l, q, h, t): .answerQuestion(log: l, question: q, hash: h, option: nil, text: t)
             case let .approveGate(l, g, h): .approveGate(log: l, gate: g, hash: h)
             case let .requestChanges(l, g, h, t): .requestChanges(log: l, gate: g, hash: h, text: t)
             case let .giveVerdict(l, o, h, t): .giveVerdict(log: l, outcome: o, hash: h, text: t)

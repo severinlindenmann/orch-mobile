@@ -32,6 +32,9 @@ public enum F1Text {
         let ccc: [(UInt32, UInt32, UInt8)]
         let decomp: [UInt32: [UInt32]]
         let compose: [UInt64: UInt32]
+        let cf: [(UInt32, UInt32)]
+        let marks: [(UInt32, UInt32)]
+        let casefold: [UInt32: [UInt32]]
 
         init() {
             func rows(_ s: String) -> [[UInt32]] {
@@ -52,6 +55,11 @@ public enum F1Text {
                 c[Tables.key(parts[0], parts[1])] = r[0]
             }
             compose = c
+            cf = rows(Unicode16Data.cf).map { ($0[0], $0[1]) }
+            marks = rows(Unicode16Data.marks).map { ($0[0], $0[1]) }
+            var f: [UInt32: [UInt32]] = [:]
+            for r in rows(Unicode16Data.casefold) { f[r[0]] = Array(r.dropFirst()) }
+            casefold = f
         }
         static func key(_ a: UInt32, _ b: UInt32) -> UInt64 { (UInt64(a) << 32) | UInt64(b) }
     }
@@ -182,4 +190,65 @@ public enum F1Text {
         try check(n, oneLine: oneLine)
         return n
     }
+
+    // MARK: plain text of structured questions (ticket-format 5.6.1, core `canon/text.py` check_plain / fold)
+
+    /// The Unicode `White_Space` property (PropList 16.0, 25 code points), pinned: `whitespacesAndNewlines` differs.
+    static let whiteSpace: Set<UInt32> = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+                                          0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
+
+    /// Empty, or every scalar has the White_Space property.
+    public static func isBlank(_ text: String) -> Bool { text.unicodeScalars.allSatisfy { whiteSpace.contains($0.value) } }
+
+    /// F1's named non-Cf look-alikes of an invisible character (core `_EXTRA_INVISIBLE`).
+    private static func extraInvisible(_ cp: UInt32) -> Bool {
+        switch cp {
+        case 0x034F, 0x115F, 0x1160, 0x2028, 0x2029, 0x2800, 0x3164, 0xFFA0, 0x17B4...0x17B5, 0x180B...0x180F, 0xFE00...0xFE0F, 0xE0100...0xE01EF: return true
+        default: return false
+        }
+    }
+
+    private static func privateUse(_ cp: UInt32) -> Bool {
+        (0xE000...0xF8FF).contains(cp) || (0xF0000...0xFFFFD).contains(cp) || (0x100000...0x10FFFD).contains(cp)
+    }
+
+    /// Whether `text` holds a character a signing surface must not show as plain text (core `suspicious()`): bidi controls, every Cf
+    /// character, the named look-alikes, private use, or a leading mark.
+    public static func hasSuspicious(_ text: String) -> Bool {
+        for (i, u) in text.unicodeScalars.enumerated() {
+            let cp = u.value
+            if bidiControls.contains(cp) || extraInvisible(cp) || inRanges(tables.cf, cp) || privateUse(cp) || (i == 0 && inRanges(tables.marks, cp)) { return true }
+        }
+        return false
+    }
+
+    /// `NFC(fullCaseFold(NFC(s)))` with the bundled Unicode 16.0 CaseFolding C+F table: the one comparison form for "the same title".
+    public static func fold(_ text: String) -> String {
+        var s = String.UnicodeScalarView()
+        for u in nfc(text).unicodeScalars {
+            if let f = tables.casefold[u.value] { for cp in f { s.append(Unicode.Scalar(cp)!) } } else { s.append(u) }
+        }
+        return nfc(String(s))
+    }
+
+    /// Core `check_plain`: `check` (never mutates), not blank, no tab in a one-line field, no suspicious character, at most `limit`
+    /// scalars and 4096 UTF-8 bytes. Returns normally or throws; `reason` names the failed rule for a plain "cannot verify" line.
+    public static func checkPlain(_ text: String, oneLine: Bool, limit: Int) throws {
+        try check(text, oneLine: oneLine)
+        if isBlank(text) { throw PlainViolation.blank }
+        if oneLine && text.unicodeScalars.contains(where: { $0.value == 0x09 }) { throw PlainViolation.tabInOneLine }
+        // a one-line field never starts or ends with White_Space (two titles differing only there must not look the same)
+        if oneLine, let f = text.unicodeScalars.first, let l = text.unicodeScalars.last, whiteSpace.contains(f.value) || whiteSpace.contains(l.value) { throw PlainViolation.edgeSpace }
+        if hasSuspicious(text) { throw PlainViolation.invisible }
+        // no line starts with a combining mark (not only the whole text)
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if let f = line.unicodeScalars.first, inRanges(tables.marks, f.value) { throw PlainViolation.lineStartsWithMark }
+        }
+        if text.unicodeScalars.count > limit { throw PlainViolation.tooLong }
+        if text.utf8.count > 4096 { throw PlainViolation.tooManyBytes }
+    }
+
+    public enum PlainViolation: Error, Equatable, Sendable { case blank, tabInOneLine, edgeSpace, lineStartsWithMark, invisible, tooLong, tooManyBytes }
+
+    public static func isPlain(_ text: String, oneLine: Bool, limit: Int) -> Bool { (try? checkPlain(text, oneLine: oneLine, limit: limit)) != nil }
 }

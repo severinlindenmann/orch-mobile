@@ -25,8 +25,7 @@ import Security
 ///   Default system trust evaluation (no custom verify block, no skip option), SNI and the `Host` header both come from the origin's
 ///   hostname, ALPN offers only `http/1.1` and any other negotiated protocol is refused. The endpoint is the origin's DNS name: this
 ///   code never resolves a name itself, so what Network.framework connects to is what the TLS name was checked against.
-/// - Plain TCP exists only for the DEBUG + `package` loopback initializer used by the integration tests (see
-///   `RealmContext.liveLoopbackForTesting`); a Release build has no such initializer.
+/// - Plain TCP exists only for the DEBUG + `package` loopback initializer used by the integration tests ; a Release build has no such initializer.
 /// - Per request (`WireRequest.options`): a larger response cap and a longer absolute deadline, both bounded (64 MiB, one hour); the
 ///   Drop routes use them, everything else keeps the defaults. A request body may be streamed from a file (`WireRequest.bodyFile`).
 /// - Timeouts: `requestTimeout` is the idle limit (connect included; no byte moved for that long) and `resourceTimeout` the absolute
@@ -53,22 +52,29 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
     /// Production: `origin` must be a valid `https` relay origin.
     public convenience init(origin: String, maxResponseBytes: Int = defaultMaxResponseBytes,
                             requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 120) throws {
-        guard origin.hasPrefix("https://"), RelayURL.isValid(origin) else { throw RealmViolation.invalidOrigin }
+        guard origin.hasPrefix("https://"), RelayURL.isValid(origin) else { throw OriginViolation.invalidOrigin }
         try self.init(validated: origin, tls: true, maxResponseBytes: maxResponseBytes, requestTimeout: requestTimeout, resourceTimeout: resourceTimeout)
     }
 
     #if DEBUG
-    /// TEST-ONLY: a loopback `http` origin, under the same `#if DEBUG` + `package` rules as `RealmContext.liveLoopbackForTesting`.
+    /// `http://127.0.0.1:<port>` or `http://[::1]:<port>`, valid under `RelayURL`, with an explicit port.
+    package static func isLoopbackHTTP(_ origin: String) -> Bool {
+        guard RelayURL.isValid(origin) else { return false }
+        for prefix in ["http://127.0.0.1:", "http://[::1]:"] where origin.hasPrefix(prefix) { return true }
+        return false
+    }
+
+    /// TEST-ONLY: a loopback `http` origin (`#if DEBUG` + `package`: a Release build has no such initializer).
     package convenience init(loopbackOrigin origin: String, maxResponseBytes: Int = defaultMaxResponseBytes,
                              requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 120) throws {
-        guard RealmContext.isLoopbackHTTP(origin) else { throw RealmViolation.invalidOrigin }
+        guard Self.isLoopbackHTTP(origin) else { throw OriginViolation.invalidOrigin }
         try self.init(validated: origin, tls: false, maxResponseBytes: maxResponseBytes, requestTimeout: requestTimeout, resourceTimeout: resourceTimeout)
     }
     #endif
 
     private init(validated origin: String, tls: Bool, maxResponseBytes: Int, requestTimeout: TimeInterval, resourceTimeout: TimeInterval) throws {
         guard maxResponseBytes > 0, requestTimeout > 0, resourceTimeout > 0, let c = URLComponents(string: origin), var h = c.host, !h.isEmpty else {
-            throw RealmViolation.invalidOrigin
+            throw OriginViolation.invalidOrigin
         }
         if h.hasPrefix("[") && h.hasSuffix("]") { h = String(h.dropFirst().dropLast()) }
         self.origin = origin; self.maxResponseBytes = maxResponseBytes; self.tls = tls

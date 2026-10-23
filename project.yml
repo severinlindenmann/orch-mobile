@@ -42,12 +42,12 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
         UILaunchScreen: {}
-        # The `orch://pair?relay=<origin>#v2...` pairing link (decisions D-3). An open only ever lands on a review screen.
+        # The `orch://hub-pair/...` hub pairing link. An open only ever lands on the hub pairing screen, never on a workspace.
         CFBundleURLTypes:
           - CFBundleURLName: io.severin.orch.pair
             CFBundleTypeRole: Viewer
             CFBundleURLSchemes: [orch]
-        NSCameraUsageDescription: orch uses the camera only to scan the pairing QR code shown by orch on your Mac.
+        NSCameraUsageDescription: orch uses the camera only to scan the hub pairing QR code.
         NSFaceIDUsageDescription: orch asks for Face ID to confirm it is you before it sends a signature request from your hub.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -144,74 +144,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.uitests
         GENERATE_INFOPLIST_FILE: YES
-  # The Simulator dev-sandbox variant (host 11A.17, C2b increment 5): the same app code with `ORCH_DEV_SANDBOX` set, for pairing a Simulator
-  # with a throwaway `dev-pair up --sim-convenience` sandbox and answering with a software key (convenience). iphonesimulator only, its own
-  # bundle id, keychain group and App Group, no extensions, no push, no `orch://` link. Debug only: OrchKit's lane is compiled only under
-  # `DEBUG && targetEnvironment(simulator)`, so there is deliberately no Release configuration of this target to build.
-  OrchDevSandbox:
-    type: application
-    platform: iOS
-    sources:
-      - path: App
-        excludes: [Info.plist, Orch.entitlements]
-      - path: ShareExtension/ShareStatusViews.swift
-        group: ShareExtension
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.devsandbox
-        PRODUCT_NAME: OrchDevSandbox
-        CODE_SIGN_ENTITLEMENTS: DevSandbox/OrchDevSandbox.entitlements
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        TARGETED_DEVICE_FAMILY: "1"
-        SUPPORTED_PLATFORMS: iphonesimulator
-        SUPPORTS_MACCATALYST: NO
-        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG ORCH_DEV_SANDBOX"
-    info:
-      path: DevSandbox/Info.plist
-      properties:
-        CFBundleDisplayName: orch sandbox
-        ITSAppUsesNonExemptEncryption: false
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        OrchAppIdentifierPrefix: $(AppIdentifierPrefix)
-        # the variant's own keychain access groups (`<team>.io.severin.orch.devsandbox.keys|push`): never the normal app's
-        OrchKeychainGroupBase: io.severin.orch.devsandbox
-        UILaunchScreen: {}
-        NSCameraUsageDescription: orch uses the camera only to scan the pairing QR code shown by dev-pair on your Mac.
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-    dependencies:
-      - package: OrchKit
-        products: [OrchProtocol, OrchCustody, OrchStore, OrchCoordination, OrchShareStaging, OrchPush, OrchClient, OrchFakeHost, OrchUI]
-  OrchDevSandboxTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources: [DevSandboxTests]
-    dependencies:
-      - target: OrchDevSandbox
-      - package: OrchKit
-        products: [OrchProtocol, OrchClient]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.devsandbox.tests
-        GENERATE_INFOPLIST_FILE: YES
-        SUPPORTED_PLATFORMS: iphonesimulator
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG ORCH_DEV_SANDBOX"
-  # The Simulator end-to-end UI test (batch B3): skipped unless TEST_RUNNER_ORCH_E2E_LINK is set (kit e2e/scenarios/sim-pair-answer.sh).
-  OrchDevSandboxUITests:
-    type: bundle.ui-testing
-    platform: iOS
-    sources: [DevSandboxUITests]
-    dependencies:
-      - target: OrchDevSandbox
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.devsandbox.uitests
-        GENERATE_INFOPLIST_FILE: YES
-        SUPPORTED_PLATFORMS: iphonesimulator
   # The hub Simulator lane (B7): pairs the real app with a real local hub, lists, signs with the Simulator's Face ID. Skipped unless
   # TEST_RUNNER_ORCH_E2E_HUB_LINK is set (scripts/e2e/hub-s6.sh, kit scenario hub-S6). Its own scheme: no CI job runs it.
   OrchHubE2ETests:
@@ -242,20 +174,3 @@ schemes:
       targets: [OrchTests, OrchUITests]
       parallelizeBuild: false
       randomExecutionOrder: false
-  OrchDevSandbox:
-    build:
-      targets:
-        OrchDevSandbox: all
-    run:
-      config: Debug
-    test:
-      config: Debug
-      targets: [OrchDevSandboxTests, OrchDevSandboxUITests]
-      parallelizeBuild: false
-      randomExecutionOrder: false
-    profile:
-      config: Debug
-    analyze:
-      config: Debug
-    archive:
-      config: Debug

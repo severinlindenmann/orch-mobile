@@ -2,7 +2,7 @@
  "accepted": [
   {
    "desc": "secure-enclave-unlocked; non-ASCII text and labels; an option with cost",
-   "digest": "sha256:718ca34291943a8efc26e1661a5a3e494f13c940c56fb74e665443e6a6f37648",
+   "digest": "sha256:b2c71960f529cd26973dfda1417035e361b37b0baad39ea8e5a600b61f9eff26",
    "event": {
     "actor": {
      "device": "d_762df76def3afcc7bfc48dbc595f8add",
@@ -11,27 +11,27 @@
     },
     "at": "2026-10-10T10:01:10Z",
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
-    "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+    "based_on": "sha256:ac500a4280ff0145a67b324d23b390d429379561d9f6debf1ed5e5beedc926c5",
+    "hash": "sha256:4dc68732ead554136b9b4522672fc43fb58bd90cb77c5174e0f45aaad3a71eed",
     "hash_v": 1,
-    "host_sig": "4-G4-CNJphDc0Qip9UQ_t9egt2_6BqGgZRBFNXVGD-iVUbwfgcSNIhT-PNCxet3kQ2hhaxo5eDpt5sOojZvbvA",
+    "host_sig": "pNxD7jDP9Y3wvNbA2ZhHU2KwuRME6g2sfj0gp4iMX6lKYfapQUYTCoCLcE7tbi87olWw68GDGxpo9IAP6LJPXw",
     "id": "01M4JM4RKG79RG3QTWCP60NNNG",
     "option": "csv",
-    "prev": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+    "prev": "sha256:ac500a4280ff0145a67b324d23b390d429379561d9f6debf1ed5e5beedc926c5",
     "question": "Q1",
     "roster_v": 3,
     "seq": 3,
-    "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+    "sig": "5ZjFpmxnRuVaxy0bADFv1WB0XYvdOKmyCrg7maKSRJ-VUw3j7jEkq2ZGoOr9sNw0jeE1q-onqr-ZHZfhXoW9WA",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
    },
-   "head": "sha256:0d214d9e29153a0b4bb1eda3b3a5c47ca33f0d91547ba6234f1a60db792af3a2",
+   "head": "sha256:e32fa70ff9e996a9c8c7851f42ac74be35d40495b9c182c39bf8928cfe0a7d73",
    "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
    "name": "answer_non_ascii_option_with_cost",
-   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a30633764323638656635663438386461303534363664373461643739316265636166396237613639643262333535623933643239336236306138393030313965222c2268617368223a227368613235363a32393831323865303832373966313139396233393861613766613761613234656162663063663765313166366234613961666539306138323234363431303265222c22686173685f76223a312c226964223a2230314d344a4d34524b473739524733515457435036304e4e4e47222c226f7074696f6e223a22637376222c227175657374696f6e223a225131222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a61633530306134323830666630313435613637623332346432336233393064343239333739353631643966366465626631656435653562656564633932366335222c2268617368223a227368613235363a34646336383733326561643535343133366239623435323236373266633433666235386264393063623737633531373465306634356161616433613731656564222c22686173685f76223a312c226964223a2230314d344a4d34524b473739524733515457435036304e4e4e47222c226f7074696f6e223a22637376222c227175657374696f6e223a225131222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
    "question": {
-    "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+    "hash": "sha256:4dc68732ead554136b9b4522672fc43fb58bd90cb77c5174e0f45aaad3a71eed",
     "hashed": {
      "options": [
       {
@@ -45,13 +45,36 @@
       }
      ],
      "question_id": "d60478ec5ff8f6ff213cded9c0f8f243",
+     "spec": {
+      "kind": "choice",
+      "why": "Seeds"
+     },
      "text": "Welcher Tarif-Export gilt? Gr\u00f6\u00dfe \u2264 5 MB \u2014 Z\u00fcrich \u00e9t\u00e9",
      "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
     },
-    "qid": "d60478ec5ff8f6ff213cded9c0f8f243"
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+    "raw": {
+     "blocking": true,
+     "id": "Q1",
+     "kind": "choice",
+     "options": [
+      {
+       "cost": "\u00bd Tag, CHF 400",
+       "key": "csv",
+       "label": "Monatliche CSV-Datei (\u00bd Tag)"
+      },
+      {
+       "key": "api",
+       "label": "Tarif-API \u2713"
+      }
+     ],
+     "text": "Welcher Tarif-Export gilt? Gr\u00f6\u00dfe \u2264 5 MB \u2014 Z\u00fcrich \u00e9t\u00e9",
+     "to": "ticket_owner",
+     "why": "Seeds"
+    }
    },
    "scenario": "phone_answers_and_creates",
-   "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+   "sig": "5ZjFpmxnRuVaxy0bADFv1WB0XYvdOKmyCrg7maKSRJ-VUw3j7jEkq2ZGoOr9sNw0jeE1q-onqr-ZHZfhXoW9WA",
    "step": 6,
    "submitted": {
     "actor": {
@@ -60,22 +83,22 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
-    "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+    "based_on": "sha256:ac500a4280ff0145a67b324d23b390d429379561d9f6debf1ed5e5beedc926c5",
+    "hash": "sha256:4dc68732ead554136b9b4522672fc43fb58bd90cb77c5174e0f45aaad3a71eed",
     "hash_v": 1,
     "id": "01M4JM4RKG79RG3QTWCP60NNNG",
     "option": "csv",
     "question": "Q1",
     "roster_v": 3,
-    "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+    "sig": "5ZjFpmxnRuVaxy0bADFv1WB0XYvdOKmyCrg7maKSRJ-VUw3j7jEkq2ZGoOr9sNw0jeE1q-onqr-ZHZfhXoW9WA",
     "type": "question.answered",
     "v": 2
    },
-   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e\",\"hash\":\"sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e\",\"hash_v\":1,\"id\":\"01M4JM4RKG79RG3QTWCP60NNNG\",\"option\":\"csv\",\"question\":\"Q1\",\"roster_v\":3,\"sig\":\"zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ\",\"type\":\"question.answered\",\"v\":2}"
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:ac500a4280ff0145a67b324d23b390d429379561d9f6debf1ed5e5beedc926c5\",\"hash\":\"sha256:4dc68732ead554136b9b4522672fc43fb58bd90cb77c5174e0f45aaad3a71eed\",\"hash_v\":1,\"id\":\"01M4JM4RKG79RG3QTWCP60NNNG\",\"option\":\"csv\",\"question\":\"Q1\",\"roster_v\":3,\"sig\":\"5ZjFpmxnRuVaxy0bADFv1WB0XYvdOKmyCrg7maKSRJ-VUw3j7jEkq2ZGoOr9sNw0jeE1q-onqr-ZHZfhXoW9WA\",\"type\":\"question.answered\",\"v\":2}"
   },
   {
-   "desc": "a text answer (with a TAB) to a question with options absent",
-   "digest": "sha256:adb0e8b626a857e02b9fc1af5fca649fe21bdcfc9df10304cc303be170852a65",
+   "desc": "a text answer (with a TAB) to a text question",
+   "digest": "sha256:7828e4cbc46e8b5d888c5ee0ec4ea8ffad85cc62425792b192a47f6e500b36d2",
    "event": {
     "actor": {
      "device": "d_762df76def3afcc7bfc48dbc595f8add",
@@ -84,37 +107,47 @@
     },
     "at": "2026-10-10T10:01:30Z",
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
-    "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+    "based_on": "sha256:40f368e0a815274e9afd88734edf6dd949721ef9fd1fe1f2930066520cc7800a",
+    "hash": "sha256:6b1353a477367319567aac0530cd7981a440e5d3c739fa6b96142131095fca3b",
     "hash_v": 1,
-    "host_sig": "Ne9PN7PHTBzZj3H7W2MCZfUq5HyxuZzWfRpTfH1p534gt0OrW9v_izNUNLRIjrC74qMmbKX-lGGLT_voiuYF7A",
+    "host_sig": "zPK8X_my3lYjrt6gK27zn3B84BrNN00akkZulKzYmPrCugZ0DblqIiqa7jqDLhhjaaf4uZ_2yv0udGf284bgOQ",
     "id": "01M4JM5C4GESP1D60PNEQA8N0A",
-    "prev": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+    "prev": "sha256:40f368e0a815274e9afd88734edf6dd949721ef9fd1fe1f2930066520cc7800a",
     "question": "Q2",
     "roster_v": 3,
     "seq": 5,
-    "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+    "sig": "7KUXUcGMORAyjY1tQx5fDBSCw6ec0Zb5mzd8DraenE2g39-rLsTKyuW5UaL12JWNdCScMPaMy5pUonCZgXmYOg",
     "text": "Keep\tthe old seeds",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
    },
-   "head": "sha256:cd12d33d426c84467b8bb3ef10d1012f7dc6a7984f5168f65cf442a42c2c7073",
+   "head": "sha256:21b52273320fed63e81e0abecf95265f9adbbb060f4c1fd07b06420ef0df693d",
    "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
    "name": "answer_text_to_options_absent_with_tab",
-   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a66353638376164343438366132353138623337643436373637643761666366333735363636323531346639646539623462653135646663316162346435353735222c2268617368223a227368613235363a30653761333362666562633462336430353062393538616635643832613666386531663831373361666633396330616563353633396262383537306233333838222c22686173685f76223a312c226964223a2230314d344a4d3543344745535031443630504e455141384e3041222c227175657374696f6e223a225132222c22726f737465725f76223a332c2274657874223a224b6565705c74746865206f6c64207365656473222c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a34306633363865306138313532373465396166643838373334656466366464393439373231656639666431666531663239333030363635323063633738303061222c2268617368223a227368613235363a36623133353361343737333637333139353637616163303533306364373938316134343065356433633733396661366239363134323133313039356663613362222c22686173685f76223a312c226964223a2230314d344a4d3543344745535031443630504e455141384e3041222c227175657374696f6e223a225132222c22726f737465725f76223a332c2274657874223a224b6565705c74746865206f6c64207365656473222c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
    "question": {
-    "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+    "hash": "sha256:6b1353a477367319567aac0530cd7981a440e5d3c739fa6b96142131095fca3b",
     "hashed": {
      "options": [],
      "question_id": "72a37c42fc71091868c10ceed59ddd24",
+     "spec": {
+      "kind": "text"
+     },
      "text": "Anything else we should know?",
      "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
     },
-    "qid": "72a37c42fc71091868c10ceed59ddd24"
+    "qid": "72a37c42fc71091868c10ceed59ddd24",
+    "raw": {
+     "blocking": true,
+     "id": "Q2",
+     "kind": "text",
+     "text": "Anything else we should know?",
+     "to": "ticket_owner"
+    }
    },
    "scenario": "phone_answers_and_creates",
-   "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+   "sig": "7KUXUcGMORAyjY1tQx5fDBSCw6ec0Zb5mzd8DraenE2g39-rLsTKyuW5UaL12JWNdCScMPaMy5pUonCZgXmYOg",
    "step": 8,
    "submitted": {
     "actor": {
@@ -123,22 +156,22 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
-    "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+    "based_on": "sha256:40f368e0a815274e9afd88734edf6dd949721ef9fd1fe1f2930066520cc7800a",
+    "hash": "sha256:6b1353a477367319567aac0530cd7981a440e5d3c739fa6b96142131095fca3b",
     "hash_v": 1,
     "id": "01M4JM5C4GESP1D60PNEQA8N0A",
     "question": "Q2",
     "roster_v": 3,
-    "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+    "sig": "7KUXUcGMORAyjY1tQx5fDBSCw6ec0Zb5mzd8DraenE2g39-rLsTKyuW5UaL12JWNdCScMPaMy5pUonCZgXmYOg",
     "text": "Keep\tthe old seeds",
     "type": "question.answered",
     "v": 2
    },
-   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575\",\"hash\":\"sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388\",\"hash_v\":1,\"id\":\"01M4JM5C4GESP1D60PNEQA8N0A\",\"question\":\"Q2\",\"roster_v\":3,\"sig\":\"Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ\",\"text\":\"Keep\\tthe old seeds\",\"type\":\"question.answered\",\"v\":2}"
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:40f368e0a815274e9afd88734edf6dd949721ef9fd1fe1f2930066520cc7800a\",\"hash\":\"sha256:6b1353a477367319567aac0530cd7981a440e5d3c739fa6b96142131095fca3b\",\"hash_v\":1,\"id\":\"01M4JM5C4GESP1D60PNEQA8N0A\",\"question\":\"Q2\",\"roster_v\":3,\"sig\":\"7KUXUcGMORAyjY1tQx5fDBSCw6ec0Zb5mzd8DraenE2g39-rLsTKyuW5UaL12JWNdCScMPaMy5pUonCZgXmYOg\",\"text\":\"Keep\\tthe old seeds\",\"type\":\"question.answered\",\"v\":2}"
   },
   {
    "desc": "auth passphrase from the phone device (Simulator/dev custody, 14.3)",
-   "digest": "sha256:5b6cdee1988abc0f30573f6f564d0c3236220bed35334c63e4f49155ebf9cdf1",
+   "digest": "sha256:f246e3df9c9a13ec1a48c329de2dccfdace07bbc5edeef81bb10dc2bfc50a029",
    "event": {
     "actor": {
      "device": "d_762df76def3afcc7bfc48dbc595f8add",
@@ -147,27 +180,27 @@
     },
     "at": "2026-10-10T10:01:50Z",
     "auth": "passphrase",
-    "based_on": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
-    "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+    "based_on": "sha256:b38212b0a94a6eb98d4f2080a33ec97ff3ffefb1ab59f9c8852f8248c2d24b64",
+    "hash": "sha256:5fd73518d4e069166475607eb53ca2cfbcec6e6fdcc9b0905f2ab20ceae75fa2",
     "hash_v": 1,
-    "host_sig": "4HQ2VtkbET7D33JkXxBKQFMBqI-FbLmbQt2MoNqgwBVspVwa6FjNb8pqMqKwlx-tvRoD6W-RrE48i13zDaTQMg",
+    "host_sig": "SaHPhxhH2Q5EHqDk-OpTLJqfGhSdiJeTKbYRsv2kmmqDS1rZ-NS5CBc7Gi1j8eC2yrudQYsPlvoxBWLGpUfGZQ",
     "id": "01M4JM5ZNG61PSJPK451QT68KK",
     "option": "yes",
-    "prev": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+    "prev": "sha256:b38212b0a94a6eb98d4f2080a33ec97ff3ffefb1ab59f9c8852f8248c2d24b64",
     "question": "Q3",
     "roster_v": 3,
     "seq": 7,
-    "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+    "sig": "tsFcmoAmq5dv3vn6ulzwcT0rktWXvUyJhrEhyLLB6-2cGcAxtomZ6km-xGgNxwELvo4O6LIHsccnMTYFOG7ukg",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
    },
-   "head": "sha256:8184be3149b002489b130d58f0a179eebfde54bab0e262a2b2b2c06955331a03",
+   "head": "sha256:541018565af80b3f209d377cf765dfe6e29fb52247f2df742879071364b19f90",
    "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
    "name": "answer_passphrase",
-   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a2270617373706872617365222c2262617365645f6f6e223a227368613235363a64643331656332356333303462326666386565633062343665366334336665353764663265343062653966333064633266666334646538376165663334303161222c2268617368223a227368613235363a38396231623838636532333339356131303535653164613064373635303866383764623334616232323462613761333766316533636437326161616635306537222c22686173685f76223a312c226964223a2230314d344a4d355a4e47363150534a504b343531515436384b4b222c226f7074696f6e223a22796573222c227175657374696f6e223a225133222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a2270617373706872617365222c2262617365645f6f6e223a227368613235363a62333832313262306139346136656239386434663230383061333365633937666633666665666231616235396639633838353266383234386332643234623634222c2268617368223a227368613235363a35666437333531386434653036393136363437353630376562353363613263666263656336653666646363396230393035663261623230636561653735666132222c22686173685f76223a312c226964223a2230314d344a4d355a4e47363150534a504b343531515436384b4b222c226f7074696f6e223a22796573222c227175657374696f6e223a225133222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
    "question": {
-    "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+    "hash": "sha256:5fd73518d4e069166475607eb53ca2cfbcec6e6fdcc9b0905f2ab20ceae75fa2",
     "hashed": {
      "options": [
       {
@@ -180,13 +213,33 @@
       }
      ],
      "question_id": "61fe62456d362fdf6813f8ce89600141",
+     "spec": {
+      "kind": "choice"
+     },
      "text": "Ship it?",
      "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
     },
-    "qid": "61fe62456d362fdf6813f8ce89600141"
+    "qid": "61fe62456d362fdf6813f8ce89600141",
+    "raw": {
+     "blocking": true,
+     "id": "Q3",
+     "kind": "choice",
+     "options": [
+      {
+       "key": "yes",
+       "label": "Yes"
+      },
+      {
+       "key": "no",
+       "label": "No"
+      }
+     ],
+     "text": "Ship it?",
+     "to": "ticket_owner"
+    }
    },
    "scenario": "phone_answers_and_creates",
-   "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+   "sig": "tsFcmoAmq5dv3vn6ulzwcT0rktWXvUyJhrEhyLLB6-2cGcAxtomZ6km-xGgNxwELvo4O6LIHsccnMTYFOG7ukg",
    "step": 10,
    "submitted": {
     "actor": {
@@ -195,22 +248,22 @@
      "kind": "person"
     },
     "auth": "passphrase",
-    "based_on": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
-    "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+    "based_on": "sha256:b38212b0a94a6eb98d4f2080a33ec97ff3ffefb1ab59f9c8852f8248c2d24b64",
+    "hash": "sha256:5fd73518d4e069166475607eb53ca2cfbcec6e6fdcc9b0905f2ab20ceae75fa2",
     "hash_v": 1,
     "id": "01M4JM5ZNG61PSJPK451QT68KK",
     "option": "yes",
     "question": "Q3",
     "roster_v": 3,
-    "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+    "sig": "tsFcmoAmq5dv3vn6ulzwcT0rktWXvUyJhrEhyLLB6-2cGcAxtomZ6km-xGgNxwELvo4O6LIHsccnMTYFOG7ukg",
     "type": "question.answered",
     "v": 2
    },
-   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"passphrase\",\"based_on\":\"sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a\",\"hash\":\"sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7\",\"hash_v\":1,\"id\":\"01M4JM5ZNG61PSJPK451QT68KK\",\"option\":\"yes\",\"question\":\"Q3\",\"roster_v\":3,\"sig\":\"iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw\",\"type\":\"question.answered\",\"v\":2}"
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"passphrase\",\"based_on\":\"sha256:b38212b0a94a6eb98d4f2080a33ec97ff3ffefb1ab59f9c8852f8248c2d24b64\",\"hash\":\"sha256:5fd73518d4e069166475607eb53ca2cfbcec6e6fdcc9b0905f2ab20ceae75fa2\",\"hash_v\":1,\"id\":\"01M4JM5ZNG61PSJPK451QT68KK\",\"option\":\"yes\",\"question\":\"Q3\",\"roster_v\":3,\"sig\":\"tsFcmoAmq5dv3vn6ulzwcT0rktWXvUyJhrEhyLLB6-2cGcAxtomZ6km-xGgNxwELvo4O6LIHsccnMTYFOG7ukg\",\"type\":\"question.answered\",\"v\":2}"
   },
   {
    "desc": "the signature's s is in the upper half; it verifies and is accepted",
-   "digest": "sha256:5fd0e6ac08eb39a682de014e5143bffeb35b8f51e85e0930ccc60c716975e6a2",
+   "digest": "sha256:a70f24a832d89ad6583539bae5c2821dbd0f596bf608aea5ff17dddee1cd093c",
    "event": {
     "actor": {
      "device": "d_762df76def3afcc7bfc48dbc595f8add",
@@ -219,27 +272,27 @@
     },
     "at": "2026-10-10T10:02:10Z",
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
-    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "based_on": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
+    "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
     "hash_v": 1,
-    "host_sig": "7KFad4xG1XP3uz-xFTA4j48oAFfAVDno0ftp5ht3mnFHMeDWkFr38HSF73VdmholJOebT_aaXUZIPxR3sk0s2g",
+    "host_sig": "SLJd0PmL5ylIOom1Ku2zrmVr92J411R2EbuwCe6Fsvj97Yxv7fbXMFXhW18_-3soHloPeNqXBMGM-fwUETWoCw",
     "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
     "option": "tue",
-    "prev": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+    "prev": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
     "question": "Q4",
     "roster_v": 3,
     "seq": 9,
-    "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+    "sig": "fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtO3pmSVjHcfJhZTAHaxe6ierb9hTyAV92TrNwjecbuZOQ",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
    },
-   "head": "sha256:3c9010e538df50cfd6e2348d05d30cf6d8c8be8d84eedadeb3f15a24ec5d9909",
+   "head": "sha256:dd4555a31a877574b7cb041382bfa710d77b4c02d2588e2fad7df680e4e4bb37",
    "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
    "name": "answer_high_s",
-   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a62363666396662383937333139636461306261373730313566336461613436663537656539643739316463633662643066326366393064636332666434623731222c2268617368223a227368613235363a31656639336566336431386139376164323130333265376239636261313262326435396562376430306463373763306131366438383033616539353630363330222c22686173685f76223a312c226964223a2230314d344a4d364b36475a335143314759444751574737524231222c226f7074696f6e223a22747565222c227175657374696f6e223a225134222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a33616162363532343133326432346335333563336134316637393537613136313632393632656462643866383533653362383862303863613766626134613730222c2268617368223a227368613235363a64366536356630356531323964626164633163313339393534353639353936386166326132323462306662313437653235316363383632396633356333313465222c22686173685f76223a312c226964223a2230314d344a4d364b36475a335143314759444751574737524231222c226f7074696f6e223a22747565222c227175657374696f6e223a225134222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
    "question": {
-    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
     "hashed": {
      "options": [
       {
@@ -252,13 +305,33 @@
       }
      ],
      "question_id": "9f46c887b5eb07cfec03fd4bdc91eaa8",
+     "spec": {
+      "kind": "choice"
+     },
      "text": "Which day?",
      "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
     },
-    "qid": "9f46c887b5eb07cfec03fd4bdc91eaa8"
+    "qid": "9f46c887b5eb07cfec03fd4bdc91eaa8",
+    "raw": {
+     "blocking": true,
+     "id": "Q4",
+     "kind": "choice",
+     "options": [
+      {
+       "key": "mon",
+       "label": "Monday"
+      },
+      {
+       "key": "tue",
+       "label": "Tuesday"
+      }
+     ],
+     "text": "Which day?",
+     "to": "ticket_owner"
+    }
    },
    "scenario": "phone_answers_and_creates",
-   "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+   "sig": "fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtO3pmSVjHcfJhZTAHaxe6ierb9hTyAV92TrNwjecbuZOQ",
    "step": 12,
    "submitted": {
     "actor": {
@@ -267,18 +340,18 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
-    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "based_on": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
+    "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
     "hash_v": 1,
     "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
     "option": "tue",
     "question": "Q4",
     "roster_v": 3,
-    "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+    "sig": "fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtO3pmSVjHcfJhZTAHaxe6ierb9hTyAV92TrNwjecbuZOQ",
     "type": "question.answered",
     "v": 2
    },
-   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71\",\"hash\":\"sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630\",\"hash_v\":1,\"id\":\"01M4JM6K6GZ3QC1GYDGQWG7RB1\",\"option\":\"tue\",\"question\":\"Q4\",\"roster_v\":3,\"sig\":\"Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw\",\"type\":\"question.answered\",\"v\":2}"
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70\",\"hash\":\"sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e\",\"hash_v\":1,\"id\":\"01M4JM6K6GZ3QC1GYDGQWG7RB1\",\"option\":\"tue\",\"question\":\"Q4\",\"roster_v\":3,\"sig\":\"fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtO3pmSVjHcfJhZTAHaxe6ierb9hTyAV92TrNwjecbuZOQ\",\"type\":\"question.answered\",\"v\":2}"
   },
   {
    "desc": "ticket.created by the phone: title-only, owner the signer, the exact next key, based_on null",
@@ -336,8 +409,8 @@
    "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":null,\"hash_v\":1,\"id\":\"01M4JM6WZ0S049ACN5HG00TH9Q\",\"key\":\"DEMO-0002\",\"owner\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"roster_v\":3,\"sig\":\"SJhWegNpnXDnWyC52jR_PLjh6NeU__evd3t_Hocj31HhO4gqKWACJAz_TXj1x0eoBIzH7V-raRjoOI8HokX86g\",\"ticket_type\":\"feature\",\"title\":\"Check the tariff seeds\",\"type\":\"ticket.created\",\"v\":2}"
   },
   {
-   "desc": "an answer that survives a why-only re-ask",
-   "digest": "sha256:fcb05c794ff0a38cc02628d6c5ad65380f376d2a88549c771b0a068f461e3106",
+   "desc": "an answer that survives a blocking-only re-ask",
+   "digest": "sha256:a6750eee91c9328de15d028dd149af711e842626ab2c538d7306d0a4da4f8f7d",
    "event": {
     "actor": {
      "device": "d_762df76def3afcc7bfc48dbc595f8add",
@@ -346,27 +419,27 @@
     },
     "at": "2026-10-10T10:01:10Z",
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
-    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "based_on": "sha256:a8a5756fab409b0d755f035cb87203b2587826e32fab51b879fc6e1339010792",
+    "hash": "sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7",
     "hash_v": 1,
-    "host_sig": "qYpVqLXHvGqp69Zb4FuRhhF8NC6lDboGVwAZ3S3ZzaoulW-s1JxD_94VmTPw7jkY3irDwSHxht3s3EMgocrA0g",
+    "host_sig": "3iy4wbrfroEt4ucDSXgY10sRtUgliRuNCsKEMmxbbEeTugKnPNMtfJASYTNxWA0BlefaZQZ2m0WJTzNBMvz-Hg",
     "id": "01M4JM4RKGVQ4TR3C35B9M93H3",
     "option": "a",
-    "prev": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+    "prev": "sha256:a8a5756fab409b0d755f035cb87203b2587826e32fab51b879fc6e1339010792",
     "question": "Q1",
     "roster_v": 3,
     "seq": 3,
-    "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+    "sig": "e7ygEkpJMiJjuhSXrVvEpwNwQob1JF72xn1UZ-C_VyhHUTvTEuwDUL9Zf_BANxhsBoYKr9oDhn4junCXbgdDFA",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
    },
-   "head": "sha256:7f7b6c141b1500a4c63501fcba655887682f83819ada4d9036859b3cd9c269ea",
+   "head": "sha256:192c915104f52b1e681801d377968746271b45d9a430fddda80b2b2f219f7892",
    "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
-   "name": "answer_before_why_reask",
-   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a61663436366363353062393034383237633463386364333533646663353731626266383463663930326532613362636461333334323032383365323837643935222c2268617368223a227368613235363a33666432613333386461373864343730316535663663303835303539653164323339316435333366623936313732323936353038373364663865366663316334222c22686173685f76223a312c226964223a2230314d344a4d34524b4756513454523343333542394d39334833222c226f7074696f6e223a2261222c227175657374696f6e223a225131222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "name": "answer_before_routing_reask",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a61386135373536666162343039623064373535663033356362383732303362323538373832366533326661623531623837396663366531333339303130373932222c2268617368223a227368613235363a61313238646431343236376666663333643534343865383462616236663365376539643531326338343461363035356461346431383435323533303563656437222c22686173685f76223a312c226964223a2230314d344a4d34524b4756513454523343333542394d39334833222c226f7074696f6e223a2261222c227175657374696f6e223a225131222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
    "question": {
-    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "hash": "sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7",
     "hashed": {
      "options": [
       {
@@ -379,13 +452,35 @@
       }
      ],
      "question_id": "d60478ec5ff8f6ff213cded9c0f8f243",
+     "spec": {
+      "kind": "choice",
+      "why": "first reason"
+     },
      "text": "Pick one",
      "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
     },
-    "qid": "d60478ec5ff8f6ff213cded9c0f8f243"
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+    "raw": {
+     "blocking": true,
+     "id": "Q1",
+     "kind": "choice",
+     "options": [
+      {
+       "key": "a",
+       "label": "Alpha"
+      },
+      {
+       "key": "b",
+       "label": "Beta"
+      }
+     ],
+     "text": "Pick one",
+     "to": "ticket_owner",
+     "why": "first reason"
+    }
    },
    "scenario": "phone_answer_semantics",
-   "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+   "sig": "e7ygEkpJMiJjuhSXrVvEpwNwQob1JF72xn1UZ-C_VyhHUTvTEuwDUL9Zf_BANxhsBoYKr9oDhn4junCXbgdDFA",
    "step": 6,
    "submitted": {
     "actor": {
@@ -394,22 +489,22 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
-    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "based_on": "sha256:a8a5756fab409b0d755f035cb87203b2587826e32fab51b879fc6e1339010792",
+    "hash": "sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7",
     "hash_v": 1,
     "id": "01M4JM4RKGVQ4TR3C35B9M93H3",
     "option": "a",
     "question": "Q1",
     "roster_v": 3,
-    "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+    "sig": "e7ygEkpJMiJjuhSXrVvEpwNwQob1JF72xn1UZ-C_VyhHUTvTEuwDUL9Zf_BANxhsBoYKr9oDhn4junCXbgdDFA",
     "type": "question.answered",
     "v": 2
    },
-   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95\",\"hash\":\"sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4\",\"hash_v\":1,\"id\":\"01M4JM4RKGVQ4TR3C35B9M93H3\",\"option\":\"a\",\"question\":\"Q1\",\"roster_v\":3,\"sig\":\"n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA\",\"type\":\"question.answered\",\"v\":2}"
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:a8a5756fab409b0d755f035cb87203b2587826e32fab51b879fc6e1339010792\",\"hash\":\"sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7\",\"hash_v\":1,\"id\":\"01M4JM4RKGVQ4TR3C35B9M93H3\",\"option\":\"a\",\"question\":\"Q1\",\"roster_v\":3,\"sig\":\"e7ygEkpJMiJjuhSXrVvEpwNwQob1JF72xn1UZ-C_VyhHUTvTEuwDUL9Zf_BANxhsBoYKr9oDhn4junCXbgdDFA\",\"type\":\"question.answered\",\"v\":2}"
   },
   {
    "desc": "A -> B -> A, then the answer to A signed before B: accepted; based_on is an earlier head",
-   "digest": "sha256:fb0276ac8bc94d01786b8a641428ca746c4d879e1d7c30b451e99559d8ec33b3",
+   "digest": "sha256:2209dee86b47a44acc688410a2e8eccaa34930e9bc122c0e309dae241c734430",
    "event": {
     "actor": {
      "device": "d_762df76def3afcc7bfc48dbc595f8add",
@@ -418,27 +513,27 @@
     },
     "at": "2026-10-10T10:02:00Z",
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
-    "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+    "based_on": "sha256:40ceef0d5f7ad92498f8f1515be00ff05ee9f9e40cb0cb9e7aa4dcb3465b35d1",
+    "hash": "sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb",
     "hash_v": 1,
-    "host_sig": "L6h9PCZ2LVvHx3dTZgf_RUwI5FRWhYuF3fIT9qS5r6quNqTzdLAlC-iBgz8BW7GpgJGG2iAqHeBmYgZtoCdDxg",
+    "host_sig": "6vDi22fRsX0avduagyOO_YN6v3W8tBmjVJL94N5pbcVTbIYiJmkQNfQPAUuIk9ZkMAHJg4Y53ZMG92dxt06eEQ",
     "id": "01M4JM5NX0RXR8BEMJ102PTS1Y",
     "option": "go",
-    "prev": "sha256:d6f60931f9addb97ebc5152e500b9ca634dfd1675392c875ec846ae64da1a6b9",
+    "prev": "sha256:3831e195ddcb2aa45b477d9253b3e90b2960ee5398e6fe6316bcf3b49b5e2836",
     "question": "Q2",
     "roster_v": 3,
     "seq": 8,
-    "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+    "sig": "jWPFdnAT8cmyIA24uivdhzueXSz5qMEb2hmFcCqmsGKslkJZEacW9ZD4EMV6YbaVZcqGYZKIu_-Zl_v2qavXHg",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
    },
-   "head": "sha256:5011219ac18b0f014ceaf1afe1ecd432948e9315eb906432fa9982f268e678ba",
+   "head": "sha256:8367e2c4a4677d3e3030567b92e573913984f650f2867ef523942138483670bf",
    "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
    "name": "delayed_answer_after_a_b_a",
-   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a61303330356434613433633162323239326161383134346133353530376231643565616265613136363639333337616135343965346462643930663438613637222c2268617368223a227368613235363a34626335666133636439623965356636636666656330373138656431396339343065363038323962353363313761323634343630613335346335653235393434222c22686173685f76223a312c226964223a2230314d344a4d354e58305258523842454d4a3130325054533159222c226f7074696f6e223a22676f222c227175657374696f6e223a225132222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
+   "person_signing_hex": "6f7263682f76322f7369672f7469636b65742d6576656e747c7b22636f6e7472616374223a312c226576656e74223a7b226163746f72223a7b22646576696365223a22645f3736326466373664656633616663633762666334386462633539356638616464222c226964223a22705f3735626637356133626235306230633461633032663861373537623930653233222c226b696e64223a22706572736f6e227d2c2261757468223a227365637572652d656e636c6176652d756e6c6f636b6564222c2262617365645f6f6e223a227368613235363a34306365656630643566376164393234393866386631353135626530306666303565653966396534306362306362396537616134646362333436356233356431222c2268617368223a227368613235363a34393536653361353034613431616437633036366539316332303336306164343632633631326536326365383534653535353936373362386236353535376562222c22686173685f76223a312c226964223a2230314d344a4d354e58305258523842454d4a3130325054533159222c226f7074696f6e223a22676f222c227175657374696f6e223a225132222c22726f737465725f76223a332c2274797065223a227175657374696f6e2e616e737765726564222c2276223a327d2c226c6f67223a2230314a395a4b3451374d33523854325636583042354e31433944222c227375697465223a322c22776f726b73706163655f6964223a223031323334353637383961626364656630313233343536373839616263646566227d",
    "question": {
-    "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+    "hash": "sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb",
     "hashed": {
      "options": [
       {
@@ -451,13 +546,33 @@
       }
      ],
      "question_id": "72a37c42fc71091868c10ceed59ddd24",
+     "spec": {
+      "kind": "choice"
+     },
      "text": "Go or wait?",
      "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
     },
-    "qid": "72a37c42fc71091868c10ceed59ddd24"
+    "qid": "72a37c42fc71091868c10ceed59ddd24",
+    "raw": {
+     "blocking": true,
+     "id": "Q2",
+     "kind": "choice",
+     "options": [
+      {
+       "key": "go",
+       "label": "Go"
+      },
+      {
+       "key": "wait",
+       "label": "Wait"
+      }
+     ],
+     "text": "Go or wait?",
+     "to": "ticket_owner"
+    }
    },
    "scenario": "phone_answer_semantics",
-   "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+   "sig": "jWPFdnAT8cmyIA24uivdhzueXSz5qMEb2hmFcCqmsGKslkJZEacW9ZD4EMV6YbaVZcqGYZKIu_-Zl_v2qavXHg",
    "step": 11,
    "submitted": {
     "actor": {
@@ -466,18 +581,18 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
-    "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+    "based_on": "sha256:40ceef0d5f7ad92498f8f1515be00ff05ee9f9e40cb0cb9e7aa4dcb3465b35d1",
+    "hash": "sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb",
     "hash_v": 1,
     "id": "01M4JM5NX0RXR8BEMJ102PTS1Y",
     "option": "go",
     "question": "Q2",
     "roster_v": 3,
-    "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+    "sig": "jWPFdnAT8cmyIA24uivdhzueXSz5qMEb2hmFcCqmsGKslkJZEacW9ZD4EMV6YbaVZcqGYZKIu_-Zl_v2qavXHg",
     "type": "question.answered",
     "v": 2
    },
-   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67\",\"hash\":\"sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944\",\"hash_v\":1,\"id\":\"01M4JM5NX0RXR8BEMJ102PTS1Y\",\"option\":\"go\",\"question\":\"Q2\",\"roster_v\":3,\"sig\":\"qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ\",\"type\":\"question.answered\",\"v\":2}"
+   "submitted_cj": "{\"actor\":{\"device\":\"d_762df76def3afcc7bfc48dbc595f8add\",\"id\":\"p_75bf75a3bb50b0c4ac02f8a757b90e23\",\"kind\":\"person\"},\"auth\":\"secure-enclave-unlocked\",\"based_on\":\"sha256:40ceef0d5f7ad92498f8f1515be00ff05ee9f9e40cb0cb9e7aa4dcb3465b35d1\",\"hash\":\"sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb\",\"hash_v\":1,\"id\":\"01M4JM5NX0RXR8BEMJ102PTS1Y\",\"option\":\"go\",\"question\":\"Q2\",\"roster_v\":3,\"sig\":\"jWPFdnAT8cmyIA24uivdhzueXSz5qMEb2hmFcCqmsGKslkJZEacW9ZD4EMV6YbaVZcqGYZKIu_-Zl_v2qavXHg\",\"type\":\"question.answered\",\"v\":2}"
   }
  ],
  "digest": "\"sha256:\" + hex(sha256(person_signing_bytes)), where person_signing_bytes = \"orch/v2/sig/ticket-event|\" || cj({\"contract\":1, \"event\":E, \"log\":uid, \"suite\":2, \"workspace_id\":W}) and E is the submitted form without sig (11A.14 14.2, 14.4)",
@@ -536,7 +651,7 @@
    "decide"
   ]
  },
- "pins": "phone person events over relay.submit (orch-v2-host 11A.14): question.answered and ticket.created signed by a phone (dk_sevp1, scopes look+decide) under signed-event contract 1; per accepted case the submitted form (no seq, at, prev, ws_seq, host_sig), the signing bytes, the signed-content digest, sig, the appended event and its head; refusals; semantics pins (why-only re-ask, A -> B -> A)",
+ "pins": "phone person events over relay.submit (orch-v2-host 11A.14): question.answered and ticket.created signed by a phone (dk_sevp1, scopes look+decide) under signed-event contract 1; per accepted case the submitted form (no seq, at, prev, ws_seq, host_sig), the signing bytes, the signed-content digest, sig, the appended event and its head; refusals; semantics pins (blocking-only re-ask, A -> B -> A)",
  "refused": [
   {
    "code": "question.stale",
@@ -552,14 +667,14 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
-    "hash": "sha256:a337d899f83dd995c52a48824b850dd243a8854444637521e972a5d97cc51e80",
+    "based_on": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
+    "hash": "sha256:19c2e05cc21a74b443a001b61788fc3c38587af4affb7647dc055dbfc81fea46",
     "hash_v": 1,
     "id": "01M4JM7GG0ANKQJJW2S87CB6J0",
     "option": "ch",
     "question": "Q5",
     "roster_v": 3,
-    "sig": "2FF0CkSDyqyiM9g5UtD18Ubc7Bl73gBTyx0Qewc7XTERxgGSaSeZo-FQXxANwEXnySPYVuxEfElwVx21Ha_74Q",
+    "sig": "-bWoidxUi1nyT3EoZFtOFS4kaDhuZ-HprknQ2ApKMpgoQIZm8dZaZIzt3hye_K1GpkALAk2jNIRFdn9WAP3Evw",
     "type": "question.answered",
     "v": 2
    }
@@ -578,14 +693,14 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
-    "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+    "based_on": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
+    "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
     "hash_v": 1,
     "id": "01M4JM7T8GD7HNY9XB0RFQQQHW",
     "option": "ch",
     "question": "Q5",
     "roster_v": 2,
-    "sig": "ytn4Iab7np6apvaEV0czrCXFk7ZCZQ2VrixwImgQr0gkMjQ0Qlcl99k3-KM3PAPtdge6Y1wloDXn64qq5q0Zew",
+    "sig": "6fFKiTkIkp0zScUqamwE7uvQ_Ei0tUs14KGGQIEMGZF3ODfIzf16gobOu4mS6xJ1EkxBfw51yw5k85yGrq4yNQ",
     "type": "question.answered",
     "v": 2
    }
@@ -605,13 +720,13 @@
     },
     "auth": "secure-enclave-unlocked",
     "based_on": "sha256:abababababababababababababababababababababababababababababababab",
-    "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+    "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
     "hash_v": 1,
     "id": "01M4JM8410RKHM15S2RTK81G49",
     "option": "ch",
     "question": "Q5",
     "roster_v": 3,
-    "sig": "qDztjeJrdK5ifqd3VF9yO07jCt1YuEGbQqtiECqYF3SQ_iCgWo9jSYcR5GvadzzpSA1BonPh9pUL6FBV52wSbw",
+    "sig": "AZdxsrpGKEbyPqCtCts0th7mH4cNO23LVjLK0kpcp1SSBzGZ7IM7MImKY3DnkgzJX4gmYSMEvKvXghBIbAgqIw",
     "type": "question.answered",
     "v": 2
    }
@@ -630,14 +745,14 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
-    "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+    "based_on": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
+    "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
     "hash_v": 1,
     "id": "01M4JM8DSG82HRH9RXRPTBGK9E",
     "option": "ch",
     "question": "Q5",
     "roster_v": 3,
-    "sig": "EMT0BCShPnKQZDsxSYjZrXKaN3vVboD9zNf42oUMSSTGMZ1AuH3idOIyY1nHvwDViqFYXyVI5XA2XMH4EgWT2A",
+    "sig": "ysKwNqNdTXuc4G7lEJ-VoY7HcjzlriIKdNTdNpdxmwW5Kei-AqfXpqwcEJ42LwBkGwpxR3-YTvClSpDUJbbTNQ",
     "type": "question.answered",
     "v": 2
    }
@@ -682,14 +797,14 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
-    "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+    "based_on": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
+    "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
     "hash_v": 1,
     "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
     "option": "tue",
     "question": "Q4",
     "roster_v": 3,
-    "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3Usd6c_TZSRFBropclgZpnFuVmFQogNfgh6F6E4aF-4gg",
+    "sig": "fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtNIWZtpc4jg2ums_4lOhFdhDyeZXocBpyAIgsHkiqeMGA",
     "type": "question.answered",
     "v": 2
    }
@@ -736,14 +851,14 @@
      "kind": "person"
     },
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
-    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "based_on": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
+    "hash": "sha256:dc02ff189d7ca9637e46b7738a4c8335078d4de8a3daa017b3c37ac1b16b5054",
     "hash_v": 1,
     "id": "01M4JM4RKGXDCVW0ESMRF6CT8H",
     "option": "b",
     "question": "Q1",
     "roster_v": 3,
-    "sig": "85HHTW48UylAiL-zmnTfv6Lsjz0Y1aL2_8RlBUyEEYDcxMRBuLBOPtjtFobVL6B0AkoWOh8JxfL0sig0jYdH6w",
+    "sig": "t8ICoVWWMGuLuHpXmnUfSe0SEZXW2jsMVQoBuieM9Q35j4Zmy0s65kwx-DPwxYW3NcyUGH2tokCLNQ0fm-00vg",
     "type": "question.answered",
     "v": 2
    }
@@ -1000,15 +1115,16 @@
       "at": "2026-10-10T10:01:00Z",
       "auth": "passphrase",
       "based_on": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
-      "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+      "hash": "sha256:4dc68732ead554136b9b4522672fc43fb58bd90cb77c5174e0f45aaad3a71eed",
       "hash_v": 1,
-      "host_sig": "CpxzDF0tFNzXKGHAsIHwsk_rrtcNMpR9LqE6v698XErhuOWnwgl4fmoYkX40UH-VJynopBNPCsEh20dFEuIDDg",
+      "host_sig": "DXsO5lzfR01345YCtBpHUd5M4mopXywgnLsBQQdg1L-qiT_FCX0NJRixpeuDO6JUQYqaQbhxKNBirWcQ4mu2ww",
       "id": "01J9ZK00000000000000000006",
       "prev": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "cost": "\u00bd Tag, CHF 400",
@@ -1026,7 +1142,7 @@
       },
       "roster_v": 3,
       "seq": 2,
-      "sig": "fIwZl2vvqqf1_bSi98DMX2uAG5yPb-BgWyWV112qXNfl_EUL0mnZ79__smPeYHuK9DxlQt2mWkQmrxEAQpgSCw",
+      "sig": "PWZ0Z4J1IwWVxuqYaSBSEapyxp1mBWXTYAtZzbARph6z30k7mwttl5BBy7OCG-OmAMhJIeER5zy5F227A7f22g",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -1044,17 +1160,17 @@
       },
       "at": "2026-10-10T10:01:10Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
-      "hash": "sha256:298128e08279f1199b398aa7fa7aa24eabf0cf7e11f6b4a9afe90a822464102e",
+      "based_on": "sha256:ac500a4280ff0145a67b324d23b390d429379561d9f6debf1ed5e5beedc926c5",
+      "hash": "sha256:4dc68732ead554136b9b4522672fc43fb58bd90cb77c5174e0f45aaad3a71eed",
       "hash_v": 1,
-      "host_sig": "4-G4-CNJphDc0Qip9UQ_t9egt2_6BqGgZRBFNXVGD-iVUbwfgcSNIhT-PNCxet3kQ2hhaxo5eDpt5sOojZvbvA",
+      "host_sig": "pNxD7jDP9Y3wvNbA2ZhHU2KwuRME6g2sfj0gp4iMX6lKYfapQUYTCoCLcE7tbi87olWw68GDGxpo9IAP6LJPXw",
       "id": "01M4JM4RKG79RG3QTWCP60NNNG",
       "option": "csv",
-      "prev": "sha256:0c7d268ef5f488da05466d74ad791becaf9b7a69d2b355b93d293b60a890019e",
+      "prev": "sha256:ac500a4280ff0145a67b324d23b390d429379561d9f6debf1ed5e5beedc926c5",
       "question": "Q1",
       "roster_v": 3,
       "seq": 3,
-      "sig": "zCwYc5TiZzZZXiIiSD11ZEYZm_07mT_whg2qSmDc4VWcSy_64Ctqobw-aLGlbQ5m_fUAh6ydgJu0pc-7n2QTcQ",
+      "sig": "5ZjFpmxnRuVaxy0bADFv1WB0XYvdOKmyCrg7maKSRJ-VUw3j7jEkq2ZGoOr9sNw0jeE1q-onqr-ZHZfhXoW9WA",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1072,29 +1188,30 @@
       },
       "at": "2026-10-10T10:01:20Z",
       "auth": "passphrase",
-      "based_on": "sha256:0d214d9e29153a0b4bb1eda3b3a5c47ca33f0d91547ba6234f1a60db792af3a2",
-      "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+      "based_on": "sha256:e32fa70ff9e996a9c8c7851f42ac74be35d40495b9c182c39bf8928cfe0a7d73",
+      "hash": "sha256:6b1353a477367319567aac0530cd7981a440e5d3c739fa6b96142131095fca3b",
       "hash_v": 1,
-      "host_sig": "qU1XVNQ8w0IJ0OBXCDaOvZznmZ9b0iQJrQmG_rISFjK1tolanry-g2qJ3dk98EJK_2e4zAVpI_Q2TnC24sxf2w",
+      "host_sig": "PaR0TWVfBtdcrQ61bBKYvh2qAnojEb2_tpoqpIWYJTMaDdaLnuGM8DDVicKWbVP9UPVhkMHSB01ei1DX75cwsA",
       "id": "01J9ZK00000000000000000007",
-      "prev": "sha256:0d214d9e29153a0b4bb1eda3b3a5c47ca33f0d91547ba6234f1a60db792af3a2",
+      "prev": "sha256:e32fa70ff9e996a9c8c7851f42ac74be35d40495b9c182c39bf8928cfe0a7d73",
       "qid": "72a37c42fc71091868c10ceed59ddd24",
       "question": {
        "blocking": true,
        "id": "Q2",
+       "kind": "text",
        "text": "Anything else we should know?",
        "to": "ticket_owner"
       },
       "roster_v": 3,
       "seq": 4,
-      "sig": "yVyV9QI8iZgGb7ZL-1AFUFBFBr0hPpoqNWFIb8hWOg4FE42PJBQUstHFSH5d9OfEsCMxNX1y5rclQ_0UoUfR4w",
+      "sig": "zHUgL7dMTtty5cblIR4gcZE-L1eQWhtD_vju362j5mfLrWIHPVLmmME5K_uiCq8Gtad9gxnA-cgICJprKNuIEQ",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
      },
      "expect": "ok",
      "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
-     "note": "a question with no options: ticket.get omits options, the hash uses []"
+     "note": "a text question (no options): the hash uses options []"
     },
     {
      "event": {
@@ -1105,16 +1222,16 @@
       },
       "at": "2026-10-10T10:01:30Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
-      "hash": "sha256:0e7a33bfebc4b3d050b958af5d82a6f8e1f8173aff39c0aec5639bb8570b3388",
+      "based_on": "sha256:40f368e0a815274e9afd88734edf6dd949721ef9fd1fe1f2930066520cc7800a",
+      "hash": "sha256:6b1353a477367319567aac0530cd7981a440e5d3c739fa6b96142131095fca3b",
       "hash_v": 1,
-      "host_sig": "Ne9PN7PHTBzZj3H7W2MCZfUq5HyxuZzWfRpTfH1p534gt0OrW9v_izNUNLRIjrC74qMmbKX-lGGLT_voiuYF7A",
+      "host_sig": "zPK8X_my3lYjrt6gK27zn3B84BrNN00akkZulKzYmPrCugZ0DblqIiqa7jqDLhhjaaf4uZ_2yv0udGf284bgOQ",
       "id": "01M4JM5C4GESP1D60PNEQA8N0A",
-      "prev": "sha256:f5687ad4486a2518b37d46767d7afcf3756662514f9de9b4be15dfc1ab4d5575",
+      "prev": "sha256:40f368e0a815274e9afd88734edf6dd949721ef9fd1fe1f2930066520cc7800a",
       "question": "Q2",
       "roster_v": 3,
       "seq": 5,
-      "sig": "Le7Y6UQwW4MG30mnWtt_1k3-W8GFO1narBJisl6vz_r8nppRaURbWLdwFJVA-ZzniSY7TScQt1awkaw3jatzXQ",
+      "sig": "7KUXUcGMORAyjY1tQx5fDBSCw6ec0Zb5mzd8DraenE2g39-rLsTKyuW5UaL12JWNdCScMPaMy5pUonCZgXmYOg",
       "text": "Keep\tthe old seeds",
       "type": "question.answered",
       "v": 2,
@@ -1133,16 +1250,17 @@
       },
       "at": "2026-10-10T10:01:40Z",
       "auth": "passphrase",
-      "based_on": "sha256:cd12d33d426c84467b8bb3ef10d1012f7dc6a7984f5168f65cf442a42c2c7073",
-      "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+      "based_on": "sha256:21b52273320fed63e81e0abecf95265f9adbbb060f4c1fd07b06420ef0df693d",
+      "hash": "sha256:5fd73518d4e069166475607eb53ca2cfbcec6e6fdcc9b0905f2ab20ceae75fa2",
       "hash_v": 1,
-      "host_sig": "-nifyOZH3J7vXsf-O-wTj3PmRXlNk5_fed2W0q1kTFzwg_Q7giBpZdF8Rrzbnl17eCDmyamaRMz1sA7modUP0w",
+      "host_sig": "JFUTmIvz5W-bpjWzXpYduci925-Z8qqZ4HcU09PfjtydJQDX-4bpQZ4WewKyZ_Pn1w-viO6Wjfm-t_3v1wHHvg",
       "id": "01J9ZK00000000000000000008",
-      "prev": "sha256:cd12d33d426c84467b8bb3ef10d1012f7dc6a7984f5168f65cf442a42c2c7073",
+      "prev": "sha256:21b52273320fed63e81e0abecf95265f9adbbb060f4c1fd07b06420ef0df693d",
       "qid": "61fe62456d362fdf6813f8ce89600141",
       "question": {
        "blocking": true,
        "id": "Q3",
+       "kind": "choice",
        "options": [
         {
          "key": "yes",
@@ -1158,7 +1276,7 @@
       },
       "roster_v": 3,
       "seq": 6,
-      "sig": "3-dHq56w38JVSR4gyL4Z11Zuim78QsWLAmo_8-jINf4OSfz7ZVHjCT_HNP9blgM5s9KTJNB8pQgOJDeKBI9H0w",
+      "sig": "ZJmKBe1MLzdYRZiLP9cEiqsj0RFRZTOQ-jezlBG9RzH_rbtXm9lDc7nupEoQgYKCppflmNRIwk3dRXlZTLLXGA",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -1176,17 +1294,17 @@
       },
       "at": "2026-10-10T10:01:50Z",
       "auth": "passphrase",
-      "based_on": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
-      "hash": "sha256:89b1b88ce23395a1055e1da0d76508f87db34ab224ba7a37f1e3cd72aaaf50e7",
+      "based_on": "sha256:b38212b0a94a6eb98d4f2080a33ec97ff3ffefb1ab59f9c8852f8248c2d24b64",
+      "hash": "sha256:5fd73518d4e069166475607eb53ca2cfbcec6e6fdcc9b0905f2ab20ceae75fa2",
       "hash_v": 1,
-      "host_sig": "4HQ2VtkbET7D33JkXxBKQFMBqI-FbLmbQt2MoNqgwBVspVwa6FjNb8pqMqKwlx-tvRoD6W-RrE48i13zDaTQMg",
+      "host_sig": "SaHPhxhH2Q5EHqDk-OpTLJqfGhSdiJeTKbYRsv2kmmqDS1rZ-NS5CBc7Gi1j8eC2yrudQYsPlvoxBWLGpUfGZQ",
       "id": "01M4JM5ZNG61PSJPK451QT68KK",
       "option": "yes",
-      "prev": "sha256:dd31ec25c304b2ff8eec0b46e6c43fe57df2e40be9f30dc2ffc4de87aef3401a",
+      "prev": "sha256:b38212b0a94a6eb98d4f2080a33ec97ff3ffefb1ab59f9c8852f8248c2d24b64",
       "question": "Q3",
       "roster_v": 3,
       "seq": 7,
-      "sig": "iP2wncCNANC2Ylf32WWy3BlsRmg84UVNMUWa-P2_jEMe-UyqmFuXObbusmga6fZPcBqTPZgAtxk--yw4JfhPIw",
+      "sig": "tsFcmoAmq5dv3vn6ulzwcT0rktWXvUyJhrEhyLLB6-2cGcAxtomZ6km-xGgNxwELvo4O6LIHsccnMTYFOG7ukg",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1204,16 +1322,17 @@
       },
       "at": "2026-10-10T10:02:00Z",
       "auth": "passphrase",
-      "based_on": "sha256:8184be3149b002489b130d58f0a179eebfde54bab0e262a2b2b2c06955331a03",
-      "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+      "based_on": "sha256:541018565af80b3f209d377cf765dfe6e29fb52247f2df742879071364b19f90",
+      "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
       "hash_v": 1,
-      "host_sig": "X6OFpEgxcUhIuwD2HwDtTq0eEb8kd6ECeqU5v909yqq5yGc8eOeY893vyxwJjgkGLW_HCEBaRA6gB-BgrJvmXA",
+      "host_sig": "yQalxhkbbnvs4Xs3cIrhLWQEsbtiZhzh5itgbAPmo3eqzbP0a5KfAyFjotms7yxiT1MidkEiHXIPZyaS14DWqA",
       "id": "01J9ZK00000000000000000009",
-      "prev": "sha256:8184be3149b002489b130d58f0a179eebfde54bab0e262a2b2b2c06955331a03",
+      "prev": "sha256:541018565af80b3f209d377cf765dfe6e29fb52247f2df742879071364b19f90",
       "qid": "9f46c887b5eb07cfec03fd4bdc91eaa8",
       "question": {
        "blocking": true,
        "id": "Q4",
+       "kind": "choice",
        "options": [
         {
          "key": "mon",
@@ -1229,7 +1348,7 @@
       },
       "roster_v": 3,
       "seq": 8,
-      "sig": "X_NouK3lcJ-TcHuTPRsqLcue8KiLWx1LnAe502wgErnmfLLq3sGzfFarzVG_J4xEc6s2Sa1HUJbPzB69N9wtKA",
+      "sig": "IubPvjQKUbeZLHt_K8LQApEzT-rXmAWGZRyTEf-QcERCFHIa7WPa7du29znXY2bG8LelwEh0qq56Zyl13MlJLw",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -1247,17 +1366,17 @@
       },
       "at": "2026-10-10T10:02:10Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
-      "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+      "based_on": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
+      "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
       "hash_v": 1,
-      "host_sig": "7KFad4xG1XP3uz-xFTA4j48oAFfAVDno0ftp5ht3mnFHMeDWkFr38HSF73VdmholJOebT_aaXUZIPxR3sk0s2g",
+      "host_sig": "SLJd0PmL5ylIOom1Ku2zrmVr92J411R2EbuwCe6Fsvj97Yxv7fbXMFXhW18_-3soHloPeNqXBMGM-fwUETWoCw",
       "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
       "option": "tue",
-      "prev": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
+      "prev": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
       "question": "Q4",
       "roster_v": 3,
       "seq": 9,
-      "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3XTiFi_smtu7OUXWjafmWY6A411ax8KIHx5oimKlANszw",
+      "sig": "fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtO3pmSVjHcfJhZTAHaxe6ierb9hTyAV92TrNwjecbuZOQ",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1304,16 +1423,17 @@
       },
       "at": "2026-10-10T10:02:30Z",
       "auth": "passphrase",
-      "based_on": "sha256:3c9010e538df50cfd6e2348d05d30cf6d8c8be8d84eedadeb3f15a24ec5d9909",
-      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "based_on": "sha256:dd4555a31a877574b7cb041382bfa710d77b4c02d2588e2fad7df680e4e4bb37",
+      "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
       "hash_v": 1,
-      "host_sig": "0ubloYwQgz_z0_yeF8bgThtjEqRQGtm0BpnUTF36XfIPeiFihzsCjIXrG4HRBHXuRvCPGYLYXxiTmz94nZvyVg",
+      "host_sig": "-yM3VDHHeug8EJ1rWSC2iLyd_9YSXlE-I-X2FCi3nGh1tS7kODoIDJv9XSIm985nVa2efJ_Tu3shl5qBFU5FXg",
       "id": "01J9ZK0000000000000000000A",
-      "prev": "sha256:3c9010e538df50cfd6e2348d05d30cf6d8c8be8d84eedadeb3f15a24ec5d9909",
+      "prev": "sha256:dd4555a31a877574b7cb041382bfa710d77b4c02d2588e2fad7df680e4e4bb37",
       "qid": "f4ae0da5340793ac2e10e82ea700f3c1",
       "question": {
        "blocking": true,
        "id": "Q5",
+       "kind": "choice",
        "options": [
         {
          "key": "ch",
@@ -1329,7 +1449,7 @@
       },
       "roster_v": 3,
       "seq": 10,
-      "sig": "zo-FABbrjMacO-C-qsOlieP6-BSzkE5ZF8o3ksWWmjIsS6snSrGJ-BuxD7t3gS58IdwLbYuPGuFX9wi-zTT8kQ",
+      "sig": "Nohvb0YmUfSz0bG0vDoqJOiwhB2_e0sFR_ZiK_aSIH7DK_AxtRV9Y8CXwOXMwQihF3iYXJQkZ_cehY-bjRCmbw",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -1347,17 +1467,17 @@
       },
       "at": "2026-10-10T10:02:40Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
-      "hash": "sha256:a337d899f83dd995c52a48824b850dd243a8854444637521e972a5d97cc51e80",
+      "based_on": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
+      "hash": "sha256:19c2e05cc21a74b443a001b61788fc3c38587af4affb7647dc055dbfc81fea46",
       "hash_v": 1,
-      "host_sig": "Wbda8Z_leOeIxDA-F2iikSiT_y6N8rN5uN7r1OzfJ1LrCU2IO15ZOJHQN3sThGk5dZfVWlAs0O2oiRkHbcZNRQ",
+      "host_sig": "5vFkhq1CAxpoOI2oxywwVOeSjnmSejzR2p_0Idf5wnVoyVJEfrNrgO6jOdpvWjJybirj83OAjO2SwFWtCTvv6g",
       "id": "01M4JM7GG0ANKQJJW2S87CB6J0",
       "option": "ch",
-      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "prev": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
       "question": "Q5",
       "roster_v": 3,
       "seq": 11,
-      "sig": "2FF0CkSDyqyiM9g5UtD18Ubc7Bl73gBTyx0Qewc7XTERxgGSaSeZo-FQXxANwEXnySPYVuxEfElwVx21Ha_74Q",
+      "sig": "-bWoidxUi1nyT3EoZFtOFS4kaDhuZ-HprknQ2ApKMpgoQIZm8dZaZIzt3hye_K1GpkALAk2jNIRFdn9WAP3Evw",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1375,17 +1495,17 @@
       },
       "at": "2026-10-10T10:02:50Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
-      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "based_on": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
+      "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
       "hash_v": 1,
-      "host_sig": "mk5fbsmTEx1IkjJyJmJ1ks5np8lvFm4y4EjcYRX5lPrIRtcu66gaDP1ryHf1vyNPKYgKxMOF5kyRuuNOW4M0Bw",
+      "host_sig": "WJeDZTcE-R5p76rZAqf2dwUlZi2MODaFSz1I9EFvtWAXTdyEqS82ZW-hTPh7qIJSBYqPIvcjc4dnJMPUcIOrdA",
       "id": "01M4JM7T8GD7HNY9XB0RFQQQHW",
       "option": "ch",
-      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "prev": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
       "question": "Q5",
       "roster_v": 2,
       "seq": 11,
-      "sig": "ytn4Iab7np6apvaEV0czrCXFk7ZCZQ2VrixwImgQr0gkMjQ0Qlcl99k3-KM3PAPtdge6Y1wloDXn64qq5q0Zew",
+      "sig": "6fFKiTkIkp0zScUqamwE7uvQ_Ei0tUs14KGGQIEMGZF3ODfIzf16gobOu4mS6xJ1EkxBfw51yw5k85yGrq4yNQ",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1404,16 +1524,16 @@
       "at": "2026-10-10T10:03:00Z",
       "auth": "secure-enclave-unlocked",
       "based_on": "sha256:abababababababababababababababababababababababababababababababab",
-      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
       "hash_v": 1,
-      "host_sig": "Wwuab7aNInh3ETm_fnnHb7IDjv8tHUZZvxD3cXeGMc4bioRfrdj9cYNWQ8mCgETo7UiOsdDMq5O-r_Jtr5cXeQ",
+      "host_sig": "POpyjWkH8caQDY2pAhgw8btKdqH6sGv0bfbdyi9Cp9TqR7oHWQWraHxctDxXwDeU0DJGs13EtcYj9h7iingBeA",
       "id": "01M4JM8410RKHM15S2RTK81G49",
       "option": "ch",
-      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "prev": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
       "question": "Q5",
       "roster_v": 3,
       "seq": 11,
-      "sig": "qDztjeJrdK5ifqd3VF9yO07jCt1YuEGbQqtiECqYF3SQ_iCgWo9jSYcR5GvadzzpSA1BonPh9pUL6FBV52wSbw",
+      "sig": "AZdxsrpGKEbyPqCtCts0th7mH4cNO23LVjLK0kpcp1SSBzGZ7IM7MImKY3DnkgzJX4gmYSMEvKvXghBIbAgqIw",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1431,17 +1551,17 @@
       },
       "at": "2026-10-10T10:03:10Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
-      "hash": "sha256:83b199fc6152995cfb0a6c89bc8f298086dc13d2cd94f26a753ab7fcb7bae233",
+      "based_on": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
+      "hash": "sha256:b329ce183793bc194bcbc4dcf7accb78aa8bde99262a8a6b7d423b471d1b1ab5",
       "hash_v": 1,
-      "host_sig": "wNccq2rJr4Kdt0V4UmUXO-V1DWqsgKMSQ2WFIG208oW9GopVW2S7ekwj2j0jEQTXYvEcYaFui3kDoC8vzLwxvQ",
+      "host_sig": "qhd92Y-ZGbeIyIrCyrw1BCEjlORK2NXLNSy_35xjeCEzag0xDvkDZLr7X1CRadRJ_bV1Su3Gcy96UNLVV4KiiQ",
       "id": "01M4JM8DSG82HRH9RXRPTBGK9E",
       "option": "ch",
-      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "prev": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
       "question": "Q5",
       "roster_v": 3,
       "seq": 11,
-      "sig": "EMT0BCShPnKQZDsxSYjZrXKaN3vVboD9zNf42oUMSSTGMZ1AuH3idOIyY1nHvwDViqFYXyVI5XA2XMH4EgWT2A",
+      "sig": "ysKwNqNdTXuc4G7lEJ-VoY7HcjzlriIKdNTdNpdxmwW5Kei-AqfXpqwcEJ42LwBkGwpxR3-YTvClSpDUJbbTNQ",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1486,17 +1606,17 @@
       },
       "at": "2026-10-10T10:03:30Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:b66f9fb897319cda0ba77015f3daa46f57ee9d791dcc6bd0f2cf90dcc2fd4b71",
-      "hash": "sha256:1ef93ef3d18a97ad21032e7b9cba12b2d59eb7d00dc77c0a16d8803ae9560630",
+      "based_on": "sha256:3aab6524132d24c535c3a41f7957a16162962edbd8f853e3b88b08ca7fba4a70",
+      "hash": "sha256:d6e65f05e129dbadc1c1399545695968af2a224b0fb147e251cc8629f35c314e",
       "hash_v": 1,
-      "host_sig": "BfsPr51TRCrSI2Ajr4MXxJXC4t-zOy926O5OtOZTtxbrLAKWtXAJJGnytJxnM4r4sC26j_oPenCD1TFnJ-yRzA",
+      "host_sig": "QGA47MrnfTdX93158qNa_DjZubE5RLdPapvLCVOsLe0ONYYyBQEBrkgKqtZ-LzytKHz1566BVAhO6YdcVMeUfA",
       "id": "01M4JM6K6GZ3QC1GYDGQWG7RB1",
       "option": "tue",
-      "prev": "sha256:5d2ea4253379dacf059b11e1e5a2483158371bfba1418f88226c88fea6d89ef6",
+      "prev": "sha256:b84ba110e4fb6417dc5a2ce61b9ce7ad43ba773ecfdfcd337de09aee5152f98a",
       "question": "Q4",
       "roster_v": 3,
       "seq": 11,
-      "sig": "Am8kuJO_jf3nACz7weYzRnq0Uw3IRpu3P7fAzICiR3Usd6c_TZSRFBropclgZpnFuVmFQogNfgh6F6E4aF-4gg",
+      "sig": "fumRz1S-feXc6yK_Fv2_rdrG49hr6J3PiR-4c4b5dtNIWZtpc4jg2ums_4lOhFdhDyeZXocBpyAIgsHkiqeMGA",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1541,7 +1661,7 @@
    "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
    "name": "phone_answer_semantics",
    "now": "2026-10-10T10:03:00Z",
-   "pins": "only text and options are bound: a why-only re-ask keeps the answer; A -> B -> A clears it, and a delayed answer to A (signed before B, based_on the head it reviewed) is then accepted",
+   "pins": "everything but routing is bound: a blocking-only re-ask keeps the answer; A -> B -> A clears it, and a delayed answer to A (signed before B, based_on the head it reviewed) is then accepted",
    "steps": [
     {
      "event": {
@@ -1787,15 +1907,16 @@
       "at": "2026-10-10T10:01:00Z",
       "auth": "passphrase",
       "based_on": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
-      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash": "sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7",
       "hash_v": 1,
-      "host_sig": "ElGniLTWHLYSfrQEyI5PQyZWyrc5aMqUxpRzKIjQt_C2LY1vZEDOiTRGGx4WsPVwQuE0uZ38dDK1fJ4N8uW3UA",
+      "host_sig": "Sp5jgEiFsXxfa5HGA-OCzP_ZJ38cA3woxNoflOwqcW3sOfPPkkiAXk5Lo39JBWHn85lz0JjpCmcFiCuNySq33g",
       "id": "01J9ZK00000000000000000006",
       "prev": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "a",
@@ -1812,7 +1933,7 @@
       },
       "roster_v": 3,
       "seq": 2,
-      "sig": "b_fyrIaYLYp7hGMjFFctWLXTpzfr20B3w_WOBu3YOJwjVcCH_jSXlgiRJVw-AkFjl5xJ5U7vDr7IU-TrK2gzIg",
+      "sig": "6v40E8HjZPD12f4we5O4FcMwun71SsHJjhQ2eFXwELNKF78Uu2V5iSo9NwD4IGVRXayMUX373TWxwV4rM9pfhw",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -1830,17 +1951,17 @@
       },
       "at": "2026-10-10T10:01:10Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
-      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "based_on": "sha256:a8a5756fab409b0d755f035cb87203b2587826e32fab51b879fc6e1339010792",
+      "hash": "sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7",
       "hash_v": 1,
-      "host_sig": "qYpVqLXHvGqp69Zb4FuRhhF8NC6lDboGVwAZ3S3ZzaoulW-s1JxD_94VmTPw7jkY3irDwSHxht3s3EMgocrA0g",
+      "host_sig": "3iy4wbrfroEt4ucDSXgY10sRtUgliRuNCsKEMmxbbEeTugKnPNMtfJASYTNxWA0BlefaZQZ2m0WJTzNBMvz-Hg",
       "id": "01M4JM4RKGVQ4TR3C35B9M93H3",
       "option": "a",
-      "prev": "sha256:af466cc50b904827c4c8cd353dfc571bbf84cf902e2a3bcda33420283e287d95",
+      "prev": "sha256:a8a5756fab409b0d755f035cb87203b2587826e32fab51b879fc6e1339010792",
       "question": "Q1",
       "roster_v": 3,
       "seq": 3,
-      "sig": "n_dYkDOmkOtCu-3U8r2BiYF6SD-V0e-UJlzjkAc3GN-LHuk_0QHgrw3dBJqVlOFxW80-YOx8960Bz4ZpDGLigA",
+      "sig": "e7ygEkpJMiJjuhSXrVvEpwNwQob1JF72xn1UZ-C_VyhHUTvTEuwDUL9Zf_BANxhsBoYKr9oDhn4junCXbgdDFA",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -1867,16 +1988,17 @@
       },
       "at": "2026-10-10T10:01:20Z",
       "auth": "passphrase",
-      "based_on": "sha256:7f7b6c141b1500a4c63501fcba655887682f83819ada4d9036859b3cd9c269ea",
-      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "based_on": "sha256:192c915104f52b1e681801d377968746271b45d9a430fddda80b2b2f219f7892",
+      "hash": "sha256:a128dd14267fff33d5448e84bab6f3e7e9d512c844a6055da4d184525305ced7",
       "hash_v": 1,
-      "host_sig": "jl4LzZOIaH-kpZQ3KEbDBbax9VuUG8OGhqCcDsfnQo18hg18wtJK9wCKSRPUcn7Tt9bUrZnvuwyAnWpgDrlotQ",
+      "host_sig": "ONLAyq9PyHhQ4YIPP6J0965-0Jc94lfUwlwmgoqx_1FEAUpRNs8OzCQ4zBdOZyRoXZXF4RGglr4JMHqiNwkYuQ",
       "id": "01J9ZK00000000000000000007",
-      "prev": "sha256:7f7b6c141b1500a4c63501fcba655887682f83819ada4d9036859b3cd9c269ea",
+      "prev": "sha256:192c915104f52b1e681801d377968746271b45d9a430fddda80b2b2f219f7892",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
-       "blocking": true,
+       "blocking": false,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "a",
@@ -1889,18 +2011,18 @@
        ],
        "text": "Pick one",
        "to": "ticket_owner",
-       "why": "second reason"
+       "why": "first reason"
       },
       "roster_v": 3,
       "seq": 4,
-      "sig": "CUUc2Q9mJtqHzGvq3kOI5jHuo06NRdE1qsGsvjYEwQk3pazwKzJmtJT_pkOk-1ZnYD8jwgBtgbg1T5qkEppveQ",
+      "sig": "0VNL2lqyGuI26wPEvpjlPNJXeYU_svyclceKOJe106IzBPl7orQz3z-L_1PSDHUfcwWJdnmiwRPSDdNstvn86Q",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
      },
      "expect": "ok",
      "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
-     "note": "re-ask with only why changed: same hash, the answer stands"
+     "note": "re-ask with only blocking changed (routing): same hash, the answer stands"
     },
     {
      "event": {
@@ -1911,16 +2033,17 @@
       },
       "at": "2026-10-10T10:01:30Z",
       "auth": "passphrase",
-      "based_on": "sha256:0a3f9cb6836e5c503ec0e104501de99e4a999a0681b0b6bf1c26a619f4ce0dae",
-      "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+      "based_on": "sha256:bc0b2ef8e3747c2a16577501fff10025dbb0eb9ec21c1e4b42b46cd469aa3abb",
+      "hash": "sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb",
       "hash_v": 1,
-      "host_sig": "oG832kPXb5bsoA0ORj4WcbOgoYsacpPRAjJYd4PmFKD5bStL_uRkMg9sw0ghPJ77u6NeWhNmHDkGo6tqdSC_4w",
+      "host_sig": "CQGNtcdzlmKaaT8aqgWLW2IRbHhx-77iaQBAC8dfHm6HmD6XkU4N0DXJF4_w9kKZbpdDlbi1Gbf6Ip2JooAiog",
       "id": "01J9ZK00000000000000000008",
-      "prev": "sha256:0a3f9cb6836e5c503ec0e104501de99e4a999a0681b0b6bf1c26a619f4ce0dae",
+      "prev": "sha256:bc0b2ef8e3747c2a16577501fff10025dbb0eb9ec21c1e4b42b46cd469aa3abb",
       "qid": "72a37c42fc71091868c10ceed59ddd24",
       "question": {
        "blocking": true,
        "id": "Q2",
+       "kind": "choice",
        "options": [
         {
          "key": "go",
@@ -1936,7 +2059,7 @@
       },
       "roster_v": 3,
       "seq": 5,
-      "sig": "sBDEfQsB3drkzyUHioCC2xRIvIuG5UBIGH3VlsH4BiVrzdQWvpqZE6uLHFLosiKv9PTs3eX_uEHITZq2jJr7gQ",
+      "sig": "HnuH9CTca5O3GoUIcFPldfQKkywMQUcWRt2Ddu4b5dGoLvRpiRo4g1uACk7Sioo2QwwmTPkXjKRZ3MI89uZ3Ug",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -1954,16 +2077,17 @@
       },
       "at": "2026-10-10T10:01:40Z",
       "auth": "passphrase",
-      "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
-      "hash": "sha256:42a21fd7c215c22ee9faff515aad5753a367ca67c4520d3e91525524314c30b5",
+      "based_on": "sha256:40ceef0d5f7ad92498f8f1515be00ff05ee9f9e40cb0cb9e7aa4dcb3465b35d1",
+      "hash": "sha256:ccf6f7f71117431ffea9e9b249154e70f7544f64da6fdf36e96210871322fcdc",
       "hash_v": 1,
-      "host_sig": "_1Kb4fts6btAiMH2aObXkW6NtaB9aCgdR7KgM82MmgOg_NJ57Hbx7xfLob0AMH0kIdcUoKHT9tZGYvp1cBnvkA",
+      "host_sig": "SbQf3Mf4K8R7BWiHD35BCViJqtKPV7jNF3Tf0eqlldnabTkkxB-nlgGoWnv6Q8gR4n4Osm36OniEYu13ROhQXg",
       "id": "01J9ZK00000000000000000009",
-      "prev": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
+      "prev": "sha256:40ceef0d5f7ad92498f8f1515be00ff05ee9f9e40cb0cb9e7aa4dcb3465b35d1",
       "qid": "72a37c42fc71091868c10ceed59ddd24",
       "question": {
        "blocking": true,
        "id": "Q2",
+       "kind": "choice",
        "options": [
         {
          "key": "go",
@@ -1983,7 +2107,7 @@
       },
       "roster_v": 3,
       "seq": 6,
-      "sig": "cxuOOP3saQIql40Kxw4L8CSz2TMuiEKmocfQoaGzu5MEndPJgalHUCSsUg8wU-39v2hXyWQfJ5Vpei-_ypE3Mg",
+      "sig": "RfQoxwc-DYhkXs0_jTKKm2YZNesB0-aefAff5hldahN747oI0VtIWtLmNug1bXV-8GwVqhqbFOun2rAqwGzjVg",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -2001,16 +2125,17 @@
       },
       "at": "2026-10-10T10:01:50Z",
       "auth": "passphrase",
-      "based_on": "sha256:24e1a2c3b09a9d02f03311b19d69ef73f5c1b57002090cb34a1b410cde21217f",
-      "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+      "based_on": "sha256:1bbe43d4a6a628bd2f9960e3b81a66a97996b7a02efcad70ec8ceb99e3cbda44",
+      "hash": "sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb",
       "hash_v": 1,
-      "host_sig": "8B9k7F-ql_UifTFPHf4jFWyYgCyBauz4Ys_54z8FYH0CXaipmiRlDQNM3VG_FxlLWEVMRAYj3R8PY7WeXX4n9Q",
+      "host_sig": "hQi-f3nhkQ-42BCsEeX7yJdySq5zlQPPf1Zu8-FoZrvYLTw9EIaikzuw8Z66bTzE86j2FvsBqIUmkweNNBDH4A",
       "id": "01J9ZK0000000000000000000A",
-      "prev": "sha256:24e1a2c3b09a9d02f03311b19d69ef73f5c1b57002090cb34a1b410cde21217f",
+      "prev": "sha256:1bbe43d4a6a628bd2f9960e3b81a66a97996b7a02efcad70ec8ceb99e3cbda44",
       "qid": "72a37c42fc71091868c10ceed59ddd24",
       "question": {
        "blocking": true,
        "id": "Q2",
+       "kind": "choice",
        "options": [
         {
          "key": "go",
@@ -2026,7 +2151,7 @@
       },
       "roster_v": 3,
       "seq": 7,
-      "sig": "XnHNCK3BltzlCZE3-d_9Gwqyul0qHx4ZlXTv161VfyXAZ8akWk1mzLy5xLFCf4u6Ozh0ceULlJPZxR3uPdHz1w",
+      "sig": "yTbF33AVPYmFPIoK9yr8nfSET2N99Q5NrO221jIu2PUNCC5EtvNkVjh259ignaNqQlRxdVm06gF3tgqG70KEDQ",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -2054,17 +2179,17 @@
       },
       "at": "2026-10-10T10:02:00Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:a0305d4a43c1b2292aa8144a35507b1d5eabea16669337aa549e4dbd90f48a67",
-      "hash": "sha256:4bc5fa3cd9b9e5f6cffec0718ed19c940e60829b53c17a264460a354c5e25944",
+      "based_on": "sha256:40ceef0d5f7ad92498f8f1515be00ff05ee9f9e40cb0cb9e7aa4dcb3465b35d1",
+      "hash": "sha256:4956e3a504a41ad7c066e91c20360ad462c612e62ce854e5559673b8b65557eb",
       "hash_v": 1,
-      "host_sig": "L6h9PCZ2LVvHx3dTZgf_RUwI5FRWhYuF3fIT9qS5r6quNqTzdLAlC-iBgz8BW7GpgJGG2iAqHeBmYgZtoCdDxg",
+      "host_sig": "6vDi22fRsX0avduagyOO_YN6v3W8tBmjVJL94N5pbcVTbIYiJmkQNfQPAUuIk9ZkMAHJg4Y53ZMG92dxt06eEQ",
       "id": "01M4JM5NX0RXR8BEMJ102PTS1Y",
       "option": "go",
-      "prev": "sha256:d6f60931f9addb97ebc5152e500b9ca634dfd1675392c875ec846ae64da1a6b9",
+      "prev": "sha256:3831e195ddcb2aa45b477d9253b3e90b2960ee5398e6fe6316bcf3b49b5e2836",
       "question": "Q2",
       "roster_v": 3,
       "seq": 8,
-      "sig": "qFz3XriXqEuJaeK4C1PR2arEaLddf9gzP96qmfpvTikYNXPktHEjrRcpALRBeXJ-oLwsBC0gmqSG2_MjlFx-uQ",
+      "sig": "jWPFdnAT8cmyIA24uivdhzueXSz5qMEb2hmFcCqmsGKslkJZEacW9ZD4EMV6YbaVZcqGYZKIu_-Zl_v2qavXHg",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4
@@ -2085,17 +2210,17 @@
     },
     "at": "2026-10-10T10:01:10Z",
     "auth": "secure-enclave-unlocked",
-    "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
-    "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+    "based_on": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
+    "hash": "sha256:dc02ff189d7ca9637e46b7738a4c8335078d4de8a3daa017b3c37ac1b16b5054",
     "hash_v": 1,
-    "host_sig": "2PH9g0OhykzMp-GHuOaagUeL972bLaNqsJ_vogwj8hA15C7cxlgnlpqxyfGPkS16OEx5SjwRHNdqb2OZvBLkGQ",
+    "host_sig": "7d68bZ2Mz8hVbodVsE1QBzSFDHbMBj-OqsinvpfBKSgAvH6Hh7JW-ilDAdmcuDKKalyAQDXfEMk8_fTADzPCkw",
     "id": "01M4JM4RKGXDCVW0ESMRF6CT8H",
     "option": "b",
-    "prev": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+    "prev": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
     "question": "Q1",
     "roster_v": 3,
     "seq": 3,
-    "sig": "85HHTW48UylAiL-zmnTfv6Lsjz0Y1aL2_8RlBUyEEYDcxMRBuLBOPtjtFobVL6B0AkoWOh8JxfL0sig0jYdH6w",
+    "sig": "t8ICoVWWMGuLuHpXmnUfSe0SEZXW2jsMVQoBuieM9Q35j4Zmy0s65kwx-DPwxYW3NcyUGH2tokCLNQ0fm-00vg",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 4
@@ -2349,15 +2474,16 @@
       "at": "2026-10-10T10:01:00Z",
       "auth": "passphrase",
       "based_on": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
-      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "hash": "sha256:dc02ff189d7ca9637e46b7738a4c8335078d4de8a3daa017b3c37ac1b16b5054",
       "hash_v": 1,
-      "host_sig": "w_TZNiBe0rmWSmLXYPELpk2CBoj_MLt5MSHbYU6DdaSm4JHOV-uVSROPNU0Aubv8CHcm63tTI4WhOwzw79l-QA",
+      "host_sig": "mK3lbReZlt23g2ecdpLNUMG0eN2a0Qq3fMSX-pHYLsQr5HNhlKJeE0iO3blC1qlyJYQxCg7OFE72ruuZrbhmag",
       "id": "01J9ZK00000000000000000006",
       "prev": "sha256:215b81b6c40231c64eafa55fa4ff7ccd3cd933fca0bd849078aa4df36b548449",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "a",
@@ -2373,7 +2499,7 @@
       },
       "roster_v": 3,
       "seq": 2,
-      "sig": "A8bfUsrW0DdkngVa8z9tsNh_xaa3V_sxuL9n5xG4kx5ww5u6Thf8Ksfi5CW0qt2jR4IG80kIIl9vulQyGstdxg",
+      "sig": "e-fXDlpugsJQ0TCwIp4-D7uCh5wHKipLL2Vm_jT3IzdCV5fAHPsqONrli72nviznVbEhy-Ac8YeAD9EP6M3yDA",
       "type": "question.asked",
       "v": 2,
       "ws_seq": 4
@@ -2385,7 +2511,7 @@
     {
      "event": {
       "abandoned": {
-       "head": "sha256:f191dd1b576b990c85d2da6039745862fffda5b1b8ddbd83994ee24c71c1f8bb",
+       "head": "sha256:c4c09537ed105ab7b614312f94b8baf236500443872f87b7007c0eaa55a76d03",
        "seq": 3
       },
       "abandoned_decisions": [
@@ -2398,18 +2524,18 @@
       },
       "at": "2026-10-10T10:01:20Z",
       "auth": "passphrase",
-      "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+      "based_on": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
       "from_seq": 2,
       "hash_v": 1,
-      "head": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
-      "host_sig": "Tl651VVxO0-1_2gWnWs79DuI8ZveKjrqFX4kZ3b9WAF5ZypA7KHiwojHGT3HfAKU0ldjicq3GH99ZIutgKtc7Q",
+      "head": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
+      "host_sig": "UFh9hplVdZR8Wg4T7y6JysjowRSXBvVSKJOxMdEY5VxALHf26MAfpitIr3ecJzq4pL52eFNz_8yqtadVfnuosA",
       "id": "01J9ZK00000000000000000007",
-      "prev": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
+      "prev": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
       "reason": "rollback",
       "revocations": [],
       "roster_v": 3,
       "seq": 3,
-      "sig": "7OlS2JJD74FBjOhXBrFYJpe8RvzyupoMFxyaJ-cFYCvspUZVdukKO_FEKSw1Gqy_0jaEJzycTct5NJpkzgaqYg",
+      "sig": "i-zg8iAqz9xezszJ7Fy6WWsb-dESMa1AQwb2e6jePx_menFwaGbCPYFcP1-S6z0r2Zy4KBDIrTNN8jjhS3rRnQ",
       "source": null,
       "type": "restore",
       "v": 2,
@@ -2428,17 +2554,17 @@
       },
       "at": "2026-10-10T10:01:30Z",
       "auth": "secure-enclave-unlocked",
-      "based_on": "sha256:be68915e8d8884045eb76c2e29ec67b896c1644a7ec81e951055dc192bf47dc6",
-      "hash": "sha256:3fd2a338da78d4701e5f6c085059e1d2391d533fb9617229650873df8e6fc1c4",
+      "based_on": "sha256:49ed6f30bb758e94179ae84f039a7e1f76501c4235d15ec3d0f2a75037950236",
+      "hash": "sha256:dc02ff189d7ca9637e46b7738a4c8335078d4de8a3daa017b3c37ac1b16b5054",
       "hash_v": 1,
-      "host_sig": "8Ha5aaDOW1zjFIGnjA_zHX5cz2HWkInMlJTBjftIa7od5mxZdNXjDyhLXFW5Kgzc6zOplT-8WQDT9Nc5G6Le2w",
+      "host_sig": "iAXaqYWmf7a5z-P6f_MQUX9MVHbMU24i_eG7A8VPaF2b0p3Yp3K2nP5_96NElGi5wm3SX656j7JP1J3V_9EvcA",
       "id": "01M4JM4RKGXDCVW0ESMRF6CT8H",
       "option": "b",
-      "prev": "sha256:749121936824654e04b5b6c9b48d0e6018b624b1a036bb3635980d1ba2e0b4d4",
+      "prev": "sha256:ae5754702ded855054ed3fd995363c2892dad71a459398c2169e38395e01add1",
       "question": "Q1",
       "roster_v": 3,
       "seq": 4,
-      "sig": "85HHTW48UylAiL-zmnTfv6Lsjz0Y1aL2_8RlBUyEEYDcxMRBuLBOPtjtFobVL6B0AkoWOh8JxfL0sig0jYdH6w",
+      "sig": "t8ICoVWWMGuLuHpXmnUfSe0SEZXW2jsMVQoBuieM9Q35j4Zmy0s65kwx-DPwxYW3NcyUGH2tokCLNQ0fm-00vg",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 4

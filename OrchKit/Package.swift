@@ -23,8 +23,6 @@ let package = Package(
         .target(name: "OrchTestVectors", path: "Tests/OrchTestVectors", exclude: ["PROVENANCE.md"],
                 resources: [.copy("vectors_v2.json"), .copy("vectors_hub.json"), .copy("reader_decl_vectors.json"), .copy("http_fixtures"), .copy("push_fixtures"), .copy("f1"), .copy("r2")]),
         .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
-        // Relay HTTP v2 examples (orch-relay tests/http_fixtures): schema, pure-wire checks and the PR2..PR5 skip list.
-        .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),
         .target(name: "OrchCustody", dependencies: ["OrchProtocol", "OrchPush"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody", "OrchPush", "OrchProtocol", "OrchTestVectors"]),
@@ -49,12 +47,7 @@ let package = Package(
         .testTarget(name: "OrchClientTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore", "OrchTestVectors", "OrchFakeHost"]),
         .target(name: "OrchFakeHost", dependencies: ["OrchProtocol", "OrchCustody", "OrchStore", "OrchClient"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchFakeHostTests",
-                    dependencies: ["OrchFakeHost", "OrchClient", "OrchProtocol", "OrchCustody", "OrchStore", "OrchTestVectors"]),
-        // Public API only (host-api section 7): ordinary imports, no @testable, no package-level signers, no vector keys.
-        .testTarget(name: "OrchC1PublicAPITests", dependencies: ["OrchFakeHost", "OrchClient", "OrchProtocol", "OrchCustody", "OrchStore"]),
-        // Real-network tests. Stub-server suites (redirect refusal, body cap, timeouts) always run; the suites against a locally started
-        // orch-relay skip cleanly unless ORCH_RELAY_INTEGRATION=1 and the relay checkout and `uv` exist (see RealRelayHarness.swift).
+        // Real-network tests of the hub transport (NWRequestSender): stub-server suites for redirect refusal, body cap, timeouts and TLS.
         .testTarget(name: "OrchRelayIntegrationTests", dependencies: ["OrchClient", "OrchProtocol", "OrchCustody", "OrchStore"]),
         .target(name: "OrchUI", dependencies: [],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),

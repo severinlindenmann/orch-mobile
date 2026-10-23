@@ -134,7 +134,7 @@ public enum HubSenders {
         #if DEBUG
         return try NWRequestSender(loopbackOrigin: origin)
         #else
-        throw RealmViolation.invalidOrigin
+        throw OriginViolation.invalidOrigin
         #endif
     }
 }

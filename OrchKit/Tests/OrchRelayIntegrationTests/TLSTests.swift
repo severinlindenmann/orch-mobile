@@ -32,7 +32,7 @@ import Testing
             gen.standardOutput = FileHandle.nullDevice; gen.standardError = FileHandle.nullDevice
             try gen.run(); gen.waitUntilExit()
             guard gen.terminationStatus == 0 else { try? FileManager.default.removeItem(at: dir); throw ServerError.failed("certificate generation") }
-            let port = try RunningRelay.freePort()
+            let port = try FreePort.get()
             let log = dir.appendingPathComponent("server.log")
             FileManager.default.createFile(atPath: log.path, contents: nil)
             let p = Process()

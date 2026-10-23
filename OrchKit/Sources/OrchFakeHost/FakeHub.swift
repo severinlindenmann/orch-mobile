@@ -42,7 +42,6 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         /// Selective signing: leave `item_hash` out of the built event; add an `option` to a built answer; build with another `gate_gen` than the
         /// item's `f1` shows (a stale value); build with another item's hash.
         public var dropItemHash = false
-        public var selectiveOption = false
         public var staleGateGen = false
         /// Selective signing: put `source_sha` on every gate event (a hub that does not follow 8.5), or leave it off a code approval.
         public var sourceOnEveryGate = false
@@ -354,7 +353,6 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             guard let q = action["question"]?.string, let entry = f1["questions"]?.object?[q]?.object else { return err(404, "unknown_item") }
             guard entry["hash"] == action["hash"] else { return err(409, "event_changed") }
             e["question"] = .string(q); e["hash"] = entry["hash"]; e["text"] = action["text"]
-            if faults.selectiveOption { e["option"] = "yes" }
         } else {
             let gate = type == "verdict.given" ? "verify" : (action["gate"]?.string ?? "")
             guard let g = f1["gates"]?.object?[gate]?.object else { return err(404, "unknown_item") }
@@ -458,6 +456,18 @@ private enum SHA256Fake { static func hash(_ d: Data) -> [UInt8] { Array(SHA256.
 // MARK: sample data for the phone's home (B2)
 
 extension FakeHub {
+    /// The hub's item id of a question is its `qid` (core `questionID`); the phone checks it.
+    public static let q1Item = (try? F1Question.questionID(question: "Q1", ticketUID: "01J9ZP0000000000000000TKT1", workspace: ID16(hex: wsPlatform)!)) ?? ""
+    public static let q2Item = (try? F1Question.questionID(question: "Q2", ticketUID: "01J9ZP0000000000000000TKT1", workspace: ID16(hex: wsPlatform)!)) ?? ""
+
+    public static func questionItem(_ item: String, number: String, text: String, key: String, options: JSONValue, spec: JSONValue) -> JSONValue {
+        let log = "01J9ZP0000000000000000TKT1"
+        let hash = (try? F1Question.questionHash(qid: item, ticketUID: log, text: .string(text), options: options, spec: spec)) ?? ""
+        return .object(["workspace_id": .string(wsPlatform), "mode": "full", "item_id": .string(item), "kind": "question", "type": "question", "key": .string(key),
+                        "title": .string(text), "deadline": .null, "signable": true, "log": .string(log), "hash": .string(hash),
+                        "content": .object(["text": .string(text), "question": .string(number), "options": options, "spec": spec])])
+    }
+
     public static let wsPlatform = String(repeating: "a1", count: 16)
     public static let wsBilling = String(repeating: "b2", count: 16)
     public static let wsShared = String(repeating: "c3", count: 16)
@@ -482,19 +492,21 @@ extension FakeHub {
         workspaceRows = [Self.workspaceRow(id: Self.wsPlatform, name: "Platform", mode: "full", role: "edit", online: true),
                          Self.workspaceRow(id: Self.wsBilling, name: "Billing", mode: "full", role: "read", online: false),
                          Self.workspaceRow(id: Self.wsShared, name: "Acme (shared)", mode: "selective", role: "owner", online: true)]
-        needsYouRows = [Self.needsRow(ws: Self.wsPlatform, item: "q1", kind: "question", title: "Which region should the pilot run in?", signable: true),
+        needsYouRows = [Self.needsRow(ws: Self.wsPlatform, item: Self.q1Item, kind: "question", title: "Which region should the pilot run in?", signable: true, key: "T-q1"),
                         Self.needsRow(ws: Self.wsPlatform, item: "g1", kind: "gate", title: "Approve the plan for the export feature", signable: true),
                         Self.needsRow(ws: Self.wsShared, mode: "selective", item: "s1", kind: "ticket", title: "Review the launch checklist"),
                         Self.needsRow(ws: Self.wsShared, mode: "selective", item: "s2", kind: "needs_you", title: "A decision is waiting in the workspace",
-                                      summaryOnly: true)]
+                                      summaryOnly: true),
+                        Self.needsRow(ws: Self.wsPlatform, item: Self.q2Item, kind: "question", title: "Which rollout plan should we use?", signable: true, key: "T-q2")]
         offlineIDs = [Self.wsBilling]
         itemAnswers = [
-            Self.wsPlatform + "/q1": .object(["workspace_id": .string(Self.wsPlatform), "mode": "full", "item_id": "q1", "kind": "question",
-                                              "type": "question", "key": "T-q1", "title": "Which region should the pilot run in?", "deadline": .null,
-                                              "signable": true, "log": "01J9ZP0000000000000000TKT1", "hash": .string(Self.contentHash),
-                                              "content": .object(["text": "Which region should the pilot run in?", "question": "Q1",
-                                                                  "options": .array([.object(["key": "eu-west", "label": "EU West"]),
-                                                                                     .object(["key": "us-east", "label": "US East"])])])]),
+            Self.wsPlatform + "/" + Self.q1Item: Self.questionItem(Self.q1Item, number: "Q1", text: "Which region should the pilot run in?", key: "T-q1",
+                                                                  options: [["key": "eu_west", "label": "EU West"], ["key": "us_east", "label": "US East"]],
+                                                                  spec: ["kind": "choice"]),
+            // answered on the Mac only: `recommended` is a hash-bound part the phone does not show yet
+            Self.wsPlatform + "/" + Self.q2Item: Self.questionItem(Self.q2Item, number: "Q2", text: "Which rollout plan should we use?", key: "T-q2",
+                                                                  options: [["key": "big_bang", "label": "Big bang"], ["key": "phased", "label": "Phased"]],
+                                                                  spec: ["kind": "choice", "recommended": "phased"]),
             Self.wsPlatform + "/g1": .object(["workspace_id": .string(Self.wsPlatform), "mode": "full", "item_id": "g1", "kind": "gate",
                                               "type": "gate", "key": "T-g1", "title": "Approve the plan for the export feature", "deadline": .null,
                                               "signable": true, "log": "01J9ZP0000000000000000TKT1", "hash": .string(Self.contentHash),
