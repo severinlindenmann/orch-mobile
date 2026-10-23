@@ -11,7 +11,7 @@ struct SettingsScreen: View {
     @State private var confirmDemoToLive = false
     @Environment(LiveIntake.self) private var intake: LiveIntake?
     #if DEBUG
-    @State private var hubPairing: HubPairingModel?
+    @State private var hubOpen = false
     #endif
 
     private var model: any SettingsModel { services.settings }
@@ -83,7 +83,7 @@ struct SettingsScreen: View {
             }
             #if DEBUG
             Section {
-                Button("Pair with a hub") { hubPairing = HubPairingModel.live() }.accessibilityIdentifier("settings.hubPair")
+                Button("Hub") { hubOpen = true }.accessibilityIdentifier("settings.hubPair")
             } header: { Text("Hub (development)") } footer: {
                 Text("For the development hub only. A hub pairs this iPhone to sign for you.")
             }
@@ -102,7 +102,7 @@ struct SettingsScreen: View {
         .toolbarBackground(.regularMaterial, for: .tabBar)
         .navigationTitle("Settings")
         #if DEBUG
-        .sheet(item: $hubPairing) { HubPairingScreen(model: $0) }
+        .sheet(isPresented: $hubOpen) { HubEntryScreen() }
         #endif
         .task { await model.refreshNotificationStatus() }
         .alert("Leave Live?", isPresented: $confirmLeaveLive) {

@@ -65,14 +65,15 @@ public actor HubPushCoordinator {
         /// Relay sender for the card's `relay_url`. Defaults to the same sender factory as the hub.
         let makeRelaySender: @Sendable (String) throws -> any RequestSender
         let intake: HubPushIntake
-        /// Called when the relay claimed a revocation: drop whatever mailbox data is cached (nothing is wiped).
-        let dropCache: @Sendable () -> Void
+        /// Called when the relay claimed a revocation: the app drops its cache and asks the hub (B2's `HubHomeCoordinator.relayReportsRevoked`,
+        /// which wipes nothing). Nil: this coordinator only asks the hub itself.
+        let onRelayRevoked: (@Sendable () async -> HubStatus)?
 
         public init(custody: HubKeyCustody, pushDir: URL, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
                     entropy: any Entropy = SystemEntropy(), makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
-                    makeRelaySender: (@Sendable (String) throws -> any RequestSender)? = nil, dropCache: @escaping @Sendable () -> Void = {}) {
+                    makeRelaySender: (@Sendable (String) throws -> any RequestSender)? = nil, onRelayRevoked: (@Sendable () async -> HubStatus)? = nil) {
             self.custody = custody; self.verifier = verifier; self.wall = wall; self.entropy = entropy; self.makeSender = makeSender
-            self.makeRelaySender = makeRelaySender ?? makeSender; self.intake = HubPushIntake(pushDir: pushDir); self.dropCache = dropCache
+            self.makeRelaySender = makeRelaySender ?? makeSender; self.intake = HubPushIntake(pushDir: pushDir); self.onRelayRevoked = onRelayRevoked
         }
     }
 
@@ -196,8 +197,8 @@ public actor HubPushCoordinator {
     /// The relay's answer is unsigned: stop polling, drop the cache, ask the hub over the authenticated channel. Wipes nothing.
     private func relayClaimedRevoked(_ p: Paired) async -> HubStatus {
         stopped = true
-        cfg.dropCache()
-        let status = await askHub(p)
+        let status: HubStatus
+        if let handler = cfg.onRelayRevoked { status = await handler() } else { status = await askHub(p) }
         switch status {
         case .live: stopped = false; pausedUntilMs = cfg.wall.nowMs + Self.pauseMs
         case .revoked, .unconfirmed: break

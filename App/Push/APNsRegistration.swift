@@ -172,7 +172,7 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         }
         #if DEBUG
         // A hub push (V3 dev): read the channel's mailbox now. The notification itself is the extension's verified, generic text.
-        await MainActor.run { HubRuntime.shared.pushArrived() }
+        await MainActor.run { HubPushDriver.shared.pushArrived() }
         #endif
         return [.banner, .list, .sound]
     }
@@ -197,7 +197,7 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         store.save(deviceToken: deviceToken, environment: environment)
         if let s = store.stored { Self.onTokenReceived?(s) }
         #if DEBUG
-        Task { @MainActor in await HubRuntime.shared.registerPush() }   // the hub channel's target follows the token (V3 dev)
+        Task { @MainActor in await HubPushDriver.shared.registerPush() }   // the hub channel's target follows the token (V3 dev)
         #endif
         Self.lastRegistrationError = nil
     }

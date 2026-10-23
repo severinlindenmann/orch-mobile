@@ -52,9 +52,8 @@ private struct Rig {
         guard case .confirm = await pairing.begin(link: h.pairingLink) else { throw HubPairingFailure.badLink }
         guard case .paired(let summary) = await pairing.complete(password: h.password, totp: h.totp, label: "Work hub") else { throw HubPairingFailure.noSession }
         channelID = summary.channelID
-        let counter = dropped
         coordinator = HubPushCoordinator(.init(custody: custody, pushDir: pushDir, verifier: verifier, wall: clock, makeSender: make,
-                                                dropCache: { counter.bump() }))
+                                                onRelayRevoked: nil))
     }
     let reachable: ReachFlag
     final class ReachFlag: @unchecked Sendable { private let l = NSLock(); private var v: Bool; init(_ v: Bool) { self.v = v }
@@ -193,7 +192,6 @@ private struct Rig {
         rig.hub.revoke(channelID: rig.channelID)
         rig.relay.purgeAndRevoke(channelID: rig.channelID)
         #expect(await rig.coordinator.catchUp() == .relayRevoked(.revoked))
-        #expect(rig.dropped.value == 1)
         // never a wipe (L2B-2): B6 wipes on the hub's answer, not here
         #expect(try rig.custody.pairedHubs() == [rig.hub.hubID])
         #expect(try rig.custody.loadChannelKey(hubID: rig.hub.hubID).channelID == rig.channelID)
@@ -201,6 +199,18 @@ private struct Rig {
         // polling has stopped
         let before = rig.relay.log.count
         #expect(await rig.coordinator.catchUp() == .paused && rig.relay.log.count == before)
+    }
+
+    @Test func theHomeCoordinatorIsAskedWhenTheRelaySaysRevoked() async throws {
+        let rig = try await Rig(); defer { rig.cleanUp() }
+        _ = await rig.coordinator.registerPush(Rig.target)
+        let asked = Rig.Counter()
+        let c = HubPushCoordinator(.init(custody: rig.custody, pushDir: rig.pushDir, verifier: HubVerifier(devMode: true), wall: rig.clock,
+                                         makeSender: rig.sender, onRelayRevoked: { asked.bump(); return .unconfirmed }))
+        rig.relay.forcedRefusal = (403, "channel_revoked")
+        #expect(await c.catchUp() == .relayRevoked(.unconfirmed))
+        let paired = try rig.custody.pairedHubs()
+        #expect(asked.value == 1 && paired == [rig.hub.hubID])
     }
 
     @Test func aRelayThatLiesAboutRevocationIsAskedAboutAtTheHubAndPollingResumesLater() async throws {
@@ -237,7 +247,7 @@ private struct Rig {
         rig.relay.forcedRefusal = (401, "stale_timestamp")
         #expect(await rig.coordinator.catchUp() == .network)
         rig.relay.forcedRefusal = nil
-        #expect(!(await rig.coordinator.isPaused) && rig.dropped.value == 0)
+        #expect(!(await rig.coordinator.isPaused))
     }
 
     private struct Empty: PushMaterialSource { func loadAll(realm: String) throws -> [ID16: PushMaterial] { [:] } }

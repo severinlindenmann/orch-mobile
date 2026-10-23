@@ -92,7 +92,7 @@ struct AppRoot: View {
             if phase == .inactive { realm.services.noteInactive() }
             realm.services.setActive(phase == .active)
             #if DEBUG
-            if phase == .active { HubRuntime.shared.foreground() } else if phase == .background { HubRuntime.shared.background() }
+            if phase == .active { HubPushDriver.shared.foreground() } else if phase == .background { HubPushDriver.shared.background() }
             #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in

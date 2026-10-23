@@ -25,9 +25,9 @@ let package = Package(
         .testTarget(name: "OrchProtocolTests", dependencies: ["OrchProtocol", "OrchTestVectors"]),
         // Relay HTTP v2 examples (orch-relay tests/http_fixtures): schema, pure-wire checks and the PR2..PR5 skip list.
         .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),
-        .target(name: "OrchCustody", dependencies: ["OrchProtocol"],
+        .target(name: "OrchCustody", dependencies: ["OrchProtocol", "OrchPush"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody", "OrchProtocol", "OrchTestVectors"]),
+        .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody", "OrchPush", "OrchProtocol", "OrchTestVectors"]),
         // Foundation only: tombstone coordination files, atomic writes, flock. The only non-protocol module an extension needs to honour removal.
         .target(name: "OrchCoordination", dependencies: [],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
@@ -39,7 +39,7 @@ let package = Package(
         .target(name: "OrchShareStaging", dependencies: ["OrchCoordination"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchShareStagingTests", dependencies: ["OrchShareStaging", "OrchCoordination", "OrchStore"]),
-        .target(name: "OrchPush", dependencies: ["OrchProtocol", "OrchCoordination", "OrchCustody"],
+        .target(name: "OrchPush", dependencies: ["OrchProtocol", "OrchCoordination"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
         .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchStore", "OrchCoordination", "OrchCustody", "OrchTestVectors", "OrchPushFixtures"]),
         // Test-only: seals push fixtures from test keys. Not a product; the script and the UI tests compile this one file.

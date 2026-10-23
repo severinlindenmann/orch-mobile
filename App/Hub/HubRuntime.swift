@@ -1,107 +1,81 @@
 #if DEBUG
-import CryptoKit
 import Foundation
-import Observation
 import OrchClient
 import OrchCustody
 import OrchFakeHost
 import OrchProtocol
 import OrchPush
 
-/// The hub side of push for the whole app (design B4; V3 dev builds only): one custody, one `HubPushCoordinator`. It registers the push key and
-/// the APNs target after the pairing and when the token changes, and catches up from the channel's relay mailbox when the app becomes active,
-/// every 60 s while it is in the foreground, and after a push arrives. A hint only wakes it: lists are read from the hub through its API (B2).
-@MainActor @Observable
-final class HubRuntime {
-    static let shared = HubRuntime()
+/// The one hub stack of this process (design B2; also L2-B1d-2): one pairing coordinator and one home coordinator over one custody. Every
+/// screen gets these, never a coordinator of its own, so two sheets cannot pair at the same time and only one thing refreshes the lists.
+final class HubRuntime: Sendable {
+    let custody: HubKeyCustody
+    let pairing: HubPairingCoordinator
+    let home: HubHomeCoordinator
+    /// Push key and target registration, and the channel's relay mailbox catch-up (design B4). A relay `channel_revoked` goes to `home`.
+    let push: HubPushCoordinator
+    /// DEBUG launch helper (`--hub-fake`): the in-process hub behind this runtime.
+    let fake: FakeHub?
 
-    /// What the person may be told (no ids, no tokens).
-    enum Status: Equatable {
-        case notPaired
-        case active
-        /// The relay said the channel is revoked and the hub confirmed: B6 handles it. The phone wipes nothing here.
-        case revokedByHub
-        /// The relay said revoked, the hub could not be asked: polling is stopped until it can.
-        case waitingForHub
-    }
-
-    private(set) var status: Status = .notPaired
-    /// Hints handled since launch (each opened, fresh, unseen): the lists refresh when this changes.
-    private(set) var hintsHandled = 0
-    /// Called with every handled hint batch (B2/B3 wire their lists here). A hint is never an authority.
-    @ObservationIgnored var onHints: (@MainActor ([HubPushHint]) -> Void)?
-
-    @ObservationIgnored let custody: HubKeyCustody
-    @ObservationIgnored let coordinator: HubPushCoordinator
-    @ObservationIgnored private var poll: Task<Void, Never>?
-    @ObservationIgnored private var running = false
-
-    /// Test/preview injection: a custody and coordinator of the caller's making (the fake hub in the Simulator).
-    init(custody: HubKeyCustody? = nil, coordinator: HubPushCoordinator? = nil) {
-        let c = custody ?? Self.makeCustody()
-        self.custody = c
-        self.coordinator = coordinator ?? HubPushCoordinator(.init(custody: c, pushDir: Self.pushDir()))
-    }
-
-    static func makeCustody() -> HubKeyCustody {
-        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
-        return HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
+    init(custody: HubKeyCustody, cache: any HubCacheStore, config: HubPairingConfig, fake: FakeHub? = nil, pushDir: URL = HubRuntime.pushDirectory,
+         makeRelaySender: (@Sendable (String) throws -> any RequestSender)? = nil) {
+        self.custody = custody; self.fake = fake
+        pairing = HubPairingCoordinator(config)
+        let home = HubHomeCoordinator(custody: custody, cache: cache, verifier: config.verifier, wall: config.wall, makeSender: config.makeSender)
+        self.home = home
+        // The relay's `channel_revoked` is unsigned (L2B-2): B2 drops the cache and asks the hub; this maps its answer. Nothing is wiped here.
+        push = HubPushCoordinator(.init(custody: custody, pushDir: pushDir, verifier: config.verifier, wall: config.wall, makeSender: config.makeSender,
+                                        makeRelaySender: makeRelaySender, onRelayRevoked: {
+            switch await home.relayReportsRevoked() {
+            case .revoked: .revoked
+            case .live: .live
+            default: .unconfirmed
+            }
+        }))
     }
 
     /// The App Group's push directory (shared with the extension); an unsigned Simulator build has none and uses a private one.
-    static func pushDir() -> URL {
+    static var pushDirectory: URL {
         PushGroup.pushDir() ?? FileManager.default.temporaryDirectory.appendingPathComponent("orch-hub-push", isDirectory: true)
     }
 
-    /// The APNs target to register: the stored token of a real device. The Simulator has no APNs: it registers a stable placeholder so the
-    /// hub still seals hints and leaves them in the mailbox, which the catch-up reads (the Simulator push path).
-    func target() -> HubPushTarget? {
-        if let s = APNsTokenStore().stored { return HubPushTarget(env: s.environment, token: s.token) }
-        #if targetEnvironment(simulator)
-        guard let hub = (try? custody.pairedHubs())?.first else { return nil }
-        return HubPushTarget(env: .sandbox, token: B64U.encode(Data(SHA256.hash(data: Data("orch-simulator-push|\(hub)".utf8)))))
-        #else
-        return nil
-        #endif
+    /// The hub's own area for its cache: never inside a direct-mode workspace container.
+    static var cacheDirectory: URL {
+        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
+            .appendingPathComponent("OrchHub", isDirectory: true)
     }
 
-    // MARK: triggers
-
-    /// After a successful pairing, and whenever iOS hands over a token.
-    func registerPush() async {
-        guard let t = target() else { return }
-        _ = await coordinator.registerPush(t)
+    /// The real stack: the keychain of the app (an in-memory vault when the Simulator build is unsigned), the hub over Network.framework.
+    static func live() -> HubRuntime {
+        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
+        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
+        return HubRuntime(custody: custody, cache: FileHubCache(directory: cacheDirectory), config: HubPairingConfig(custody: custody))
     }
 
-    /// The app became active: register (idempotent), catch up, and poll every 60 s while it stays in the foreground.
-    func foreground() {
-        poll?.cancel()
-        poll = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.tick()
-                try? await Task.sleep(for: .seconds(60))
-            }
-        }
+    /// `--hub-fake`: the same stack against `FakeHub` with sample data (no network, nothing on disk, nothing in the keychain).
+    static func fake() -> HubRuntime {
+        let hub = FakeHub(origin: "https://hub.dev.orch.example")
+        hub.seedHome()
+        let backend: any VaultBackend = InMemoryVaultBackend()
+        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
+        let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
+            guard origin == hub.origin else { throw HubAPIError.network }
+            return hub
+        })
+        return HubRuntime(custody: custody, cache: InMemoryHubCache(), config: cfg, fake: hub)
     }
 
-    func background() { poll?.cancel(); poll = nil }
+    /// The process-wide runtime. `--hub-fake` (any variant) selects the fake one at first use; nothing else changes it.
+    static let shared: HubRuntime = ProcessInfo.processInfo.arguments.contains("--hub-fake") ? fake() : live()
 
-    /// A push arrived while the app was in the foreground: read the mailbox now.
-    func pushArrived() { Task { await tick() } }
+    /// Reset this iPhone also removes the hub's cache (the keychain items are removed by the existing reset path).
+    static func removeAllCaches() { FileHubCache(directory: cacheDirectory).removeAll() }
 
-    func tick() async {
-        guard !running else { return }
-        running = true; defer { running = false }
-        await registerPush()
-        switch await coordinator.catchUp() {
-        case .notPaired: status = .notPaired
-        case .done(let hints, _):
-            status = .active
-            if !hints.isEmpty { hintsHandled += hints.count; onHints?(hints) }
-        case .relayRevoked(.revoked): status = .revokedByHub
-        case .relayRevoked(.unconfirmed): status = .waitingForHub
-        case .relayRevoked(.live), .noRelay, .noMaterial, .paused, .network: if status == .notPaired { status = .active }
-        }
+    /// Pairs the fake hub without a screen (screenshots and UI tests of the home).
+    func pairFake() async {
+        guard let hub = fake else { return }
+        _ = await pairing.begin(link: hub.pairingLink)
+        _ = await pairing.complete(password: hub.password, totp: hub.totp, label: "Dev hub")
     }
 }
 #endif
