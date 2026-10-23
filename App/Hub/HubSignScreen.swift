@@ -44,6 +44,13 @@ struct HubSignScreen: View {
         switch model.state {
         case .signed: "Signed"
         case .failed(let f): f == .unknownOutcome ? "Not sure" : "Nothing was signed"
+        case .review(let p), .signing(let p):
+            switch p.facts.type {
+            case "gate.approved": "Review approval"
+            case "gate.changes_requested": "Review change request"
+            case "verdict.given": "Review verdict"
+            default: "Review your answer"
+            }
         default: "Review your answer"
         }
     }
@@ -63,15 +70,18 @@ struct HubSignScreen: View {
                 if let h = p.facts.shortHash { row("Content reference", h, machine: true) }
                 if let n = p.facts.gateGen { row("Round", String(n)) }
                 ForEach(Array(p.facts.sources.enumerated()), id: \.offset) { _, s in row("Commit in \(s.repo)", s.sha, machine: true) }
-                row("Signature reference", p.reference, machine: true)
                 if let url = p.contentLink {
-                    Link(destination: url) { Label("Read the content in your hub", systemImage: "arrow.up.right.square") }
+                    Link(destination: url) { Label("Open the content in \(p.hubLabel)", systemImage: "arrow.up.right.square") }
                         .font(OF.body).accessibilityIdentifier("hubsign.link")
                 }
             }
             .padding(OS.s4).orchCard()
+            if p.facts.shortHash != nil {
+                Text("Check that the content reference matches the one next to the content in your hub.").font(OF.meta).foregroundStyle(OC.textMuted)
+            }
             DisclosureGroup("Signed details") {
                 VStack(alignment: .leading, spacing: OS.s2) {
+                    row("Signature reference", p.reference, machine: true)
                     ForEach(Array(p.facts.fields.enumerated()), id: \.offset) { _, f in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: f.name).font(OF.meta).foregroundStyle(OC.textMuted)

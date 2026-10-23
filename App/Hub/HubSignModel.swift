@@ -153,6 +153,7 @@ extension HubSignModel {
         case "question": .answerQuestion(log: log, question: "Q2", hash: h, option: "yes-ship-it", text: nil)
         default: .approveGate(log: log, gate: "plan", hash: h)
         }
+        state = .idle   // `start` refuses while busy
         start(workspaceID: hub.workspaceID, action: action)
         await task?.value
         if name == "offline" { link.goOffline(); confirm(); await task?.value }
