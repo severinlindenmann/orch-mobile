@@ -27,7 +27,7 @@ let package = Package(
         .testTarget(name: "OrchRelayFixtureTests", dependencies: ["OrchProtocol", "OrchClient", "OrchFakeHost", "OrchTestVectors"]),
         .target(name: "OrchCustody", dependencies: ["OrchProtocol"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody"]),
+        .testTarget(name: "OrchCustodyTests", dependencies: ["OrchCustody", "OrchProtocol", "OrchTestVectors"]),
         // Foundation only: tombstone coordination files, atomic writes, flock. The only non-protocol module an extension needs to honour removal.
         .target(name: "OrchCoordination", dependencies: [],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
