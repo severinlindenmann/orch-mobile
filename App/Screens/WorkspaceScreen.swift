@@ -9,6 +9,7 @@ struct WorkspaceScreen: View {
     @State private var composing = false
     @State private var newTicket = false
     @Environment(\.dynamicTypeSize) private var typeSize
+    @ObservedObject private var direct = AppDirectPath.shared
 
     init(services: any AppServices, workspaceID: String, segment: WorkspaceSegment) {
         self.services = services
@@ -25,6 +26,13 @@ struct WorkspaceScreen: View {
         List {
             Section {
                 header.listRowBackground(Color.clear).listRowInsets(EdgeInsets())
+            }
+            if direct.usesHub(workspaceID) {
+                Section {
+                    Label("This workspace now uses your hub", systemImage: "arrow.triangle.branch").font(OF.section)
+                    Text("Direct connection is closed for this workspace. Pair with your hub to keep using it.").font(OF.body)
+                }
+                .accessibilityIdentifier("workspace.usesHub")
             }
             switch segment {
             case .questions: questions

@@ -82,9 +82,9 @@ struct LiveStorage: Sendable {
     /// The Live transport: `https` only. The OrchDevSandbox variant reaches the dev relay only.
     @Sendable static func productionTransport(_ context: RealmContext) throws -> any RelayTransport {
         #if ORCH_DEV_SANDBOX
-        try LiveTransport.makeDevSandbox(context: context, enabler: DevSandboxLaneEnabler())
+        try LiveTransport.makeDevSandbox(context: context, enabler: DevSandboxLaneEnabler(), directPath: AppDirectPath.flag)
         #else
-        try LiveTransport.make(context: context)
+        try LiveTransport.make(context: context, directPath: AppDirectPath.flag)
         #endif
     }
 
@@ -250,6 +250,7 @@ final class LiveRuntime: RealmRuntime {
         if let index { idx = index } else {
             idx = try await WorkspaceIndex(layout: storage.layout, fence: context.writeFence)       // the fence is bound at construction
             index = idx                                  // kept even if the realm ended meanwhile: the wipe closes it
+            AppDirectPath.flag.setPairedCheck { ws in (try? await idx.workspaces().contains { $0.ws == ws }) ?? false }
         }
         try await step("index")
         try await LocalWipe(index: idx, hooks: storage.wipeHooks()).resumePendingWipes()
@@ -313,6 +314,7 @@ final class LiveRuntime: RealmRuntime {
     private func makeBootCoordinator(_ index: WorkspaceIndex) -> PairingCoordinator {
         var config = PairingConfig(context: context, transport: transport, index: index, vault: keys, custody: custody,
                                    clock: storage.clock, wall: storage.wall, entropy: storage.entropy, deviceLabel: deviceLabel)
+        config.directPath = AppDirectPath.flag
         #if ORCH_DEV_SANDBOX
         config.devSandboxEnabler = DevSandboxLaneEnabler()
         #endif

@@ -63,10 +63,10 @@ extension RealmContext {
 
 extension LiveTransport {
     /// The Live transport for a variant context: as `make` (`https` only).
-    public static func makeDevSandbox(context: RealmContext, enabler: DevSandboxLaneEnabler) throws -> some RelayTransport {
+    public static func makeDevSandbox(context: RealmContext, enabler: DevSandboxLaneEnabler, directPath: DirectPathFlag? = nil) throws -> some RelayTransport {
         guard context.realm == .live else { throw TransportError.realm(.wrongTransport) }
         let sender = try NWRequestSender(origin: context.origin)
-        return try RoutedRelayTransport(context: context, origin: context.origin, sender: sender, clientAddress: clientAddress)
+        return try RoutedRelayTransport(context: context, origin: context.origin, sender: sender, clientAddress: clientAddress, directPath: directPath)
     }
 }
 

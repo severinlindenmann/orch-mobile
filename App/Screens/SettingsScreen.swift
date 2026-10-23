@@ -203,6 +203,7 @@ struct WorkspaceSettingsScreen: View {
     @State private var confirm: Bool
     @State private var report: LeaveReport?
     @State private var simulateOffline = false
+    @ObservedObject private var direct = AppDirectPath.shared
     @ScaledMetric(relativeTo: .body) private var checkBox = 22.0
     @Environment(\.routeSelector) private var routeSelector
 
@@ -228,6 +229,15 @@ struct WorkspaceSettingsScreen: View {
                         Toggle("Notifications", isOn: Binding(get: { ws.notificationsOn },
                                                               set: { model.setNotifications($0, workspaceID: ws.id) }))
                             .accessibilityIdentifier("settings.notifications")
+                    }
+                }
+                if direct.usesHub(ws.id) {
+                    Section {
+                        Text("This workspace now uses your hub").font(OF.section)
+                        Button("Use direct connection again") { direct.reenable(ws.id) }
+                            .accessibilityIdentifier("settings.directAgain")
+                    } footer: {
+                        Text("Only if the hub switch was not real. If the workspace is still cut over, it will switch off again.")
                     }
                 }
                 if services.capabilities.demoControls {

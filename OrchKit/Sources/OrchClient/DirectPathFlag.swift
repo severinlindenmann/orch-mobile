@@ -17,6 +17,7 @@ public final class DirectPathFlag: @unchecked Sendable {
     private let store: any DirectPathStore
     private let lock = NSLock()
     private var observers: [@Sendable (String) -> Void] = []
+    private var paired: (@Sendable (String) async -> Bool)?
 
     public init(store: any DirectPathStore = InMemoryDirectPathStore()) { self.store = store }
 
@@ -27,17 +28,40 @@ public final class DirectPathFlag: @unchecked Sendable {
 
     public func decision(workspace ws: String) -> Decision { isEnabled(workspace: ws) ? .allowed : .usesHub }
 
-    /// The workspace reported `relay.cut_over` (or `cut_over`): switch OFF for it. Idempotent.
-    public func noteCutOver(workspace ws: String) {
+    /// Which workspace ids this phone is paired with. A cut-over for any other id is ignored: the relay's `403 cut_over` is
+    /// unauthenticated, so a hostile relay must not be able to grow the OFF set. nil (never set): every cut-over is ignored (fail closed).
+    public func setPairedCheck(_ f: (@Sendable (String) async -> Bool)?) { lock.lock(); paired = f; lock.unlock() }
+
+    static let maxClosed = 256
+
+    /// The workspace reported `relay.cut_over` (or `cut_over`): switch OFF for it, if this phone is paired with it. Idempotent.
+    /// ACCEPTED RISK (documented in PR): a forged `403 cut_over` from a hostile relay can switch a paired workspace's direct path OFF
+    /// (a DoS of the direct path only); `reenable` ("Use direct connection again") undoes it, and a real cut-over is re-detected.
+    public func noteCutOver(workspace ws: String) async {
         let id = ws.lowercased()
         guard ID16(hex: id) != nil else { return }
+        guard let check = pairedCheck(), await check(id) else { return }
+        insert(id)
+    }
+
+    private func pairedCheck() -> (@Sendable (String) async -> Bool)? { lock.lock(); defer { lock.unlock() }; return paired }
+
+    private func insert(_ id: String) {
         lock.lock()
         var s = store.closed()
-        let isNew = s.insert(id).inserted
+        let isNew = s.count < Self.maxClosed && s.insert(id).inserted
         if isNew { store.setClosed(s) }
         let o = observers
         lock.unlock()
         if isNew { o.forEach { $0(id) } }
+    }
+
+    /// Manual "Use direct connection again" (workspace settings): turns the direct path back ON for this workspace. The next
+    /// `cut_over` switches it off again.
+    public func reenable(workspace ws: String) {
+        lock.lock(); defer { lock.unlock() }
+        var s = store.closed()
+        if s.remove(ws.lowercased()) != nil { store.setClosed(s) }
     }
 
     /// Called once per workspace that just switched OFF, so the UI can show "This workspace now uses your hub".

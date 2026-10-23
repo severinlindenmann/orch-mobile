@@ -52,7 +52,7 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
         try Task.checkCancellation()
         let reply = try await sender.send(r)
         if let flag = directPath, DirectPathFlag.isCutOver(status: reply.status, body: reply.body),
-           let ws = DirectPathFlag.workspace(inTarget: r.target, base: R) { flag.noteCutOver(workspace: ws) }
+           let ws = DirectPathFlag.workspace(inTarget: r.target, base: R) { await flag.noteCutOver(workspace: ws) }
         return reply
     }
 

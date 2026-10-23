@@ -18,10 +18,10 @@ public enum LiveTransport {
 
     /// A transport for `context` (a `RealmContext.live` context). Throws `RealmViolation` for a Demo context or any origin the
     /// context does not admit, before anything is opened.
-    public static func make(context: RealmContext) throws -> some RelayTransport {
+    public static func make(context: RealmContext, directPath: DirectPathFlag? = nil) throws -> some RelayTransport {
         guard context.realm == .live else { throw TransportError.realm(.wrongTransport) }
         return try RoutedRelayTransport(context: context, origin: context.origin, sender: try NWRequestSender(origin: context.origin),
-                                        clientAddress: clientAddress)
+                                        clientAddress: clientAddress, directPath: directPath)
     }
 
     #if DEBUG
