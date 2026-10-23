@@ -26,9 +26,7 @@ final class HubPairingModel: Identifiable {
 
     /// The real stack: the keychain of the app (an in-memory vault when the Simulator build is unsigned), the hub over Network.framework.
     static func live() -> HubPairingModel {
-        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
-        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
-        return HubPairingModel(coordinator: HubPairingCoordinator(HubPairingConfig(custody: custody)))
+        HubPairingModel(coordinator: HubPairingCoordinator(HubPairingConfig(custody: HubRuntime.shared.custody)))
     }
 
     /// `--hub-fake`: the same stack against `FakeHub` (no network). `script` is `link`, `confirm` or `paired` (screenshots and UI tests).
@@ -70,8 +68,11 @@ final class HubPairingModel: Identifiable {
         guard !busy, case .confirm = state else { return }
         let (p, t, n) = (password, totp, hubName)
         password = ""; totp = ""
-        task = Task { [coordinator] in
+        task = Task { [coordinator, fake] in
             state = await coordinator.complete(password: p, totp: t, label: n)
+            // After bind: publish the extension's material and register the push key and target with the hub (B4). Not part of the pairing:
+            // a failure leaves the phone paired and the next foreground tries again.
+            if case .paired = state, fake == nil { await HubRuntime.shared.registerPush() }
         }
         state = .working(.signingIn)
     }
