@@ -39,8 +39,7 @@ public struct HubPushOpener: Sendable {
               let blob = B64U.decode(sealed) else { throw Refusal.malformed }
         let pt: Data
         do {
-            pt = try Sealing.open(with: Agreer(key: key, publicKey: publicKey), recipientID: ch, purpose: .hubPush, object: id, epoch: 0,
-                                  extra: hub.bytes, sealed: blob)
+            pt = try Sealing.openHubPush(with: Agreer(key: key, publicKey: publicKey), channel: ch, message: id, hub: hub, sealed: blob)
         } catch { throw Refusal.malformed }
         guard let o = (try? StrictJSON.parse(pt, maxBytes: 4096))?.object, o.hasExactlyKeys(["v", "hv", "kind", "type", "ts_ms", "ref"]),
               o["v"] == .int(2), o["hv"] == .int(0), o["kind"] == "hub.push", let t = o["type"]?.string,

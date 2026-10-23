@@ -69,6 +69,22 @@ Home preview; `--ui-testing` marks a test launch. Release ignores both. With no
 workspaces, Welcome offers Try Demo and Pair a workspace. Try Demo opens the same
 static fixtures in either configuration.
 
+## Hub pairing (V3, dev builds only)
+
+B1 (orch-core #861) pairs the phone with an orch hub (`orch-hub` `docs/protocol.md` 5, 6.3, 6.4; design `state/design-b-phone.md`).
+`orch://hub-pair/<authority>#h1.<hub_id>.<user_id>.<code>` is parsed strictly (`HubVerifier.parseLink`); the card is verified pinned to the
+link's `hub_id`, the HK_op-signed `hub.api_origin` must equal the link's origin (`other_origin`), and only then a password and a TOTP code are
+sent. The Secure Enclave channel key (`HubChannelSigner`: exactly five typed signatures, no "sign bytes") registers with the hub's challenge
+(checked field by field before it signs), the certificate is verified (`se-unlocked`, our key, our user), the pairing session is bound to the
+channel, and only then are the key, the session token and the record kept (`HubPairingCoordinator`, staged: a failure leaves nothing).
+The phone keeps the verified origin and sends every later request there. The push key (`HubPushOpener`) is an agreement-only key in the
+`.push` group. The app is a dev verifier from the compile-time `DEBUG` flag: a release build refuses every `dev: true` object and any
+loopback or http link, and has no hub UI.
+
+`vectors_hub.json` is orch-hub's contract file, copied byte for byte (`Tests/OrchTestVectors/PROVENANCE.md`). In a debug build:
+`--hub-pair` opens the screen on the real stack, `--hub-fake [link|confirm|paired]` runs it against the in-process `FakeHub`, and an opened
+`orch://hub-pair/...` link lands on it. Settings has a "Pair with a hub" row.
+
 ## TestFlight
 
 `scripts/testflight.sh` archives (Release, generic iOS), exports with method

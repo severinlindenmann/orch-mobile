@@ -34,7 +34,7 @@ final class HubPairingModel: Identifiable {
     /// `--hub-fake`: the same stack against `FakeHub` (no network). `script` is `link`, `confirm` or `paired` (screenshots and UI tests).
     static func fake(script: String?) -> HubPairingModel {
         let hub = FakeHub(origin: "https://hub.dev.orch.example")
-        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
+        let backend: any VaultBackend = InMemoryVaultBackend()   // the fake hub never touches the keychain
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
             guard origin == hub.origin else { throw HubAPIError.network }
@@ -42,9 +42,10 @@ final class HubPairingModel: Identifiable {
         })
         let m = HubPairingModel(coordinator: HubPairingCoordinator(cfg), fake: hub)
         m.linkText = hub.pairingLink
-        if script == "confirm" || script == "paired" {
+        if script == "confirm" || script == "paired" || script == "failed" {
             m.start()
             if script == "paired" { m.password = hub.password; m.totp = hub.totp; m.task = Task { await m.waitConfirmThenPair() } }
+            if script == "failed" { m.password = "wrong"; m.totp = "000000"; m.task = Task { await m.waitConfirmThenPair() } }
         }
         return m
     }
@@ -90,7 +91,7 @@ final class HubPairingModel: Identifiable {
 }
 
 /// DEBUG launch arguments for the hub pairing screen (Release does not compile this file): `--hub-pair` opens the real stack,
-/// `--hub-fake [link|confirm|paired]` the in-process fake hub (screenshots and UI tests).
+/// `--hub-fake [link|confirm|paired|failed]` the in-process fake hub (screenshots and UI tests).
 enum HubLaunch {
     static func isHubLink(_ text: String) -> Bool { text.hasPrefix("orch://hub-pair/") }
 
