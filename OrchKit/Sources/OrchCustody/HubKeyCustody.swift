@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import OrchProtocol
+import OrchPush
 import Security
 
 /// Where the phone's hub secrets live (design B1, D-B1 to D-B3). Hub data lives in the Live realm under its own namespace: every item name
@@ -21,7 +22,7 @@ public struct HubKeyCustody: Sendable {
         self.keys = keys; self.push = push; self.realm = realm
     }
 
-    enum Purpose: String { case channelKey = "channel-key", session, record, pushKey = "push-key", biometry }
+    enum Purpose: String { case channelKey = "channel-key", session, record, pushKey = "push-key", pushState = "push-state", biometry }
 
     func id(_ hubID: String, _ p: Purpose) throws -> SecretID {
         guard Hex.decode(hubID, length: 16) != nil else { throw VaultError.badName }
@@ -86,6 +87,39 @@ public struct HubKeyCustody: Sendable {
 
     public func deletePushKey(hubID: String) throws { try map { try push.delete(try id(hubID, .pushKey)) } }
 
+    // MARK: push material (what the notification extension reads: ONE item, `.push` group)
+
+    /// Writes `hub.push.material` for the paired channel: the hub and channel ids, the label and the push key (read back from the `.push`
+    /// group here, so the key is never handed around). One atomic `put`; the extension sees the old item or the new one, never half.
+    public func publishPushMaterial(hubID: String, channelID: String, label: String) throws {
+        let material = try HubPushMaterial(hubID: hubID, channelID: channelID, label: label, opener: try loadPushKey(hubID: hubID))
+        let item = try SecretID(realm: realm, purpose: HubPushMaterial.purpose)
+        try map { try push.put(try material.encoded(), for: item) }
+    }
+
+    public func pushMaterial() throws -> HubPushMaterial? {
+        let item = try SecretID(realm: realm, purpose: HubPushMaterial.purpose)
+        guard let data = try read(push, item) else { return nil }
+        guard let m = try? HubPushMaterial.decode(data) else { throw CustodyError.orphaned }
+        return m
+    }
+
+    public func deletePushMaterial() throws { try map { try push.delete(try SecretID(realm: realm, purpose: HubPushMaterial.purpose)) } }
+
+    private func read(_ v: SecretVault, _ item: SecretID) throws -> Data? {
+        do { return try map { try v.get(item) } } catch CustodyError.vault(.notFound) { return nil }
+    }
+
+    // MARK: push registration state (`.keys`, app only)
+
+    public func pushState(hubID: String) throws -> HubPushState? {
+        guard let d = try read(keys, hubID, .pushState) else { return nil }
+        guard let s = try? HubPushState.decode(d) else { throw CustodyError.orphaned }
+        return s
+    }
+
+    public func putPushState(_ state: HubPushState, hubID: String) throws { try map { try keys.put(try state.encoded(), for: try id(hubID, .pushState)) } }
+
     // MARK: channel session token (only ever in .keys, never in .push, a file or UserDefaults)
 
     public func putSessionToken(_ token: String, hubID: String) throws { try map { try keys.put(Data(token.utf8), for: try id(hubID, .session)) } }
@@ -117,8 +151,9 @@ public struct HubKeyCustody: Sendable {
     /// error is rethrown after all were attempted.
     public func deleteAll(hubID: String) throws {
         var first: Error?
-        for step: () throws -> Void in [{ try deleteSessionToken(hubID: hubID) }, { try deleteBiometryBaseline(hubID: hubID) }, { try deleteRecord(hubID: hubID) },
-                                         { try deletePushKey(hubID: hubID) }, { try deleteChannelKey(hubID: hubID) }] {
+        for step: () throws -> Void in [{ try deletePushMaterial() }, { try deleteSessionToken(hubID: hubID) }, { try deleteBiometryBaseline(hubID: hubID) }, { try deleteRecord(hubID: hubID) },
+                                         { try deletePushKey(hubID: hubID) }, { try deleteChannelKey(hubID: hubID) },
+                                         { try map { try keys.delete(try id(hubID, .pushState)) } }] {
             do { try step() } catch { first = first ?? error }
         }
         if let first { throw first }

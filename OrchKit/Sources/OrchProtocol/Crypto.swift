@@ -147,6 +147,17 @@ public enum Sealing {
                                      aad: aad(purposeName: hubPushPurpose, object: message, epoch: 0, extra: hub.bytes))
     }
 
+    /// Seals a hub push hint to a channel's push key (protocol 10.8.2). Only the HUB seals; the phone never does. Package-level for the fake hub and
+    /// the tests (the ephemeral key is generated here and used once).
+    package static func sealHubPush(to recipient: AgreementPublicKey, channel: ID16, message: ID16, hub: ID16, plaintext: Data) throws -> Data {
+        let eph = SoftwareKeyAgreer()
+        let ss = try eph.sharedSecret(with: recipient)
+        guard ss.contains(where: { $0 != 0 }) else { throw CryptoFailure.degenerateSharedSecret }
+        let k = key(sharedSecret: ss, ephPub: eph.publicKey.x963, recipientPub: recipient.x963, purposeName: hubPushPurpose, recipientID: channel)
+        return eph.publicKey.x963 + (try ZeroNonceGCM.seal(key: k, plaintext: plaintext,
+                                                           aad: aad(purposeName: hubPushPurpose, object: message, epoch: 0, extra: hub.bytes)))
+    }
+
     /// Product seal. The ephemeral key is generated here, used once and dropped; it is deliberately not a
     /// parameter, because the zero nonce is safe only while the key is single-use.
     public static func seal(to recipient: AgreementPublicKey, recipientID: ID16, purpose: SealPurpose, object: ID16,
