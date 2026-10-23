@@ -111,10 +111,14 @@ public struct HubPairingConfig: Sendable {
     public let wall: any WallClock
     /// A sender bound to exactly the origin it is given (production: `HubSenders.make`).
     public let makeSender: @Sendable (String) throws -> any RequestSender
+    /// The device's biometry state at pairing (`BiometricGate.currentDomainState`), recorded with the pairing so that a later change of the
+    /// enrolled faces or fingers means "sign in again" (design B3, R2). Nil: none recorded, and the phone will not sign until one is.
+    public let biometryBaseline: (@Sendable () -> Data?)?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
-                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make) {
-        self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender
+                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
+                biometryBaseline: (@Sendable () -> Data?)? = nil) {
+        self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometryBaseline = biometryBaseline
     }
 }
 
@@ -240,6 +244,7 @@ public actor HubPairingCoordinator {
                                           card: bound.card, channelCert: bound.channelCert, sessionExpiresMs: bound.expiresMs, pairedMs: now)
             do {
                 try cfg.custody.putSessionToken(bound.bearer.token, hubID: hubID)
+                if let state = cfg.biometryBaseline?() { try cfg.custody.putBiometryBaseline(state, hubID: hubID) }
                 try cfg.custody.putRecord(try canonicalJSON(record.json), hubID: hubID)
             } catch { throw HubPairingFailure.custody }
             pending = nil

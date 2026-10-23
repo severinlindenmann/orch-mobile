@@ -103,8 +103,14 @@ public enum HubSign {
 
     // MARK: what the prompt shows
 
-    public struct Field: Sendable, Equatable { public let name: String; public let value: String }
-    public struct Source: Sendable, Equatable { public let repo: String; public let sha: String }
+    public struct Field: Sendable, Equatable {
+        public let name: String; public let value: String
+        public init(name: String, value: String) { self.name = name; self.value = value }
+    }
+    public struct Source: Sendable, Equatable {
+        public let repo: String; public let sha: String
+        public init(repo: String, sha: String) { self.repo = repo; self.sha = sha }
+    }
 
     /// Everything a sign prompt shows, derived from `ctx.event` alone (D15b display rule: gate, short hash, `gate_gen`, short source SHAs).
     public struct Facts: Sendable, Equatable {

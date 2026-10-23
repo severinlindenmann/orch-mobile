@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import OrchClient
 import OrchProtocol
 
@@ -22,6 +23,19 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var certForOtherKey = false
         /// Answer the bind with a session longer than 12 h.
         public var longSession = false
+        /// Signing: the hub's `shown` block lies (the phone must render from `ctx` only).
+        public var lyingShown = false
+        /// Signing: build another event type than the one asked for (e.g. `ticket.moved`), or one outside the allow-list.
+        public var buildType: String?
+        /// Signing: the digest is of another event than `ctx` carries.
+        public var wrongDigest = false
+        /// Signing: build the event for another workspace / another channel than the one asked for.
+        public var buildWorkspace: String?
+        public var buildChannel: String?
+        /// Signing: seconds the prepared request lives (default 120).
+        public var preparedTTLMs: Int64 = 120_000
+        /// Signing: answer `/sign/sign` with this error code instead of signing.
+        public var signError: String?
         public init() {}
     }
 
@@ -44,6 +58,16 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     private var _log: [String] = []
     private var _bearers: [String] = []
     private var counter = 0
+    private var prepared: [String: (ctx: JSONValue, digest: Data, expires: Int64, channel: String)] = [:]
+    /// Events the hub "signed": `(type, log, prepared id)` in order (the proof was verified under the channel key first).
+    /// The id of the newest prepared request.
+    public private(set) var lastPreparedID: String?
+    public private(set) var signedEvents: [(type: String, log: String, preparedID: String)] = []
+    /// The workspace and the ticket the fake serves, and the hash of the content under review.
+    public let workspaceID = SystemEntropy().id16().hex
+    public let ticketLog = "01J9ZP0000000000000000TKT1"
+    public static let contentHash = "sha256:3d3f5e93357cf4b89511c728d2d7995ebc233f435574ef9b95de0259f3247987"
+    public static let policyHash = "sha256:508506355d0c369c4bfc20c05048e111cf0dd1747def9bbd4076d3d9a46e55e1"
     private let opCertID: String
     private var apiOriginJSON: JSONValue = .null
     private var card: JSONValue = .null
@@ -168,9 +192,86 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             sessions[token] = ("channel", now + life)
             return (200, ["token": .string(token), "user_id": .string(userID), "channel_id": .string(cid), "expires_ms": .int(now + life),
                           "channel_cert": ch.cert, "card": card])
+        case ("POST", "/api/v1/sign/prepare"):
+            guard let t = session("channel") else { return err(401, "no_session") }
+            return prepare(body, token: t, now: now)
+        case ("POST", "/api/v1/sign/sign"):
+            guard session("channel") != nil else { return err(401, "no_session") }
+            return sign(body, now: now)
+        case ("GET", _) where r.target.hasPrefix("/api/v1/sign/prepared/"):
+            guard session("channel") != nil else { return err(401, "no_session") }
+            guard let p = prepared[String(r.target.dropFirst("/api/v1/sign/prepared/".count))] else { return err(404, "unknown_prepared") }
+            if p.expires <= now { return err(410, "prepared_expired") }
+            return (200, reply(String(r.target.dropFirst("/api/v1/sign/prepared/".count)), p))
         default:
             return err(404, "unknown_op")
         }
+    }
+
+    // MARK: custodial signing (protocol 8.4)
+
+    private func reply(_ id: String, _ p: (ctx: JSONValue, digest: Data, expires: Int64, channel: String)) -> [String: JSONValue] {
+        var shown: JSONValue = .object(["sentence": "Approve the plan gate"])
+        if faults.lyingShown { shown = .object(["sentence": "Mark the ticket as read", "facts": .array([])]) }
+        return ["prepared_id": .string(id), "ctx": p.ctx, "digest": .string(Hex.encode(p.digest)), "expires_ms": .int(p.expires), "shown": shown]
+    }
+
+    private func prepare(_ body: [String: JSONValue], token: String, now: Int64) -> (Int, [String: JSONValue]) {
+        guard let ws = body["workspace_id"]?.string, let cid = body["channel_id"]?.string, let action = body["action"]?.object,
+              let type = action["type"]?.string, let log = action["log"]?.string, let ch = channels[cid] else { return err(400, "malformed") }
+        guard ws == workspaceID else { return err(403, "unknown_workspace") }
+        let builtType = faults.buildType ?? type
+        var e: [String: JSONValue] = ["v": 2, "id": .string(SystemEntropy().id16().hex), "type": .string(builtType),
+                                      "actor": .object(["kind": "person", "id": .string("u_" + userID), "via": .string(faults.buildChannel ?? cid)]),
+                                      "based_on": .string(Self.contentHash), "roster_v": 4, "hash_v": 1, "auth": "hub",
+                                      "channel": .string(faults.buildChannel ?? cid), "channel_factor": "se-unlocked", "hub_id": .string(hubID),
+                                      "snapshot_version": 3, "channel_cert": ch.cert, "uk_cert": ukCert()]
+        e["id"] = .string("01J9ZP0000000000000000EVT\(counter % 10)")
+        switch builtType {
+        case "question.answered":
+            e["question"] = action["question"] ?? "Q1"; e["hash"] = action["hash"] ?? "sha256:x"
+            if let o = action["option"] { e["option"] = o }
+            if let t = action["text"] { e["text"] = t }
+        case "gate.approved", "gate.changes_requested":
+            e["gate"] = action["gate"] ?? "plan"; e["hash"] = action["hash"] ?? "sha256:x"; e["gate_gen"] = 2; e["policy_hash"] = .string(Self.policyHash)
+            if let t = action["text"] { e["text"] = t }
+            if e["gate"] == "code" {
+                e["source_sha"] = .array([.object(["repo": "orch-core", "ref": "main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"])])
+            }
+        case "verdict.given":
+            e["outcome"] = action["outcome"] ?? "pass"; e["hash"] = action["hash"] ?? "sha256:x"; e["gate_gen"] = 1; e["policy_hash"] = .string(Self.policyHash)
+            e["source_sha"] = .array([.object(["repo": "orch-core", "ref": "main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"]),
+                                      .object(["repo": "orch-mobile", "ref": "main", "sha": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"])])
+            if let t = action["text"] { e["text"] = t }
+        case "ticket.moved": e["to"] = "backlog"; e["from"] = "open"; e["reason"] = "moved"
+        default: break
+        }
+        let ctx: JSONValue = .object(["contract": 1, "suite": 2, "workspace_id": .string(faults.buildWorkspace ?? ws), "log": .string(log), "event": .object(e)])
+        guard var digest = try? HubSign.digest(ofContext: ctx) else { return err(500, "unavailable") }
+        if faults.wrongDigest { digest = Data(SHA256Fake.hash(digest)) }
+        counter += 1
+        let id = "prep-\(counter)"
+        let entry = (ctx: ctx, digest: digest, expires: now + faults.preparedTTLMs, channel: cid)
+        prepared[id] = entry; lastPreparedID = id
+        return (200, reply(id, entry))
+    }
+
+    private func sign(_ body: [String: JSONValue], now: Int64) -> (Int, [String: JSONValue]) {
+        if let code = faults.signError { return err(409, code) }
+        guard let id = body["prepared_id"]?.string, let cid = body["channel_id"]?.string, let proofText = body["channel_proof"]?.string,
+              let p = prepared.removeValue(forKey: id) else { return err(404, "unknown_prepared") }
+        guard p.expires > now else { return err(410, "prepared_expired") }
+        guard let ch = channels[cid], cid == p.channel, let sig = B64U.decode(proofText, length: 64),
+              Signature.verify(ch.key, signature: sig, label: Label.sigHubChannelProof, message: p.digest) else { return err(400, "bad_channel_proof") }
+        let ev = p.ctx.at("event")?.object ?? [:]
+        let type = ev["type"]?.string ?? "", log = p.ctx.at("log")?.string ?? ""
+        signedEvents.append((type, log, id))
+        return (200, ["ok": true, "event_id": ev["id"] ?? "", "type": .string(type), "workspace_id": p.ctx.at("workspace_id") ?? "", "log": .string(log)])
+    }
+
+    private func ukCert() -> JSONValue {
+        .object(["o": .object(["v": 2, "suite": 2, "kind": "hub.uk_cert", "hv": 0, "dev": true, "hub_id": .string(hubID), "user_id": .string(userID),
+                               "op_cert_id": .string(opCertID)]), "sig": "fake"])
     }
 
     /// The Authorization headers the hub saw (tests assert no token leaks into a request to another place).
@@ -180,3 +281,5 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
 private extension JSONValue {
     func at(_ k: String) -> JSONValue? { object?[k] }
 }
+
+private enum SHA256Fake { static func hash(_ d: Data) -> [UInt8] { Array(SHA256.hash(data: d + Data("other".utf8))) } }
