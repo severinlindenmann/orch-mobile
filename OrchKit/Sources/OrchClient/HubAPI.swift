@@ -109,6 +109,27 @@ public struct HubAPI: Sendable {
         return Bound(bearer: HubBearer(t), userID: u, channelID: c, expiresMs: e, channelCert: cert, card: card)
     }
 
+    // MARK: the person's home (channel session; design B2)
+
+    /// `GET /me/workspaces`: the workspaces this user has a part in, with role, mode and whether the host is online.
+    public func myWorkspaces(_ bearer: HubBearer) async throws -> [HubWorkspace] {
+        try HubViewParse.workspaces(try await call("GET", "/me/workspaces", bearer: bearer))
+    }
+
+    /// `GET /me/needs-you`: needs-you rows (full: from the workspace view; selective: shared items only). Rows are checked against `workspaces`.
+    public func needsYou(_ bearer: HubBearer, workspaces: [HubWorkspace]) async throws -> HubNeedsYou {
+        try HubViewParse.needsYou(try await call("GET", "/me/needs-you", bearer: bearer), workspaces: workspaces)
+    }
+
+    /// `GET /workspaces/{ws}/items/{id}`. The ids are validated before they reach the path.
+    public func item(_ bearer: HubBearer, workspaceID: String, itemID: String, workspaces: [HubWorkspace]) async throws -> HubItemDetail {
+        guard HubViewParse.isWorkspaceID(workspaceID), HubViewParse.isItemID(itemID) else { throw HubAPIError.badReply }
+        let o = try await call("GET", "/workspaces/\(workspaceID)/items/\(itemID)", bearer: bearer)
+        let d = try HubViewParse.detail(o, workspaces: workspaces)
+        guard d.row.workspaceID == workspaceID, d.row.itemID == itemID else { throw HubAPIError.badReply }
+        return d
+    }
+
     static func plausibleToken(_ t: String) -> Bool { (1...256).contains(t.utf8.count) && t.utf8.allSatisfy { $0 > 0x20 && $0 < 0x7F } }
 }
 
