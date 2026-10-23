@@ -18,10 +18,13 @@ public struct HubPushOpener: Sendable {
     let key: P256.KeyAgreement.PrivateKey
     public let publicKey: AgreementPublicKey
 
-    init(raw: Data) throws {
+    package init(raw: Data) throws {
         key = try P256.KeyAgreement.PrivateKey(rawRepresentation: raw)
         publicKey = try AgreementPublicKey(x963: key.publicKey.x963Representation)
     }
+
+    /// The raw scalar, for the custody that stores it (never public).
+    package var raw: Data { key.rawRepresentation }
 
     private struct Agreer: KeyAgreer {
         let key: P256.KeyAgreement.PrivateKey

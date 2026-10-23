@@ -36,6 +36,7 @@ struct HubHomeScreen: View {
             .navigationDestination(for: HubNeedsYouRow.self) { HubItemScreen(model: model, row: $0) }
         }
         .task { await model.open() }
+        .onChange(of: HubPushDriver.shared.hintTick) { Task { await model.refresh() } }   // a handled push hint: read the lists from the hub (B4)
     }
 
     // MARK: switcher

@@ -57,8 +57,12 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     private var sessions: [String: (kind: String, expires: Int64)] = [:]
     private var challenges: [String: (key: SigningPublicKey, expires: Int64, session: String)] = [:]
     private var channels: [String: (key: SigningPublicKey, cert: JSONValue)] = [:]
+    private var pushTargets: [String: (env: String, topic: String, token: String)] = [:]
+    private var pushKeys: [String: (pub: AgreementPublicKey, issuedMs: Int64)] = [:]
+    private var revoked: Set<String> = []
     private var _log: [String] = []
     private var _bearers: [String] = []
+    private var channelOfSession: [String: String] = [:]
     private var counter = 0
     private let opCertID: String
     private var apiOriginJSON: JSONValue = .null
@@ -73,7 +77,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
 
     static func authority(of origin: String) -> String { String(origin.drop(while: { $0 != "/" }).dropFirst(2)) }
 
-    public init(origin: String, wall: any WallClock = SystemWallClock(), pairingCode: String = "ab12-cd34-ef56") {
+    public init(origin: String, wall: any WallClock = SystemWallClock(), pairingCode: String = "ab12-cd34-ef56", relayURL: String? = nil) {
         self.origin = origin; self.wall = wall; self.pairingCode = pairingCode
         userID = SystemEntropy().id16().hex
         opCertID = SystemEntropy().id16().hex
@@ -89,7 +93,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             oc["hk_op_pub"] = .string(B64U.encode(op.publicKey.x963)); oc["issued_ms"] = .int(now - 1000); oc["expires_ms"] = .int(now + 86_400_000 * 30)
             var c = header("hub.card")
             c["hub_id"] = .string(HubIdentifiers.hubID(root: root.publicKey)); c["hk_root_pub"] = .string(B64U.encode(root.publicKey.x963))
-            c["hxk_pub"] = .string(B64U.encode(SoftwareKeyAgreer().publicKey.x963)); c["relay_url"] = .null
+            c["hxk_pub"] = .string(B64U.encode(SoftwareKeyAgreer().publicKey.x963)); c["relay_url"] = relayURL.map { JSONValue.string($0) } ?? .null
             c["tls_spki_sha256"] = .string(B64U.encode(Data(count: 32))); c["card_seq"] = 1; c["issued_ms"] = .int(now - 1000)
             let signedOp = sign(oc, root, Label.sigHubOpCert)
             let signed = sign(c, op, Label.sigHubCard)
@@ -190,8 +194,15 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             let token = "FAKE-HUB-CHANNEL-\(counter)"
             let life: Int64 = faults.longSession ? 48 * 3_600_000 : 12 * 3_600_000
             sessions[token] = ("channel", now + life)
+            channelOfSession[token] = cid
             return (200, ["token": .string(token), "user_id": .string(userID), "channel_id": .string(cid), "expires_ms": .int(now + life),
                           "channel_cert": ch.cert, "card": card])
+        case ("GET", "/api/v1/session"):
+            guard let t = session("channel") else { return err(403, "no_session") }
+            if let cid = channelOfSession[t], revoked.contains(cid) { return err(403, "channel_revoked") }
+            return (200, ["user_id": .string(userID), "name": .string(userName), "is_admin": false])
+        case ("PUT", _) where r.target.hasPrefix("/api/v1/channels/") && r.target.hasSuffix("/push"):
+            return handlePush(r, body: body, session: session("channel"))
         case ("GET", "/api/v1/me/workspaces"), ("GET", "/api/v1/me/needs-you"):
             if let e = channelFault(session("channel")) { return e }
             if faults.garbledLists { return (200, ["workspaces": "nope", "items": 7]) }
@@ -207,6 +218,62 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             return err(404, "unknown_op")
         }
     }
+
+
+    // MARK: push (protocol 6.4 `PUT /channels/{id}/push`, 10.8.2 sealing)
+
+    private func handlePush(_ r: WireRequest, body: [String: JSONValue], session token: String?) -> (Int, [String: JSONValue]) {
+        guard let token, let sessionChannel = channelOfSession[token] else { return err(403, "no_session") }
+        let parts = r.target.split(separator: "/").map(String.init)
+        guard parts.count == 5, parts[3] == sessionChannel else { return err(403, "other_user") }
+        guard !revoked.contains(sessionChannel), let ch = channels[sessionChannel] else { return err(403, "channel_revoked") }
+        guard let env = body["env"]?.string, let topic = body["topic"]?.string, let tok = body["token"]?.string, body.keys.contains("push_key"),
+              Set(body.keys) == ["env", "topic", "token", "push_key"], B64U.decode(tok) != nil else { return err(400, "malformed") }
+        let held = pushKeys[sessionChannel]
+        var newKey: (AgreementPublicKey, Int64)?
+        if let pk = body["push_key"], !pk.isNull {
+            guard let po = pk.at("o")?.object, let sig = pk.at("sig")?.string.flatMap({ B64U.decode($0, length: 64) }),
+                  Signature.verify(ch.key, signature: sig, label: Label.sigHubChannelPush, message: (try? canonicalJSON(.object(po))) ?? Data())
+            else { return err(400, "bad_signature") }
+            guard po["kind"] == "hub.channel_push", po["hub_id"]?.string == hubID, po["channel_id"]?.string == sessionChannel,
+                  let issued = po["issued_ms"]?.int, let pubText = po["push_pub"]?.string, let pubBytes = B64U.decode(pubText, length: 65),
+                  let pub = try? AgreementPublicKey(x963: pubBytes), po["dev"] == true else { return err(400, "malformed") }
+            guard abs(issued - wall.nowMs) <= 120_000 else { return err(400, "stale_timestamp") }
+            guard pubBytes != ch.key.x963 else { return err(400, "malformed") }
+            if let held, issued <= held.issuedMs { return err(400, "replay") }
+            newKey = (pub, issued)
+        } else if held == nil { return err(400, "malformed") }
+        if let newKey { pushKeys[sessionChannel] = (newKey.0, newKey.1) }
+        pushTargets[sessionChannel] = (env, topic, tok)
+        return (200, ["registered": true])
+    }
+
+    /// The push target the phone registered for a channel, if any.
+    public func pushTarget(channelID: String) -> (env: String, topic: String, token: String)? { lock.withLock { pushTargets[channelID] } }
+    /// The `issued_ms` of the push key the hub holds for a channel.
+    public func heldPushIssuedMs(channelID: String) -> Int64? { lock.withLock { pushKeys[channelID]?.issuedMs } }
+    public func heldPushPub(channelID: String) -> AgreementPublicKey? { lock.withLock { pushKeys[channelID]?.pub } }
+
+    /// Revokes a channel at the hub (its web API then answers `channel_revoked`).
+    public func revoke(channelID: String) { lock.withLock { _ = revoked.insert(channelID) } }
+
+    /// The hub seals a hint to the channel's PUSH key (10.8.2) and returns the relay's `outer` as the JSON string APNs would carry, plus the
+    /// sealed message `c` for the mailbox. Nil when the hub holds no push key (it then sends nothing).
+    public func sealHint(channelID: String, type: String, ref: String?, tsMs: Int64? = nil, messageID: String? = nil)
+        -> (id: String, c: String, outer: String)? {
+        lock.withLock {
+            guard let held = pushKeys[channelID], let ch = ID16(hex: channelID), let hub = ID16(hex: hubID) else { return nil }
+            let id = ID16(hex: messageID ?? SystemEntropy().id16().hex)!
+            let pt = (try? canonicalJSON(["v": 2, "hv": 0, "kind": "hub.push", "type": .string(type), "ts_ms": .int(tsMs ?? wall.nowMs),
+                                          "ref": ref.map { JSONValue.string($0) } ?? .null]))!
+            let sealed = B64U.encode(try! Sealing.sealHubPush(to: held.pub, channel: ch, message: id, hub: hub, plaintext: pt))
+            let outer = try! canonicalJSON(["v": 2, "hub": .string(hubID), "ch": .string(channelID), "id": .string(id.hex), "c": .string(sealed)])
+            return (id.hex, sealed, String(decoding: outer, as: UTF8.self))
+        }
+    }
+
+    /// The held, signed channel certificate (what a phone puts in `Orch-Channel-Cert`).
+    public func certificate(channelID: String) -> JSONValue? { lock.withLock { channels[channelID]?.cert } }
 
     /// The Authorization headers the hub saw (tests assert no token leaks into a request to another place).
     public var seenAuthorizations: [String] { lock.withLock { _bearers } }

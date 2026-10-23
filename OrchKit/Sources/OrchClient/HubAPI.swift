@@ -109,6 +109,20 @@ public struct HubAPI: Sendable {
         return Bound(bearer: HubBearer(t), userID: u, channelID: c, expiresMs: e, channelCert: cert, card: card)
     }
 
+    /// `PUT /channels/{id}/push` (channel session of that channel): the APNs target, and the channel-key-signed `hub.channel_push` naming the push
+    /// key, or `nil` to keep the key the hub holds (an APNs token change needs no new key). `token` is the b64u APNs device token.
+    public func registerPush(bearer: HubBearer, channelID: String, env: String, topic: String, token: String, pushKey: JSONValue?) async throws {
+        guard Hex.decode(channelID, length: 16) != nil else { throw HubAPIError.badReply }
+        let o = try await call("PUT", "/channels/\(channelID)/push", bearer: bearer,
+                               body: ["env": .string(env), "topic": .string(topic), "token": .string(token), "push_key": pushKey ?? .null])
+        guard o["registered"] == true else { throw HubAPIError.badReply }
+    }
+
+    /// `GET /session` (who am I) with a channel session: a cheap authenticated question. A revoked channel answers `channel_revoked` (6.4).
+    public func confirmSession(_ bearer: HubBearer) async throws {
+        _ = try await call("GET", "/session", bearer: bearer)
+    }
+
     // MARK: the person's home (channel session; design B2)
 
     /// `GET /me/workspaces`: the workspaces this user has a part in, with role, mode and whether the host is online.
