@@ -451,9 +451,9 @@ extension FakeHub {
     }
 
     public static func needsRow(ws: String, mode: String = "full", item: String, kind: String, title: String, signable: Bool = false,
-                                summaryOnly: Bool = false) -> JSONValue {
+                                summaryOnly: Bool = false, key: String? = nil) -> JSONValue {
         var o: [String: JSONValue] = ["workspace_id": .string(ws), "mode": .string(mode), "item_id": .string(item), "kind": .string(kind),
-                                      "type": .string(kind), "key": .string("T-" + item), "title": .string(title), "deadline": .null,
+                                      "type": .string(kind), "key": .string(key ?? "T-" + item), "title": .string(title), "deadline": .null,
                                       "signable": .bool(signable)]
         if mode == "selective" { o["item_version"] = 1; o["summary_only"] = .bool(summaryOnly) }
         return .object(o)
@@ -532,7 +532,7 @@ extension FakeHub {
              .object(["key": "T-n2", "type": "feature", "title": "Export", "status": "plan", "labels": .array([]), "deadline": .null]), nil),
         ]
         for (item, kind, key, title, content, f) in items {
-            needsYouRows.append(Self.needsRow(ws: Self.wsShared, mode: "selective", item: item, kind: kind, title: title))
+            needsYouRows.append(Self.needsRow(ws: Self.wsShared, mode: "selective", item: item, kind: kind, title: title, key: key))
             itemAnswers[Self.wsShared + "/" + item] = answer(item, kind: kind, key: key, title: title, content: content, f1: f, hash: Self.sharedItemHash)
             sharedItems[item] = SharedItem(log: ticketLog, head: Self.sharedHead, itemHash: Self.sharedItemHash, f1: f)
         }

@@ -2,6 +2,7 @@
 import SwiftUI
 import OrchClient
 import OrchFakeHost
+import OrchProtocol
 import OrchUI
 
 /// The hub home (V3 dev; design B2): the workspaces the hub lists, a switcher, and what needs the person. Deliberately minimal: the mockup
@@ -269,7 +270,7 @@ struct HubItemScreen: View {
         switch d.kind {
         case .question(let q, _):
             TextField("Your answer", text: $reason, axis: .vertical).lineLimit(1...4).padding(OS.s3).orchCard().accessibilityIdentifier("hubitem.answer")
-            Button { signShared(d, sh) { .answerQuestion(log: $0, question: q, hash: d.hash, text: text) } } label: { Text("Send answer").frame(maxWidth: .infinity) }
+            Button { signShared(d, sh) { .answerQuestion(log: $0, question: q, hash: d.hash, text: text) } } label: { Text("Review answer").frame(maxWidth: .infinity) }
                 .buttonStyle(.orchProminent).disabled(text.isEmpty).accessibilityIdentifier("hubitem.send")
         case .gate(let g):
             Button("Approve") { signShared(d, sh) { .approveGate(log: $0, gate: g, hash: d.hash) } }.buttonStyle(.orchProminent).accessibilityIdentifier("hubitem.approve")
@@ -306,7 +307,7 @@ struct HubItemScreen: View {
                 }
             }
             .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
-            if let h = d.itemHash { Text(HubHomeScreen.safe("Shared content fingerprint: " + h)).font(OF.machine).foregroundStyle(OC.textMuted) }
+            if let h = d.itemHash { Text(HubHomeScreen.safe("Shared content reference: " + (HubSign.shortHash(h) ?? h))).font(OF.machine).foregroundStyle(OC.textMuted) }
             if let dec = d.decision, model.signEnabled(d.row) { decisionButtons(dec) }
             else { Text("Handled where it lives.").font(OF.meta).foregroundStyle(OC.textMuted).accessibilityIdentifier("hubitem.handled") }
         }
