@@ -398,6 +398,27 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         #expect(!wipe.pending && wipe.workToken().isValid)
     }
 
+    @Test func aWipeThatBeginsAfterTheRunningOnesLastReadStillRunsBeforeRunReturns() async throws {
+        let r = await WipeRig()
+        let journal = HookJournal()
+        let wipe = HubWipe(custody: r.custody, cache: r.rig.cache, journal: journal)
+        try r.rig.cache.write(Data("{}".utf8), hubID: String(repeating: "ab", count: 16))      // only a Reset removes another hub's cache
+        let joined = Box()
+        // the first run's loop ends on a read that finds nothing; a Reset begins at exactly that point and calls `run()`, which joins the dying task
+        let sawIntent = Counter()
+        journal.onRead = { i in
+            if i != nil { _ = sawIntent.next(); return }
+            guard sawIntent.value >= 5 else { return }       // only the loop's final read (after the last phase cleared the journal), not begin's first read
+            journal.onRead = nil
+            try? wipe.begin(.everything)
+            joined.task = Task { try await wipe.run() }
+        }
+        try await wipe.wipe(.hub(r.hub.hubID))
+        try await #require(joined.task).value
+        #expect(!wipe.pending && wipe.workToken().isValid)
+        #expect(r.rig.cache.hubIDs.isEmpty, "the Reset ran; it was not reported done by joining a task that had already ended")
+    }
+
     @Test func theJournalSurvivesInUserDefaults() throws {
         let suite = "orch.test.hubwipe." + UUID().uuidString
         let d = try #require(UserDefaults(suiteName: suite))
@@ -478,4 +499,10 @@ private final class Counter: @unchecked Sendable {
     private var n = 0
     func next() -> Int { lock.withLock { n += 1; return n } }
     var value: Int { lock.withLock { n } }
+}
+
+private final class Box: @unchecked Sendable {
+    private let lock = NSLock()
+    private var t: Task<Void, Error>?
+    var task: Task<Void, Error>? { get { lock.withLock { t } } set { lock.withLock { t = newValue } } }
 }

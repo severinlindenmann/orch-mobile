@@ -129,8 +129,11 @@ public final class HubWipe: Sendable {
     public func resume() async throws { if pending { try await run() } }
 
     /// Runs the pending wipe from its persisted phase. One run at a time: a second caller joins the first.
+    ///
+    /// Repeats while a wipe is pending: a wipe that began after the running one's last journal read joins that task, which then ends without
+    /// having run it (L2-B6d3-1); the loop runs it before this call returns.
     public func run() async throws {
-        try await running.join { Task { try await self.runPhases() } }
+        repeat { try await running.join { Task { try await self.runPhases() } } } while pending
     }
 
     private func runPhases() async throws {
