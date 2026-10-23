@@ -105,103 +105,6 @@ public struct WireRequest: Sendable, Equatable, CustomStringConvertible {
     public var description: String { "WireRequest(\(method) \(target))" }
 }
 
-/// A bearer token. It never appears in `description`, `debugDescription`, `dump` or a `Mirror`, so logging a session cannot leak it.
-public struct RelaySession: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
-    public let token: String
-    public init(token: String) { self.token = token }
-    public var description: String { "RelaySession(<redacted>)" }
-    public var debugDescription: String { description }
-    public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
-}
-
-public struct PairRoute: Sendable, Equatable {
-    public let workspaceID: ID16, offerID: ID16, requestID: ID16
-    public init(workspaceID: ID16, offerID: ID16, requestID: ID16) { self.workspaceID = workspaceID; self.offerID = offerID; self.requestID = requestID }
-}
-
-public struct BridgeRoute: Sendable, Equatable {
-    public let workspaceID: ID16, requestID: ID16
-    public init(workspaceID: ID16, requestID: ID16) { self.workspaceID = workspaceID; self.requestID = requestID }
-}
-
-public enum DropPart: String, Sendable { case descriptor, wraps, blob }
-
-/// The seam between the client and any relay (host-api section 1). Bytes in, bytes out: no crypto here. Constructed with
-/// a fixed `RealmContext` and allowed origin; callers cannot override either. `context` is the transport's own realm and
-/// origin: the client binds a login to it (it signs `context.origin`, and only with an identity of `context.realm`), so a
-/// wrapper that forwards to another transport must forward the context of the transport that really carries the bytes.
-public protocol RelayTransport: Sendable {
-    var context: RealmContext { get }
-    func challenge() async throws -> WireReply
-    func login(_ body: Data) async throws -> WireReply
-    func pairingPost(_ envelope: Data, route: PairRoute) async throws -> WireReply
-    /// `wait` is the long-poll seconds (0...25, section 19); nil sends no `wait` (an immediate answer).
-    func pairingPoll(route: PairRoute, after: UInt64?, wait: Int?) async throws -> WireReply
-    /// `permit` is non-nil exactly for a person-event write (C2b); a transport that carries it to a relay refuses one that is not a
-    /// live Secure Enclave permit, and the in-process Demo transport refuses any that is not a Demo one. Reads pass nil.
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession, permit: WritePermit?) async throws -> WireReply
-    /// See the extension: nil unless the transport is the in-process Demo one.
-    var processLocalSender: ObjectIdentifier? { get }
-    func bridgePoll(route: BridgeRoute, after: UInt64?, wait: Int?, session: RelaySession) async throws -> WireReply
-    func grants(workspaceID: ID16, epoch: UInt32?, session: RelaySession) async throws -> WireReply
-    func memberList(workspaceID: ID16, session: RelaySession) async throws -> WireReply
-    func card(workspaceID: ID16, session: RelaySession) async throws -> WireReply
-    func cardKey(workspaceID: ID16, cardSequence: UInt32, session: RelaySession) async throws -> WireReply
-    func registerPush(_ body: Data, session: RelaySession) async throws -> WireReply
-    func unregisterPush(_ body: Data, session: RelaySession) async throws -> WireReply
-    /// A revocation record is a public, PK-signed object: this route takes no session (a revoked device has none).
-    /// `after` is the relay's opaque page cursor (`next` of the previous page) and `limit` the page size (1...32); nil sends neither.
-    func revocation(deviceID: ID16, after: String?, limit: Int?) async throws -> WireReply
-    /// Ends a session (`POST /v2/session/logout`). Best effort: callers ignore failure. Transports without the route keep the default.
-    func logout(session: RelaySession) async throws -> WireReply
-    func dropPut(objectID: ID16, ifMatch: UInt32, body: Data, session: RelaySession) async throws -> WireReply
-    /// The same `PUT` with the frame streamed from `bodyFile` (the sender never holds it whole). Transports without streaming read it.
-    func dropPut(objectID: ID16, ifMatch: UInt32, bodyFile: URL, session: RelaySession) async throws -> WireReply
-    func dropList(_ query: Data, session: RelaySession) async throws -> WireReply
-    func dropGet(objectID: ID16, version: UInt32, part: DropPart, session: RelaySession) async throws -> WireReply
-    /// `GET /v2/drop/{o}/descriptors?after=&limit=` (protocol 19.9): signed descriptors ascending by version, `after` exclusive.
-    func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply
-
-    // The primary device's side of the cert_pending queues and the account route (section 19.1, 19.3).
-    /// `GET /v2/persons/{person}/cert-requests[?wait=s]` with the primary's device session (D(p), addressee only).
-    func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply
-    /// `POST /v2/cert-requests/{id}/challenge` with the primary's device session; the body is `cj({"challenge": signed})`.
-    func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply
-    /// `POST /v2/cert-requests/{id}/rejection` with the primary's device session; the body is `cj({"rejection": signed})`.
-    func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply
-    /// `POST /v2/accounts`, session-less (P3-D3).
-    func createAccount(_ body: Data) async throws -> WireReply
-}
-
-/// Transports that do not carry the primary's routes (test doubles that wrap only the pairing and workspace calls) refuse them
-/// before any I/O.
-extension RelayTransport {
-    public func certRequests(person: ID16, wait: Int?, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
-    public func postCertChallenge(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
-    public func postCertRejection(requestID: ID16, _ body: Data, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
-    public func createAccount(_ body: Data) async throws -> WireReply { throw TransportError.invalidArgument }
-    public func dropDescriptors(objectID: ID16, after: UInt32?, limit: Int?, session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
-    public func dropPut(objectID: ID16, ifMatch: UInt32, bodyFile: URL, session: RelaySession) async throws -> WireReply {
-        try await dropPut(objectID: objectID, ifMatch: ifMatch, body: Data(contentsOf: bodyFile), session: session)
-    }
-}
-
-public extension RelayTransport {
-    /// The identity of the in-process sender behind this transport (the FakeRelay object), nil for any transport that is not one. A
-    /// `ProcessLocalWriteGrant` admits only the transport whose sender it was minted with.
-    var processLocalSender: ObjectIdentifier? { nil }
-    /// A post that is not a write (a read, a declaration).
-    func bridgePost(_ envelope: Data, route: BridgeRoute, session: RelaySession) async throws -> WireReply {
-        try await bridgePost(envelope, route: route, session: session, permit: nil)
-    }
-    func pairingPoll(route: PairRoute, after: UInt64?) async throws -> WireReply { try await pairingPoll(route: route, after: after, wait: nil) }
-    func bridgePoll(route: BridgeRoute, after: UInt64?, session: RelaySession) async throws -> WireReply {
-        try await bridgePoll(route: route, after: after, wait: nil, session: session)
-    }
-    func revocation(deviceID: ID16) async throws -> WireReply { try await revocation(deviceID: deviceID, after: nil, limit: nil) }
-    func logout(session: RelaySession) async throws -> WireReply { throw TransportError.invalidArgument }
-}
-
 /// Something that carries one request to a relay and brings back its reply (the HTTPS client later, the fake now).
 ///
 /// `origin` is the one origin this sender talks to; the transport admits it against its realm context on every send.
@@ -212,13 +115,14 @@ public protocol RequestSender: Sendable {
     func send(_ request: WireRequest) async throws -> WireReply
 }
 
-/// A sender that stays inside this process (the FakeRelay, or a test double standing in for it): the only kind a Demo realm may use.
-/// Package-scoped on purpose: conformance is an in-package decision, and no sender that opens a socket conforms.
-package protocol InProcessDemoSender: RequestSender {}
+/// Why an origin was refused. Always raised before any request is made.
+public enum OriginViolation: Error, Equatable, Sendable {
+    /// Not a section 7.1 origin (https, no userinfo, path, query or fragment).
+    case invalidOrigin
+}
 
 /// Thrown by a transport. HTTP failures are not here: they are `WireReply` values.
 public enum TransportError: Error, Equatable, Sendable {
-    case realm(RealmViolation)
     /// A grants epoch of 0 (reserved for pairing envelopes) or a counter outside its range, refused before any I/O.
     case invalidEpoch
     /// A session token or id that cannot be put on the wire safely.

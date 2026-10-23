@@ -21,6 +21,7 @@ final class HubPushDriver {
 
     @ObservationIgnored private var poll: Task<Void, Never>?
     @ObservationIgnored private var running = false
+    @ObservationIgnored private var permissionAsked = false
     @ObservationIgnored private let runtime: HubRuntime
 
     init(runtime: HubRuntime = .shared) {
@@ -64,10 +65,22 @@ final class HubPushDriver {
     /// A push arrived while the app was in the foreground.
     func pushArrived() { Task { await tick() } }
 
+    /// Once per process, and only on a real device with a paired hub: the system permission prompt, then APNs registration (U10: never at launch,
+    /// never before a hub is paired). The Simulator has no APNs; it must not raise a system alert in the middle of a UI test.
+    private func askForPushPermission() async {
+        #if !targetEnvironment(simulator)
+        guard !permissionAsked, (try? runtime.custody.pairedHubs())?.first != nil else { return }
+        permissionAsked = true
+        let state = await PushPermission.requestIfNeeded()
+        if state == .authorized || state == .provisional { PushPermission.registerForAPNs() }
+        #endif
+    }
+
     func tick() async {
         let work = runtime.wipe.workToken()          // the wipe barrier (HubWorkBarrier): a unit of work is one tick
         guard !running, work.isValid else { return }
         running = true; defer { running = false }
+        await askForPushPermission()
         await registerPush()
         guard work.isValid else { return }           // a wipe began during the registration: no catch-up
         let r = await runtime.push.catchUp()

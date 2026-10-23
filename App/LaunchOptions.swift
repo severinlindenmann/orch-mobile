@@ -1,33 +1,15 @@
 import Foundation
 
+/// Launch flags. Release builds ignore every one of them; the hub launch arguments (`--hub-pair`, `--hub-fake`, `--hub-sign`) are read
+/// by `HubLaunch` and exist only in DEBUG.
 struct LaunchOptions: Equatable, Sendable {
     let uiTesting: Bool
-    let demo: Bool
-    /// DEBUG-only deep route for UI tests and screenshots (A13), e.g. `pair/sas`, `sign/q2`.
-    let initialRoute: String?
     /// DEBUG-only `--appearance dark|light`, so UI tests do not depend on simulator state.
     let appearance: String?
-    /// DEBUG-only `--push-harness`: shows the NSE test harness instead of Home (push simulator tests, see UITests/PushNSETests).
+    /// DEBUG-only `--push-harness`: shows the NSE test harness instead of the hub (push simulator tests, see UITests/PushNSETests).
     let pushHarness: Bool
-    /// DEBUG-only `--push-material <base64url>`: a test `PushMaterial` item for the fixture workspace A, installed into the `.push` keychain group.
+    /// DEBUG-only `--push-material <base64url>`: a test `PushMaterial` item installed into the `.push` keychain group.
     let pushMaterial: String?
-    /// DEBUG-only: seed a quarantined share job (destination removed) so UI tests can reach the redirect flow.
-    let seedShareQuarantine: Bool
-    /// DEBUG-only: no automatic share import on activation, so a test can observe the extension-written job first.
-    let holdShareImport: Bool
-    /// Obsolete: Demo workspaces are always offered to the share extension now (TestFlight runs Demo). Kept so old test arguments still parse.
-    let shareDemoTargets: Bool
-    /// DEBUG-only `--ui-preview`: the in-memory PreviewWorld fake instead of the real Demo stack (fallback for layout work).
-    let uiPreview: Bool
-    /// DEBUG-only `--demo-seed`: pairs the two Demo workspaces at launch (playing the Demo humans' explicit approvals), for UI tests.
-    let demoSeed: Bool
-    /// DEBUG-only `--hold-reconcile`: no timed background reconcile of stored decisions, so a UI test drives "Check again" itself
-    /// instead of racing the 20 s UI-test timer.
-    let holdReconcile: Bool
-    /// DEBUG-only `--live-test-relay`: Live runs on a temporary disk and an in-memory keychain behind a relay that never answers.
-    let liveTestRelay: Bool
-    /// DEBUG-only `--open-url <orch:// or https:// link>`: delivered to the same intake as `onOpenURL`, once the realm has booted.
-    let openURL: String?
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         #if DEBUG
@@ -37,47 +19,21 @@ struct LaunchOptions: Equatable, Sendable {
         #endif
     }
 
-    private init(uiTesting: Bool, demo: Bool, initialRoute: String?, appearance: String?, pushHarness: Bool = false, pushMaterial: String? = nil,
-                 seedShareQuarantine: Bool = false, holdShareImport: Bool = false, shareDemoTargets: Bool = false,
-                 uiPreview: Bool = false, demoSeed: Bool = false, holdReconcile: Bool = false,
-                 liveTestRelay: Bool = false, openURL: String? = nil) {
-        self.holdReconcile = holdReconcile
-        self.liveTestRelay = liveTestRelay
-        self.openURL = openURL
-        self.uiPreview = uiPreview
-        self.demoSeed = demoSeed
+    private init(uiTesting: Bool, appearance: String?, pushHarness: Bool = false, pushMaterial: String? = nil) {
+        self.uiTesting = uiTesting
+        self.appearance = appearance
         self.pushHarness = pushHarness
         self.pushMaterial = pushMaterial
-        self.uiTesting = uiTesting
-        self.demo = demo
-        self.initialRoute = initialRoute
-        self.appearance = appearance
-        self.seedShareQuarantine = seedShareQuarantine
-        self.holdShareImport = holdShareImport
-        self.shareDemoTargets = shareDemoTargets
     }
 
     /// Release builds (`debug == false`) ignore every flag.
     static func parse(arguments: [String], debug: Bool) -> LaunchOptions {
-        guard debug else { return LaunchOptions(uiTesting: false, demo: false, initialRoute: nil, appearance: nil) }
-        var route: String?
+        guard debug else { return LaunchOptions(uiTesting: false, appearance: nil) }
         var appearance: String?
         if let i = arguments.firstIndex(of: "--appearance"), arguments.indices.contains(i + 1) { appearance = arguments[i + 1] }
-        if let i = arguments.firstIndex(of: "--initial-route"), arguments.indices.contains(i + 1) {
-            route = arguments[i + 1]
-        }
         var material: String?
         if let i = arguments.firstIndex(of: "--push-material"), arguments.indices.contains(i + 1) { material = arguments[i + 1] }
-        var openURL: String?
-        if let i = arguments.firstIndex(of: "--open-url"), arguments.indices.contains(i + 1) { openURL = arguments[i + 1] }
-        return LaunchOptions(uiTesting: arguments.contains("--ui-testing"),
-                             demo: arguments.contains("--demo"), initialRoute: route, appearance: appearance,
-                             pushHarness: arguments.contains("--push-harness"), pushMaterial: material,
-                             seedShareQuarantine: arguments.contains("--seed-share-quarantine"),
-                             holdShareImport: arguments.contains("--hold-share-import"),
-                             shareDemoTargets: arguments.contains("--share-demo-targets"),
-                             uiPreview: arguments.contains("--ui-preview"), demoSeed: arguments.contains("--demo-seed"),
-                             holdReconcile: arguments.contains("--hold-reconcile"),
-                             liveTestRelay: arguments.contains("--live-test-relay"), openURL: openURL)
+        return LaunchOptions(uiTesting: arguments.contains("--ui-testing"), appearance: appearance,
+                             pushHarness: arguments.contains("--push-harness"), pushMaterial: material)
     }
 }
