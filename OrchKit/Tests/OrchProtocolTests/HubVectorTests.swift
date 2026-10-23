@@ -147,4 +147,33 @@ enum HubVectors {
         #expect(throws: Refusal.devMismatch) { try check(obj { $0["dev"] = false }) }
         #expect(throws: Refusal.devRefused) { _ = try HubVerifier(devMode: false).checkRegistrationChallenge(obj(), challengeID: nonce, hubID: hubID, userID: user, ownKey: key, nowMs: now) }
     }
+
+    @Test func renderCasesMatchTheHub() {
+        let cases = HubVectors.cases("render")
+        #expect(cases.count == 3)
+        for c in cases {
+            #expect(HubText.render(c["args"]["text"].str) == c["expect"]["ok"]["shown"].str, "\(c["name"].str)")
+        }
+        // Idempotent, and the escapes are plain ASCII.
+        #expect(HubText.render(HubText.render("a\u{202E}b\u{3164}")) == "a<U+202E>b<U+3164>")
+        #expect(HubText.render("\u{0}\u{7F}x") == "<U+0000><U+007F>x")
+    }
+
+    /// L2-B2-1: the result must not depend on the OS's Unicode tables. Every scalar either stays itself or becomes `<U+XXXX>`; anything
+    /// assigned after Unicode 16.0 (or of unknown age) is escaped; and the vector scalars agree.
+    @Test func renderSweepIsPinnedToUnicode16() {
+        var escapedLater = 0
+        for v in UInt32(0)...0x10FFFF {
+            guard let u = Unicode.Scalar(v) else { continue }
+            let out = HubText.render(String(u))
+            if out == String(u) { continue }
+            #expect(out.hasPrefix("<U+") && out.hasSuffix(">") && out.utf8.allSatisfy { $0 < 0x80 }, "\(v)")
+            if let a = u.properties.age, a.major > 16, u.properties.generalCategory != .unassigned { escapedLater += 1 }
+        }
+        // a scalar assigned in Unicode 17 is escaped even where the runtime knows it (U+088F, U+1ACF); plain text is not
+        #expect(HubText.render("\u{088F}") == "<U+088F>")
+        #expect(HubText.render("\u{1ACF}") == "<U+1ACF>")
+        #expect(HubText.render("Zürich é 日本 😀") == "Zürich é 日本 😀")
+        _ = escapedLater
+    }
 }

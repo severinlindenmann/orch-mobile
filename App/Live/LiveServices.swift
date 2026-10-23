@@ -1234,6 +1234,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         if let backend = KeychainBackend.fromBundle() {
             for g in [KeychainGroup.keys, .push] { try? SecretVault(group: g, backend: backend).wipeHubItems(realm: .live) }
         }
+        #if DEBUG
+        HubRuntime.removeAllCaches()
+        #endif
         leaveRealm(thenDemo: false)
     }
     func exitDemo() { leaveRealm(thenDemo: false) }
