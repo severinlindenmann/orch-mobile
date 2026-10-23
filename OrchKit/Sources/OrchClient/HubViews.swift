@@ -57,7 +57,17 @@ public struct HubItemDetail: Sendable, Equatable {
 
 /// The decision an item offers, from the hub's item answer (`log`, `hash`, and the content's `question` / `options` / `gate`).
 public struct HubItemDecision: Sendable, Equatable {
-    public struct Option: Sendable, Equatable { public let key: String; public let label: String }
+    /// One option of a verified `choice` question: the title (`label`), and the one-line text, `[label, value]` facts and cost the hash binds.
+    public struct Option: Sendable, Equatable {
+        public let key: String
+        public let label: String
+        public let text: String?
+        public let facts: [F1Fact]
+        public let cost: String?
+        public init(key: String, label: String, text: String? = nil, facts: [F1Fact] = [], cost: String? = nil) {
+            self.key = key; self.label = label; self.text = text; self.facts = facts; self.cost = cost
+        }
+    }
     public enum Kind: Sendable, Equatable {
         case question(id: String, options: [Option])
         case gate(String)
@@ -154,7 +164,7 @@ enum HubViewParse {
         if r.mode == .selective {
             // a summary is never signable; a shared item is signable only when its own `f1` names the target (protocol 8.6)
             dec = r.summaryOnly || r.kind == "needs_you" ? nil : sharedDecision(o, content: content, kind: r.kind)
-        } else { dec = r.signable ? decision(o, content: content, kind: r.kind) : nil }
+        } else { dec = r.signable ? decision(o, content: content, kind: r.kind, workspace: ID16(hex: r.workspaceID)) : nil }
         return HubItemDetail(row: r, lines: lines, itemHash: hash, decision: dec)
     }
 
@@ -163,18 +173,16 @@ enum HubViewParse {
     static func sharedDecision(_ o: [String: JSONValue], content: JSONValue, kind: String) -> HubItemDecision? {
         guard let item = o["item_id"]?.string, HubSign.isItemID(item), let ih = o["item_hash"]?.string, HubSign.isHash(ih),
               let log = o["chain"]?.object?["log"]?.string, HubSign.isULID(log), let f1 = o["f1"]?.object, let roster = f1["roster_v"]?.int, roster >= 0,
-              let c = content.object else { return nil }
+              content.object != nil else { return nil }
         let gates = f1["gates"]?.object ?? [:], questions = f1["questions"]?.object ?? [:]
         guard gates.count + questions.count == 1 else { return nil }
         func shared(_ g: (gen: Int64, policy: String, source: JSONValue?)?) -> HubItemDecision.Shared {
             .init(item: item, itemHash: ih, rosterV: roster, gateGen: g?.gen, policyHash: g?.policy, sourceSha: g?.source)
         }
-        if let (qid, v) = questions.first {
-            // a question answer on a `question` item, about the question the item is about; options are not shared, so there are none
-            guard kind == "question", c["id"]?.string == qid, qid.hasPrefix("Q"), qid.count > 1, qid.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
-                  let h = v.object?["hash"]?.string, HubSign.isHash(h) else { return nil }
-            return HubItemDecision(log: log, hash: h, kind: .question(id: qid, options: []), shared: shared(nil))
-        }
+        // A shared question offers nothing: the answer would be signed over the hub's `f1.questions[Q].hash`, which binds options and spec that a
+        // shared item never carries, so the phone could neither show nor check them ("Handled where it lives"). It becomes answerable only when
+        // a shared item carries the raw text, options and spec and the phone runs the same checks as `decision()`.
+        if !questions.isEmpty { return nil }
         guard kind == "ticket", let (gate, v) = gates.first, let e = v.object, let h = e["hash"]?.string, HubSign.isHash(h), let gen = e["gen"]?.int, gen >= 0,
               let pol = e["policy_hash"]?.string, HubSign.isHash(pol) else { return nil }
         let src = e["source_sha"]
@@ -186,27 +194,27 @@ enum HubViewParse {
         return HubItemDecision(log: log, hash: h, kind: gate == "verify" ? .verdict : .gate(gate), shared: shared((gen, pol, src)))
     }
 
-    static func decision(_ o: [String: JSONValue], content: JSONValue, kind: String) -> HubItemDecision? {
+    static func decision(_ o: [String: JSONValue], content: JSONValue, kind: String, workspace: ID16?) -> HubItemDecision? {
         guard let log = o["log"]?.string, HubSign.isULID(log), let hash = o["hash"]?.string, HubSign.isHash(hash), let c = content.object else { return nil }
         switch kind {
         case "question":
-            guard let q = c["question"]?.string, q.hasPrefix("Q"), q.count > 1, q.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
-            let opts: [HubItemDecision.Option] = (c["options"]?.array ?? []).prefix(8).compactMap { v in
-                if let s = v.string, isOptionKey(s) { return .init(key: s, label: HubText.render(s)) }
-                guard let o = v.object, let k = o["key"]?.string, isOptionKey(k) else { return nil }
-                return .init(key: k, label: HubText.render(o["label"]?.string ?? k))
-            }
-            return opts.isEmpty ? nil : HubItemDecision(log: log, hash: hash, kind: .question(id: q, options: opts), shared: nil)
+            guard let q = c["question"]?.string, q.hasPrefix("Q"), q.count > 1, q.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let qid = o["item_id"]?.string, HubSign.isItemID(qid), let workspace,
+                  (try? F1Question.questionID(question: q, ticketUID: log, workspace: workspace))?.bytesEqual(qid) == true else { return nil }
+            // Design #1123 rev 4: the phone hashes the RAW question exactly as the hub sent it (`text`, `options`, `spec` verbatim) and offers an
+            // answer only when that is the row's hash. Unknown kind or key, a bad limit, a hash mismatch, a `text` question (no hub input yet) and any
+            // question with a part the buttons do not show (details, why, recommended, option text, facts) offer nothing: the item is shown and answered on the Mac. Never a blind Answer button.
+            guard let content = try? F1Question.Content(text: c["text"], options: c["options"], spec: c["spec"]), content.phoneShowsEverything,
+                  let mine = try? F1Question.questionHash(qid: qid, ticketUID: log, content: content), mine.bytesEqual(hash) else { return nil }
+            let opts = content.options.map { HubItemDecision.Option(key: $0.key, label: HubText.render($0.label), text: $0.text.map(HubText.render),
+                                                                    facts: $0.facts, cost: $0.cost) }
+            return HubItemDecision(log: log, hash: hash, kind: .question(id: q, options: opts), shared: nil)
         case "gate":
             guard let g = c["gate"]?.string, ["requirements", "plan", "code"].contains(g) else { return nil }
             return HubItemDecision(log: log, hash: hash, kind: .gate(g), shared: nil)
         case "verdict": return HubItemDecision(log: log, hash: hash, kind: .verdict, shared: nil)
         default: return nil
         }
-    }
-
-    static func isOptionKey(_ s: String) -> Bool {
-        (1...64).contains(s.utf8.count) && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F }
     }
 
     /// Scalars only, at most three levels deep and `maxLines` lines; anything else is not shown (and nothing is invented).

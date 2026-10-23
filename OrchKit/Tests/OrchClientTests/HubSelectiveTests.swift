@@ -57,7 +57,7 @@ private struct Rig {
     func action(_ item: String, text: String = "Go with EU West") async throws -> HubSignAction {
         let d = try #require(try await detail(item).decision)
         let sel: HubSignAction.Selective = switch d.kind {
-        case .question(let q, _): .answerQuestion(log: d.log, question: q, hash: d.hash, text: text)
+        case .question: throw TransportError.disconnected       // a shared question offers no decision
         case .gate(let g): .approveGate(log: d.log, gate: g, hash: d.hash)
         case .verdict: .giveVerdict(log: d.log, outcome: "pass", hash: d.hash, text: nil)
         }
@@ -99,21 +99,11 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
 
     // MARK: a shared question
 
-    @Test func aSharedQuestionIsAnsweredWithTextOnly() async throws {
+    /// The hub's `f1` hash of a shared question binds options and spec the item never carries: the phone offers nothing (design #1123).
+    @Test func aSharedQuestionOffersNothing() async throws {
         let r = try await Rig()
-        let d = try #require(try await r.detail(FakeHub.sharedQuestionItem).decision)
-        guard case .question(let q, let options) = d.kind else { Issue.record("not a question"); return }
-        #expect(q == "Q2" && options.isEmpty && d.hash == FakeHub.sharedQuestionHash && d.shared?.item == FakeHub.sharedQuestionItem)
-        let a = try await r.action(FakeHub.sharedQuestionItem)
-        let sent = try #require(a.json.object)
-        #expect(sent["item"]?.string == FakeHub.sharedQuestionItem && sent["option"] == nil && sent["text"]?.string == "Go with EU West")
-        let p = try await r.prepare(a)
-        #expect(p.facts.selective && p.facts.sentence == "Answer question Q2: Go with EU West")
-        #expect(p.facts.fields.contains { $0.name == "item_hash" && $0.value == FakeHub.sharedItemHash })   // shown under "Signed details"
-        #expect(Face.evaluations == 0)
-        let receipt = try await r.session.confirm(preparedID: p.preparedID)
-        #expect(receipt.type == "question.answered" && Face.evaluations == 1)
-        #expect(r.hub.signedEvents.map(\.type) == ["question.answered"])
+        let d = try await r.detail(FakeHub.sharedQuestionItem)
+        #expect(d.decision == nil)
     }
 
     @Test func aSharedGateAndACodeGateAreSignedWithTheirValues() async throws {
@@ -153,36 +143,11 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
     }
 
-    // MARK: options are refused
-
-    @Test func anOptionOnASelectiveAnswerIsRefused() async throws {
-        let r = try await Rig()
-        let a = try await r.action(FakeHub.sharedQuestionItem)
-        // a hub that adds an option the person never saw
-        r.hub.faults.selectiveOption = true
-        #expect(await failure { try await r.prepare(a) } == .changed(code: "event_changed"))   // an option the action did not send
-        #expect(await failure { try await r.session.confirm(preparedID: r.hub.lastPreparedID ?? "none") } == .notLive)
-        #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
-        // a hand-made action with an option: the hub refuses it (and the phone's own check refuses the answer)
-        r.hub.faults.selectiveOption = false
-        let d = try #require(try await r.detail(FakeHub.sharedQuestionItem).decision)
-        let bad = HubSignAction.answerQuestion(log: d.log, question: "Q2", hash: d.hash, option: "yes", text: "x")
-        var o = try #require(bad.json.object); o["item"] = .string(FakeHub.sharedQuestionItem)
-        #expect(throws: Refusal.malformed) { try HubSign.checkSelectiveBuilt(action: .object(o), event: .object(["type": "question.answered", "item_hash": .string(FakeHub.sharedItemHash), "text": "x"])) }
-        // and `facts` refuses a selective answer that carries an option, or has no text, however it reached the phone
-        for extra: [String: JSONValue] in [["option": "yes", "text": "x"], ["option": "yes"]] {
-            var e: [String: JSONValue] = ["type": "question.answered", "question": "Q2", "hash": .string(FakeHub.sharedQuestionHash), "item_hash": .string(FakeHub.sharedItemHash)]
-            e.merge(extra) { $1 }
-            let ctx: JSONValue = .object(["contract": 1, "suite": 2, "workspace_id": .string(FakeHub.wsShared), "log": .string(r.hub.ticketLog), "event": .object(e)])
-            #expect(throws: Refusal.malformed) { try HubSign.facts(ctx: ctx) }
-        }
-    }
-
     // MARK: item_hash
 
     @Test func itemHashIsRequiredInSelectiveMode() async throws {
         let r = try await Rig()
-        let a = try await r.action(FakeHub.sharedQuestionItem)
+        let a = try await r.action(FakeHub.sharedGateItem)
         r.hub.faults.dropItemHash = true
         #expect(await failure { try await r.prepare(a) } == .changed(code: "event_changed"))
         #expect(await failure { try await r.session.confirm(preparedID: r.hub.lastPreparedID ?? "none") } == .notLive)
@@ -225,25 +190,21 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
 
     @Test func anItemOrTargetNotInF1IsRefused() async throws {
         let r = try await Rig()
-        let d = try #require(try await r.detail(FakeHub.sharedQuestionItem).decision)
-        let bound = try #require(d.shared)
-        // a question the item's f1 does not name
-        let other = HubSignAction.shared(bound: bound, .answerQuestion(log: d.log, question: "Q9", hash: d.hash, text: "x"))
-        #expect(await failure { try await r.prepare(other) } == .hub(code: "unknown_item"))
+        let g = try #require(try await r.detail(FakeHub.sharedGateItem).decision)
+        let bound = try #require(g.shared)
         // an item the hub does not hold, and the right item on another log
-        let ghost = HubSignAction.shared(bound: rebound(bound, String(repeating: "00", count: 16)), .answerQuestion(log: d.log, question: "Q2", hash: d.hash, text: "x"))
+        let ghost = HubSignAction.shared(bound: rebound(bound, String(repeating: "00", count: 16)), .approveGate(log: g.log, gate: "plan", hash: g.hash))
         #expect(await failure { try await r.prepare(ghost) } == .hub(code: "unknown_item"))
-        let log = HubSignAction.shared(bound: bound, .answerQuestion(log: "01J9ZP0000000000000000OTHR", question: "Q2", hash: d.hash, text: "x"))
+        let log = HubSignAction.shared(bound: bound, .approveGate(log: "01J9ZP0000000000000000OTHR", gate: "plan", hash: g.hash))
         #expect(await failure { try await r.prepare(log) } == .hub(code: "unknown_item"))
         // a gate the f1 does not name: the plan item has no `code` entry
-        let g = try #require(try await r.detail(FakeHub.sharedGateItem).decision)
         let code = HubSignAction.shared(bound: try #require(g.shared), .approveGate(log: g.log, gate: "code", hash: g.hash))
         #expect(await failure { try await r.prepare(code) } == .hub(code: "unknown_item"))
         // a reviewed hash that is not the f1's is `event_changed`
         let stale = HubSignAction.shared(bound: try #require(g.shared), .approveGate(log: g.log, gate: "plan", hash: FakeHub.contentHash))
         #expect(await failure { try await r.prepare(stale) } == .changed(code: "event_changed"))
         // the shared item without f1: the hub cannot build (`unavailable`), and the phone never offered it
-        let none = HubSignAction.shared(bound: rebound(bound, FakeHub.sharedNoF1Item), .approveGate(log: d.log, gate: "plan", hash: d.hash))
+        let none = HubSignAction.shared(bound: rebound(bound, FakeHub.sharedNoF1Item), .approveGate(log: g.log, gate: "plan", hash: g.hash))
         #expect(await failure { try await r.prepare(none) } == .hub(code: "unavailable"))
         #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
     }
@@ -281,7 +242,7 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         let q = f1([:], ["Q1": .object(["hash": h])])
         #expect(HubViewParse.sharedDecision(item(q), content: .object(["id": "Q2"]), kind: "question") == nil)
         #expect(HubViewParse.sharedDecision(item(q), content: .object(["id": "Q1"]), kind: "ticket") == nil)
-        #expect(HubViewParse.sharedDecision(item(q), content: .object(["id": "Q1"]), kind: "question")?.kind == .question(id: "Q1", options: []))
+        #expect(HubViewParse.sharedDecision(item(q), content: .object(["id": "Q1"]), kind: "question") == nil)   // a shared question offers nothing (see aSharedQuestionOffersNothing)
         // an item id that is not 32 hex cannot be named in an action
         var bad = item(f1(["plan": gate(nil)])); bad["item_id"] = "s1"
         #expect(HubViewParse.sharedDecision(bad, content: .object([:]), kind: "ticket") == nil)

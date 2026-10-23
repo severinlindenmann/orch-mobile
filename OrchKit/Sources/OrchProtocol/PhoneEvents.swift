@@ -91,6 +91,8 @@ public struct SignedPhoneEvent: Equatable, Sendable {
 /// Builds and signs the two phone person events. The result depends only on its inputs (the id, the snapshot values and the signer).
 public enum PhoneEvents {
     public static let maxAnswerTextBytes = 4096
+    /// An answer's `text` (Other, a note, or the answer to a `text` question): 1..1000 scalars (core `ANSWER_MAX`).
+    public static let maxAnswerTextScalars = 1000
     public static let maxTitleScalars = 200
     public static let ticketTypes = ["feature", "bug", "chore", "spike", "epic"]
 
@@ -104,6 +106,12 @@ public enum PhoneEvents {
 
     public enum Failure: Error, Equatable, Sendable {
         case badID, badTicketUID, badRoster, badBase, notOpen, unknownOption, noAnswer
+        /// A text of the person's own without an option, on a choice question that does not bind `allow_other`.
+        case otherNotAllowed
+        /// An option chosen on a `text` question (it has none).
+        case optionOnTextQuestion
+        /// The answer text breaks the plain-text rules (core `check_plain`): invisible characters, a tab-less control, ...
+        case textRefused
         case text(F1Text.Violation), textTooLong, emptyText, titleLength
         case badKey, badType
         /// `validateSigned`: a field set, type or value outside P1 to P5.
@@ -119,7 +127,7 @@ public enum PhoneEvents {
     }
 
     /// An event as the phone would sign it, with every field the signature covers and no `sig`: what `AutoResign.decide` compares before a
-    /// key is used. Only `unsignedAnswer` / `unsignedCreate` build one, and only `sign` turns it into a `SignedPhoneEvent`.
+    /// key is used. Only `unsignedCreate` and the gate builders build one, and only `sign` turns it into a `SignedPhoneEvent`.
     public struct UnsignedPhoneEvent: Equatable, Sendable {
         public let kind: SignedPhoneEvent.Kind
         public let log: String
@@ -135,36 +143,6 @@ public enum PhoneEvents {
     /// Phone-authored text (title, free-text answer) to be shown on the sign sheet and signed: CRLF/CR to LF, NFC (Unicode 16.0), checks.
     public static func prepareText(_ s: String, oneLine: Bool) throws -> PreparedText {
         do { return PreparedText(value: try F1Text.normalize(s, oneLine: oneLine), oneLine: oneLine) } catch let v as F1Text.Violation { throw Failure.text(v) }
-    }
-
-    // MARK: question.answered
-
-    /// `question.answered` (F1 section 5.4.1): exact fields `question`, `hash`, then `option?` and/or `text?`. `basedOn` is
-    /// `ticket.get` -> `doc.head.head`, `rosterV` is `members_v`. `reviewed` must come from `F1Question.reviewed` (recomputed hash).
-    package static func answer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
-                               actor: PhoneActor, workspace: ID16, signer: some Signer) throws -> SignedPhoneEvent {
-        try sign(try unsignedAnswer(r, option: option, text: text, id: id, actor: actor, workspace: workspace), signer: signer)
-    }
-
-    /// The unsigned `question.answered` (same checks as `answer`), for the auto re-sign decision and for `sign`.
-    package static func unsignedAnswer(_ r: F1Question.Reviewed, option: String?, text: PreparedText?, id: String,
-                                       actor: PhoneActor, workspace: ID16) throws -> UnsignedPhoneEvent {
-        guard ULID.isValid(id) else { throw Failure.badID }
-        guard r.question.state == .open else { throw Failure.notOpen }
-        guard option != nil || text != nil else { throw Failure.noAnswer }
-        var e: [String: JSONValue] = envelope(actor: actor, id: id, rosterV: r.rosterV, type: "question.answered", basedOn: .string(r.basedOn))
-        e["question"] = .string(r.question.id)
-        e["hash"] = .string(r.hash)
-        if let option {
-            guard let match = r.question.options.first(where: { $0.key.bytesEqual(option) }) else { throw Failure.unknownOption }
-            e["option"] = .string(match.key)
-        }
-        if let text {
-            guard !text.value.isEmpty else { throw Failure.emptyText }
-            guard text.value.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
-            e["text"] = .string(text.value)
-        }
-        return UnsignedPhoneEvent(kind: .questionAnswered, log: r.ticketUID, id: id, event: e, workspace: workspace)
     }
 
     // MARK: ticket.created

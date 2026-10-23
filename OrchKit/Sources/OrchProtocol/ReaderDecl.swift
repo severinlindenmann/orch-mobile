@@ -39,7 +39,7 @@ public enum ReaderKAT {
             "id": "Q1", "state": "answered", "blocking": true, "to": [person], "answered_by": person, "answered_seq": 3,
             "text": "Ship the reader handshake first?", "asked_at": "2026-10-10T10:05:00Z", "asked_seq": 2,
             "asked_by": ["kind": "person", "id": "p_6aae5cce832160e6f8cd9dadfbb4c5cd", "device": "d_7efc1ba896b95f9151978a1dad982e3a"],
-            "options": [["key": "a", "label": "yes"], ["key": "b", "label": "no"]],
+            "options": [["key": "a", "label": "yes"], ["key": "b", "label": "no"]], "spec": ["kind": "choice"],
             "answer": ["by": person, "at": "2026-10-10T10:10:00Z", "seq": 3, "option": "a", "text": .null, "id": "01J9ZK00000000000000000003",
                        "signer": ["device": "d_c65032f21d43401cc223b05723c1e5b4", "auth": .string(auth)]],
         ]

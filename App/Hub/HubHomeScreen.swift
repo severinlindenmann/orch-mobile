@@ -304,13 +304,11 @@ struct HubItemScreen: View {
         }
     }
 
-    /// The same four decisions on a shared item: an answer is text only (options are not shared), and the sign prompt says what the hub sees.
+    /// The gate and verdict decisions on a shared item; the sign prompt says what the hub sees.
     @ViewBuilder private func sharedButtons(_ d: HubItemDecision, _ sh: HubItemDecision.Shared, text: String) -> some View {
         switch d.kind {
-        case .question(let q, _):
-            TextField("Your answer", text: $reason, axis: .vertical).lineLimit(1...4).padding(OS.s3).orchCard().accessibilityIdentifier("hubitem.answer")
-            Button { signShared(d, sh) { .answerQuestion(log: $0, question: q, hash: d.hash, text: text) } } label: { Text("Review answer").frame(maxWidth: .infinity) }
-                .buttonStyle(.orchProminent).disabled(text.isEmpty).accessibilityIdentifier("hubitem.send")
+        case .question:
+            EmptyView()       // a shared question is answered where it lives (the phone cannot show or check what its hash binds)
         case .gate(let g):
             Button("Approve") { signShared(d, sh) { .approveGate(log: $0, gate: g, hash: d.hash) } }.buttonStyle(.orchProminent).accessibilityIdentifier("hubitem.approve")
             reasonField
