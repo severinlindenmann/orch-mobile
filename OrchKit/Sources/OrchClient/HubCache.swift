@@ -45,6 +45,10 @@ public struct FileHubCache: HubCacheStore {
     public func write(_ data: Data, hubID: String) throws {
         guard let u = url(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // not in iCloud or device backups (L2-B2-3): workspace names and titles stay on this phone
+        var dir = directory
+        var rv = URLResourceValues(); rv.isExcludedFromBackup = true
+        try dir.setResourceValues(rv)
         #if os(iOS)
         try data.write(to: u, options: [.atomic, .completeFileProtection])
         #else

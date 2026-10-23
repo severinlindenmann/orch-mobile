@@ -47,15 +47,18 @@ struct HubHomeScreen: View {
                 Divider()
                 ForEach(snap.workspaces) { ws in
                     Button { model.selected = ws.id } label: {
-                        Label(Self.title(ws) + (ws.online ? "" : " (paused)"), systemImage: model.selected == ws.id ? "checkmark" : "folder")
+                        Label { Text(Self.safe(Self.title(ws) + (ws.online ? "" : " (paused)"))) } icon: { Image(systemName: model.selected == ws.id ? "checkmark" : "folder") }
                     }
                 }
             } label: {
-                Label(model.selectedWorkspace.map(Self.title) ?? "All workspaces", systemImage: "rectangle.stack").labelStyle(.titleAndIcon)
+                Label { Text(Self.safe(model.selectedWorkspace.map(Self.title) ?? "All workspaces")) } icon: { Image(systemName: "rectangle.stack") }.labelStyle(.titleAndIcon)
             }
             .accessibilityIdentifier("hubhome.switcher")
         }
     }
+
+    /// Every string that came from the hub is shown through SafeText (look-alikes, odd spaces and invisible scalars get visible markers).
+    static func safe(_ s: String) -> AttributedString { SafeText.attributed(s, style: .prose) }
 
     static func title(_ ws: HubWorkspace) -> String { ws.name ?? "Workspace " + ws.id.prefix(4) }
 
@@ -140,7 +143,7 @@ struct HubHomeScreen: View {
                     if !ws.online { StatusChip("Paused", systemImage: "pause.circle", color: OC.warn) }
                     if ws.mode == .selective { StatusChip("Shared items only", systemImage: "eye", color: OC.info) }
                 }
-                Text(verbatim: "Hub reads: " + ws.hubReads + " · " + Self.role(ws.role)).font(OF.meta).foregroundStyle(OC.textMuted)
+                Text(Self.safe("Hub reads: " + ws.hubReads + " · " + Self.role(ws.role))).font(OF.meta).foregroundStyle(OC.textMuted)
             }
             if rows.isEmpty {
                 Text(ws.online ? "Nothing needs you here." : "Paused: the workspace's computer is not connected, so nothing can be asked or signed.")
@@ -163,7 +166,7 @@ struct HubHomeScreen: View {
         VStack(alignment: .leading, spacing: OS.s2) {
             HStack(spacing: OS.s2) {
                 Text(verbatim: Self.kind(row)).font(OF.meta).foregroundStyle(OC.brand)
-                if let k = row.key { Text(verbatim: k).font(OF.meta).foregroundStyle(OC.textMuted) }
+                if let k = row.key { Text(Self.safe(k)).font(OF.meta).foregroundStyle(OC.textMuted) }
             }
             SafeTextView(row.title ?? "(untitled)", style: .prose)
             if row.summaryOnly { Text("Handled where it lives").font(OF.meta).foregroundStyle(OC.textMuted) }
@@ -217,13 +220,13 @@ struct HubItemScreen: View {
             VStack(alignment: .leading, spacing: OS.s3) {
                 ForEach(Array(d.lines.enumerated()), id: \.offset) { _, l in
                     VStack(alignment: .leading, spacing: OS.s1) {
-                        Text(verbatim: l.label).font(OF.meta).foregroundStyle(OC.textMuted)
+                        Text(HubHomeScreen.safe(l.label)).font(OF.meta).foregroundStyle(OC.textMuted)
                         SafeTextView(l.value, style: .prose)
                     }
                 }
             }
             .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
-            if let h = d.itemHash { Text(verbatim: "Shared content fingerprint: " + h).font(OF.machine).foregroundStyle(OC.textMuted) }
+            if let h = d.itemHash { Text(HubHomeScreen.safe("Shared content fingerprint: " + h)).font(OF.machine).foregroundStyle(OC.textMuted) }
             Text("Signing from this iPhone comes in a later version.").font(OF.meta).foregroundStyle(OC.textMuted)
         }
         .accessibilityIdentifier("hubitem.detail")

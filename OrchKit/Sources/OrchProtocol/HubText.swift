@@ -11,7 +11,12 @@ public enum HubText {
         0x1BCA0...0x1BCA3, 0x1D173...0x1D17A, 0xE0000...0xE0FFF,
     ]
 
+    /// The hub pins Unicode 16.0 (its text rule fails closed on any other table). The phone's runtime may know a newer Unicode, so a scalar
+    /// assigned after 16.0 is still "unassigned" for this rule and is escaped (L2-B2-1); an unknown age is escaped too.
+    static let pinnedUnicodeMajor = 16
+
     private static func allowed(_ u: Unicode.Scalar) -> Bool {
+        guard let age = u.properties.age, age.major <= pinnedUnicodeMajor else { return false }
         switch u.properties.generalCategory {
         case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate, .privateUse, .unassigned: return false
         default: break

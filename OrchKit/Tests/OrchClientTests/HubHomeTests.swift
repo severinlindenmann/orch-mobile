@@ -385,6 +385,34 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         #expect(Set(asked.all) == [hub.origin])
     }
 
+    @Test func aWipeDuringTheBindIsNotUndoneBySignInAgain() async throws {
+        let r = await Rig()
+        _ = await r.home.refresh()
+        r.clock.advance(hours: 13)
+        let hold = HoldSender(r.hub, path: "/api/v1/session/channel")
+        let hub = r.hub
+        let home = HubHomeCoordinator(custody: r.custody, cache: r.cache, verifier: HubVerifier(devMode: true), wall: r.clock, makeSender: { _ in hold })
+        async let result = home.signInAgain(password: hub.password, totp: hub.totp)
+        await hold.waitUntilHeld()
+        try r.custody.deleteAll(hubID: hub.hubID)          // Leave / wipe while the bind is in flight
+        hold.release()
+        #expect(await result == .signInFailed(.verification))
+        #expect(try r.custody.pairedHubs().isEmpty && r.custody.sessionToken(hubID: hub.hubID) == nil)
+    }
+
+    @Test func theCacheIsExcludedFromBackups() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hubcache-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileHubCache(directory: dir).write(Data("x".utf8), hubID: String(repeating: "ab", count: 16))
+        #expect(try dir.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+    }
+
+    @Test func dotOnlyItemIdsAreRefused() async {
+        let r = await Rig()
+        _ = await r.home.refresh()
+        for bad in [".", ".."] { #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: bad) == .refused(code: "malformed")) }
+    }
+
     // MARK: one coordinator (L2-B1d-2)
 
     @Test func aSecondPairingCannotCommitOverTheKeyOfAnother() async throws {

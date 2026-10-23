@@ -156,6 +156,11 @@ public actor HubHomeCoordinator {
             else { throw Refusal.malformed }
             let next = HubPairingRecord(hubID: hubID, origin: record.origin, userID: record.userID, channelID: record.channelID, label: record.label,
                                         card: bound.card, channelCert: bound.channelCert, sessionExpiresMs: bound.expiresMs, pairedMs: record.pairedMs)
+            // the last await is behind us: the key must still be this channel's and the record the one we loaded (a wipe or Leave during
+            // the bind must not be undone by a record for a deleted key; L2-B2-5, the pairing step-5 check)
+            guard (try? custody.loadChannelKey(hubID: hubID))?.channelID == record.channelID,
+                  let stored = try? custody.record(hubID: hubID), (try? HubPairingRecord.decode(stored)) == record
+            else { throw CustodyError.missing }
             // commit: token, then the record (the old session's expiry stays in force until the record is rewritten)
             try custody.putSessionToken(bound.bearer.token, hubID: hubID)
             try custody.putRecord(try canonicalJSON(next.json), hubID: hubID)
@@ -167,6 +172,7 @@ public actor HubHomeCoordinator {
                 cache.remove(hubID: hubID); state = .revoked
             case HubAPIError.refused(let code, _): state = .signInFailed(code == "bad_credentials" ? .badCredentials : code == "rate_limited" ? .rateLimited : .refused)
             case HubAPIError.network: state = .signInFailed(.network)
+            case is CustodyError: state = .signInFailed(.verification)
             default: state = .signInFailed(.verification)
             }
             return state

@@ -60,7 +60,7 @@ enum HubViewParse {
     static func isWorkspaceID(_ s: String) -> Bool { s.utf8.count == 32 && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) } }
     /// An item id goes into a request path: a short token, never anything that could change the path.
     static func isItemID(_ s: String) -> Bool {
-        (1...64).contains(s.utf8.count) && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F || $0 == 0x2E }
+        s != "." && s != ".." && (1...64).contains(s.utf8.count) && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F || $0 == 0x2E }
     }
 
     static func text(_ v: JSONValue?) throws -> String? {
