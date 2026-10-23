@@ -38,14 +38,13 @@ enum HubStorage {
 
     /// Removes the hub's delivered notifications (best effort, bounded: a wedged notification daemon never holds a wipe).
     static func removeDeliveredHubNotifications() async {
-        let center = UNUserNotificationCenter.current()
         let ids = await withTaskGroup(of: [String]?.self) { group -> [String] in
-            group.addTask { await center.deliveredNotifications().filter { isHubHint(body: $0.request.content.body) }.map(\.request.identifier) }
+            group.addTask { await UNUserNotificationCenter.current().deliveredNotifications().filter { isHubHint(body: $0.request.content.body) }.map(\.request.identifier) }
             group.addTask { try? await Task.sleep(for: .seconds(3)); return nil }
             let first = await group.next() ?? nil
             group.cancelAll()
             return first ?? []
         }
-        if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+        if !ids.isEmpty { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids) }
     }
 }

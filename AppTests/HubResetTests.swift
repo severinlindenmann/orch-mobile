@@ -1,6 +1,7 @@
 import XCTest
 import OrchClient
 import OrchCustody
+import OrchPush
 @testable import Orch
 
 /// Reset this iPhone removes the hub pairing and the hub's cache as part of the resumable reset (B6; L2-B1d-1, L2-B2-4).
@@ -88,6 +89,26 @@ final class HubResetTests: XCTestCase {
         await s.boot()
         XCTAssertFalse(s.resetIncomplete)
         XCTAssertNotNil(st.journal.read(), "still pending for the hub home to retry")
+    }
+
+    func testOnlyTheFixedHubHintLinesAreRemovedFromDeliveredNotifications() {
+        XCTAssertTrue(HubStorage.isHubHint(body: "A signature request is waiting"))
+        XCTAssertTrue(HubStorage.isHubHint(body: "Something needs you"))
+        XCTAssertFalse(HubStorage.isHubHint(body: "Alice replied on PLAT-12"))
+    }
+
+    func testResetStepsClearTheHubReplayFolderAndTheCounter() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hubreset-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let state = dir.appendingPathComponent("state/hub/\(hub)")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: state.appendingPathComponent("replay.0.json"))
+        let st = try pairedStores()
+        try st.custody.putPushState(HubPushState(issuedMs: 5, keyRegistered: true), hubID: hub)
+        let wipe = st.wipe(steps: [{ _ in HubPushIntake(pushDir: dir).purgeAll() }])
+        try await wipe.wipe(.everything)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("state/hub").path))
+        XCTAssertNil(try st.custody.pushState(hubID: hub))
     }
 
     func testALaunchWithNothingPendingTouchesNothing() async throws {
