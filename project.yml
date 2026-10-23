@@ -212,7 +212,28 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.devsandbox.uitests
         GENERATE_INFOPLIST_FILE: YES
         SUPPORTED_PLATFORMS: iphonesimulator
+  # The hub Simulator lane (B7): pairs the real app with a real local hub, lists, signs with the Simulator's Face ID. Skipped unless
+  # TEST_RUNNER_ORCH_E2E_HUB_LINK is set (scripts/e2e/hub-s6.sh, kit scenario hub-S6). Its own scheme: no CI job runs it.
+  OrchHubE2ETests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [HubE2ETests]
+    dependencies:
+      - target: Orch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.hube2e.uitests
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
+  OrchHubE2E:
+    build:
+      targets:
+        Orch: all
+    test:
+      config: Debug
+      targets: [OrchHubE2ETests]
+      parallelizeBuild: false
+      randomExecutionOrder: false
   Orch:
     build:
       targets:
