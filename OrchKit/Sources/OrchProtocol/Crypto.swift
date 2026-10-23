@@ -106,6 +106,8 @@ public enum SealPurpose: String, Sendable, CaseIterable {
     case dropDEK = "drop-dek"
     case wsEnvelope = "ws-envelope"
     case vault
+    /// Hub push hints (orch-hub protocol 10.8.2): sealed to a channel's push key. Not a purpose of any direct-mode seal.
+    case hubPush = "hub-push"
 }
 
 /// Sealing to a device `dk_kx` or a workspace `WXK` (section 5.3), HPKE-shaped base mode: no sender authentication.

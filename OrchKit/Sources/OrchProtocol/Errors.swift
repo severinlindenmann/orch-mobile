@@ -38,6 +38,18 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case wkCommitConflict = "wk_commit_conflict"
     /// Local (G2b D4): a key for an epoch above the head list's, or before any verified list. Epochs move only on a verified list.
     case futureEpoch = "future_epoch"
+    // Hub contract (orch-hub protocol section 14, V3 stream B). Wire spellings.
+    case otherHub = "other_hub"
+    case hubIDMismatch = "hub_id_mismatch"
+    case staleOpCert = "stale_op_cert"
+    case devRefused = "dev_refused"
+    case devMismatch = "dev_mismatch"
+    /// Local (phone, never on the wire): the hub's signed API origin is not the pairing link's. Nothing was sent.
+    case otherOrigin = "other_origin"
+    case otherUser = "other_user"
+    case staleTimestamp = "stale_timestamp"
+    case challengeInvalid = "challenge_invalid"
+    case factorMismatch = "factor_mismatch"
 }
 
 /// Failures of the byte-level primitives (encodings, keys, AEAD).
