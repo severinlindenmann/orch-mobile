@@ -277,7 +277,7 @@ private actor Calls {
         let (w, p) = try await world()
         let api = BridgeWorkspaceAPI(session: p.session)
         let before = try await w.serve(p) { try await api.snapshot() }
-        #expect(before.macOnlyCount == 0 && before.questions.count == 3)
+        #expect(before.macOnlyCount == 1 && before.questions.count == 3)      // the fourth seeded question has details: Mac-only
         let fresh = try await w.makePhone(install: false)            // no cached ticket reads
         let api2 = BridgeWorkspaceAPI(session: fresh.session)
         // one question fails its hash, one is free text (no options)

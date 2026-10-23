@@ -164,7 +164,7 @@ enum HubViewParse {
         if r.mode == .selective {
             // a summary is never signable; a shared item is signable only when its own `f1` names the target (protocol 8.6)
             dec = r.summaryOnly || r.kind == "needs_you" ? nil : sharedDecision(o, content: content, kind: r.kind)
-        } else { dec = r.signable ? decision(o, content: content, kind: r.kind) : nil }
+        } else { dec = r.signable ? decision(o, content: content, kind: r.kind, workspace: ID16(hex: r.workspaceID)) : nil }
         return HubItemDetail(row: r, lines: lines, itemHash: hash, decision: dec)
     }
 
@@ -196,16 +196,17 @@ enum HubViewParse {
         return HubItemDecision(log: log, hash: h, kind: gate == "verify" ? .verdict : .gate(gate), shared: shared((gen, pol, src)))
     }
 
-    static func decision(_ o: [String: JSONValue], content: JSONValue, kind: String) -> HubItemDecision? {
+    static func decision(_ o: [String: JSONValue], content: JSONValue, kind: String, workspace: ID16?) -> HubItemDecision? {
         guard let log = o["log"]?.string, HubSign.isULID(log), let hash = o["hash"]?.string, HubSign.isHash(hash), let c = content.object else { return nil }
         switch kind {
         case "question":
             guard let q = c["question"]?.string, q.hasPrefix("Q"), q.count > 1, q.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
-                  let qid = o["item_id"]?.string, HubSign.isItemID(qid) else { return nil }
+                  let qid = o["item_id"]?.string, HubSign.isItemID(qid), let workspace,
+                  (try? F1Question.questionID(question: q, ticketUID: log, workspace: workspace))?.bytesEqual(qid) == true else { return nil }
             // Design #1123 rev 4: the phone hashes the RAW question exactly as the hub sent it (`text`, `options`, `spec` verbatim) and offers an
-            // answer only when that is the row's hash. Unknown kind or key, a bad limit, a hash mismatch and a `text` question (no hub input yet)
-            // offer nothing: the item is shown and answered on the Mac. Never a blind Answer button.
-            guard let content = try? F1Question.Content(text: c["text"], options: c["options"], spec: c["spec"]), content.kind == .choice,
+            // answer only when that is the row's hash. Unknown kind or key, a bad limit, a hash mismatch, a `text` question (no hub input yet) and any
+            // question with a part the buttons do not show (details, why, recommended, option text, facts) offer nothing: the item is shown and answered on the Mac. Never a blind Answer button.
+            guard let content = try? F1Question.Content(text: c["text"], options: c["options"], spec: c["spec"]), content.phoneShowsEverything,
                   let mine = try? F1Question.questionHash(qid: qid, ticketUID: log, content: content), mine.bytesEqual(hash) else { return nil }
             let opts = content.options.map { HubItemDecision.Option(key: $0.key, label: HubText.render($0.label), text: $0.text.map(HubText.render),
                                                                     facts: $0.facts, cost: $0.cost) }

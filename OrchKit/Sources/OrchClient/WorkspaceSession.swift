@@ -1214,7 +1214,7 @@ extension WorkspaceSession {
             do {
                 let made = try Question(q, ticketKey: t.key, ticketUID: t.uid, workspace: workspace, createdMs: created,
                                         deviceLabel: { self.label(forDevice: $0, person: $1) })
-                if made.kind == .text && made.state == "open" { mac[q.id] = "this iPhone cannot answer a typed question yet; answer it on your Mac" } else { out.append(made) }
+                if made.state == "open", !q.content.phoneShowsEverything { mac[q.id] = F1Question.Content.cannotShowAllReason } else { out.append(made) }
             } catch {
                 if q.state == .open { mac[q.id] = (error as? F1QuestionRefusal)?.reason ?? "this iPhone cannot verify the host's view of this question" }
             }

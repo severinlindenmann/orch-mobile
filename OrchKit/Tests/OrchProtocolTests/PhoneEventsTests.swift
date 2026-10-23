@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OrchTestVectors
 import Testing
 @testable import OrchProtocol
 
@@ -290,5 +291,20 @@ extension String {
         var h = SHA256()
         for (n, b) in blocks { h.update(data: Data((n + "\n" + b + "\n").utf8)) }
         #expect(Hex.encode(h.finalize()) == Unicode16Data.digest)
+    }
+
+    /// Drift from core, not only hand edits: `f1/core_unicode16.py` is core's `canon/_unicode16.py` at the pinned commit (PROVENANCE.md);
+    /// every block the phone uses must equal the one in it.
+    @Test func unicodeTablesEqualCoresBundledTables() throws {
+        let core = String(decoding: OrchTestVectors.Vectors.f1Raw("core_unicode16", ext: "py"), as: UTF8.self)
+        func block(_ name: String) -> String {
+            let start = core.range(of: name + " = \"\"\"\n")!.upperBound
+            let end = core.range(of: "\"\"\"", range: start..<core.endIndex)!.lowerBound
+            return String(core[start..<end]).trimmingCharacters(in: .newlines)
+        }
+        let pairs = [("ASSIGNED_RANGES", Unicode16Data.assigned), ("CCC_RANGES", Unicode16Data.ccc), ("DECOMP", Unicode16Data.decomp),
+                     ("COMPOSABLE", Unicode16Data.composable), ("CF_RANGES", Unicode16Data.cf), ("MARK_RANGES", Unicode16Data.marks),
+                     ("CASEFOLD", Unicode16Data.casefold)]
+        for (name, swift) in pairs { #expect(block(name) == swift.trimmingCharacters(in: .newlines), "\(name)") }
     }
 }

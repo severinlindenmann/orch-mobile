@@ -189,6 +189,15 @@ public struct F1Question: Equatable, Sendable {
         /// The answer rule of the kind (core `validate_answer`): choice = an `option` (a `text` is then only a note that never replaces
         /// it) or, with `allow_other`, a `text` alone; text = a `text` alone. A text is 1..1000 scalars and plain. Checks the text as given
         /// (never normalises): phone-authored text goes through `PhoneEvents.prepareText` first.
+        /// Until the phone renders every hash-bound field (D-mob-2), a question is answerable only when it has nothing the current screens
+        /// do not show: a plain choice question (no details, no why, no recommendation, no option text or facts). D-mob-2 widens this.
+        public var phoneShowsEverything: Bool {
+            kind == .choice && details == nil && why == nil && recommended == nil && options.allSatisfy { $0.text == nil && $0.facts.isEmpty }
+        }
+
+        /// The constant reason for any other open question.
+        public static let cannotShowAllReason = "this iPhone cannot show every part of this question yet; answer it on your Mac"
+
         public func checkAnswer(option: String?, text answer: String?) throws {
             guard option != nil || answer != nil else { throw PhoneEvents.Failure.noAnswer }
             if let answer {

@@ -16,11 +16,11 @@ import OrchProtocol
         let (w, p) = try await setup()
         let s = p.session
         let needs = try await w.serve(p) { try await s.needs() }
-        #expect(needs.items.count == 3 && needs.items.allSatisfy { $0.kind == .question && $0.key == "MOB-0001" })
+        #expect(needs.items.count == 4 && needs.items.allSatisfy { $0.kind == .question && $0.key == "MOB-0001" })
         let q = try await w.serve(p) { try await s.ticketQuery() }
         #expect(q.rows.map(\.key).sorted() == ["FAC-0001", "MOB-0001"] && q.total == 2)
         let g = try await w.serve(p) { try await s.ticketGet("MOB-0001") }
-        #expect(g.questions.count == 3 && g.uid == needs.items[0].uid)
+        #expect(g.questions.count == 4 && g.uid == needs.items[0].uid)
         let m = try await w.serve(p) { try await s.memberList() }
         #expect(m.members.count == 1 && m.members[0].devices.contains { $0.id == "d_" + w.phoneID.hex && $0.label == "Demo iPhone" })
         let show = try await w.serve(p) { try await s.workspaceShow() }
@@ -63,7 +63,7 @@ import OrchProtocol
             return await w.host.handleView(req)
         }
         let r = try await w.serve(p) { try await p.session.needs() }
-        #expect(r.items.count == 3)
+        #expect(r.items.count == 4)
         #expect(await n.count == 2)
         let uncertain = try await p.session.uncertainRequests(), pending = try await p.session.pendingRequests()
         #expect(uncertain.isEmpty && pending.isEmpty)
@@ -223,7 +223,7 @@ import OrchProtocol
             return await w.host.handleView(req)
         }
         let r = try await w.serve(p) { try await p.session.needs() }
-        #expect(r.items.count == 3)
+        #expect(r.items.count == 4)
         let entries = await log.entries
         #expect(entries.map(\.op) == ["needs", "reader.declare", "needs"])
         #expect(entries[1].rd == nil && !entries[1].idem)                  // the declare is exempt from rd and has no idem

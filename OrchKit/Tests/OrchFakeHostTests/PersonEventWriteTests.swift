@@ -166,7 +166,7 @@ extension FakeHost {
         _ = try await w.host.demoAskQuestion(DemoQuestionSeed(ticket: "MOB-0001", text: "Anything else?", options: [], createdAgoMs: 1000))
         let snap = try await w.serve(p) { try await api.snapshot() }
         // not listed, counted as "needs your Mac"
-        #expect(snap.macOnlyCount == 1 && !snap.questions.contains { $0.text == "Anything else?" })
+        #expect(snap.macOnlyCount == 2 && !snap.questions.contains { $0.text == "Anything else?" })
         // and even a snapshot of it built by hand is refused before anything is signed
         let get = try await w.serve(p) { try await p.session.ticketGet("MOB-0001") }
         let f1 = try #require(get.questions.compactMap(\.question).first { $0.options.isEmpty })
@@ -176,6 +176,30 @@ extension FakeHost {
         #expect(!s.answerable)
         await #expect(throws: ViewError.invalidOption) { _ = try await api.answer(s, option: "anything") }
         #expect(try await p.container.database().query("SELECT * FROM pe_attempts").isEmpty)
+    }
+
+    /// Until the phone renders every bound field, a choice question with details (or why, recommended, option text, facts) is Mac-only on the
+    /// direct path, with the constant reason; a plain one is still answerable. The fake host seeds one of each.
+    @Test func aQuestionWithPartsThePhoneDoesNotShowIsAnsweredOnTheMac() async throws {
+        let w = try await World.make()
+        let p = try await w.makePhone()
+        let api = BridgeWorkspaceAPI(session: p.session)
+        let snap = try await w.serve(p) { try await api.snapshot() }
+        #expect(snap.questions.count == 3 && snap.macOnlyCount == 1)
+        #expect(snap.cannotVerify.map(\.reason) == [F1Question.Content.cannotShowAllReason])
+        #expect(!snap.questions.contains { $0.details != nil || $0.why != nil || $0.recommended != nil })
+        let get = try await w.serve(p) { try await p.session.ticketGet("MOB-0001") }
+        let f1 = try #require(get.questions.compactMap(\.question).first { $0.details != nil })
+        let reviewed = try f1.reviewed(ticketUID: get.uid, workspace: w.ws, basedOn: get.headHash, rosterV: get.membersV)
+        let q = try Question(f1, ticketKey: get.key, ticketUID: get.uid, workspace: w.ws, createdMs: 0, deviceLabel: { _, _ in "" })
+        let s = ReviewedSnapshot(reviewed: reviewed, token: UUID(), question: q, realm: .demo, workspaceID: w.ws, generation: 1)
+        #expect(!s.answerable)
+        await #expect(throws: ViewError.invalidOption) { _ = try await api.answer(s, option: "approve") }
+        // a plain one stays answerable
+        let plain = try #require(get.questions.compactMap(\.question).first { $0.details == nil })
+        let pr = try plain.reviewed(ticketUID: get.uid, workspace: w.ws, basedOn: get.headHash, rosterV: get.membersV)
+        let pq = try Question(plain, ticketKey: get.key, ticketUID: get.uid, workspace: w.ws, createdMs: 0, deviceLabel: { _, _ in "" })
+        #expect(ReviewedSnapshot(reviewed: pr, token: UUID(), question: pq, realm: .demo, workspaceID: w.ws, generation: 1).answerable)
     }
 
     // MARK: crash and transaction failures

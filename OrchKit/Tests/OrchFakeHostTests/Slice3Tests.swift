@@ -87,7 +87,6 @@ extension FakeHost {
     @Test func testLongReviewRequiresScrollAndArming() async throws {
         let (w, p, api, s) = try await setup()
         let r = try await w.serve(p) { try await api.review(questionID: s.questions[1].questionID) }
-        #expect((r.question.details?.count ?? 0) > 1000)      // the long body is `details` now (a question text is 140 scalars at most)
         var gate = ReviewArming(review: r)
         gate.select("approve", now: .zero)
         #expect(!gate.canConfirm(now: .seconds(60)))

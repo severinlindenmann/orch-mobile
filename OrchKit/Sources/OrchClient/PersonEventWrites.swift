@@ -49,8 +49,9 @@ public struct ReviewedSnapshot: Sendable, Equatable {
     public var hash: String { reviewed.hash }
     public var ticketUID: String { reviewed.ticketUID }
     public var ticketKey: String { question.ticket }
-    /// A question without options (kind `text`) is answered on the Mac until the phone has a typed-answer input (D-mob-2).
-    public var answerable: Bool { reviewed.question.kind == .choice && !reviewed.question.options.isEmpty }
+    /// Only a plain choice question is answered on the phone until D-mob-2 renders every bound field (details, why, recommended, option text,
+    /// facts) and a typed input; every other question is answered on the Mac.
+    public var answerable: Bool { reviewed.question.content.phoneShowsEverything }
 
     public static func == (a: ReviewedSnapshot, b: ReviewedSnapshot) -> Bool { a.token == b.token && a.sameContent(b) }
     /// Same reviewed content, whatever review issued it (never true for content that could not be encoded).

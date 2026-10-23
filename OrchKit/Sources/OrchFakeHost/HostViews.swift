@@ -96,15 +96,17 @@ struct HostViewState: Sendable {
         tickets = [Self.ticket(entropy, now, "FAC-0001", "Demo Factory epic", type: "epic"),
                    Self.ticket(entropy, now, "MOB-0001", "Review mobile pairing", parent: "FAC-0001")]
         for t in tickets { append(type: "ticket.created", ticket: t, at: now) }
-        let texts = ["Ship this change?", "Review every paragraph before signing?",
+        let texts = ["Ship this change?", "Review every paragraph before signing.",
                      "Which one: Yes or \u{FF39}es? (a full-width look-alike; F1 text carries no bidi or invisible controls)"]
         for (i, text) in texts.enumerated() {
             let options = [F1QuestionOption(key: "approve", label: i == 2 ? "Approve (full\u{FF0D}width dash)" : "Approve"),
                            F1QuestionOption(key: "reject", label: "Reject")]
-            // the long body of the second question is its `details` (a question text is 140 scalars at most)
-            let details = i == 1 ? String(repeating: "Review every paragraph before signing.\n", count: 35) : nil
-            _ = ask(entropy, ticket: "MOB-0001", text: text, options: options, details: details, at: now - Int64(texts.count - i) * 1000)
+            _ = ask(entropy, ticket: "MOB-0001", text: text, options: options, at: now - Int64(texts.count - i) * 1000)
         }
+        // Mac-only until the phone shows every bound field: this one has `details` (a question text is 140 scalars at most)
+        _ = ask(entropy, ticket: "MOB-0001", text: "Read the full change notes before approving?",
+                options: [F1QuestionOption(key: "approve", label: "Approve"), F1QuestionOption(key: "reject", label: "Reject")],
+                details: String(repeating: "Review every paragraph before signing.\n", count: 35), at: now - 500)
     }
 
     static func newULID(_ entropy: any Entropy, _ ms: Int64) -> String {
