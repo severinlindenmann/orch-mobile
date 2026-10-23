@@ -37,6 +37,7 @@ struct PushHarnessView: View {
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
         UIApplication.shared.registerForRemoteNotifications()
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        if let material, material.hasPrefix("hub:") { installHub(String(material.dropFirst(4))); return }
         guard let material, let colon = material.firstIndex(of: ":"),
               let ws = ID16(hex: String(material[..<colon])), let json = B64U.decode(String(material[material.index(after: colon)...])),
               let decoded = try? PushMaterial.decode(json) else { status = "no or bad material"; return }
@@ -50,6 +51,23 @@ struct PushHarnessView: View {
                 try? FileManager.default.removeItem(at: ReplayStore(pushDir: dir, realm: "live").stateDir(workspace: ws))
             }
             status = "material installed gen=\(decoded.generation)"
+        } catch { status = "install failed: \(error)" }
+    }
+
+    /// A hub push material item (design B4) written to the real `.push` group, with the hub replay state cleared: the extension must open the
+    /// hub pushes of the fixture with this push key only.
+    @MainActor
+    private func installHub(_ b64u: String) {
+        guard let json = B64U.decode(b64u), let decoded = try? HubPushMaterial.decode(json), let ch = ID16(hex: decoded.channelID) else { status = "no or bad hub material"; return }
+        guard let backend = KeychainBackend.fromBundle() else { status = "no keychain prefix"; return }
+        do {
+            let item = try SecretID(realm: .live, purpose: HubPushMaterial.purpose)
+            try SecretVault(group: .push, backend: backend).put(json, for: item)
+            if let dir = PushGroup.pushDir() {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(NSEMarker.fileName))
+                try? FileManager.default.removeItem(at: HubPushIntake(pushDir: dir).stateDirectory(channelID: ch))
+            }
+            status = "material installed hub"
         } catch { status = "install failed: \(error)" }
     }
 

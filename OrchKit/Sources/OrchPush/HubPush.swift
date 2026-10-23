@@ -101,6 +101,9 @@ public struct HubPushIntake: Sendable {
         } catch { return .dropped(.capacity) }
     }
 
+    /// Where one channel's replay state lives.
+    public func stateDirectory(channelID: ID16) -> URL { store.stateDir(workspace: channelID) }
+
     /// Forgets the replay state of one channel (the wipe of B6).
     public func purge(channelID: String) {
         guard let ch = ID16(hex: channelID) else { return }
