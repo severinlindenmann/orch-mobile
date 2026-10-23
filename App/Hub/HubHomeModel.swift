@@ -64,6 +64,9 @@ final class HubHomeModel {
         }
     }
 
+    /// Password and code go straight to the coordinator and are cleared by the caller; nothing is kept here.
+    func signInAgain(password: String, totp: String) async { state = await runtime.home.signInAgain(password: password, totp: totp) }
+
     func clearItem() { item = .idle }
 }
 #endif

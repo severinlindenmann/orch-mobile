@@ -49,6 +49,13 @@ private final class HoldSender: RequestSender, @unchecked Sendable {
     }
 }
 
+private final class OriginLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    func add(_ o: String) { lock.withLock { items.append(o) } }
+    var all: [String] { lock.withLock { items } }
+}
+
 private struct Rig {
     let hub: FakeHub
     let clock = Clock()
@@ -318,6 +325,64 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         #expect(throws: (any Error).self) { try c.write(Data(), hubID: "../x") }
         c.remove(hubID: id)
         #expect(c.read(hubID: id) == nil)
+    }
+
+    // MARK: sign in again
+
+    @Test func signInAgainAfterTheSessionEndedBindsTheSameChannelAndGoesLive() async throws {
+        let r = await Rig()
+        _ = try #require(live(await r.home.refresh()))
+        let before = try #require(try HubPairingRecord.load(custody: r.custody, hubID: r.hub.hubID, verifier: HubVerifier(devMode: true), nowMs: r.clock.nowMs))
+        r.clock.advance(hours: 13)
+        #expect(await r.home.refresh() == .signedOut)
+        let n = r.hub.log.count
+        let s = await r.home.signInAgain(password: r.hub.password, totp: r.hub.totp)
+        #expect(live(s) != nil)
+        #expect(Array(r.hub.log.dropFirst(n).prefix(2)) == ["POST /api/v1/session", "POST /api/v1/session/channel"])
+        let after = try #require(try HubPairingRecord.load(custody: r.custody, hubID: r.hub.hubID, verifier: HubVerifier(devMode: true), nowMs: r.clock.nowMs))
+        #expect(after.channelID == before.channelID && after.origin == before.origin && after.pairedMs == before.pairedMs)
+        #expect(after.sessionExpiresMs > before.sessionExpiresMs && after.sessionExpiresMs > r.clock.nowMs)
+        #expect(try r.custody.pairedHubs().count == 1)
+        #expect(try r.custody.loadChannelKey(hubID: r.hub.hubID).channelID == before.channelID)   // the same key, no new channel
+    }
+
+    @Test func aFailedSignInAgainChangesNothing() async throws {
+        let r = await Rig()
+        _ = try #require(live(await r.home.refresh()))
+        r.clock.advance(hours: 13)
+        _ = await r.home.refresh()
+        let token = try r.custody.sessionToken(hubID: r.hub.hubID)
+        let rec = try r.custody.record(hubID: r.hub.hubID)
+        #expect(await r.home.signInAgain(password: "wrong", totp: r.hub.totp) == .signInFailed(.badCredentials))
+        r.hub.faults.longSession = true       // a session longer than 12 h is not accepted
+        #expect(await r.home.signInAgain(password: r.hub.password, totp: r.hub.totp) == .signInFailed(.verification))
+        r.hub.faults.longSession = false
+        r.hub.faults.down = true
+        #expect(await r.home.signInAgain(password: r.hub.password, totp: r.hub.totp) == .signInFailed(.network))
+        #expect(try r.custody.sessionToken(hubID: r.hub.hubID) == token && (try r.custody.record(hubID: r.hub.hubID)) == rec)
+        r.hub.faults.down = false
+        #expect(await r.home.refresh() == .signedOut)
+        #expect(r.cache.hubIDs.isEmpty)
+    }
+
+    @Test func aRevokedChannelCannotSignInAgain() async throws {
+        let r = await Rig()
+        _ = await r.home.refresh()
+        r.clock.advance(hours: 13)
+        r.hub.faults.bindAnswer = "channel_revoked"
+        #expect(await r.home.signInAgain(password: r.hub.password, totp: r.hub.totp) == .revoked)
+    }
+
+    @Test func signInAgainGoesOnlyToTheStoredOrigin() async throws {
+        let r = await Rig()
+        _ = await r.home.refresh()
+        r.clock.advance(hours: 13)
+        let asked = OriginLog()
+        let hub = r.hub
+        let home = HubHomeCoordinator(custody: r.custody, cache: r.cache, verifier: HubVerifier(devMode: true), wall: r.clock,
+                                      makeSender: { o in asked.add(o); return hub })
+        #expect(live(await home.signInAgain(password: hub.password, totp: hub.totp)) != nil)
+        #expect(Set(asked.all) == [hub.origin])
     }
 
     // MARK: one coordinator (L2-B1d-2)

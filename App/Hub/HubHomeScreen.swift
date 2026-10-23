@@ -9,6 +9,8 @@ import OrchUI
 /// `SafeTextView`; rows are display only.
 struct HubHomeScreen: View {
     @State private var model: HubHomeModel
+    @State private var password = ""
+    @State private var totp = ""
     @Environment(\.dismiss) private var dismiss
 
     init(model: HubHomeModel = HubHomeModel()) { _model = State(initialValue: model) }
@@ -71,10 +73,38 @@ struct HubHomeScreen: View {
                 note("Hub offline. There is nothing saved to show yet.", icon: "wifi.slash", color: OC.warn, id: "hubhome.offline")
             }
         case .signedOut:
-            note("Your sign-in with the hub ended. This iPhone is still paired, but signing in again is not available in this version.",
-                 icon: "person.crop.circle.badge.exclamationmark", color: OC.warn, id: "hubhome.signedout")
+            signInAgain(failure: nil)
+        case .signInFailed(let f):
+            signInAgain(failure: f)
         case .revoked:
             note("The hub removed this iPhone. Pair it again to use the hub.", icon: "xmark.shield", color: OC.danger, id: "hubhome.revoked")
+        }
+    }
+
+    private func signInAgain(failure: HubSignInFailure?) -> some View {
+        VStack(alignment: .leading, spacing: OS.s3) {
+            note("Your sign-in with the hub ended after 12 hours. This iPhone is still paired. Sign in again to see the hub.",
+                 icon: "person.crop.circle.badge.exclamationmark", color: OC.warn, id: "hubhome.signedout")
+            if let failure { Text(verbatim: Self.text(failure)).font(OF.body).foregroundStyle(OC.danger).accessibilityIdentifier("hubhome.signin.failure") }
+            SecureField("Password", text: $password).textContentType(.password).padding(OS.s3).orchCard().accessibilityIdentifier("hubhome.password")
+            TextField("Code from your authenticator app", text: $totp).keyboardType(.numberPad).padding(OS.s3).orchCard()
+                .accessibilityIdentifier("hubhome.totp")
+            Button("Sign in again") {
+                let (p, t) = (password, totp)
+                password = ""; totp = ""
+                Task { await model.signInAgain(password: p, totp: t) }
+            }
+            .buttonStyle(.orchProminent).disabled(password.isEmpty || totp.count != 6).accessibilityIdentifier("hubhome.signin")
+        }
+    }
+
+    static func text(_ f: HubSignInFailure) -> String {
+        switch f {
+        case .badCredentials: "Check your password and enter a new code. A code works once, so wait for the next one."
+        case .rateLimited: "Too many tries. Wait a little and try again."
+        case .network: "Could not reach the hub. Nothing changed."
+        case .refused: "The hub refused. Nothing changed."
+        case .verification: "The hub's answer did not check out, so this iPhone did not trust it. Nothing changed."
         }
     }
 

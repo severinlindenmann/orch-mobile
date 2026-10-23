@@ -26,6 +26,8 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var down = false
         /// Answer every channel-session request with this error code instead (`no_session`, `channel_revoked`, `cert_expired`, ...).
         public var channelAnswer: String?
+        /// Answer `POST /session/channel` with this error code (a revoked channel cannot bind again).
+        public var bindAnswer: String?
         /// Answer the lists with a body of the wrong shape.
         public var garbledLists = false
         public init() {}
@@ -176,6 +178,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             return (200, ["channel_cert": cert])
         case ("POST", "/api/v1/session/channel"):
             guard let t = session("pairing") else { return err(403, "no_session") }
+            if let c = faults.bindAnswer { return err(403, c) }
             guard let auth = body["auth"], let ao = auth.at("o")?.object, let cid = ao["channel_id"]?.string, let ch = channels[cid],
                   let sig = auth.at("sig")?.string.flatMap({ B64U.decode($0, length: 64) }),
                   Signature.verify(ch.key, signature: sig, label: Label.sigHubChannelAuth, message: (try? canonicalJSON(.object(ao))) ?? Data())
