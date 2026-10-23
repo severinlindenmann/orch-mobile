@@ -7,6 +7,8 @@ import OrchUI
 /// code, see the result. Deliberately minimal: the mockup (A4) is not picked yet, so only the essentials, in a layout that can be replaced.
 struct HubPairingScreen: View {
     @Bindable var model: HubPairingModel
+    /// The launch root (`--hub-pair`) has no sheet to dismiss: "Done" goes on to the hub home there (B7 Simulator lane).
+    var onDone: (() -> Void)?
     @State private var scanning = false
     @Environment(\.dismiss) private var dismiss
 
@@ -102,7 +104,7 @@ struct HubPairingScreen: View {
             }
             .padding(OS.s4).orchCard()
             Text("This iPhone's key stays on this iPhone. Your hub can now ask you to sign here.").font(OF.body).foregroundStyle(OC.textMuted)
-            Button("Done") { dismiss() }.buttonStyle(.orchProminent).accessibilityIdentifier("hub.done")
+            Button("Done") { if let onDone { onDone() } else { dismiss() } }.buttonStyle(.orchProminent).accessibilityIdentifier("hub.done")
         }
     }
 

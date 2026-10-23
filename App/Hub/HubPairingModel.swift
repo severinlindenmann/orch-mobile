@@ -124,10 +124,13 @@ struct HubLaunchRoot: View {
     @State private var model = (HubLaunch.homeScript() == nil && HubLaunchRoot.signModel() == nil) ? (HubLaunch.model() ?? HubPairingModel.live()) : nil
     /// `--hub-sign [script]`: the sign prompt against the in-process hub (screenshots and UI tests).
     @State private var sign = HubLaunchRoot.signModel()
+    /// `--hub-pair` on the real stack: after "Done" the home of the hub just paired (the Simulator lane, one launch from pairing to sign).
+    @State private var home = false
     var body: some View {
         if let sign { HubSignScreen(model: sign) }
         else if let script = HubLaunch.homeScript() { HubHomeLaunchRoot(script: script) }
-        else if let model { HubPairingScreen(model: model) }
+        else if home { HubHomeScreen() }
+        else if let model { HubPairingScreen(model: model, onDone: ProcessInfo.processInfo.arguments.contains("--hub-pair") ? { home = true } : nil) }
     }
 
     static func signModel(arguments: [String] = ProcessInfo.processInfo.arguments) -> HubSignModel? {
