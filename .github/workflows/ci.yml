@@ -5,10 +5,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]  # a draft runs nothing heavy; marking it ready runs everything
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Draft-event runs and full runs are separate groups: a quick skipped run (push to a draft) must never cancel a full
+  # run (ready_for_review, or a push to a ready PR). Within a group the newer run still cancels the older one.
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.draft && 'draft' || 'full' }}
   cancel-in-progress: true
 permissions:
   contents: read
+  pull-requests: read  # the `mode` job reads the PR's live draft state
 
 env:
   # Passed into the simulator test host as CI, so hosted keychain tests fail instead of skip.
@@ -18,8 +21,27 @@ env:
   XCODEGEN_SHA256: '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806'
 
 jobs:
+  mode:
+    # Cheap Linux job: decides from the PR's LIVE draft state (the event payload can be stale when a push and
+    # `gh pr ready` race), so one `gh pr ready` reliably yields one full run on the current head.
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      heavy: ${{ steps.m.outputs.heavy }}
+    steps:
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          heavy=true
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            d=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" -q .draft)
+            [ "$d" = true ] && heavy=false
+          fi
+          echo "draft=${d:-n/a} heavy=$heavy"; echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
   core:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: mode
+    if: needs.mode.outputs.heavy == 'true'
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -43,7 +65,8 @@ jobs:
       - run: scripts/check-extension-links.sh
       - run: scripts/test-check-extension-links.sh
   app:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: mode
+    if: needs.mode.outputs.heavy == 'true'
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -104,7 +127,8 @@ jobs:
       - name: Release ignores debug launch flags
         run: scripts/check-release-flags.sh
   lane:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: mode
+    if: needs.mode.outputs.heavy == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     steps:
