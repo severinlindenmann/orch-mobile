@@ -104,7 +104,8 @@ public struct HubChannelSigner: Sendable {
     }
 
     /// The custodial proof over a digest computed here from `ctx` (design B3: only after the sign view model rendered and checked it).
-    public func proof(context ctx: JSONValue) throws -> HubProof {
+    /// Package-level on purpose (L2-B1-4): B3 reaches it only through its four-type allow-list sign view model, never from app code.
+    package func proof(context ctx: JSONValue) throws -> HubProof {
         let digest = try Self.digest(ofContext: ctx)
         let sig = try Signature.sign(signer, label: Label.sigHubChannelProof, message: digest)
         return HubProof(digest: digest, proof: B64U.encode(sig))

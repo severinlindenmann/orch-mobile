@@ -1228,7 +1228,14 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     }
 
     /// Wipes the Demo realm through the real reset path and leaves Demo.
-    func resetThisiPhone() { pushOffSinceStored = nil; leaveRealm(thenDemo: false) }
+    func resetThisiPhone() {
+        pushOffSinceStored = nil
+        // Reset (and only Reset) also removes the hub pairing: a direct-mode wipe leaves `hub.*` items alone (D-B1).
+        if let backend = KeychainBackend.fromBundle() {
+            for g in [KeychainGroup.keys, .push] { try? SecretVault(group: g, backend: backend).wipeHubItems(realm: .live) }
+        }
+        leaveRealm(thenDemo: false)
+    }
     func exitDemo() { leaveRealm(thenDemo: false) }
     /// "Reset Demo data" is leave-then-Demo: only a `RealmController` can do the second half, so without one it is a no-op.
     func resetDemoData() { leaveRealm(thenDemo: true) }

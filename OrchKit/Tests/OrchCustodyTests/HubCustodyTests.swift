@@ -183,6 +183,25 @@ private func scalarFromSeed(_ seed: Data) -> Data {
         #expect(try SecretVault(group: .keys, backend: b).ids().isEmpty && SecretVault(group: .push, backend: b).ids().isEmpty)
     }
 
+    @Test func aDirectModeWipeNeverRemovesTheHubPairing() throws {
+        let (c, b) = make()
+        _ = try c.createChannelKey(hubID: hub); _ = try c.createPushKey(hubID: hub)
+        try c.putSessionToken("tok", hubID: hub); try c.putRecord(Data("r".utf8), hubID: hub)
+        let keys = SecretVault(group: .keys, backend: b), push = SecretVault(group: .push, backend: b)
+        // a direct-mode device identity and workspace item in the same groups
+        try keys.put(Data("dk".utf8), for: SecretID(realm: .live, purpose: "dk_sig"))
+        try keys.put(Data("x".utf8), for: SecretID(realm: .live, ws: String(repeating: "a", count: 32), purpose: "wk"))
+        // first direct Live entry, Leave Live, interrupted reset: all run the realm wipe
+        try keys.wipe(realm: .live); try push.wipe(realm: .live)
+        try keys.wipeUnindexed(realm: .live, knownWorkspaces: [])
+        #expect(try keys.ids().map(\.purpose).sorted() == ["hub.\(hub).channel-key", "hub.\(hub).record", "hub.\(hub).session"])
+        #expect(try push.ids().map(\.purpose) == ["hub.\(hub).push-key"])
+        #expect(try c.loadChannelKey(hubID: hub).channelID.count == 32 && c.pairedHubs() == [hub])
+        // only Reset removes it
+        try keys.wipeHubItems(realm: .live); try push.wipeHubItems(realm: .live)
+        #expect(try keys.ids().isEmpty && push.ids().isEmpty)
+    }
+
     @Test func pushKeyOpensTheVectorHintAndNothingElse() throws {
         let ps = HV.root["phase4"]["relay_routes"]["push_seal"]
         let opener = try HubPushOpener(raw: scalarFromSeed(Hex.decode(HV.keys["push_alice_phone"]["seed"].str!)!))

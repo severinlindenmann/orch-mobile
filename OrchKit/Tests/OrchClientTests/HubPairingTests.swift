@@ -59,7 +59,52 @@ private struct Rig {
     }
 }
 
+/// Holds the n-th request until released.
+private final class GateSender: RequestSender, @unchecked Sendable {
+    let inner: FakeHub
+    let holdAt: Int
+    private let lock = NSLock()
+    private var n = 0
+    private var cont: CheckedContinuation<Void, Never>?
+    private var released = false
+    var origin: String { inner.origin }
+    init(_ inner: FakeHub, holdAt: Int) { self.inner = inner; self.holdAt = holdAt }
+    func release() {
+        let c: CheckedContinuation<Void, Never>? = lock.withLock { released = true; let c = cont; cont = nil; return c }
+        c?.resume()
+    }
+    func send(_ request: WireRequest) async throws -> WireReply {
+        let k = lock.withLock { n += 1; return n }
+        if k == holdAt { await withCheckedContinuation { c in
+            let go = lock.withLock { () -> Bool in if released { return true }; cont = c; return false }
+            if go { c.resume() }
+        } }
+        return try await inner.send(request)
+    }
+}
+
 @Suite struct HubPairingTests {
+    @Test func aCancelledAttemptThatWakesLaterTouchesNothingOfItsSuccessor() async throws {
+        let hub = FakeHub(origin: "https://hub.dev.orch.example", wall: FixedWall())
+        let backend = InMemoryVaultBackend()
+        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
+        // request 3 = register/begin of the FIRST complete; it is held while the second attempt runs
+        let gate = GateSender(hub, holdAt: 3)
+        let co = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: FixedWall(), makeSender: { _ in gate }))
+        guard case .confirm = await co.begin(link: hub.pairingLink) else { Issue.record("no confirm"); return }
+        let first = Task { await co.complete(password: hub.password, totp: hub.totp, label: "One") }
+        try await Task.sleep(for: .milliseconds(200))
+        await co.cancel()
+        guard case .confirm = await co.begin(link: hub.pairingLink) else { Issue.record("no second confirm"); return }
+        guard case .paired(let s) = await co.complete(password: hub.password, totp: hub.totp, label: "Two") else { Issue.record("second not paired"); return }
+        gate.release()
+        _ = await first.value
+        // the second attempt's key, token and record are all still there
+        let hubID = hub.hubID
+        #expect(try custody.loadChannelKey(hubID: hubID).channelID == s.channelID)
+        #expect(try custody.sessionToken(hubID: hubID) != nil && custody.record(hubID: hubID) != nil)
+    }
+
     @Test func pairsEndToEndAndKeepsOnlyTheVerifiedOrigin() async throws {
         let rig = Rig()
         let preview = try #require(await rig.confirm())

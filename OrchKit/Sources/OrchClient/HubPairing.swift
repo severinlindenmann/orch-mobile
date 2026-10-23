@@ -186,11 +186,16 @@ public actor HubPairingCoordinator {
         defer { if mine == generation { busy = false } }
         let hubID = p.held.hubID
         var pairingSession: HubBearer?
-        var keyCreated = false
+        // Rollback removes only what THIS attempt made, and only while it is still the current attempt: a cancelled attempt that wakes up
+        // later must not touch its successor's key, token or record (L2-B1-2).
+        var ownKey: HubChannelSigner?
         func rollback() async {
-            if keyCreated || (try? cfg.custody.record(hubID: hubID)) == nil { try? cfg.custody.deleteAll(hubID: hubID) }
+            if mine == generation {
+                if let k = ownKey, (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == k.channelID,
+                   (try? cfg.custody.record(hubID: hubID)) == nil { try? cfg.custody.deleteAll(hubID: hubID) }
+                pending = nil
+            }
             if let s = pairingSession { await p.api.signOut(s) }
-            pending = nil
         }
         do {
             let hubLabel = try Self.cleanLabel(label)
@@ -202,9 +207,12 @@ public actor HubPairingCoordinator {
             guard signedIn.userID == p.link.userID else { throw Refusal.otherUser }
             // 2. the channel key (a leftover key of an interrupted pairing has no record and is replaced)
             state = .working(.creatingKey)
-            try? cfg.custody.deleteAll(hubID: hubID)
+            guard try cfg.custody.record(hubID: hubID) == nil, try cfg.custody.pairedHubs().isEmpty else { throw HubPairingFailure.alreadyPaired }
             let signer: HubChannelSigner
-            do { signer = try cfg.custody.createChannelKey(hubID: hubID); keyCreated = true } catch { throw HubPairingFailure.custody }
+            do {
+                try? cfg.custody.deleteChannelKey(hubID: hubID)   // a leftover key of an interrupted pairing (no record) is replaced
+                signer = try cfg.custody.createChannelKey(hubID: hubID); ownKey = signer
+            } catch { throw HubPairingFailure.custody }
             // 3. register: the hub's challenge is checked field by field BEFORE the key signs it
             state = .working(.registering)
             let begun = try await p.api.registerBegin(bearer: signedIn.bearer, keyPub: signer.publicKey, pairingCode: p.link.code)
