@@ -127,7 +127,7 @@ public enum PhoneEvents {
     }
 
     /// An event as the phone would sign it, with every field the signature covers and no `sig`: what `AutoResign.decide` compares before a
-    /// key is used. Only `unsignedAnswer` / `unsignedCreate` build one, and only `sign` turns it into a `SignedPhoneEvent`.
+    /// key is used. Only `unsignedCreate` and the gate builders build one, and only `sign` turns it into a `SignedPhoneEvent`.
     public struct UnsignedPhoneEvent: Equatable, Sendable {
         public let kind: SignedPhoneEvent.Kind
         public let log: String

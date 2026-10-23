@@ -173,7 +173,7 @@ enum HubViewParse {
     static func sharedDecision(_ o: [String: JSONValue], content: JSONValue, kind: String) -> HubItemDecision? {
         guard let item = o["item_id"]?.string, HubSign.isItemID(item), let ih = o["item_hash"]?.string, HubSign.isHash(ih),
               let log = o["chain"]?.object?["log"]?.string, HubSign.isULID(log), let f1 = o["f1"]?.object, let roster = f1["roster_v"]?.int, roster >= 0,
-              let c = content.object else { return nil }
+              content.object != nil else { return nil }
         let gates = f1["gates"]?.object ?? [:], questions = f1["questions"]?.object ?? [:]
         guard gates.count + questions.count == 1 else { return nil }
         func shared(_ g: (gen: Int64, policy: String, source: JSONValue?)?) -> HubItemDecision.Shared {

@@ -57,7 +57,7 @@ private struct Rig {
     func action(_ item: String, text: String = "Go with EU West") async throws -> HubSignAction {
         let d = try #require(try await detail(item).decision)
         let sel: HubSignAction.Selective = switch d.kind {
-        case .question(let q, _): .answerQuestion(log: d.log, question: q, hash: d.hash, text: text)
+        case .question: throw TransportError.disconnected       // a shared question offers no decision
         case .gate(let g): .approveGate(log: d.log, gate: g, hash: d.hash)
         case .verdict: .giveVerdict(log: d.log, outcome: "pass", hash: d.hash, text: nil)
         }
@@ -65,12 +65,6 @@ private struct Rig {
     }
 
     func prepare(_ a: HubSignAction) async throws -> HubSignPrompt { try await session.prepare(workspaceID: FakeHub.wsShared, action: a) }
-}
-
-/// What a hand-made hub action on the shared question carries (the phone offers none: HubHub robustness only).
-private func sharedQuestionAction(_ r: Rig, question: String = "Q2", text: String = "Go with EU West") -> (bound: HubItemDecision.Shared, action: HubSignAction) {
-    let b = HubItemDecision.Shared(item: FakeHub.sharedQuestionItem, itemHash: FakeHub.sharedItemHash, rosterV: 4, gateGen: nil, policyHash: nil, sourceSha: nil)
-    return (b, .shared(bound: b, .answerQuestion(log: r.hub.ticketLog, question: question, hash: FakeHub.sharedQuestionHash, text: text)))
 }
 
 private func rebound(_ b: HubItemDecision.Shared, _ item: String) -> HubItemDecision.Shared {
@@ -149,35 +143,11 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
     }
 
-    // MARK: options are refused
-
-    @Test func anOptionOnASelectiveAnswerIsRefused() async throws {
-        let r = try await Rig()
-        let a = sharedQuestionAction(r).action
-        // a hub that adds an option the person never saw
-        r.hub.faults.selectiveOption = true
-        #expect(await failure { try await r.prepare(a) } == .changed(code: "event_changed"))   // an option the action did not send
-        #expect(await failure { try await r.session.confirm(preparedID: r.hub.lastPreparedID ?? "none") } == .notLive)
-        #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
-        // a hand-made action with an option: the hub refuses it (and the phone's own check refuses the answer)
-        r.hub.faults.selectiveOption = false
-        let bad = HubSignAction.answerQuestion(log: r.hub.ticketLog, question: "Q2", hash: FakeHub.sharedQuestionHash, option: "yes", text: "x")
-        var o = try #require(bad.json.object); o["item"] = .string(FakeHub.sharedQuestionItem)
-        #expect(throws: Refusal.malformed) { try HubSign.checkSelectiveBuilt(action: .object(o), event: .object(["type": "question.answered", "item_hash": .string(FakeHub.sharedItemHash), "text": "x"])) }
-        // and `facts` refuses a selective answer that carries an option, or has no text, however it reached the phone
-        for extra: [String: JSONValue] in [["option": "yes", "text": "x"], ["option": "yes"]] {
-            var e: [String: JSONValue] = ["type": "question.answered", "question": "Q2", "hash": .string(FakeHub.sharedQuestionHash), "item_hash": .string(FakeHub.sharedItemHash)]
-            e.merge(extra) { $1 }
-            let ctx: JSONValue = .object(["contract": 1, "suite": 2, "workspace_id": .string(FakeHub.wsShared), "log": .string(r.hub.ticketLog), "event": .object(e)])
-            #expect(throws: Refusal.malformed) { try HubSign.facts(ctx: ctx) }
-        }
-    }
-
     // MARK: item_hash
 
     @Test func itemHashIsRequiredInSelectiveMode() async throws {
         let r = try await Rig()
-        let a = sharedQuestionAction(r).action
+        let a = try await r.action(FakeHub.sharedGateItem)
         r.hub.faults.dropItemHash = true
         #expect(await failure { try await r.prepare(a) } == .changed(code: "event_changed"))
         #expect(await failure { try await r.session.confirm(preparedID: r.hub.lastPreparedID ?? "none") } == .notLive)
@@ -220,25 +190,21 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
 
     @Test func anItemOrTargetNotInF1IsRefused() async throws {
         let r = try await Rig()
-        let (bound, _) = sharedQuestionAction(r)
-        let d = (log: r.hub.ticketLog, hash: FakeHub.sharedQuestionHash)
-        // a question the item's f1 does not name
-        let other = HubSignAction.shared(bound: bound, .answerQuestion(log: d.log, question: "Q9", hash: d.hash, text: "x"))
-        #expect(await failure { try await r.prepare(other) } == .hub(code: "unknown_item"))
+        let g = try #require(try await r.detail(FakeHub.sharedGateItem).decision)
+        let bound = try #require(g.shared)
         // an item the hub does not hold, and the right item on another log
-        let ghost = HubSignAction.shared(bound: rebound(bound, String(repeating: "00", count: 16)), .answerQuestion(log: d.log, question: "Q2", hash: d.hash, text: "x"))
+        let ghost = HubSignAction.shared(bound: rebound(bound, String(repeating: "00", count: 16)), .approveGate(log: g.log, gate: "plan", hash: g.hash))
         #expect(await failure { try await r.prepare(ghost) } == .hub(code: "unknown_item"))
-        let log = HubSignAction.shared(bound: bound, .answerQuestion(log: "01J9ZP0000000000000000OTHR", question: "Q2", hash: d.hash, text: "x"))
+        let log = HubSignAction.shared(bound: bound, .approveGate(log: "01J9ZP0000000000000000OTHR", gate: "plan", hash: g.hash))
         #expect(await failure { try await r.prepare(log) } == .hub(code: "unknown_item"))
         // a gate the f1 does not name: the plan item has no `code` entry
-        let g = try #require(try await r.detail(FakeHub.sharedGateItem).decision)
         let code = HubSignAction.shared(bound: try #require(g.shared), .approveGate(log: g.log, gate: "code", hash: g.hash))
         #expect(await failure { try await r.prepare(code) } == .hub(code: "unknown_item"))
         // a reviewed hash that is not the f1's is `event_changed`
         let stale = HubSignAction.shared(bound: try #require(g.shared), .approveGate(log: g.log, gate: "plan", hash: FakeHub.contentHash))
         #expect(await failure { try await r.prepare(stale) } == .changed(code: "event_changed"))
         // the shared item without f1: the hub cannot build (`unavailable`), and the phone never offered it
-        let none = HubSignAction.shared(bound: rebound(bound, FakeHub.sharedNoF1Item), .approveGate(log: d.log, gate: "plan", hash: d.hash))
+        let none = HubSignAction.shared(bound: rebound(bound, FakeHub.sharedNoF1Item), .approveGate(log: g.log, gate: "plan", hash: g.hash))
         #expect(await failure { try await r.prepare(none) } == .hub(code: "unavailable"))
         #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
     }

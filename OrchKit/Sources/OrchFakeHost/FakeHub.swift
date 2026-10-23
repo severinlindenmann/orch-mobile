@@ -42,7 +42,6 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         /// Selective signing: leave `item_hash` out of the built event; add an `option` to a built answer; build with another `gate_gen` than the
         /// item's `f1` shows (a stale value); build with another item's hash.
         public var dropItemHash = false
-        public var selectiveOption = false
         public var staleGateGen = false
         /// Selective signing: put `source_sha` on every gate event (a hub that does not follow 8.5), or leave it off a code approval.
         public var sourceOnEveryGate = false
@@ -354,7 +353,6 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             guard let q = action["question"]?.string, let entry = f1["questions"]?.object?[q]?.object else { return err(404, "unknown_item") }
             guard entry["hash"] == action["hash"] else { return err(409, "event_changed") }
             e["question"] = .string(q); e["hash"] = entry["hash"]; e["text"] = action["text"]
-            if faults.selectiveOption { e["option"] = "yes" }
         } else {
             let gate = type == "verdict.given" ? "verify" : (action["gate"]?.string ?? "")
             guard let g = f1["gates"]?.object?[gate]?.object else { return err(404, "unknown_item") }
