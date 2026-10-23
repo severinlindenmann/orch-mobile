@@ -146,7 +146,8 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
             #expect(await failure { try await rig.prepare() } == .notSignable(type: type), "\(type)")
             // pushed: the same refusal, before any Confirm exists
             let id = rig.hub.lastPreparedID ?? "none"
-            #expect(id != "none" && (await failure { try await rig.session.open(preparedID: id) }) == .notSignable(type: type), "\(type)")
+            let opened = await failure { try await rig.session.open(preparedID: id) }
+            #expect(id != "none" && opened == .notSignable(type: type), "\(type)")
             #expect(await failure { try await rig.session.confirm(preparedID: rig.hub.lastPreparedID ?? "none") } == .notLive)
             #expect(rig.hub.signedEvents.isEmpty && MockLA.evaluations == 0)
         }
