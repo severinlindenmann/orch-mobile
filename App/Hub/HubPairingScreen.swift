@@ -44,7 +44,7 @@ struct HubPairingScreen: View {
 
     private var entry: some View {
         VStack(alignment: .leading, spacing: OS.s4) {
-            Text("Scan the QR code your hub's admin shows you, or paste the link.").font(OF.body).foregroundStyle(OC.textMuted)
+            Text("Connect this iPhone to your hub so it can ask you to sign. Scan the QR code your hub's admin shows you, or paste the link.").font(OF.body).foregroundStyle(OC.textMuted)
             Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity) }
                 .buttonStyle(.orchProminent).accessibilityIdentifier("hub.scan")
             VStack(alignment: .leading, spacing: OS.s2) {
@@ -71,10 +71,13 @@ struct HubPairingScreen: View {
             }
             .padding(OS.s4).orchCard()
             VStack(alignment: .leading, spacing: OS.s3) {
+                Text("Hub password").font(OF.meta).foregroundStyle(OC.textMuted)
                 SecureField("Password", text: $model.password).textContentType(.password).padding(OS.s3).orchCard()
                     .accessibilityIdentifier("hub.password")
+                Text("Authenticator code").font(OF.meta).foregroundStyle(OC.textMuted)
                 TextField("6-digit code", text: $model.totp).keyboardType(.numberPad).textContentType(.oneTimeCode)
                     .padding(OS.s3).orchCard().accessibilityIdentifier("hub.totp")
+                Text("Hub name (shown in notifications)").font(OF.meta).foregroundStyle(OC.textMuted)
                 TextField("Name for this hub", text: $model.hubName).padding(OS.s3).orchCard().accessibilityIdentifier("hub.name")
                 Text("The code from your authenticator app. Each code works once.").font(OF.meta).foregroundStyle(OC.textMuted)
             }
@@ -107,7 +110,7 @@ struct HubPairingScreen: View {
         VStack(alignment: .leading, spacing: OS.s4) {
             Label("Pairing didn't finish", systemImage: "exclamationmark.triangle.fill").font(OF.wsName).foregroundStyle(OC.danger)
             Text(verbatim: Self.text(f)).font(OF.body).accessibilityIdentifier("hub.failure")
-            Text("Nothing was kept on this iPhone.").font(OF.meta).foregroundStyle(OC.textMuted)
+            Text("This iPhone was not paired.").font(OF.meta).foregroundStyle(OC.textMuted)
             Button("Try again") { model.tryAgain() }.buttonStyle(.orchProminent).accessibilityIdentifier("hub.retry")
         }
     }
@@ -137,7 +140,7 @@ struct HubPairingScreen: View {
         case .otherOrigin: "The address in this link is not the address the hub signed. Nothing was sent. Do not use this link."
         case .cardRefused(let c): c == "dev_refused" ? "This is a development hub, and this version of orch only pairs with real hubs."
             : "This hub could not be verified. Nothing was sent. (\(c))"
-        case .badCredentials: "The password or the code was wrong. A code works once, so wait for the next one."
+        case .badCredentials: "Check your password and enter a new authenticator code. A code works once, so wait for the next one."
         case .rateLimited: "Too many tries. Wait a little and try again."
         case .pairingCodeRejected: "The pairing code was used already or has run out. Ask your admin for a new QR code."
         case .noSession: "The sign-in ran out. Start again."
