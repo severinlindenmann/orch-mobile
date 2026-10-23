@@ -72,18 +72,20 @@ final class E2EHubS6Tests: XCTestCase {
         try signStep(app)
     }
 
-    // MARK: sign (filled in with B3)
+    // MARK: sign (B3)
 
     @MainActor
     private func signStep(_ app: XCUIApplication) throws {
         let text = env["ORCH_E2E_HUB_QUESTION"] ?? ""
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'hubhome.row.' AND label CONTAINS %@", text)).firstMatch
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Question' AND label CONTAINS %@", text)).firstMatch
         var tries = 0
         while !row.exists, tries < 6 { app.swipeDown(); Thread.sleep(forTimeInterval: 5); tries += 1 }
+        if !row.exists { print("ORCH_E2E_TREE \(app.debugDescription)") }
         XCTAssertTrue(row.exists, "step 4: the question is not on the phone's list")
         row.tap()
-        let choose = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'hubitem.option.' AND label CONTAINS %@", env["ORCH_E2E_HUB_OPTION"] ?? "")).firstMatch
-        XCTAssertTrue(choose.waitForExistence(timeout: 60), "step 4: no sign choice for the question")
+        let choose = app.buttons[env["ORCH_E2E_HUB_OPTION"] ?? ""] // by label: the item's container identifier hides `hubitem.option.<key>` (backlog issue)
+        if !choose.waitForExistence(timeout: 60) { print("ORCH_E2E_TREE \(app.debugDescription)") }
+        XCTAssertTrue(choose.exists, "step 4: no sign choice for the question")
         choose.tap()
         let confirm = app.buttons["hubsign.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 60), "step 4: the review (hubsign.confirm) did not appear")
@@ -94,6 +96,7 @@ final class E2EHubS6Tests: XCTestCase {
         XCTAssertFalse(app.el("hubsign.failure").exists, "step 4: signing failed: \(app.el("hubsign.failure").label)")
         XCTAssertTrue(signed.exists, "step 4: not signed within 120 s")
         event("signed")
+        if app.buttons["hubsign.done"].exists { app.buttons["hubsign.done"].tap() }
     }
 
     // MARK: helpers
@@ -110,7 +113,18 @@ final class E2EHubS6Tests: XCTestCase {
         XCTAssertTrue(el.waitForExistence(timeout: 30), "\(what): the field did not appear")
         el.tap()
         el.typeText(text)
-        guard !secure else { return }
+        if secure {
+            // a secure field shows bullets: compare the length, retype once when characters were dropped
+            let n = (el.value as? String)?.count ?? 0
+            if n != text.count {
+                print("ORCH_E2E_NOTE \(what): field holds \(n) of \(text.count) characters, retyping")
+                el.press(forDuration: 1.0)
+                if XCUIApplication().menuItems["Select All"].waitForExistence(timeout: 3) { XCUIApplication().menuItems["Select All"].tap() }
+                el.typeText(text)
+                XCTAssertEqual((el.value as? String)?.count ?? 0, text.count, "\(what): the typed text has the wrong length after a retry")
+            }
+            return
+        }
         if (el.value as? String) != text {
             el.press(forDuration: 1.0)
             if XCUIApplication().menuItems["Select All"].waitForExistence(timeout: 3) { XCUIApplication().menuItems["Select All"].tap() }
@@ -139,7 +153,7 @@ final class E2EHubS6Tests: XCTestCase {
     /// previous, current and next step, each once; when the window is used up, wait for the next step.
     static func totp(secret: String, after last: Int) -> String {
         var now = Int(Date().timeIntervalSince1970) / 30
-        let step = max(last + 1, now - 1)
+        let step = max(last + 1, now)  // the current step, not the previous one: typing takes seconds and the step may roll over
         while step > now + 1 { Thread.sleep(forTimeInterval: 1); now = Int(Date().timeIntervalSince1970) / 30 }
         let key = SymmetricKey(data: base32(secret))
         var counter = UInt64(step).bigEndian

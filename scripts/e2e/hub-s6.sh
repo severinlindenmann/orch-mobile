@@ -100,6 +100,10 @@ run_scenario() {
   xcrun simctl bootstatus "$udid" -b >>"$work/boot.log" 2>&1 || true
   step_pass "boot ($name)"
 
+  # -- a clean install: the app's keychain items survive an uninstall in the Simulator, and a paired app refuses a second pairing
+  xcrun simctl uninstall "$udid" io.severin.orch >>"$work/boot.log" 2>&1 || true
+  xcrun simctl keychain "$udid" reset >>"$work/boot.log" 2>&1 || true
+
   # -- Face ID: enrolled before the app pairs (the app records the enrolled-face state then). Matches follow while the UI test waits for one.
   if xcrun simctl spawn "$udid" notifyutil -s com.apple.BiometricKit.enrollmentChanged 1 >>"$work/faceid.log" 2>&1 &&
     xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit.enrollmentChanged >>"$work/faceid.log" 2>&1; then
