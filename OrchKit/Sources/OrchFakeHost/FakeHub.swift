@@ -44,6 +44,9 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var dropItemHash = false
         public var selectiveOption = false
         public var staleGateGen = false
+        /// Selective signing: put `source_sha` on every gate event (a hub that does not follow 8.5), or leave it off a code approval.
+        public var sourceOnEveryGate = false
+        public var dropSource = false
         public var otherItemHash = false
         /// The hub is unreachable (every request fails at the transport).
         public var down = false
@@ -296,7 +299,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         case "gate.approved", "gate.changes_requested":
             e["gate"] = action["gate"] ?? "plan"; e["hash"] = action["hash"] ?? "sha256:x"; e["gate_gen"] = 2; e["policy_hash"] = .string(Self.policyHash)
             if let t = action["text"] { e["text"] = t }
-            if e["gate"] == "code" {
+            if e["gate"] == "code", builtType == "gate.approved" {
                 e["source_sha"] = .array([.object(["repo": "orch-core", "ref": "main", "sha": "9f2c1a7be4d05c3a8e6f1b2c4d5e6f708192a3b4"])])
             }
         case "verdict.given":
@@ -344,7 +347,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             e["hash"] = g["hash"]; e["gate_gen"] = faults.staleGateGen ? .int((g["gen"]?.int ?? 0) + 1) : g["gen"]; e["policy_hash"] = g["policy_hash"]
             if type == "verdict.given" { e["outcome"] = action["outcome"] } else { e["gate"] = .string(gate) }
             if let t = action["text"] { e["text"] = t }
-            if type == "verdict.given" || gate == "code" { e["source_sha"] = g["source_sha"] }
+            if (type == "verdict.given" || (type == "gate.approved" && gate == "code") || faults.sourceOnEveryGate) && !faults.dropSource { e["source_sha"] = g["source_sha"] }
         }
         let ctx: JSONValue = .object(["contract": 1, "suite": 2, "workspace_id": .string(ws), "log": .string(log), "event": .object(e)])
         guard let digest = try? HubSign.digest(ofContext: ctx) else { return err(500, "unavailable") }

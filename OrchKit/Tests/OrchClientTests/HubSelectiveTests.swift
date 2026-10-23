@@ -61,10 +61,14 @@ private struct Rig {
         case .gate(let g): .approveGate(log: d.log, gate: g, hash: d.hash)
         case .verdict: .giveVerdict(log: d.log, outcome: "pass", hash: d.hash, text: nil)
         }
-        return .shared(item: item, bound: try #require(d.shared), sel)
+        return .shared(bound: try #require(d.shared), sel)
     }
 
     func prepare(_ a: HubSignAction) async throws -> HubSignPrompt { try await session.prepare(workspaceID: FakeHub.wsShared, action: a) }
+}
+
+private func rebound(_ b: HubItemDecision.Shared, _ item: String) -> HubItemDecision.Shared {
+    .init(item: item, itemHash: b.itemHash, rosterV: b.rosterV, gateGen: b.gateGen, policyHash: b.policyHash, sourceSha: b.sourceSha)
 }
 
 private func failure(_ body: () async throws -> some Any) async -> HubSignFailure? {
@@ -121,6 +125,32 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         #expect(code.facts.gate == "code" && code.facts.sources == [HubSign.Source(repo: "orch-core", sha: "9f2c1a7b")])
         _ = try await r.session.confirm(preparedID: code.preparedID)
         #expect(r.hub.signedEvents.map(\.type) == ["gate.approved", "gate.approved"])
+    }
+
+    @Test func requestChangesOnACodeGateAndAPlanGateIsSignedWithoutSourceSha() async throws {
+        let r = try await Rig()
+        for item in [FakeHub.sharedCodeItem, FakeHub.sharedGateItem] {
+            let d = try #require(try await r.detail(item).decision)
+            guard case .gate(let g) = d.kind else { Issue.record("not a gate"); return }
+            let a = HubSignAction.shared(bound: try #require(d.shared), .requestChanges(log: d.log, gate: g, hash: d.hash, text: "Add tests"))
+            let p = try await r.prepare(a)
+            #expect(p.facts.selective && p.facts.type == "gate.changes_requested" && p.facts.gate == g && p.facts.sources.isEmpty)
+            _ = try await r.session.confirm(preparedID: p.preparedID)
+        }
+        #expect(r.hub.signedEvents.map(\.type) == ["gate.changes_requested", "gate.changes_requested"])
+    }
+
+    @Test func sourceShaIsHeldToTheTypeThatCarriesIt() async throws {
+        let r = try await Rig()
+        let d = try #require(try await r.detail(FakeHub.sharedCodeItem).decision)
+        // an approval on a code gate without `source_sha`
+        r.hub.faults.dropSource = true
+        #expect(await failure { try await r.prepare(try await r.action(FakeHub.sharedCodeItem)) } == .changed(code: "event_changed"))
+        // a change request that carries one (a hub that does not follow 8.5)
+        r.hub.faults.dropSource = false; r.hub.faults.sourceOnEveryGate = true
+        let ask = HubSignAction.shared(bound: try #require(d.shared), .requestChanges(log: d.log, gate: "code", hash: d.hash, text: "x"))
+        #expect(await failure { try await r.prepare(ask) } == .changed(code: "event_changed"))
+        #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
     }
 
     // MARK: options are refused
@@ -198,22 +228,22 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         let d = try #require(try await r.detail(FakeHub.sharedQuestionItem).decision)
         let bound = try #require(d.shared)
         // a question the item's f1 does not name
-        let other = HubSignAction.shared(item: FakeHub.sharedQuestionItem, bound: bound, .answerQuestion(log: d.log, question: "Q9", hash: d.hash, text: "x"))
+        let other = HubSignAction.shared(bound: bound, .answerQuestion(log: d.log, question: "Q9", hash: d.hash, text: "x"))
         #expect(await failure { try await r.prepare(other) } == .hub(code: "unknown_item"))
         // an item the hub does not hold, and the right item on another log
-        let ghost = HubSignAction.shared(item: String(repeating: "00", count: 16), bound: bound, .answerQuestion(log: d.log, question: "Q2", hash: d.hash, text: "x"))
+        let ghost = HubSignAction.shared(bound: rebound(bound, String(repeating: "00", count: 16)), .answerQuestion(log: d.log, question: "Q2", hash: d.hash, text: "x"))
         #expect(await failure { try await r.prepare(ghost) } == .hub(code: "unknown_item"))
-        let log = HubSignAction.shared(item: FakeHub.sharedQuestionItem, bound: bound, .answerQuestion(log: "01J9ZP0000000000000000OTHR", question: "Q2", hash: d.hash, text: "x"))
+        let log = HubSignAction.shared(bound: bound, .answerQuestion(log: "01J9ZP0000000000000000OTHR", question: "Q2", hash: d.hash, text: "x"))
         #expect(await failure { try await r.prepare(log) } == .hub(code: "unknown_item"))
         // a gate the f1 does not name: the plan item has no `code` entry
         let g = try #require(try await r.detail(FakeHub.sharedGateItem).decision)
-        let code = HubSignAction.shared(item: FakeHub.sharedGateItem, bound: try #require(g.shared), .approveGate(log: g.log, gate: "code", hash: g.hash))
+        let code = HubSignAction.shared(bound: try #require(g.shared), .approveGate(log: g.log, gate: "code", hash: g.hash))
         #expect(await failure { try await r.prepare(code) } == .hub(code: "unknown_item"))
         // a reviewed hash that is not the f1's is `event_changed`
-        let stale = HubSignAction.shared(item: FakeHub.sharedGateItem, bound: try #require(g.shared), .approveGate(log: g.log, gate: "plan", hash: FakeHub.contentHash))
+        let stale = HubSignAction.shared(bound: try #require(g.shared), .approveGate(log: g.log, gate: "plan", hash: FakeHub.contentHash))
         #expect(await failure { try await r.prepare(stale) } == .changed(code: "event_changed"))
         // the shared item without f1: the hub cannot build (`unavailable`), and the phone never offered it
-        let none = HubSignAction.shared(item: FakeHub.sharedNoF1Item, bound: bound, .approveGate(log: d.log, gate: "plan", hash: d.hash))
+        let none = HubSignAction.shared(bound: rebound(bound, FakeHub.sharedNoF1Item), .approveGate(log: d.log, gate: "plan", hash: d.hash))
         #expect(await failure { try await r.prepare(none) } == .hub(code: "unavailable"))
         #expect(r.hub.signedEvents.isEmpty && Face.evaluations == 0)
     }

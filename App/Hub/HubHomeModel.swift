@@ -44,7 +44,7 @@ final class HubHomeModel {
     func signEnabled(_ row: HubNeedsYouRow) -> Bool {
         guard isLive, !row.summaryOnly, let ws = snapshot?.workspaces.first(where: { $0.id == row.workspaceID }) else { return false }
         // a selective workspace has no list hint: the shared item's own `f1` decides (the item answer carries a decision only when it names one)
-        return ws.online && (row.signable || row.mode == .selective)
+        return ws.online && (row.signable || (row.mode == .selective && row.kind != "needs_you"))
     }
 
     func open() async {

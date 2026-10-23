@@ -165,8 +165,7 @@ extension HubSignModel {
         if name?.hasPrefix("selective") == true { hub.seedSelective() }
         let action: HubSignAction = switch name {
         case "selective", "selective-stale":
-            .shared(item: FakeHub.sharedQuestionItem,
-                    bound: .init(item: FakeHub.sharedQuestionItem, itemHash: FakeHub.sharedItemHash, rosterV: 4, gateGen: nil, policyHash: nil, sourceSha: nil),
+            .shared(bound: .init(item: FakeHub.sharedQuestionItem, itemHash: FakeHub.sharedItemHash, rosterV: 4, gateGen: nil, policyHash: nil, sourceSha: nil),
                     .answerQuestion(log: log, question: "Q2", hash: FakeHub.sharedQuestionHash, text: "Go with EU West"))
         case "code": .approveGate(log: log, gate: "code", hash: h)
         case "question": .answerQuestion(log: log, question: "Q2", hash: h, option: "yes-ship-it", text: nil)

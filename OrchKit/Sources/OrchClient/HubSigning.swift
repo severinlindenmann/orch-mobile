@@ -21,8 +21,8 @@ public enum HubSignAction: Sendable, Equatable {
     case giveVerdict(log: String, outcome: String, hash: String, text: String?)
     /// The same four decisions on ONE shared item of a selective workspace (protocol 8.6): the action names `item`, `hash` is the one the item's `f1`
     /// shows, and a question answer is text only (V3 shares no options, so there is no `option` to send). `bound` is what the person was shown; it
-    /// is compared with the prepared event on the phone and never sent.
-    case shared(item: String, bound: HubItemDecision.Shared, Selective)
+    /// is compared with the prepared event on the phone and never sent. The item named in the action is `bound.item`.
+    case shared(bound: HubItemDecision.Shared, Selective)
 
     public enum Selective: Sendable, Equatable {
         case answerQuestion(log: String, question: String, hash: String, text: String)
@@ -41,13 +41,13 @@ public enum HubSignAction: Sendable, Equatable {
     }
 
     /// The shared item a selective action names (nil for a full-mode action).
-    var sharedBinding: HubItemDecision.Shared? { if case let .shared(_, b, _) = self { b } else { nil } }
+    var sharedBinding: HubItemDecision.Shared? { if case let .shared(b, _) = self { b } else { nil } }
 
     var json: JSONValue {
         switch self {
-        case let .shared(item, _, inner):
+        case let .shared(bound, inner):
             guard var o = inner.plain.json.object else { return .null }
-            o["item"] = .string(item)
+            o["item"] = .string(bound.item)   // the item named is the item compared: one value
             return .object(o)
         case let .answerQuestion(log, q, hash, option, text):
             var o: [String: JSONValue] = ["type": "question.answered", "log": .string(log), "question": .string(q), "hash": .string(hash)]
@@ -271,9 +271,10 @@ public actor HubSignSession {
             // selective (protocol 8.6): decided by the action; `item_hash` required, no option, and the event holds exactly the values shown
             do { try HubSign.checkSelectiveBuilt(action: started.json, event: event) }
             catch let r as Refusal { throw HubSignFailure.changed(code: r.rawValue) }
-            if let bound = started.sharedBinding, let e = event.object, !Self.matches(e, bound) { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
+            if let bound = started.sharedBinding, let e = event.object, !Self.matches(e, bound, type: started.json.object?["type"]?.string ?? "") { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
         }
-        // a pushed request: `item_hash` is there exactly in a selective workspace (when the list tells the mode)
+        // a pushed request: `item_hash` is there exactly (nil mode = a workspace not in the list, which `isMyWorkspace` above already refused)
+        //  in a selective workspace (when the list tells the mode)
         if started == nil, let e = event.object, let mode = await cfg.workspaceMode(ws) {
             if (e["item_hash"] != nil) != (mode == .selective) { throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue) }
         }
@@ -295,10 +296,13 @@ public actor HubSignSession {
 
     /// A selective event holds exactly the values the person saw on the shared item (protocol 8.6 step 4): the item's hash, `roster_v`, and on a
     /// gate decision `gate_gen`, `policy_hash` and `source_sha`. A stale or swapped value is `event_changed` before any Confirm exists.
-    static func matches(_ e: [String: JSONValue], _ b: HubItemDecision.Shared) -> Bool {
+    static func matches(_ e: [String: JSONValue], _ b: HubItemDecision.Shared, type: String) -> Bool {
         guard e["item_hash"]?.string?.bytesEqual(b.itemHash) == true, e["roster_v"] == .int(b.rosterV) else { return false }
         if let gen = b.gateGen {
-            guard e["gate_gen"] == .int(gen), e["policy_hash"]?.string?.bytesEqual(b.policyHash ?? "") == true, e["source_sha"] == b.sourceSha else { return false }
+            // `source_sha` exactly where protocol 8.5/8.6 puts it: a `code` approval and a verdict; never on a change request or another gate
+            let needsSource = "verdict.given".bytesEqual(type) || ("gate.approved".bytesEqual(type) && e["gate"]?.string?.bytesEqual("code") == true)
+            guard e["gate_gen"] == .int(gen), e["policy_hash"]?.string?.bytesEqual(b.policyHash ?? "") == true,
+                  e["source_sha"] == (needsSource ? b.sourceSha : nil) else { return false }
         } else if e["gate_gen"] != nil || e["policy_hash"] != nil || e["source_sha"] != nil { return false }
         return true
     }

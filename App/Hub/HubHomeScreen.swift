@@ -229,7 +229,7 @@ struct HubItemScreen: View {
 
     /// A decision on a shared item of a selective workspace (protocol 8.6): the action names the item and the values the person was shown.
     private func signShared(_ d: HubItemDecision, _ s: HubItemDecision.Shared, _ make: (String) -> HubSignAction.Selective) {
-        start(.shared(item: s.item, bound: s, make(d.log)))
+        start(.shared(bound: s, make(d.log)))
     }
 
     private func start(_ action: HubSignAction) {

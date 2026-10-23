@@ -178,7 +178,8 @@ public enum HubSign {
             guard type == "verdict.given" || gates.contains(g), let n = e["gate_gen"]?.int, n >= 0, let p = str("policy_hash"), isHash(p)
             else { throw Refusal.malformed }
             gate = g; gen = n
-            let needsSource = type == "verdict.given" || g == "code"
+            // protocol 8.5: `source_sha` only on a verdict and on a `code` approval, never on a change request
+            let needsSource = type == "verdict.given" || (type == "gate.approved" && g == "code")
             if needsSource {
                 guard let list = e["source_sha"]?.array, !list.isEmpty else { throw Refusal.malformed }
                 for item in list {
