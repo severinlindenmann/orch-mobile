@@ -3,6 +3,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]  # a draft runs nothing heavy; marking it ready runs everything
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -18,6 +19,7 @@ env:
 
 jobs:
   core:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -41,6 +43,7 @@ jobs:
       - run: scripts/check-extension-links.sh
       - run: scripts/test-check-extension-links.sh
   app:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -101,6 +104,7 @@ jobs:
       - name: Release ignores debug launch flags
         run: scripts/check-release-flags.sh
   lane:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-15
     timeout-minutes: 60
     steps:

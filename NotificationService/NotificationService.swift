@@ -32,7 +32,7 @@ final class NotificationService: UNNotificationServiceExtension {
             contentHandler(Self.content(for: .generic))
             return
         }
-        let d = PushDelivery(handler: PushHandler(material: source, pushDir: dir)) { key, done in
+        let d = PushDelivery(handler: PushHandler(material: source, hubMaterial: KeychainHubPushMaterialSource.fromBundle(), pushDir: dir)) { key, done in
             // "Answered on ...": remove the delivered question of the same (workspace, id), then deliver the closure.
             let center = UNUserNotificationCenter.current()
             center.getDeliveredNotifications { delivered in

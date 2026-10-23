@@ -267,6 +267,27 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         #expect(try r0.rig.cache.hubIDs.isEmpty && r0.vaultEmpty())
     }
 
+    @Test func theWipeSweepsTheIssuedCounterAndThePushMaterial() async throws {
+        let r = await WipeRig()
+        try r.addPushKey()
+        let hubID = r.hub.hubID
+        try r.custody.putPushState(HubPushState(issuedMs: 1_790_000_000_123, keyRegistered: true, targetDigest: "ab"), hubID: hubID)
+        try r.custody.publishPushMaterial(hubID: hubID, channelID: String(repeating: "cd", count: 16), label: "Dev hub")
+        #expect(try r.custody.pushState(hubID: hubID)?.issuedMs == 1_790_000_000_123 && r.custody.pushMaterial() != nil)
+        try await r.wipe.wipe(.hub(hubID))
+        #expect(try r.custody.pushState(hubID: hubID) == nil && r.custody.pushMaterial() == nil && r.vaultEmpty())
+    }
+
+    @Test func aPushingCoordinatorDoesNothingWhileAWipeIsPending() async throws {
+        let r = await WipeRig()
+        let push = HubPushCoordinator(.init(custody: r.custody, pushDir: FileManager.default.temporaryDirectory, verifier: HubVerifier(devMode: true),
+                                            wall: r.rig.clock, makeSender: { _ in r.hub }, wipe: r.wipe))
+        try r.wipe.begin(.hub(r.hub.hubID))
+        let n = r.hub.log.count
+        #expect(await push.registerPush(HubPushTarget(env: .sandbox, token: "AAAA")) == .notPaired)
+        #expect(try r.hub.log.count == n && r.custody.pushMaterial() == nil)
+    }
+
     @Test func theJournalSurvivesInUserDefaults() throws {
         let suite = "orch.test.hubwipe." + UUID().uuidString
         let d = try #require(UserDefaults(suiteName: suite))

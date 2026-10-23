@@ -91,6 +91,9 @@ struct AppRoot: View {
             // C2b: `.inactive` ends every answer's eligibility for an automatic re-sign before anything else runs
             if phase == .inactive { realm.services.noteInactive() }
             realm.services.setActive(phase == .active)
+            #if DEBUG
+            if phase == .active { HubPushDriver.shared.foreground() } else if phase == .background { HubPushDriver.shared.background() }
+            #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
             realm.services.noteProtectedDataUnavailable()
