@@ -158,9 +158,8 @@ public struct F1Question: Equatable, Sendable {
                 throw F1QuestionRefusal(.unknownKind, "this question has a kind this iPhone does not know")
             }
             let allowed: Set<String> = kind == .choice ? ["kind", "why", "details", "recommended", "allow_other"] : ["kind", "why", "details"]
-            if let extra = spec.keys.first(where: { !allowed.contains($0) }) {
-                throw F1QuestionRefusal(.unknownKey, "the question carries \(extra.count <= 24 ? "\"\(extra)\"" : "a key") this iPhone does not know")
-            }
+            // never echo host text into a reason: the UI shows it
+            if spec.keys.contains(where: { !allowed.contains($0) }) { throw F1QuestionRefusal(.unknownKey, "the question carries a key this iPhone does not know") }
             let text = try plain(textValue, "the question", oneLine: false, limit: Limit.question)
             let why = try spec["why"].map { try plain($0, "why", oneLine: false, limit: Limit.why, code: .spec) }
             let details = try spec["details"].map { try plain($0, "details", oneLine: false, limit: Limit.details, code: .spec) }

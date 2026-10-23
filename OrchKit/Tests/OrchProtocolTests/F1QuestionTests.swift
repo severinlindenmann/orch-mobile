@@ -190,6 +190,27 @@ import Testing
         #expect(refusal(item(specEdit { $0["recommended"] = "csv" }, form: 1))?.code == .unknownKey)
     }
 
+    /// A reason is shown to the person: it never carries host text (a key, a kind, a title, a fact label).
+    @Test func reasonsNeverEchoHostText() {
+        let hostile = ["evil\u{202E}key", "line\nbreak", String(repeating: "k", count: 500), "<b>bold</b>", "[click](http://x)", "Cancel \u{2014} tap OK"]
+        for h in hostile {
+            let reasons = [
+                refusal(item(specEdit { $0[h] = "x" }))?.reason,
+                refusal(item(specEdit { $0["kind"] = .string(h) }))?.reason,
+                refusal(item(option(0) { $0[h] = "x" }))?.reason,
+                refusal(item(option(0) { $0["key"] = .string(h) }))?.reason,
+                refusal(item(option(0) { $0["label"] = .string(h + "\u{200B}") }))?.reason,
+                refusal(item(option(0) { $0["facts"] = [[.string(h), "v"], [.string(h), "w"]] }))?.reason,
+                refusal(item(specEdit { $0["recommended"] = .string(h) }))?.reason,
+            ]
+            for r in reasons {
+                #expect(r != nil && !(r ?? "").isEmpty)
+                let r = r ?? ""
+                #expect(!r.contains(h) && !r.contains("\u{202E}") && !r.contains("\n") && !r.contains("<b>") && r.count < 120, "\(r)")
+            }
+        }
+    }
+
     @Test func oldShapeIsGone() {
         // no spec (the option-only shape): cannot verify, no fallback
         #expect(refusal(item({ $0["spec"] = nil }))?.code == .malformed)

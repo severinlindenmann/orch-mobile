@@ -216,7 +216,7 @@ public struct Question: Equatable, Sendable {
         // The stored form is re-checked like a host view: the same parser and limits, and the F1 hash recomputed from the ticket uid and the
         // stored text, options and spec. A stored review that no longer reproduces is refused.
         let optionsValue = m["options"]
-        let content = try F1Question.Content(text: m["text"], options: optionsValue?.array?.isEmpty == true ? nil : optionsValue, spec: m["spec"])
+        guard let content = try? F1Question.Content(text: m["text"], options: optionsValue?.array?.isEmpty == true ? nil : optionsValue, spec: m["spec"]) else { throw ViewError.malformed }
         guard let myQid = try? F1Question.questionID(question: number, ticketUID: uid, workspace: workspace), ID16(hex: myQid) == id,
               let myHash = try? F1Question.questionHash(qid: myQid, ticketUID: uid, content: content),
               Hex.decode(String(myHash.dropFirst("sha256:".count)), length: 32) == hash else { throw ViewError.malformed }

@@ -43,7 +43,7 @@ enum ReaderVectors {
         #expect(cases.map { $0["expect"]["accepted"].bool } == [true, true, false])
     }
 
-    /// The vector's own objects have no `answer.id` (v1.7), which the phone's parser requires; with an id added they must classify exactly
+    /// The vector's own objects have no `answer.id` (v1.7) and no `spec` (#1123), which the phone's parser requires; with an id added they must classify exactly
     /// as the vector says, and our corpus differs from them only in that field.
     @Test func vectorObjectsClassifyLikeCore() throws {
         for c in ReaderVectors.kat["view"]["cases"].items {
@@ -51,6 +51,7 @@ enum ReaderVectors {
             var answer = o["answer"]!.object!
             answer["id"] = "01J9ZK00000000000000000003"
             o["answer"] = .object(answer)
+            o["spec"] = ["kind": "choice"]        // core's KAT corpus predates `spec` (design #1123); the phone's parser requires it
             let got = ReaderKAT.productionParser(.object(o))
             #expect(got == c["expect"]["auth"].string)
             let auth = c["object"]["answer"]["signer"]["auth"].str

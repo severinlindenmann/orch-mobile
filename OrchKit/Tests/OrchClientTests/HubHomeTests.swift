@@ -270,9 +270,10 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         #expect(d.itemHash?.hasPrefix("sha256:") == true)
         guard case .detail(let q) = await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") else { Issue.record("no detail"); return }
         #expect(q.lines.map(\.label) == ["options [1] / key", "options [1] / label", "options [2] / key", "options [2] / label", "question", "text"])
-        // B3: the item offers a decision (display data; the hub's prepare and check_built are the authority)
-        #expect(q.decision == HubItemDecision(log: "01J9ZP0000000000000000TKT1", hash: FakeHub.contentHash,
-                                              kind: .question(id: "Q1", options: [.init(key: "eu-west", label: "EU West"), .init(key: "us-east", label: "US East")])))
+        // design #1123 rev 4: the phone offers a decision only for a question it verified by hashing the raw text, options and spec; the fake
+        // hub's `q1` carries neither a spec nor a 32-hex item id, so it offers none (shown, answered on the Mac). The verified path is
+        // covered by HubQuestionDecisionTests against the frozen core fixtures.
+        #expect(q.decision == nil)
         #expect(d.decision == nil)                       // a selective item is never decided on the phone
         #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "nope") == .refused(code: "unknown_item"))
     }

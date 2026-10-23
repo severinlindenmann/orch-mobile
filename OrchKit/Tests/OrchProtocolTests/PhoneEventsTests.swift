@@ -127,12 +127,12 @@ import Testing
         #expect((try? go()) != nil)
         #expect((try? go(option: "nope")) == nil)
         #expect((try? go(option: nil, text: nil)) == nil)
-        #expect((try? go(option: nil, text: pt("free"))) != nil)
+        #expect((try? go(option: nil, text: pt("free"))) == nil)           // Other only when allow_other is bound (this question has none)
         #expect((try? go(option: "csv", text: pt("both"))) != nil)
         #expect((try? go(option: nil, text: pt(""))) == nil)
-        #expect((try? go(option: nil, text: pt(String(repeating: "x", count: 4096)))) != nil)
-        #expect((try? go(option: nil, text: pt(String(repeating: "x", count: 4097)))) == nil)
-        #expect((try? go(option: nil, text: pt(String(repeating: "\u{E9}", count: 2049)))) == nil)   // 4098 bytes
+        #expect((try? go(option: "csv", text: pt(String(repeating: "x", count: 1000)))) != nil)
+        #expect((try? go(option: "csv", text: pt(String(repeating: "x", count: 1001)))) == nil)       // 1000 scalars (core ANSWER_MAX)
+        #expect((try? go(option: "csv", text: pt(String(repeating: "\u{1F600}", count: 1000)))) != nil)  // counted in scalars: 4000 bytes
         #expect((try? go(id: "01m4jm4rkg79rg3qtwcp60nnng")) == nil)
         #expect((try? go(id: "81M4JM4RKG79RG3QTWCP60NNNG")) == nil)
         let ev = try go(option: "csv", text: pt("ok\tfine"))
