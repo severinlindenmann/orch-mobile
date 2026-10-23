@@ -53,4 +53,7 @@ public struct FileHubCache: HubCacheStore {
     }
 
     public func remove(hubID: String) { if let u = url(hubID) { try? FileManager.default.removeItem(at: u) } }
+
+    /// Everything of every hub (the app's Reset; the hub wipe of B6 uses `remove`).
+    public func removeAll() { try? FileManager.default.removeItem(at: directory) }
 }

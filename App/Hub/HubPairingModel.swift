@@ -24,11 +24,9 @@ final class HubPairingModel: Identifiable {
         self.coordinator = coordinator; self.fake = fake
     }
 
-    /// The real stack: the keychain of the app (an in-memory vault when the Simulator build is unsigned), the hub over Network.framework.
+    /// The process-wide stack (`HubRuntime.shared`): one pairing coordinator per process, never one per sheet (L2-B1d-2).
     static func live() -> HubPairingModel {
-        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
-        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
-        return HubPairingModel(coordinator: HubPairingCoordinator(HubPairingConfig(custody: custody)))
+        HubPairingModel(coordinator: HubRuntime.shared.pairing, fake: HubRuntime.shared.fake)
     }
 
     /// `--hub-fake`: the same stack against `FakeHub` (no network). `script` is `link`, `confirm` or `paired` (screenshots and UI tests).
@@ -101,6 +99,12 @@ enum HubLaunch {
     /// Whether a launch argument asks for the hub screen (no model is made: `HubLaunchRoot` makes it once).
     static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") }
 
+    /// `--hub-fake home...`: the hub home instead of the pairing screen.
+    static func homeScript(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> String? {
+        guard let i = arguments.firstIndex(of: "--hub-fake"), arguments.indices.contains(i + 1), arguments[i + 1].hasPrefix("home") else { return nil }
+        return arguments[i + 1]
+    }
+
     @MainActor static func model(arguments: [String] = ProcessInfo.processInfo.arguments) -> HubPairingModel? {
         if let i = arguments.firstIndex(of: "--hub-fake") {
             let script = arguments.indices.contains(i + 1) && !arguments[i + 1].hasPrefix("--") ? arguments[i + 1] : nil
@@ -114,7 +118,9 @@ import SwiftUI
 
 /// Owns the launch-argument model for the life of the view (a computed `root` would rebuild it on every body pass).
 struct HubLaunchRoot: View {
-    @State private var model = HubLaunch.model() ?? HubPairingModel.live()
-    var body: some View { HubPairingScreen(model: model) }
+    @State private var model = HubLaunch.homeScript() == nil ? (HubLaunch.model() ?? HubPairingModel.live()) : nil
+    var body: some View {
+        if let script = HubLaunch.homeScript() { HubHomeLaunchRoot(script: script) } else if let model { HubPairingScreen(model: model) }
+    }
 }
 #endif
