@@ -284,7 +284,7 @@ public actor HubSignSession {
         guard cfg.wall.nowMs < expiresMs - 5_000 else { throw HubSignFailure.expired }
     }
 
-    private func call<T>(_ body: () async throws -> T) async throws -> T {
+    private func call<T: Sendable>(_ body: () async throws -> T) async throws -> T {
         do { return try await body() }
         catch HubAPIError.network { throw HubSignFailure.offline }
         catch let e as HubAPIError { throw Self.map(e) }
