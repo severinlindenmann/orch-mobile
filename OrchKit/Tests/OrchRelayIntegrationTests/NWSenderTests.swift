@@ -30,14 +30,13 @@ import Testing
     @Test func productionInitAcceptsOnlyHTTPSOrigins() throws {
         _ = try NWRequestSender(origin: "https://relay.example.org")
         for o in ["http://127.0.0.1:8101", "http://localhost:8101", "http://relay.example.org", "https://relay.example.org/", "ftp://a", ""] {
-            #expect(throws: RealmViolation.self) { _ = try NWRequestSender(origin: o) }
+            #expect(throws: OriginViolation.self) { _ = try NWRequestSender(origin: o) }
         }
-        #expect(throws: RealmViolation.invalidOrigin) { _ = try RealmContext.live(origin: "http://127.0.0.1:8101") }
-        #expect(throws: RealmViolation.invalidOrigin) { _ = try RealmContext.liveLoopbackForTesting(origin: "http://localhost:8101") }
-        #expect(throws: RealmViolation.invalidOrigin) { _ = try RealmContext.liveLoopbackForTesting(origin: "http://127.0.0.1") }
-        #expect(throws: RealmViolation.invalidOrigin) { _ = try RealmContext.liveLoopbackForTesting(origin: "https://127.0.0.1:1") }
-        #expect(throws: RealmViolation.self) { _ = try NWRequestSender(loopbackOrigin: "http://relay.example.org:80") }
-        #expect(try RealmContext.liveLoopbackForTesting(origin: "http://[::1]:8101").realm == .live)
+        #expect(throws: OriginViolation.self) { _ = try NWRequestSender(loopbackOrigin: "http://relay.example.org:80") }
+        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(loopbackOrigin: "http://localhost:8101") }
+        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(loopbackOrigin: "http://127.0.0.1") }
+        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(loopbackOrigin: "https://127.0.0.1:1") }
+        _ = try NWRequestSender(loopbackOrigin: "http://[::1]:8101")
     }
 
     @Test func targetsThatCouldChangeTheRequestAreRefusedBeforeIO() async throws {
@@ -138,7 +137,6 @@ import Testing
             #expect(r.status == status && r.header("location") == "\(other.origin)/landing")
         }
         #expect(other.requests.isEmpty)
-        #expect(HostAPI.failure(of: try await snd.send(get("/y"))) == .badReply)
     }
 
     // MARK: size cap

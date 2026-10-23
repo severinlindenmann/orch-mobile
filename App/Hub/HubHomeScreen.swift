@@ -402,4 +402,23 @@ struct HubHomeLaunchRoot: View {
         }
     }
 }
+
+/// The DEBUG app root: the hub home (a not-paired phone offers pairing there), the hub push work, and an opened `orch://hub-pair/...` link
+/// goes to the hub pairing screen. There is no other pairing in the app.
+struct HubRoot: View {
+    @State private var pairing: HubPairingModel?
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        HubHomeScreen()
+            .onOpenURL { url in
+                if HubLaunch.isHubLink(url.absoluteString) { pairing = HubLaunch.model(link: url.absoluteString) }
+            }
+            .sheet(item: $pairing) { HubPairingScreen(model: $0) }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { HubPushDriver.shared.foreground() } else if phase == .background { HubPushDriver.shared.background() }
+            }
+            .onAppear { if scenePhase == .active { HubPushDriver.shared.foreground() } }
+    }
+}
 #endif
