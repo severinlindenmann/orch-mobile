@@ -112,7 +112,7 @@ public actor HubHomeCoordinator {
         do {
             let ws = try await ctx.api.myWorkspaces(ctx.bearer)
             let ny = try await ctx.api.needsYou(ctx.bearer, workspaces: ws)
-            guard mine == generation else { return state }
+            guard mine == generation, stillPaired(ctx.record) else { return state }
             let snap = HubSnapshot(workspaces: ws, needsYou: ny, asOfMs: wall.nowMs)
             store(snap, ctx)
             return set(.live(snap), mine)
@@ -313,6 +313,13 @@ public actor HubHomeCoordinator {
             // unreachable, refused for another reason, or an answer that does not have the contract's shape: read-only, from the cache
             return .offline(cached(ctx))
         }
+    }
+
+    /// The pairing the request was made for is still the stored one and no wipe has started (a Leave or Reset during the request must not
+    /// get its cache written back).
+    private func stillPaired(_ r: HubPairingRecord) -> Bool {
+        guard !wipe.pending, let data = try? custody.record(hubID: r.hubID), let now = try? HubPairingRecord.decode(data) else { return false }
+        return now.channelID == r.channelID
     }
 
     private func set(_ s: HubHomeState, _ mine: Int) -> HubHomeState {

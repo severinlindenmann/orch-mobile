@@ -106,15 +106,20 @@ public struct HubKeyCustody: Sendable {
             .map { String($0.purpose.dropFirst(4).dropLast(7)) }
     }
 
+    /// Hub items that carry no hub id in their name (V3 has one hub): `hub.push.material` (B4). A wipe of one hub removes them too.
+    static let unkeyedHubItems: Set<String> = ["hub.push.material"]
+
     /// Every hub item in this custody, in both groups: of one hub, or of all (`hubID == nil`, Reset this iPhone). It lists the vault instead of
     /// naming the items, so an item a later task adds under `hub.<hub_id>.` (the push material, the biometry baseline) is wiped too, and a
     /// leftover of an interrupted pairing with no record is not forgotten.
     func hubItems(_ hubID: String?) throws -> [(vault: SecretVault, id: SecretID)] {
         if let hubID, Hex.decode(hubID, length: 16) == nil { throw VaultError.badName }
         let prefix = hubID.map { "hub.\($0)." } ?? "hub."
+        // items of the single hub of V3 that are not named by hub id (B4: the notification extension's one `.push` item)
+        let singletons: Set<String> = hubID == nil ? [] : Self.unkeyedHubItems
         var out: [(SecretVault, SecretID)] = []
         for v in [keys, push] {
-            for id in try map({ try v.ids() }) where id.realm == realm && id.ws == nil && id.purpose.hasPrefix(prefix) { out.append((v, id)) }
+            for id in try map({ try v.ids() }) where id.realm == realm && id.ws == nil && (id.purpose.hasPrefix(prefix) || singletons.contains(id.purpose)) { out.append((v, id)) }
         }
         return out
     }

@@ -234,7 +234,9 @@ private func scalarFromSeed(_ seed: Data) -> Data {
         try keys.put(Data("b".utf8), for: SecretID(realm: .live, purpose: "hub.\(hub).biometry-baseline"))
         try keys.put(Data("dk".utf8), for: SecretID(realm: .live, purpose: "dk_sig"))
         try keys.put(Data("x".utf8), for: SecretID(realm: .live, ws: String(repeating: "a", count: 32), purpose: "wk"))
+        try SecretVault(group: .push, backend: b).put(Data("m".utf8), for: SecretID(realm: .live, purpose: "hub.push.material"))
         try c.deleteSecrets(hubID: hub)
+        #expect(try SecretVault(group: .push, backend: b).ids().isEmpty, "B4's unkeyed push material goes with the hub")
         // the record is still there (the hub is still named), everything else of this hub is gone, other hub and direct items stay
         #expect(try keys.ids().map(\.purpose).sorted() == ["dk_sig", "hub.\(hub).record", "hub.\(other).channel-key", "wk"])
         #expect(try c.pairedHubs() == [hub])

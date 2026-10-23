@@ -139,6 +139,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     @ObservationIgnored var liveBootGate: (@Sendable (String) async -> Void)?
     #endif
     private func finishLiveReset() async throws { try await finishInterruptedLiveReset(try liveStorage()) }
+    /// The hub pairing's wipe (B6). Reset this iPhone writes its intent first; it is finished here, in the same resumable reset as the
+    /// realm's, at the next launch if this run is killed. A hub wipe that cannot finish keeps the reset "incomplete" (Try again).
+    @ObservationIgnored var hubWipe: HubWipe = HubStorage.wipe
     /// Cleanups and gates of the reset in progress, kept across retries and cleared only after the wipe succeeded (L4).
     @ObservationIgnored private var cleanupToClear: [ServerCleanupStore] = []
     @ObservationIgnored private var resetFlagKeys: Set<String> = []
@@ -217,6 +220,12 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 clearLiveRealmRecords()
                 resetFlags.set(false, forKey: Keys.liveResetPending)
             } catch {
+                resetIncomplete = true
+                PresentationGate.requireRebuild()
+            }
+        }
+        if hubWipe.pending {
+            do { try await hubWipe.resume() } catch {
                 resetIncomplete = true
                 PresentationGate.requireRebuild()
             }
@@ -1230,13 +1239,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
     /// Wipes the Demo realm through the real reset path and leaves Demo.
     func resetThisiPhone() {
         pushOffSinceStored = nil
-        // Reset (and only Reset) also removes the hub pairing: a direct-mode wipe leaves `hub.*` items alone (D-B1).
-        if let backend = KeychainBackend.fromBundle() {
-            for g in [KeychainGroup.keys, .push] { try? SecretVault(group: g, backend: backend).wipeHubItems(realm: .live) }
-        }
-        #if DEBUG
-        HubRuntime.removeAllCaches()
-        #endif
+        // Reset (and only Reset) also removes the hub pairing and the hub's cache: a direct-mode wipe leaves `hub.*` items alone (D-B1). The
+        // intent is made durable here, before anything is awaited; the wipe itself runs with the realm's (below, or at the next launch).
+        do { try hubWipe.begin(.everything) } catch { resetIncomplete = true }
         leaveRealm(thenDemo: false)
     }
     func exitDemo() { leaveRealm(thenDemo: false) }
@@ -1389,6 +1394,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                     if self.resetFlagKeys.contains(Keys.resetPending), !self.options.uiTesting { try await self.finishInterruptedReset() }
                     if self.resetFlagKeys.contains(Keys.liveResetPending) { try await self.finishLiveReset() }
                 }
+                try await self.hubWipe.resume()
                 self.failedReset = nil
                 for id in self.lifecycle.keys { self.transition(id, to: .removed) }
                 // The wipe succeeded: only now do the realm's records and cleanups go.

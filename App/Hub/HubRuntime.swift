@@ -10,26 +10,20 @@ final class HubRuntime: Sendable {
     let custody: HubKeyCustody
     let pairing: HubPairingCoordinator
     let home: HubHomeCoordinator
+    let wipe: HubWipe
     /// DEBUG launch helper (`--hub-fake`): the in-process hub behind this runtime.
     let fake: FakeHub?
 
-    init(custody: HubKeyCustody, cache: any HubCacheStore, config: HubPairingConfig, fake: FakeHub? = nil) {
-        self.custody = custody; self.fake = fake
+    init(custody: HubKeyCustody, cache: any HubCacheStore, wipe: HubWipe, config: HubPairingConfig, fake: FakeHub? = nil) {
+        self.custody = custody; self.fake = fake; self.wipe = wipe
         pairing = HubPairingCoordinator(config)
-        home = HubHomeCoordinator(custody: custody, cache: cache, verifier: config.verifier, wall: config.wall, makeSender: config.makeSender)
+        home = HubHomeCoordinator(custody: custody, cache: cache, verifier: config.verifier, wall: config.wall, makeSender: config.makeSender, wipe: wipe)
     }
 
-    /// The hub's own area for its cache: never inside a direct-mode workspace container.
-    static var cacheDirectory: URL {
-        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
-            .appendingPathComponent("OrchHub", isDirectory: true)
-    }
-
-    /// The real stack: the keychain of the app (an in-memory vault when the Simulator build is unsigned), the hub over Network.framework.
+    /// The real stack: the process-wide hub storage (the same objects Reset this iPhone wipes), the hub over Network.framework.
     static func live() -> HubRuntime {
-        let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
-        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
-        return HubRuntime(custody: custody, cache: FileHubCache(directory: cacheDirectory), config: HubPairingConfig(custody: custody))
+        HubRuntime(custody: HubStorage.custody, cache: HubStorage.cache, wipe: HubStorage.wipe,
+                   config: HubPairingConfig(custody: HubStorage.custody, wipe: HubStorage.wipe))
     }
 
     /// `--hub-fake`: the same stack against `FakeHub` with sample data (no network, nothing on disk, nothing in the keychain).
@@ -38,18 +32,17 @@ final class HubRuntime: Sendable {
         hub.seedHome()
         let backend: any VaultBackend = InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
+        let cache = InMemoryHubCache()
+        let wipe = HubWipe(custody: custody, cache: cache)
         let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
             guard origin == hub.origin else { throw HubAPIError.network }
             return hub
-        })
-        return HubRuntime(custody: custody, cache: InMemoryHubCache(), config: cfg, fake: hub)
+        }, wipe: wipe)
+        return HubRuntime(custody: custody, cache: cache, wipe: wipe, config: cfg, fake: hub)
     }
 
     /// The process-wide runtime. `--hub-fake` (any variant) selects the fake one at first use; nothing else changes it.
     static let shared: HubRuntime = ProcessInfo.processInfo.arguments.contains("--hub-fake") ? fake() : live()
-
-    /// Reset this iPhone also removes the hub's cache (the keychain items are removed by the existing reset path).
-    static func removeAllCaches() { FileHubCache(directory: cacheDirectory).removeAll() }
 
     /// Pairs the fake hub without a screen (screenshots and UI tests of the home).
     func pairFake() async {

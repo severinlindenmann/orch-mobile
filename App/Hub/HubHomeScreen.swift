@@ -11,6 +11,8 @@ struct HubHomeScreen: View {
     @State private var model: HubHomeModel
     @State private var password = ""
     @State private var totp = ""
+    @State private var pairing: HubPairingModel?
+    @State private var confirmLeave = false
     @Environment(\.dismiss) private var dismiss
 
     init(model: HubHomeModel = HubHomeModel()) { _model = State(initialValue: model) }
@@ -32,10 +34,38 @@ struct HubHomeScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() }.accessibilityIdentifier("hubhome.close") }
                 ToolbarItem(placement: .topBarTrailing) { switcher }
+                ToolbarItem(placement: .topBarTrailing) { leaveMenu }
             }
+            .confirmationDialog("Leave this hub?", isPresented: $confirmLeave, titleVisibility: .visible) {
+                Button("Leave the hub", role: .destructive) { Task { await model.leave() } }.accessibilityIdentifier("hubhome.leave.confirm")
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This iPhone asks the hub to remove it, then deletes its keys and everything it saved from the hub. Your direct workspaces are not affected. To use the hub again you pair this iPhone again.")
+            }
+            .sheet(item: $pairing, onDismiss: { Task { await model.refresh() } }) { HubPairingScreen(model: $0) }
             .navigationDestination(for: HubNeedsYouRow.self) { HubItemScreen(model: model, row: $0) }
         }
         .task { await model.open() }
+    }
+
+    // MARK: leave and pair again (B6)
+
+    @ViewBuilder private var leaveMenu: some View {
+        switch model.state {
+        case .notPaired, .revoked: EmptyView()
+        default:
+            Menu {
+                Button("Leave this hub", role: .destructive) { confirmLeave = true }.accessibilityIdentifier("hubhome.leave")
+            } label: { Image(systemName: "ellipsis.circle") }
+                .disabled(model.leaving).accessibilityIdentifier("hubhome.more")
+        }
+    }
+
+    private var pairAgainButton: some View {
+        Button("Pair this iPhone again") {
+            Task { if await model.pairAgain() { pairing = HubPairingModel.live() } }
+        }
+        .buttonStyle(.orchProminent).accessibilityIdentifier("hubhome.pairagain")
     }
 
     // MARK: switcher
@@ -67,7 +97,11 @@ struct HubHomeScreen: View {
     @ViewBuilder private var banner: some View {
         switch model.state {
         case .notPaired:
-            note("This iPhone is not paired with a hub.", icon: "link.badge.plus", color: OC.textMuted, id: "hubhome.notpaired")
+            VStack(alignment: .leading, spacing: OS.s3) {
+                if let n = model.leaveNotice { note(n, icon: "checkmark.circle", color: OC.info, id: "hubhome.leavenotice") }
+                note("This iPhone is not paired with a hub.", icon: "link.badge.plus", color: OC.textMuted, id: "hubhome.notpaired")
+                pairAgainButton
+            }
         case .live: EmptyView()
         case .offline(let snap):
             if let snap {
@@ -80,7 +114,12 @@ struct HubHomeScreen: View {
         case .signInFailed(let f):
             signInAgain(failure: f)
         case .revoked:
-            note("The hub removed this iPhone. Pair it again to use the hub.", icon: "xmark.shield", color: OC.danger, id: "hubhome.revoked")
+            VStack(alignment: .leading, spacing: OS.s3) {
+                note("The hub removed this iPhone, or its pairing ran out. What it saved from the hub is deleted. Pair it again to use the hub.",
+                     icon: "xmark.shield", color: OC.danger, id: "hubhome.revoked")
+                if let n = model.leaveNotice { note(n, icon: "exclamationmark.triangle", color: OC.warn, id: "hubhome.leavenotice") }
+                pairAgainButton
+            }
         }
     }
 
