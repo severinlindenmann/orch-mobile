@@ -97,7 +97,7 @@ enum HubLaunch {
     }
 
     /// Whether a launch argument asks for the hub screen (no model is made: `HubLaunchRoot` makes it once).
-    static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") }
+    static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") || arguments.contains("--hub-sign") }
 
     /// `--hub-fake home...`: the hub home instead of the pairing screen.
     static func homeScript(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> String? {
@@ -118,13 +118,21 @@ import SwiftUI
 
 /// Owns the launch-argument model for the life of the view (a computed `root` would rebuild it on every body pass).
 struct HubLaunchRoot: View {
-    @State private var model = HubLaunch.homeScript() == nil ? (HubLaunch.model() ?? HubPairingModel.live()) : nil
-    /// `--hub-pair` on the real stack: after "Done" the home of the hub just paired (the Simulator lane, one launch from pairing to list).
+    @State private var model = (HubLaunch.homeScript() == nil && HubLaunchRoot.signModel() == nil) ? (HubLaunch.model() ?? HubPairingModel.live()) : nil
+    /// `--hub-sign [script]`: the sign prompt against the in-process hub (screenshots and UI tests).
+    @State private var sign = HubLaunchRoot.signModel()
+    /// `--hub-pair` on the real stack: after "Done" the home of the hub just paired (the Simulator lane, one launch from pairing to sign).
     @State private var home = false
     var body: some View {
-        if let script = HubLaunch.homeScript() { HubHomeLaunchRoot(script: script) }
+        if let sign { HubSignScreen(model: sign) }
+        else if let script = HubLaunch.homeScript() { HubHomeLaunchRoot(script: script) }
         else if home { HubHomeScreen() }
         else if let model { HubPairingScreen(model: model, onDone: ProcessInfo.processInfo.arguments.contains("--hub-pair") ? { home = true } : nil) }
+    }
+
+    static func signModel(arguments: [String] = ProcessInfo.processInfo.arguments) -> HubSignModel? {
+        guard let i = arguments.firstIndex(of: "--hub-sign") else { return nil }
+        return HubSignModel.fake(script: arguments.indices.contains(i + 1) && !arguments[i + 1].hasPrefix("--") ? arguments[i + 1] : nil)
     }
 }
 #endif

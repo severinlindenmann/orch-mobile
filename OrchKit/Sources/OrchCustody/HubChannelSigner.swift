@@ -96,12 +96,7 @@ public struct HubChannelSigner: Sendable {
 
     /// The digest the channel signs (protocol 8.2): `H("orch/v2/hub-event-digest|" || cj(ctx))` where `ctx.event` has no `channel_proof`.
     /// The caller passes the CONTEXT it rendered and checked; the digest is computed here, never taken from the hub.
-    public static func digest(ofContext ctx: JSONValue) throws -> Data {
-        guard var c = ctx.object, var event = c["event"]?.object else { throw Refusal.malformed }
-        event["channel_proof"] = nil
-        c["event"] = .object(event)
-        return Data(SHA256.hash(data: Data(Label.hHubEventDigest.utf8) + (try canonicalJSON(.object(c)))))
-    }
+    public static func digest(ofContext ctx: JSONValue) throws -> Data { try HubSign.digest(ofContext: ctx) }
 
     /// The custodial proof over a digest computed here from `ctx` (design B3: only after the sign view model rendered and checked it).
     /// Package-level on purpose (L2-B1-4): B3 reaches it only through its four-type allow-list sign view model, never from app code.

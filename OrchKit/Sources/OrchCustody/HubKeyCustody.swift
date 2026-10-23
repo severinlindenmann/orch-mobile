@@ -21,7 +21,7 @@ public struct HubKeyCustody: Sendable {
         self.keys = keys; self.push = push; self.realm = realm
     }
 
-    enum Purpose: String { case channelKey = "channel-key", session, record, pushKey = "push-key" }
+    enum Purpose: String { case channelKey = "channel-key", session, record, pushKey = "push-key", biometry }
 
     func id(_ hubID: String, _ p: Purpose) throws -> SecretID {
         guard Hex.decode(hubID, length: 16) != nil else { throw VaultError.badName }
@@ -94,6 +94,13 @@ public struct HubKeyCustody: Sendable {
     }
     public func deleteSessionToken(hubID: String) throws { try map { try keys.delete(try id(hubID, .session)) } }
 
+    // MARK: the biometry baseline (design B3, R2): `evaluatedPolicyDomainState` at pairing. It is not a secret, but it is what makes a
+    // changed set of faces mean "sign in again", so it lives with the session token in the app-only `.keys` group.
+
+    package func putBiometryBaseline(_ state: Data, hubID: String) throws { try map { try keys.put(state, for: try id(hubID, .biometry)) } }
+    public func biometryBaseline(hubID: String) throws -> Data? { try read(keys, hubID, .biometry) }
+    public func deleteBiometryBaseline(hubID: String) throws { try map { try keys.delete(try id(hubID, .biometry)) } }
+
     // MARK: the pairing record (what the phone verified: card, origin, user, channel, certificate)
 
     public func putRecord(_ data: Data, hubID: String) throws { try map { try keys.put(data, for: try id(hubID, .record)) } }
@@ -110,7 +117,7 @@ public struct HubKeyCustody: Sendable {
     /// error is rethrown after all were attempted.
     public func deleteAll(hubID: String) throws {
         var first: Error?
-        for step: () throws -> Void in [{ try deleteSessionToken(hubID: hubID) }, { try deleteRecord(hubID: hubID) },
+        for step: () throws -> Void in [{ try deleteSessionToken(hubID: hubID) }, { try deleteBiometryBaseline(hubID: hubID) }, { try deleteRecord(hubID: hubID) },
                                          { try deletePushKey(hubID: hubID) }, { try deleteChannelKey(hubID: hubID) }] {
             do { try step() } catch { first = first ?? error }
         }

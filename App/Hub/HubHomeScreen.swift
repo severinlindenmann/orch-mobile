@@ -189,6 +189,8 @@ struct HubHomeScreen: View {
 struct HubItemScreen: View {
     let model: HubHomeModel
     let row: HubNeedsYouRow
+    @State private var signModel: HubSignModel?
+    @State private var reason = ""
 
     var body: some View {
         ScrollView {
@@ -209,7 +211,46 @@ struct HubItemScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.load(row) }
         .onDisappear { model.clearItem() }
+        .sheet(item: $signModel, onDismiss: { Task { await model.refresh() } }) { HubSignScreen(model: $0) }
     }
+
+    /// B3: start a decision on this item. The sign model refuses anything the hub's prepared event does not match.
+    private func sign(_ d: HubItemDecision, _ make: (String) -> HubSignAction) {
+        let ids = Set(model.snapshot?.workspaces.map(\.id) ?? [])
+        guard let m = HubSignModel.make(runtime: HubRuntime.shared, workspaces: ids) else { return }
+        signModel = m
+        m.start(workspaceID: row.workspaceID, action: make(d.log))
+    }
+
+    @ViewBuilder private func decisionButtons(_ d: HubItemDecision) -> some View {
+        let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(alignment: .leading, spacing: OS.s3) {
+            switch d.kind {
+            case .question(let q, let options):
+                ForEach(options, id: \.key) { o in
+                    Button { sign(d) { .answerQuestion(log: $0, question: q, hash: d.hash, option: o.key, text: nil) } } label: { Text(Self.plain(o.label)).frame(maxWidth: .infinity) }
+                        .buttonStyle(.orchSoftBrand).accessibilityIdentifier("hubitem.option.\(o.key)")
+                }
+            case .gate(let g):
+                Button("Approve") { sign(d) { .approveGate(log: $0, gate: g, hash: d.hash) } }.buttonStyle(.orchProminent).accessibilityIdentifier("hubitem.approve")
+                reasonField
+                Button("Ask for changes") { sign(d) { .requestChanges(log: $0, gate: g, hash: d.hash, text: text) } }
+                    .buttonStyle(.orchSoftBrand).disabled(text.isEmpty).accessibilityIdentifier("hubitem.changes")
+            case .verdict:
+                Button("Pass") { sign(d) { .giveVerdict(log: $0, outcome: "pass", hash: d.hash, text: nil) } }.buttonStyle(.orchProminent).accessibilityIdentifier("hubitem.pass")
+                reasonField
+                Button("Fail") { sign(d) { .giveVerdict(log: $0, outcome: "fail", hash: d.hash, text: text) } }
+                    .buttonStyle(.orchSoftBrand).disabled(text.isEmpty).accessibilityIdentifier("hubitem.fail")
+            }
+        }
+    }
+
+    private var reasonField: some View {
+        TextField("Reason (needed to ask for changes or fail)", text: $reason, axis: .vertical).lineLimit(1...4).padding(OS.s3).orchCard()
+            .accessibilityIdentifier("hubitem.reason")
+    }
+
+    private static func plain(_ s: String) -> String { s }
 
     private func detail(_ d: HubItemDetail) -> some View {
         VStack(alignment: .leading, spacing: OS.s4) {
@@ -227,7 +268,8 @@ struct HubItemScreen: View {
             }
             .padding(OS.s4).frame(maxWidth: .infinity, alignment: .leading).orchCard()
             if let h = d.itemHash { Text(HubHomeScreen.safe("Shared content fingerprint: " + h)).font(OF.machine).foregroundStyle(OC.textMuted) }
-            Text("Signing from this iPhone comes in a later version.").font(OF.meta).foregroundStyle(OC.textMuted)
+            if let dec = d.decision, model.signEnabled(d.row) { decisionButtons(dec) }
+            else { Text("Handled where it lives.").font(OF.meta).foregroundStyle(OC.textMuted) }
         }
         .accessibilityIdentifier("hubitem.detail")
     }

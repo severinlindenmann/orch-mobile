@@ -37,6 +37,8 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>orch uses the camera only to scan the pairing QR code shown by orch on your Mac.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>orch asks for Face ID to confirm it is you before it sends a signature request from your hub.</string>
 	<key>OrchAppIdentifierPrefix</key>
 	<string>$(AppIdentifierPrefix)</string>
 	<key>UIApplicationSceneManifest</key>

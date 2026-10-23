@@ -49,7 +49,23 @@ public struct HubItemDetail: Sendable, Equatable {
     public let row: HubNeedsYouRow
     public let lines: [Line]
     public let itemHash: String?
+    /// What a sign button would start (nil: this item cannot be decided from the phone). Display data only: the action it builds is checked
+    /// against the hub's prepared event (`check_built`), and the hub's prepare is the authority.
+    public let decision: HubItemDecision?
     public struct Line: Sendable, Equatable { public let label: String; public let value: String }
+}
+
+/// The decision an item offers, from the hub's item answer (`log`, `hash`, and the content's `question` / `options` / `gate`).
+public struct HubItemDecision: Sendable, Equatable {
+    public struct Option: Sendable, Equatable { public let key: String; public let label: String }
+    public enum Kind: Sendable, Equatable {
+        case question(id: String, options: [Option])
+        case gate(String)
+        case verdict
+    }
+    public let log: String
+    public let hash: String
+    public let kind: Kind
 }
 
 enum HubViewParse {
@@ -115,7 +131,30 @@ enum HubViewParse {
         var lines: [HubItemDetail.Line] = []
         flatten(content, label: "", depth: 0, into: &lines)
         let hash = (o["item_hash"]?.string).flatMap { $0.utf8.count <= 80 ? HubText.render($0) : nil }
-        return HubItemDetail(row: r, lines: lines, itemHash: hash)
+        return HubItemDetail(row: r, lines: lines, itemHash: hash, decision: r.signable ? decision(o, content: content, kind: r.kind) : nil)
+    }
+
+    static func decision(_ o: [String: JSONValue], content: JSONValue, kind: String) -> HubItemDecision? {
+        guard let log = o["log"]?.string, HubSign.isULID(log), let hash = o["hash"]?.string, HubSign.isHash(hash), let c = content.object else { return nil }
+        switch kind {
+        case "question":
+            guard let q = c["question"]?.string, q.hasPrefix("Q"), q.count > 1, q.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            let opts: [HubItemDecision.Option] = (c["options"]?.array ?? []).prefix(8).compactMap { v in
+                if let s = v.string, isOptionKey(s) { return .init(key: s, label: HubText.render(s)) }
+                guard let o = v.object, let k = o["key"]?.string, isOptionKey(k) else { return nil }
+                return .init(key: k, label: HubText.render(o["label"]?.string ?? k))
+            }
+            return opts.isEmpty ? nil : HubItemDecision(log: log, hash: hash, kind: .question(id: q, options: opts))
+        case "gate":
+            guard let g = c["gate"]?.string, ["requirements", "plan", "code"].contains(g) else { return nil }
+            return HubItemDecision(log: log, hash: hash, kind: .gate(g))
+        case "verdict": return HubItemDecision(log: log, hash: hash, kind: .verdict)
+        default: return nil
+        }
+    }
+
+    static func isOptionKey(_ s: String) -> Bool {
+        (1...64).contains(s.utf8.count) && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F }
     }
 
     /// Scalars only, at most three levels deep and `maxLines` lines; anything else is not shown (and nothing is invented).
