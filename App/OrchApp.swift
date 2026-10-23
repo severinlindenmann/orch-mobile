@@ -26,7 +26,7 @@ struct OrchApp: App {
     @ViewBuilder private var root: some View {
         #if DEBUG
         if options.pushHarness { PushHarnessView(material: options.pushMaterial) }
-        else if let hub = HubLaunch.model() { HubPairingScreen(model: hub) }
+        else if HubLaunch.model(arguments: ProcessInfo.processInfo.arguments, probe: true) { HubLaunchRoot() }
         else if let kind = Self.shareStatusKind(options.initialRoute) { ShareStatusPreview(kind: kind) }
         else if options.uiPreview { HomeScreen(services: PreviewWorld(demo: options.demo), options: options) }
         else { AppRoot(options: options) }

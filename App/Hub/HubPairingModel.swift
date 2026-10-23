@@ -44,15 +44,11 @@ final class HubPairingModel: Identifiable {
         m.linkText = hub.pairingLink
         if script == "confirm" || script == "paired" || script == "failed" {
             m.start()
-            if script == "paired" { m.password = hub.password; m.totp = hub.totp; m.task = Task { await m.waitConfirmThenPair() } }
-            if script == "failed" { m.password = "wrong"; m.totp = "000000"; m.task = Task { await m.waitConfirmThenPair() } }
+            if script == "paired" { m.password = hub.password; m.totp = hub.totp }
+            if script == "failed" { m.password = "wrong"; m.totp = "000000" }
+            if script != "confirm" { let started = m.task; m.task = Task { await started?.value; m.pair() } }
         }
         return m
-    }
-
-    private func waitConfirmThenPair() async {
-        await task?.value
-        pair()
     }
 
     var busy: Bool {
@@ -102,6 +98,9 @@ enum HubLaunch {
         return m
     }
 
+    /// Whether a launch argument asks for the hub screen (no model is made: `HubLaunchRoot` makes it once).
+    static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") }
+
     @MainActor static func model(arguments: [String] = ProcessInfo.processInfo.arguments) -> HubPairingModel? {
         if let i = arguments.firstIndex(of: "--hub-fake") {
             let script = arguments.indices.contains(i + 1) && !arguments[i + 1].hasPrefix("--") ? arguments[i + 1] : nil
@@ -109,5 +108,13 @@ enum HubLaunch {
         }
         return arguments.contains("--hub-pair") ? HubPairingModel.live() : nil
     }
+}
+
+import SwiftUI
+
+/// Owns the launch-argument model for the life of the view (a computed `root` would rebuild it on every body pass).
+struct HubLaunchRoot: View {
+    @State private var model = HubLaunch.model() ?? HubPairingModel.live()
+    var body: some View { HubPairingScreen(model: model) }
 }
 #endif
