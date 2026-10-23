@@ -126,8 +126,15 @@ public enum WorkspaceEvent: Equatable, Sendable { case snapshot(WorkspaceSnapsho
 public struct QuestionOption: Equatable, Sendable {
     /// The option's `key` (host section 0.8 `Question.options`); what a decision binds.
     public let id: String, label: String
-    /// Bound into the question hash, so the phone must show it (11A.14 14.5).
+    /// Bound into the question hash, so the phone must show them (11A.14 14.5, design #1123 rev 4): the cost, the one-line text under
+    /// the title and the `[label, value]` facts.
     public let cost: String?
+    public let text: String?
+    public let facts: [F1Fact]
+    public init(id: String, label: String, cost: String? = nil, text: String? = nil, facts: [F1Fact] = []) {
+        self.id = id; self.label = label; self.cost = cost; self.text = text; self.facts = facts
+    }
+    init(_ o: F1QuestionOption) { self.init(id: o.key, label: o.label, cost: o.cost, text: o.text, facts: o.facts) }
 }
 public struct QuestionResolution: Equatable, Sendable {
     /// The id of the `question.answered` event that counts (`answer.id`, v1.7), as the host names it.
@@ -148,7 +155,13 @@ public struct Question: Equatable, Sendable {
     /// The ticket key (display) and uid (what is bound), and the question's id on the ticket (`Q1`).
     public let ticket: String, ticketUID: String, number: String
     public let text: String
+    /// The kind of the closed registry (`choice` or `text`); a text question has no options.
+    public let kind: F1QuestionKind
     public let options: [QuestionOption]
+    /// Hash-bound content a signing surface shows as it is: `why`, `details`, the recommended option key and whether a text of the
+    /// person's own may replace the options (`allow_other`).
+    public let why: String?, details: String?, recommended: String?
+    public let allowOther: Bool
     public let contentHash: Data
     public let createdMs: Int64
     public let state: String
@@ -157,40 +170,36 @@ public struct Question: Equatable, Sendable {
     package let wire: JSONValue
 
     /// From the F1 question of a `ticket.get` (verified against the paired workspace id) and the ticket facts it came with. A question
-    /// whose `qid` or `hash` the phone cannot reproduce from its own text, options and the ticket uid is refused.
+    /// whose `qid` or `hash` the phone cannot reproduce from the verbatim `text`, `options` and `spec` and the ticket uid is refused
+    /// (`F1QuestionRefusal` when the hash is the reason).
     package init(_ q: F1Question, ticketKey: String, ticketUID: String, workspace: ID16, createdMs: Int64,
                  deviceLabel: (_ device: String?, _ person: String) -> String) throws {
-        guard let text = q.text, let hostQid = q.qid, let hostHash = q.hash, q.state != .stale,
-              let myQid = try? F1Question.questionID(question: q.id, ticketUID: ticketUID, workspace: workspace),
-              let myHash = try? F1Question.questionHash(qid: myQid, ticketUID: ticketUID, text: text, options: q.options),
-              myQid.utf8Equal(hostQid), myHash.utf8Equal(hostHash),
-              let id = ID16(hex: myQid), let hash = Hex.decode(String(myHash.dropFirst("sha256:".count)), length: 32) else { throw ViewError.malformed }
+        guard q.state != .stale else { throw ViewError.malformed }
+        let (myQid, myHash) = try q.verified(ticketUID: ticketUID, workspace: workspace)
+        guard let id = ID16(hex: myQid), let hash = Hex.decode(String(myHash.dropFirst("sha256:".count)), length: 32) else { throw ViewError.malformed }
         var resolution: QuestionResolution?
         if let a = q.answer {
             guard q.state == .answered, let by = q.answeredBy, by.utf8Equal(a.by), let atMs = HostTime.ms(a.at) else { throw ViewError.malformed }
             let answer: JSONValue
             if let o = a.option { answer = ["option_id": .string(o)] } else if let t = a.text { answer = ["text": .string(t)] } else { throw ViewError.malformed }
             if let o = a.option { guard q.options.contains(where: { $0.key.utf8Equal(o) }) else { throw ViewError.malformed } }
-            resolution = QuestionResolution(decisionID: a.id, byDeviceID: a.signerDevice, byPerson: a.by, answer: answer,
-                                            byDeviceLabel: deviceLabel(a.signerDevice, a.by), atMs: atMs)
+            resolution = QuestionResolution(decisionID: a.id, byDeviceID: a.signerDevice, byPerson: a.by, answer: answer, byDeviceLabel: deviceLabel(a.signerDevice, a.by), atMs: atMs)
         }
         guard (q.state == .answered) == (resolution != nil) else { throw ViewError.malformed }
-        questionID = id; ticket = ticketKey; self.ticketUID = ticketUID; number = q.id; self.text = text
-        options = q.options.map { QuestionOption(id: $0.key, label: $0.label, cost: $0.cost) }
+        questionID = id; ticket = ticketKey; self.ticketUID = ticketUID; number = q.id; text = q.text
+        kind = q.kind; options = q.options.map(QuestionOption.init); why = q.why; details = q.details; recommended = q.recommended; allowOther = q.allowOther
         contentHash = hash; self.createdMs = createdMs; state = resolution == nil ? "open" : "closed"; blocking = q.blocking; self.resolution = resolution
-        wire = Self.encode(id: id, ticket: ticketKey, uid: ticketUID, number: q.id, text: text, options: options, hash: hash, createdMs: createdMs,
+        wire = Self.encode(id: id, ticket: ticketKey, uid: ticketUID, number: q.id, content: q.content, hash: hash, createdMs: createdMs,
                            state: state, blocking: q.blocking, resolution: resolution)
     }
 
-    /// The stored form (a decision keeps the review it signed): `Question(wire:)` reads it back and checks it the same way.
-    private static func encode(id: ID16, ticket: String, uid: String, number: String, text: String, options: [QuestionOption], hash: Data, createdMs: Int64,
+    /// The stored form (a decision keeps the review it signed): `Question(wire:)` reads it back and checks it the same way. `options` and
+    /// `spec` are stored VERBATIM (what the hash covers); the typed fields above are derived from them on load.
+    private static func encode(id: ID16, ticket: String, uid: String, number: String, content: F1Question.Content, hash: Data, createdMs: Int64,
                                state: String, blocking: Bool, resolution: QuestionResolution?) -> JSONValue {
         var o: [String: JSONValue] = ["question_id": .string(id.hex), "ticket": .string(ticket), "ticket_uid": .string(uid), "number": .string(number),
-                                      "text": .string(text), "options": .array(options.map { opt in
-                                          var m: [String: JSONValue] = ["id": .string(opt.id), "label": .string(opt.label)]
-                                          if let c = opt.cost { m["cost"] = .string(c) }
-                                          return .object(m)
-                                      }), "content_hash": .string(B64U.encode(hash)), "created_ms": .int(createdMs), "state": .string(state),
+                                      "text": .string(content.text), "options": content.optionsWire, "spec": content.specWire,
+                                      "content_hash": .string(B64U.encode(hash)), "created_ms": .int(createdMs), "state": .string(state),
                                       "blocking": .bool(blocking), "resolution": .null]
         if let r = resolution {
             o["resolution"] = ["decision_id": .string(r.decisionID), "by_device_id": r.byDeviceID.map(JSONValue.string) ?? .null, "by_person": .string(r.byPerson),
@@ -200,24 +209,16 @@ public struct Question: Equatable, Sendable {
     }
 
     package init(wire value: JSONValue, workspace: ID16) throws {
-        let m = try fields(value, ["question_id", "ticket", "ticket_uid", "number", "text", "options", "content_hash", "created_ms", "state", "blocking", "resolution"])
+        let m = try fields(value, ["question_id", "ticket", "ticket_uid", "number", "text", "options", "spec", "content_hash", "created_ms", "state", "blocking", "resolution"])
         guard let id = m.idField("question_id"), let ticket = m["ticket"]?.string, validTicketKey(ticket), let uid = m["ticket_uid"]?.string, ULID.isValid(uid),
-              let number = m["number"]?.string, let text = m["text"]?.string, let opts = m["options"]?.array,
-              let hash = m.b64uField("content_hash", length: 32), let created = m["created_ms"]?.int, validViewTime(created),
+              let number = m["number"]?.string, let hash = m.b64uField("content_hash", length: 32), let created = m["created_ms"]?.int, validViewTime(created),
               let state = m["state"]?.string, ["open", "closed"].contains(state), let blocking = m["blocking"]?.bool else { throw ViewError.malformed }
-        let options = try opts.map { v -> QuestionOption in
-            let o = v.object ?? [:]
-            guard Set(o.keys).isSubset(of: ["id", "label", "cost"]), let id = o["id"]?.string, let label = o["label"]?.string else { throw ViewError.malformed }
-            if let c = o["cost"] { guard c.string != nil else { throw ViewError.malformed } }       // present, it is a string
-            return QuestionOption(id: id, label: label, cost: o["cost"]?.string)
-        }
-        // The stored form is re-checked like a host view: option keys byte-unique and clean, labels distinct (NFC and case), and the F1 hash
-        // recomputed from the ticket uid, text and options. A stored review that no longer reproduces is refused.
-        let f1 = options.map { F1QuestionOption(key: $0.id, label: $0.label, cost: $0.cost) }
-        guard Set(f1.map { Data($0.key.utf8) }).count == f1.count, F1Question.labelsDistinct(f1),
-              f1.allSatisfy({ F1Text.isClean($0.key, oneLine: true) && !$0.key.isEmpty }),
-              let myQid = try? F1Question.questionID(question: number, ticketUID: uid, workspace: workspace), ID16(hex: myQid) == id,
-              let myHash = try? F1Question.questionHash(qid: myQid, ticketUID: uid, text: text, options: f1),
+        // The stored form is re-checked like a host view: the same parser and limits, and the F1 hash recomputed from the ticket uid and the
+        // stored text, options and spec. A stored review that no longer reproduces is refused.
+        let optionsValue = m["options"]
+        let content = try F1Question.Content(text: m["text"], options: optionsValue?.array?.isEmpty == true ? nil : optionsValue, spec: m["spec"])
+        guard let myQid = try? F1Question.questionID(question: number, ticketUID: uid, workspace: workspace), ID16(hex: myQid) == id,
+              let myHash = try? F1Question.questionHash(qid: myQid, ticketUID: uid, content: content),
               Hex.decode(String(myHash.dropFirst("sha256:".count)), length: 32) == hash else { throw ViewError.malformed }
         var resolution: QuestionResolution?
         if m["resolution"] != .null {
@@ -227,8 +228,9 @@ public struct Question: Equatable, Sendable {
             resolution = QuestionResolution(decisionID: d, byDeviceID: r["by_device_id"]?.string, byPerson: p, answer: answer, byDeviceLabel: l, atMs: at)
         }
         guard (state == "closed") == (resolution != nil) else { throw ViewError.malformed }
-        questionID = id; self.ticket = ticket; ticketUID = uid; self.number = number; self.text = text; self.options = options; contentHash = hash
-        createdMs = created; self.state = state; self.blocking = blocking; self.resolution = resolution; wire = value
+        questionID = id; self.ticket = ticket; ticketUID = uid; self.number = number; text = content.text; kind = content.kind
+        options = content.options.map(QuestionOption.init); why = content.why; details = content.details; recommended = content.recommended; allowOther = content.allowOther
+        contentHash = hash; createdMs = created; self.state = state; self.blocking = blocking; self.resolution = resolution; wire = value
     }
 }
 public struct QuestionReview: Equatable, Sendable {
@@ -269,6 +271,11 @@ public struct Ticket: Equatable, Sendable {
                 "epic_key": epicKey.map(JSONValue.string) ?? .null, "updated_ms": .int(r.updatedMs)]
     }
 }
+/// An open question shown as "cannot verify": the ticket key, the question's id on it and a plain reason. Its text is never shown as content.
+public struct CannotVerifyQuestion: Equatable, Sendable {
+    public let ticket: String, question: String, reason: String
+    public init(ticket: String, question: String, reason: String) { self.ticket = ticket; self.question = question; self.reason = reason }
+}
 public struct WorkspaceMember: Equatable, Sendable { public let deviceID: ID16; public let label: String }
 public struct WorkspaceSnapshot: Equatable, Sendable {
     public let workspaceID: ID16
@@ -276,17 +283,20 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
     public let questions: [Question], tickets: [Ticket], members: [WorkspaceMember]
     /// `workspace.show`: the host's name for the workspace and its advisory next ticket key (`nil` when this device may not create one).
     public let name: String, nextKey: String?
-    /// Open questions this phone cannot show or sign (unreadable, failing a label or hash check, or free text): "N questions need your Mac".
-    public let macOnlyCount: Int
+    /// Open questions this phone cannot show or sign ("cannot verify": unreadable, an unknown kind or key, a failing limit or hash check, or
+    /// a typed question until the phone has its input): each with a plain reason, never answerable. The ticket stays.
+    public let cannotVerify: [CannotVerifyQuestion]
+    /// "N questions need your Mac".
+    public var macOnlyCount: Int { cannotVerify.count }
     /// The ticket list is cut (page cap, or fewer rows than the host's `total`): more tickets exist than are shown.
     public let ticketsIncomplete: Bool
     package init(workspace: ID16, revision: Int64, checkedMs: Int64, questions: [Question], tickets: [Ticket], members: [WorkspaceMember],
-                 name: String, nextKey: String?, macOnlyCount: Int = 0, ticketsIncomplete: Bool = false) throws {
+                 name: String, nextKey: String?, cannotVerify: [CannotVerifyQuestion] = [], ticketsIncomplete: Bool = false) throws {
         guard revision >= 1, validViewTime(checkedMs),
               Set(questions.map(\.questionID)).count == questions.count, Set(tickets.map(\.key)).count == tickets.count else { throw ViewError.malformed }
         workspaceID = workspace; self.revision = revision; self.checkedMs = checkedMs; self.questions = questions; self.tickets = tickets
         self.members = members; self.name = name; self.nextKey = nextKey
-        self.macOnlyCount = macOnlyCount; self.ticketsIncomplete = ticketsIncomplete
+        self.cannotVerify = cannotVerify; self.ticketsIncomplete = ticketsIncomplete
     }
 }
 package func fields(_ v: JSONValue, _ keys: Set<String>) throws -> [String: JSONValue] {

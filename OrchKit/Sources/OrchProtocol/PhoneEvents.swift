@@ -91,6 +91,8 @@ public struct SignedPhoneEvent: Equatable, Sendable {
 /// Builds and signs the two phone person events. The result depends only on its inputs (the id, the snapshot values and the signer).
 public enum PhoneEvents {
     public static let maxAnswerTextBytes = 4096
+    /// An answer's `text` (Other, a note, or the answer to a `text` question): 1..1000 scalars (core `ANSWER_MAX`).
+    public static let maxAnswerTextScalars = 1000
     public static let maxTitleScalars = 200
     public static let ticketTypes = ["feature", "bug", "chore", "spike", "epic"]
 
@@ -104,6 +106,12 @@ public enum PhoneEvents {
 
     public enum Failure: Error, Equatable, Sendable {
         case badID, badTicketUID, badRoster, badBase, notOpen, unknownOption, noAnswer
+        /// A text of the person's own without an option, on a choice question that does not bind `allow_other`.
+        case otherNotAllowed
+        /// An option chosen on a `text` question (it has none).
+        case optionOnTextQuestion
+        /// The answer text breaks the plain-text rules (core `check_plain`): invisible characters, a tab-less control, ...
+        case textRefused
         case text(F1Text.Violation), textTooLong, emptyText, titleLength
         case badKey, badType
         /// `validateSigned`: a field set, type or value outside P1 to P5.
@@ -151,7 +159,7 @@ public enum PhoneEvents {
                                        actor: PhoneActor, workspace: ID16) throws -> UnsignedPhoneEvent {
         guard ULID.isValid(id) else { throw Failure.badID }
         guard r.question.state == .open else { throw Failure.notOpen }
-        guard option != nil || text != nil else { throw Failure.noAnswer }
+        try r.question.content.checkAnswer(option: option, text: text?.value)
         var e: [String: JSONValue] = envelope(actor: actor, id: id, rosterV: r.rosterV, type: "question.answered", basedOn: .string(r.basedOn))
         e["question"] = .string(r.question.id)
         e["hash"] = .string(r.hash)
@@ -160,8 +168,6 @@ public enum PhoneEvents {
             e["option"] = .string(match.key)
         }
         if let text {
-            guard !text.value.isEmpty else { throw Failure.emptyText }
-            guard text.value.utf8.count <= maxAnswerTextBytes else { throw Failure.textTooLong }
             e["text"] = .string(text.value)
         }
         return UnsignedPhoneEvent(kind: .questionAnswered, log: r.ticketUID, id: id, event: e, workspace: workspace)

@@ -57,7 +57,17 @@ public struct HubItemDetail: Sendable, Equatable {
 
 /// The decision an item offers, from the hub's item answer (`log`, `hash`, and the content's `question` / `options` / `gate`).
 public struct HubItemDecision: Sendable, Equatable {
-    public struct Option: Sendable, Equatable { public let key: String; public let label: String }
+    /// One option of a verified `choice` question: the title (`label`), and the one-line text, `[label, value]` facts and cost the hash binds.
+    public struct Option: Sendable, Equatable {
+        public let key: String
+        public let label: String
+        public let text: String?
+        public let facts: [F1Fact]
+        public let cost: String?
+        public init(key: String, label: String, text: String? = nil, facts: [F1Fact] = [], cost: String? = nil) {
+            self.key = key; self.label = label; self.text = text; self.facts = facts; self.cost = cost
+        }
+    }
     public enum Kind: Sendable, Equatable {
         case question(id: String, options: [Option])
         case gate(String)
@@ -190,23 +200,22 @@ enum HubViewParse {
         guard let log = o["log"]?.string, HubSign.isULID(log), let hash = o["hash"]?.string, HubSign.isHash(hash), let c = content.object else { return nil }
         switch kind {
         case "question":
-            guard let q = c["question"]?.string, q.hasPrefix("Q"), q.count > 1, q.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
-            let opts: [HubItemDecision.Option] = (c["options"]?.array ?? []).prefix(8).compactMap { v in
-                if let s = v.string, isOptionKey(s) { return .init(key: s, label: HubText.render(s)) }
-                guard let o = v.object, let k = o["key"]?.string, isOptionKey(k) else { return nil }
-                return .init(key: k, label: HubText.render(o["label"]?.string ?? k))
-            }
-            return opts.isEmpty ? nil : HubItemDecision(log: log, hash: hash, kind: .question(id: q, options: opts), shared: nil)
+            guard let q = c["question"]?.string, q.hasPrefix("Q"), q.count > 1, q.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let qid = o["item_id"]?.string, HubSign.isItemID(qid) else { return nil }
+            // Design #1123 rev 4: the phone hashes the RAW question exactly as the hub sent it (`text`, `options`, `spec` verbatim) and offers an
+            // answer only when that is the row's hash. Unknown kind or key, a bad limit, a hash mismatch and a `text` question (no hub input yet)
+            // offer nothing: the item is shown and answered on the Mac. Never a blind Answer button.
+            guard let content = try? F1Question.Content(text: c["text"], options: c["options"], spec: c["spec"]), content.kind == .choice,
+                  let mine = try? F1Question.questionHash(qid: qid, ticketUID: log, content: content), mine.bytesEqual(hash) else { return nil }
+            let opts = content.options.map { HubItemDecision.Option(key: $0.key, label: HubText.render($0.label), text: $0.text.map(HubText.render),
+                                                                    facts: $0.facts, cost: $0.cost) }
+            return HubItemDecision(log: log, hash: hash, kind: .question(id: q, options: opts), shared: nil)
         case "gate":
             guard let g = c["gate"]?.string, ["requirements", "plan", "code"].contains(g) else { return nil }
             return HubItemDecision(log: log, hash: hash, kind: .gate(g), shared: nil)
         case "verdict": return HubItemDecision(log: log, hash: hash, kind: .verdict, shared: nil)
         default: return nil
         }
-    }
-
-    static func isOptionKey(_ s: String) -> Bool {
-        (1...64).contains(s.utf8.count) && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F }
     }
 
     /// Scalars only, at most three levels deep and `maxLines` lines; anything else is not shown (and nothing is invented).

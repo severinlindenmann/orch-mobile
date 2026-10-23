@@ -33,12 +33,15 @@ public struct ReviewedSnapshot: Sendable, Equatable {
 
     /// The hashed options themselves, exactly as reviewed (what the sign sheet's rows are checked against, byte for byte).
     public var reviewedOptions: [F1QuestionOption] { reviewed.question.options }
-    /// EVERY option, in the order the hash binds them: key, label and cost exactly as reviewed.
-    public var options: [QuestionOption] { reviewed.question.options.map { QuestionOption(id: $0.key, label: $0.label, cost: $0.cost) } }
+    /// EVERY option, in the order the hash binds them: key, title, text, facts and cost exactly as reviewed.
+    public var options: [QuestionOption] { reviewed.question.options.map(QuestionOption.init) }
     public var text: String { reviewed.text }
-    /// Unbound context (shown under "Not signed").
+    /// Hash-bound content (design #1123 rev 4): shown as ordinary rows, never "not signed".
+    public var kind: F1QuestionKind { reviewed.question.kind }
     public var why: String? { reviewed.question.why }
+    public var details: String? { reviewed.question.details }
     public var recommended: String? { reviewed.question.recommended }
+    public var allowOther: Bool { reviewed.question.allowOther }
     public var to: [String] { reviewed.question.to }
     public var blocking: Bool { reviewed.question.blocking }
     /// Signed details.
@@ -46,8 +49,8 @@ public struct ReviewedSnapshot: Sendable, Equatable {
     public var hash: String { reviewed.hash }
     public var ticketUID: String { reviewed.ticketUID }
     public var ticketKey: String { question.ticket }
-    /// A question without options is answered on the Mac (free text stays out of C2b).
-    public var answerable: Bool { !reviewed.question.options.isEmpty }
+    /// A question without options (kind `text`) is answered on the Mac until the phone has a typed-answer input (D-mob-2).
+    public var answerable: Bool { reviewed.question.kind == .choice && !reviewed.question.options.isEmpty }
 
     public static func == (a: ReviewedSnapshot, b: ReviewedSnapshot) -> Bool { a.token == b.token && a.sameContent(b) }
     /// Same reviewed content, whatever review issued it (never true for content that could not be encoded).
@@ -136,7 +139,9 @@ public struct StoredReview: Equatable, Sendable {
     /// Every option, in hash order.
     public let options: [QuestionOption]
     public let option: String
-    public let why: String?, recommended: String?
+    public let kind: F1QuestionKind
+    public let why: String?, details: String?, recommended: String?
+    public let allowOther: Bool
     public let to: [String]
     public let blocking: Bool
     /// The hash's hex digits (the `sha256:` prefix removed).
@@ -597,8 +602,9 @@ extension WorkspaceSession {
               let signed = try? PhoneEvents.restore(bytes: event, kind: .questionAnswered, log: log, workspace: workspace),
               signed.event["hash"]?.string == r.hash else { return nil }
         return StoredReview(ticketKey: snap.ticketKey, ticketUID: r.ticketUID, qid: r.qid, hash: r.hash, text: r.text,
-                            options: r.question.options.map { QuestionOption(id: $0.key, label: $0.label, cost: $0.cost) }, option: snap.option,
-                            why: r.question.why, recommended: r.question.recommended, to: r.question.to, blocking: r.question.blocking)
+                            options: r.question.options.map(QuestionOption.init), option: snap.option,
+                            kind: r.question.kind, why: r.question.why, details: r.question.details, recommended: r.question.recommended,
+                            allowOther: r.question.allowOther, to: r.question.to, blocking: r.question.blocking)
     }
 
     #if DEBUG

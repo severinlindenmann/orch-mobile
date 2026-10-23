@@ -2,14 +2,23 @@ import Foundation
 import Testing
 @testable import OrchProtocol
 
+/// The phone's question protocol (design #1123 rev 4): the raw-question hash over verbatim `options` and `spec`, the closed parser, the
+/// pinned fold and the answer rules, against the FROZEN orch-core fixtures (`f1/hashes.json`, `f1/questions.json`, `f1/phone_events.json`;
+/// PROVENANCE.md says which are shared with the relay and the dashboard).
 @Suite struct F1QuestionTests {
     let hashes = F1Vectors.load("hashes")
+    let questions = F1Vectors.load("questions")
     let labels = F1Vectors.load("labels")
     let base = "sha256:" + String(repeating: "b", count: 64)
     let wsid = ID16(hex: "0123456789abcdef0123456789abcdef")!
+    let ticket = "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
 
-    func options(_ v: JSONValue) -> [F1QuestionOption] {
-        v.items.map { F1QuestionOption(key: $0["key"].str, label: $0["label"].str, cost: $0["cost"].string) }
+    /// `spec` as core computes it from a raw question: every key except `id`, `to`, `blocking`, `text`, `options`.
+    func specOf(_ raw: JSONValue) -> JSONValue {
+        .object((raw.object ?? [:]).filter { !["id", "to", "blocking", "text", "options"].contains($0.key) })
+    }
+    func content(_ raw: JSONValue) throws -> F1Question.Content {
+        try F1Question.Content(text: raw.object?["text"], options: raw.object?["options"], spec: specOf(raw))
     }
 
     @Test func labelsMatchCore() {
@@ -27,102 +36,219 @@ import Testing
         }
     }
 
+    // MARK: hash vectors [shared with core, hub, dashboard]
+
     @Test func questionHashKnownAnswers() throws {
         let cases = hashes["question_hash"].items
-        #expect(cases.count >= 2)
+        #expect(cases.count == 29)
         for c in cases {
-            let got = try F1Question.questionHash(qid: c["qid"].str, ticketUID: c["ticket"].str, text: c["text"].str, options: options(c["options"]))
-            #expect(got == c["hash"].str)
+            let raw = c["question"], name = c["name"].str
+            // the phone hashes `options` and `spec` as given: here, the vector's own `hashed` object
+            let hashed = c["hashed"]
+            #expect(hashed["options"] == .array(raw.object?["options"]?.array ?? []), "\(name) options verbatim")
+            #expect(hashed["spec"] == specOf(raw), "\(name) spec is the complement")
+            let got = try F1Question.questionHash(qid: c["qid"].str, ticketUID: c["ticket"].str, text: hashed["text"],
+                                                  options: raw.object?["options"], spec: hashed["spec"])
+            #expect(got == c["hash"].str, "\(name)")
         }
     }
 
-    @Test func questionHashRefusesTextThatBreaksTheRules() {
-        for c in hashes["question_hash_refused"].items {
-            let r = try? F1Question.questionHash(qid: String(repeating: "a", count: 32), ticketUID: "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
-                                                text: c["text"].str, options: options(c["options"]))
-            #expect(r == nil)
+    /// Re-asks that change only routing (`to`, `blocking`) keep the hash: an answer stands.
+    @Test func routingOnlyVariantsHaveTheSameHash() {
+        let same = hashes["question_hash"].items.filter { $0.object?["same_as"] != nil }
+        #expect(same.count == 2)
+        for c in same { #expect(c["hash"].str == hashes["question_hash"].items.first { $0["name"].str == c["same_as"].str }?["hash"].str) }
+    }
+
+    /// Core refuses every one of these. The phone sees only text, options and spec (routing keys are the view's), so a question
+    /// that breaks only a routing rule is not a content refusal here; `missing_blocking` is the one such vector.
+    @Test func refusedQuestionShapesDoNotParse() {
+        let routingOnly: Set<String> = ["missing_blocking"]
+        let cases = hashes["question_hash_refused"].items
+        #expect(cases.count == 63)
+        for c in cases {
+            let name = c["name"].str
+            guard c["question"].object != nil else { continue }              // "not_an_object": nothing to read
+            if routingOnly.contains(name) { #expect((try? content(c["question"])) != nil, "\(name)"); continue }
+            #expect((try? content(c["question"])) == nil, "\(name) must not parse")
+        }
+    }
+
+    @Test func foldVectorsAreThePinnedUnicode16Table() {
+        let cases = hashes["question_fold"].items
+        #expect(cases.count == 10)
+        for c in cases { #expect(F1Text.fold(c["text"].str).utf8.elementsEqual(c["folded"].str.utf8), "\(c["text"].str.unicodeScalars.map(\.value))") }
+    }
+
+    @Test func blankSetIsUnicodeWhiteSpace() {
+        let cases = hashes["question_blank"].items
+        #expect(cases.count == 9)
+        for c in cases { #expect(F1Text.isBlank(c["text"].str) == (c["blank"].bool ?? false), "\(c["text"].str.unicodeScalars.map(\.value))") }
+    }
+
+    @Test func answerRulesPerKind() throws {
+        let cases = hashes["question_answers"].items
+        #expect(cases.count == 19)
+        for c in cases {
+            let name = c["name"].str
+            let content = try content(c["question"])
+            var threw = false
+            do { try content.checkAnswer(option: c["option"].string, text: c["text"].string) } catch { threw = true }
+            #expect(threw == !(c["ok"].bool ?? false), "\(name)")
+        }
+    }
+
+    // MARK: the three forms of one question [shared]
+
+    @Test func eachFormHashesToTheSameValue() throws {
+        let forms = questions["forms"].items
+        #expect(forms.map { $0["name"].str } == ["choice_full", "text_with_why_and_details"])
+        for f in forms {
+            let name = f["name"].str, uid = f["ticket"].str
+            // raw event: the question as signed and replayed
+            let ev = f["raw_event"], raw = ev["question"]
+            let qid = try F1Question.questionID(question: raw["id"].str, ticketUID: uid, workspace: wsid)
+            #expect(qid == ev["qid"].str, "\(name) qid")
+            let fromRaw = try F1Question.questionHash(qid: qid, ticketUID: uid, content: content(raw))
+            #expect(fromRaw == ev["hash"].str, "\(name) raw_event")
+            // read item: options and spec verbatim, no top-level why/recommended/kind
+            let item = try F1Question(f["read_item"])
+            let (rq, rh) = try item.verified(ticketUID: uid, workspace: wsid)
+            #expect(rq == qid && rh == ev["hash"].str, "\(name) read_item")
+            #expect(item.kind.rawValue == raw["kind"].str)
+            // hub needs: the content carries text, options and spec; the row carries the hash
+            let needs = f["hub_needs"], row = needs["row"], c = needs["content"]
+            let fromNeeds = try F1Question.questionHash(qid: row["item_id"].str, ticketUID: row["log"].str, text: c["text"], options: c.object?["options"], spec: c["spec"])
+            #expect(fromNeeds == row["hash"].str && fromNeeds == ev["hash"].str, "\(name) hub_needs")
         }
     }
 
     // MARK: parser
 
-    func ticketGetQuestion(_ extra: [String: JSONValue] = [:], drop: [String] = []) -> JSONValue {
-        var q: [String: JSONValue] = ["id": "Q1", "state": "open", "to": ["p_75bf75a3bb50b0c4ac02f8a757b90e23"], "blocking": true,
-                                      "answered_by": .null, "answered_seq": .null, "text": "Which?", "why": "because",
-                                      "options": [["key": "csv", "label": "CSV", "cost": "1 day"], ["key": "api", "label": "API"]],
-                                      "recommended": "csv"]
-        for (k, v) in extra { q[k] = v }
-        for k in drop { q[k] = nil }
+    /// The `choice_full` read item of the frozen fixtures, edited.
+    func item(_ edit: (inout [String: JSONValue]) -> Void = { _ in }, form: Int = 0) -> JSONValue {
+        var q = questions["forms"].items[form]["read_item"].object!
+        edit(&q)
         return .object(q)
     }
+    func optionsEdit(_ f: @escaping (inout [JSONValue]) -> Void) -> (inout [String: JSONValue]) -> Void {
+        { q in var o = q["options"]!.array!; f(&o); q["options"] = .array(o) }
+    }
+    func option(_ i: Int, _ edit: @escaping (inout [String: JSONValue]) -> Void) -> (inout [String: JSONValue]) -> Void {
+        optionsEdit { o in var x = o[i].object!; edit(&x); o[i] = .object(x) }
+    }
+    func specEdit(_ f: @escaping (inout [String: JSONValue]) -> Void) -> (inout [String: JSONValue]) -> Void {
+        { q in var s = q["spec"]!.object!; f(&s); q["spec"] = .object(s) }
+    }
+    func refusal(_ v: JSONValue) -> F1QuestionRefusal? {
+        do { _ = try F1Question(v); return nil } catch { return error as? F1QuestionRefusal }
+    }
 
-    @Test func parsesAnOpenQuestion() throws {
-        let q = try F1Question(ticketGetQuestion())
-        #expect(q.id == "Q1")
-        #expect(q.state == .open)
-        #expect(q.options.count == 2)
-        #expect(q.options[0].cost == "1 day")
-        #expect(q.options[1].cost == nil)
+    @Test func parsesTheFullChoiceQuestion() throws {
+        let q = try F1Question(item())
+        #expect(q.id == "Q1" && q.state == .open && q.kind == .choice)
+        #expect(q.text.hasPrefix("Which export should feed"))
+        #expect(q.options.map(\.key) == ["csv", "api", "other"])
+        #expect(q.options[0].label == "Monthly CSV" && q.options[0].text == "One file a month, checked by hand")
+        #expect(q.options[0].facts == [F1Fact(label: "Effort", value: "\u{BD} day"), F1Fact(label: "Cost", value: "CHF 400")])
+        #expect(q.options[0].cost == "\u{BD} day" && q.options[2].cost == nil && q.options[2].facts.isEmpty)
+        #expect(q.why == "The seeds are stale." && q.recommended == "csv" && q.allowOther)
+        #expect(q.details == "If you pick CSV, we import monthly.\n\tAPI means a daily pull.")
         #expect(q.answer == nil)
     }
 
-    @Test func collidingOptionLabelsAreRefused() {
-        func with(_ a: String, _ b: String) -> JSONValue {
-            ticketGetQuestion(["options": [["key": "a", "label": .string(a)], ["key": "b", "label": .string(b)]], "recommended": "a"])
+    @Test func parsesATextQuestion() throws {
+        let q = try F1Question(item(form: 1))
+        #expect(q.kind == .text && q.options.isEmpty && q.recommended == nil && !q.allowOther)
+        #expect(q.why == "For the invoice." && q.details == "IBAN or name is fine.")
+        // a text question has no options: absent is the only "none"
+        #expect(refusal(item({ $0["options"] = [] }, form: 1))?.code == .option)
+    }
+
+    @Test func oneEncodingOneRendering() {
+        #expect(refusal(item(option(0) { $0["facts"] = [] }))?.code == .facts)               // empty facts
+        #expect(refusal(item(option(0) { $0["facts"] = ["Effort": "1 day"] }))?.code == .facts)   // object form
+        #expect(refusal(item(option(0) { $0["facts"] = [["A", "1", "x"]] }))?.code == .facts)
+        #expect(refusal(item(option(0) { $0["facts"] = [["A", "1"], ["B", "2"], ["C", "3"], ["D", "4"]] }))?.code == .facts)
+        #expect(refusal(item(option(0) { $0["facts"] = [["Cost", "1"], ["COST", "2"]] }))?.code == .facts)    // duplicate label after fold
+        #expect(refusal(item(option(0) { $0["text"] = "" }))?.code == .option)
+        #expect(refusal(item(option(0) { $0["cost"] = "" }))?.code == .option)
+        #expect(refusal(item(specEdit { $0["why"] = "" }))?.code == .spec)
+        #expect(refusal(item(specEdit { $0["details"] = "" }))?.code == .spec)
+        #expect(refusal(item(specEdit { $0["allow_other"] = false }))?.code == .spec)
+        #expect(refusal(item(specEdit { $0["allow_other"] = .null }))?.code == .spec)
+    }
+
+    @Test func unknownKindOrKeyIsCannotVerifyWithAReason() {
+        let kind = refusal(item(specEdit { $0["kind"] = "date" }))
+        #expect(kind?.code == .unknownKind && !(kind?.reason.isEmpty ?? true))
+        #expect(refusal(item(specEdit { $0["kind"] = .null }))?.code == .unknownKind)
+        #expect(refusal(item(specEdit { $0["kind"] = nil }))?.code == .unknownKind)
+        #expect(refusal(item(specEdit { $0["value"] = "x" }))?.code == .unknownKey)
+        #expect(refusal(item(option(0) { $0["value"] = "x" }))?.code == .unknownKey)
+        // a key of another kind: `recommended` and `allow_other` belong to choice only
+        #expect(refusal(item(specEdit { $0["recommended"] = "csv" }, form: 1))?.code == .unknownKey)
+    }
+
+    @Test func oldShapeIsGone() {
+        // no spec (the option-only shape): cannot verify, no fallback
+        #expect(refusal(item({ $0["spec"] = nil }))?.code == .malformed)
+        #expect((try? F1Question(item({ $0["spec"] = nil; $0["options"] = [["key": "a", "label": "A"], ["key": "b", "label": "B"]] }))) == nil)
+        // top-level why/recommended/kind are not content: ignored, never read as the question's own
+        let q = try? F1Question(item({ $0["why"] = "tampered"; $0["recommended"] = "api"; $0["kind"] = "text" }))
+        #expect(q?.why == "The seeds are stale." && q?.recommended == "csv" && q?.kind == .choice)
+    }
+
+    @Test func limitsAndTextRulesAreEnforced() {
+        #expect(refusal(item { $0["text"] = .string(String(repeating: "q", count: 141)) })?.code == .text)
+        #expect(refusal(item { $0["text"] = "cafe\u{301}?" })?.code == .text)
+        #expect(refusal(item { $0["text"] = "Pick\u{200B}one" })?.code == .text)
+        #expect(refusal(item(option(0) { $0["label"] = "Monthly\nCSV" }))?.code == .option)
+        #expect(refusal(item(option(0) { $0["label"] = .string(String(repeating: "T", count: 61)) }))?.code == .option)
+        #expect(refusal(item(option(0) { $0["key"] = "CSV" }))?.code == .option)
+        #expect(refusal(item(optionsEdit { $0 = Array($0.prefix(1)) }))?.code == .option)
+        #expect(refusal(item(optionsEdit { $0 += [["key": "d", "label": "D"], ["key": "e", "label": "E"], ["key": "f", "label": "F"], ["key": "g", "label": "G"]] }))?.code == .option)
+        #expect(refusal(item(option(1) { $0["key"] = "csv" }))?.code == .option)                        // duplicate key
+        #expect(refusal(item(option(1) { $0["label"] = "MONTHLY csv" }))?.code == .option)               // same title after fold
+        #expect(refusal(item(option(1) { $0["label"] = "Monthly CSV" }))?.code == .option)
+        #expect(refusal(item(specEdit { $0["recommended"] = "pdf" }))?.code == .spec)
+        #expect(refusal(item(specEdit { $0["details"] = .string(String(repeating: "d", count: 1501)) }))?.code == .spec)
+        #expect(refusal(item(specEdit { $0["details"] = .string(String(repeating: "\u{20AC}", count: 1400)) }))?.code == .spec)   // 4200 bytes
+        // title uniqueness uses the pinned fold: sharp s against SS, capital sharp s against ss, Kelvin against k
+        func titles(_ a: String, _ b: String) -> JSONValue { item(chain(optionsEdit { $0 = [["key": "a", "label": .string(a)], ["key": "b", "label": .string(b)]] }, specEdit { $0["recommended"] = nil; $0["allow_other"] = nil })) }
+        for (a, b) in [("Stra\u{DF}e", "STRASSE"), ("\u{1E9E}", "ss"), ("\u{212A}elvin", "kelvin"), ("\u{FB01}le", "FILE"), ("\u{130}stanbul", "i\u{307}stanbul")] {
+            #expect(refusal(titles(a, b))?.code == .option, "\(a) / \(b)")
         }
-        #expect((try? F1Question(with("Approve", "approve"))) == nil)               // case
-        #expect((try? F1Question(with("Caf\u{E9}", "Cafe\u{301}"))) == nil)          // NFC-equivalent
-        #expect((try? F1Question(with("Approve", "Reject"))) != nil)
-        // keys are byte-unique and an empty list stays allowed (a free-text question)
-        #expect((try? F1Question(ticketGetQuestion(["options": [["key": "a", "label": "A"], ["key": "a", "label": "B"]], "recommended": "a"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["options": []], drop: ["recommended"]))) != nil)
+        #expect(refusal(titles("Yes", "No")) == nil)
     }
 
-    @Test func optionsAbsentMeansEmpty() throws {
-        let q = try F1Question(ticketGetQuestion(drop: ["options", "recommended"]))
-        #expect(q.options.isEmpty)
-        let e = try F1Question(ticketGetQuestion(["options": []], drop: ["recommended"]))
-        #expect(e.options.isEmpty)
-    }
-
-    @Test func unknownKeysAreIgnoredAtQuestionAnswerAndSignerLevel() throws {
+    @Test func unknownTopLevelKeysAreIgnoredAtQuestionAnswerAndSignerLevel() throws {
         // host section 0.4: clients ignore unknown keys the host sends; every known key is still validated
-        #expect((try? F1Question(ticketGetQuestion(["surprise": 1]))) != nil)
+        #expect((try? F1Question(item { $0["surprise"] = 1 })) != nil)
         var a = answered().object!["answer"]!.object!
         a["extra_answer_key"] = "x"
         var signer = a["signer"]!.object!
         signer["extra_signer_key"] = 1
         a["signer"] = .object(signer)
-        let q = try F1Question(ticketGetQuestion(["state": "answered", "answered_by": "p_75bf75a3bb50b0c4ac02f8a757b90e23", "answered_seq": 3, "answer": .object(a)]))
+        let q = try F1Question(item { $0["state"] = "answered"; $0["answered_by"] = "p_75bf75a3bb50b0c4ac02f8a757b90e23"; $0["answered_seq"] = 3; $0["answer"] = .object(a) })
         #expect(q.answer?.signerAuth == .secureEnclaveUnlocked)
-        // a known key with a bad value is still refused, extra keys or not
-        #expect((try? F1Question(ticketGetQuestion(["surprise": 1, "blocking": "yes"]))) == nil)
-    }
-
-    @Test func optionEntriesAreClosedBecauseTheyAreHashed() {
-        #expect((try? F1Question(ticketGetQuestion(["options": [["key": "a", "label": "A", "extra": 1]], "recommended": "a"]))) == nil)
+        #expect((try? F1Question(item { $0["surprise"] = 1; $0["blocking"] = "yes" })) == nil)
     }
 
     @Test func refusesMissingKeyAndBadTypes() {
-        #expect((try? F1Question(ticketGetQuestion(drop: ["blocking"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["id": "Q01"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["state": "closed"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["to": ["sev"]]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["recommended": "nope"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["options": [["key": "a", "label": "A"], ["key": "a", "label": "B"]], "recommended": "a"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["qid": "xyz"]))) == nil)
-    }
-
-    @Test func refusesTextThatBreaksTheRules() {
-        #expect((try? F1Question(ticketGetQuestion(["text": "cafe\u{301}"]))) == nil)
-        #expect((try? F1Question(ticketGetQuestion(["options": [["key": "a", "label": "bad\u{202E}"]], "recommended": "a"]))) == nil)
+        #expect((try? F1Question(item { $0["blocking"] = nil })) == nil)
+        #expect(refusal(item { $0["text"] = nil })?.code == .text)        // a missing text is "cannot verify" with a reason
+        #expect((try? F1Question(item { $0["id"] = "Q01" })) == nil)
+        #expect((try? F1Question(item { $0["state"] = "closed" })) == nil)
+        #expect((try? F1Question(item { $0["to"] = ["sev"] })) == nil)
+        #expect((try? F1Question(item { $0["qid"] = "xyz" })) == nil)
     }
 
     func answered(auth: JSONValue = "secure-enclave-unlocked", signerAuth: JSONValue = "secure-enclave-unlocked") -> JSONValue {
         let answer: JSONValue = ["by": "p_75bf75a3bb50b0c4ac02f8a757b90e23", "at": "2026-10-10T10:01:10Z", "seq": 3, "option": "csv", "text": .null,
                                  "auth": auth, "id": "01M4JM4RKG79RG3QTWCP60NNNG",
                                  "signer": ["device": "d_762df76def3afcc7bfc48dbc595f8add", "auth": signerAuth]]
-        return ticketGetQuestion(["state": "answered", "answered_by": "p_75bf75a3bb50b0c4ac02f8a757b90e23", "answered_seq": 3, "answer": answer])
+        return item { $0["state"] = "answered"; $0["answered_by"] = "p_75bf75a3bb50b0c4ac02f8a757b90e23"; $0["answered_seq"] = 3; $0["answer"] = answer }
     }
 
     @Test func parsesAnAnswerWithSigner() throws {
@@ -142,68 +268,77 @@ import Testing
     }
 
     @Test func answerStateAndAnswerGoTogether() {
-        #expect((try? F1Question(ticketGetQuestion(["state": "answered"]))) == nil)
+        #expect((try? F1Question(item { $0["state"] = "answered" })) == nil)
         let a = answered().object!["answer"]!
-        #expect((try? F1Question(ticketGetQuestion(["answer": a]))) == nil)
+        #expect((try? F1Question(item { $0["answer"] = a })) == nil)
     }
 
     @Test func answerNeedsOptionOrText() {
         let a: JSONValue = ["by": "p_75bf75a3bb50b0c4ac02f8a757b90e23", "at": "t", "seq": 3, "option": .null, "text": .null, "id": "01M4JM4RKG79RG3QTWCP60NNNG"]
-        #expect((try? F1Question(ticketGetQuestion(["state": "answered", "answer": a]))) == nil)
+        #expect((try? F1Question(item { $0["state"] = "answered"; $0["answer"] = a })) == nil)
+    }
+
+    // MARK: stored form
+
+    @Test func openWireReproducesTheQuestionByteForByte() throws {
+        for form in 0...1 {
+            let q = try F1Question(item(form: form))
+            let again = try F1Question(q.openWire)
+            #expect(again == q)
+            #expect(try canonicalJSON(again.openWire) == canonicalJSON(q.openWire))
+            // `options` and `spec` are stored as received, so the stored form still reproduces the host's hash
+            #expect(try again.verified(ticketUID: ticket, workspace: wsid).hash == q.hash)
+        }
     }
 
     // MARK: reviewed (recomputed qid and hash)
 
     @Test func reviewedRecomputesAndComparesToTheHost() throws {
-        let ticket = "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
-        let opts: [F1QuestionOption] = [F1QuestionOption(key: "csv", label: "CSV", cost: "1 day"), F1QuestionOption(key: "api", label: "API")]
-        let qid = try F1Question.questionID(question: "Q1", ticketUID: ticket, workspace: wsid)
-        let hash = try F1Question.questionHash(qid: qid, ticketUID: ticket, text: "Which?", options: opts)
-        let good = try F1Question(ticketGetQuestion(["qid": .string(qid), "hash": .string(hash)]))
+        let good = try F1Question(item())
         let r = try good.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)
-        #expect(r.hash == hash)
-        #expect(r.qid == qid)
-        #expect(r.basedOn == base)
-        #expect(r.rosterV == 3)
+        #expect(r.hash == good.hash && r.qid == good.qid)
+        #expect(r.basedOn == base && r.rosterV == 3)
         #expect((try? good.reviewed(ticketUID: ticket, workspace: wsid, basedOn: "sha256:abc", rosterV: 3)) == nil)
         #expect((try? good.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: -1)) == nil)
-        // a host hash for other content, a missing hash, another workspace or another ticket: no sign sheet
-        let other = "sha256:" + String(repeating: "0", count: 64)
-        #expect((try? F1Question(ticketGetQuestion(["qid": .string(qid), "hash": .string(other)])).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
-        #expect((try? F1Question(ticketGetQuestion()).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
+        // another workspace or another ticket: no sign sheet
         #expect((try? good.reviewed(ticketUID: ticket, workspace: ID16(hex: String(repeating: "1", count: 32))!, basedOn: base, rosterV: 3)) == nil)
         #expect((try? good.reviewed(ticketUID: "01J9ZK4Q7M3R8T2V6X0B5N1C9E", workspace: wsid, basedOn: base, rosterV: 3)) == nil)
-        // a changed cost (bound) breaks it; a changed why (unbound) does not
-        let costChanged = try F1Question(ticketGetQuestion(["qid": .string(qid), "hash": .string(hash),
-                                                            "options": [["key": "csv", "label": "CSV", "cost": "2 days"], ["key": "api", "label": "API"]]]))
-        #expect((try? costChanged.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
-        let whyChanged = try F1Question(ticketGetQuestion(["qid": .string(qid), "hash": .string(hash), "why": "different"]))
-        #expect((try? whyChanged.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) != nil)
+        // a missing hash, or a hash for other content
+        #expect((try? F1Question(item { $0["hash"] = nil }).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
+        let other: JSONValue = .string("sha256:" + String(repeating: "0", count: 64))
+        #expect((try? F1Question(item { $0["hash"] = other }).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)) == nil)
+        // a text question reviews too
+        let t = try F1Question(item(form: 1)).reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3)
+        #expect(t.question.kind == .text)
     }
 
-    /// questions.json: every `question.asked` event pins a qid and hash. The ones the model accepted ("ok") are reproduced; the ones
-    /// it refused as `question.bad_id` / `question.bad_hash` do not match the phone's derivation either.
-    @Test func questionsVectorQidAndHashAgreeWithTheModelsVerdicts() throws {
-        let q = F1Vectors.load("questions")
-        var ok = 0, badID = 0, badHash = 0
-        for sc in q["scenarios"].items {
-            let ws = ID16(hex: sc["workspace_id"].str)!
-            for st in sc["steps"].items where st["event"]["type"].str == "question.asked" {
-                let e = st["event"], qs = e["question"]
-                let opts = qs["options"].items.map { F1QuestionOption(key: $0["key"].str, label: $0["label"].str, cost: $0["cost"].string) }
-                let ticket = st["log"].str
-                let myQid = try F1Question.questionID(question: qs["id"].str, ticketUID: ticket, workspace: ws)
-                let myHash = try F1Question.questionHash(qid: e["qid"].str, ticketUID: ticket, text: qs["text"].str, options: opts)
-                switch st["expect"].str {
-                case "ok": #expect(myQid == e["qid"].str); #expect(myHash == e["hash"].str); ok += 1
-                case "question.bad_id": #expect(myQid != e["qid"].str); badID += 1
-                case "question.bad_hash": #expect(myHash != e["hash"].str); badHash += 1
-                default: break
-                }
-            }
+    /// Every bound field changes the hash (the tamper variants of the oracle): a host cannot change a fact, a title, the order, the
+    /// recommendation, the reason, the details, `allow_other` or the kind under the hash it already sent.
+    @Test func everyBoundFieldBreaksTheHostHash() {
+        func cannotVerify(_ v: JSONValue) -> Bool {
+            guard let q = try? F1Question(v) else { return true }       // refused outright is also not answerable
+            do { _ = try q.reviewed(ticketUID: ticket, workspace: wsid, basedOn: base, rosterV: 3); return false } catch let e as F1QuestionRefusal { return e.code == .hashMismatch } catch { return false }
         }
-        #expect(ok >= 3)
-        #expect(badID >= 1)
-        #expect(badHash >= 1)
+        #expect(!cannotVerify(item()))
+        #expect(cannotVerify(item { $0["text"] = "Which export should feed the tariff tables?" }))
+        #expect(cannotVerify(item(specEdit { $0["why"] = "The seeds are old." })))
+        #expect(cannotVerify(item(specEdit { $0["why"] = nil })))
+        #expect(cannotVerify(item(specEdit { $0["details"] = "If you pick CSV, we import weekly." })))
+        #expect(cannotVerify(item(specEdit { $0["recommended"] = "api" })))
+        #expect(cannotVerify(item(specEdit { $0["allow_other"] = nil })))
+        #expect(cannotVerify(item(option(0) { $0["label"] = "Monthly CSV file" })))
+        #expect(cannotVerify(item(option(0) { $0["text"] = "One file a month" })))
+        #expect(cannotVerify(item(option(0) { $0["cost"] = "1 day" })))
+        #expect(cannotVerify(item(option(0) { $0["facts"] = [["Effort", "\u{BD} day"], ["Cost", "CHF 500"]] })))
+        #expect(cannotVerify(item(option(0) { $0["facts"] = [["Effort", "\u{BD} day"], ["Price", "CHF 400"]] })))
+        #expect(cannotVerify(item(option(0) { $0["facts"] = [["Cost", "CHF 400"], ["Effort", "\u{BD} day"]] })))
+        #expect(cannotVerify(item(option(0) { $0["facts"] = nil })))
+        #expect(cannotVerify(item(optionsEdit { $0.reverse() })))
+        #expect(cannotVerify(item(chain(specEdit { $0["kind"] = "text" }, { $0["options"] = nil }))))
     }
+}
+
+/// Applies `a`, then `b`, to one question object (test helper).
+func chain(_ a: @escaping (inout [String: JSONValue]) -> Void, _ b: @escaping (inout [String: JSONValue]) -> Void) -> (inout [String: JSONValue]) -> Void {
+    { q in a(&q); b(&q) }
 }

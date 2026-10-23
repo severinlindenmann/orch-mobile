@@ -9,11 +9,12 @@ tests/canon/gen_unicode16.py on a Python with unidata_version 16.0.0). The outpu
 tables or the pinned commit change. The file also carries `digest` (SHA-256 of its data blocks), which a unit test recomputes, so
 a hand edit of the data is caught without core.
 
-Only the blocks the phone uses are emitted. A core-parity `suspicious()` would also need MARK_RANGES and CF_RANGES: add them to BLOCKS.
+Only the blocks the phone uses are emitted (cf and marks feed `suspicious`, casefold feeds `fold`).
 """
 import argparse, hashlib, pathlib, re, sys
 
-BLOCKS = [("ASSIGNED_RANGES", "assigned"), ("CCC_RANGES", "ccc"), ("DECOMP", "decomp"), ("COMPOSABLE", "composable")]
+BLOCKS = [("ASSIGNED_RANGES", "assigned"), ("CCC_RANGES", "ccc"), ("DECOMP", "decomp"), ("COMPOSABLE", "composable"),
+          ("CF_RANGES", "cf"), ("MARK_RANGES", "marks"), ("CASEFOLD", "casefold")]
 OUT = pathlib.Path(__file__).resolve().parent.parent / "Sources" / "OrchProtocol" / "Unicode16Data.swift"
 
 
@@ -28,7 +29,7 @@ def render(text: str, sha: str) -> str:
         body = m.group(1).strip("\n")
         h.update((swift + "\n" + body + "\n").encode())
         out.append(f'    static let {swift} = """\n{body}\n"""')
-    out.append(f'    /// SHA-256 over `name + "\\n" + block + "\\n"` for each block in this order: assigned, ccc, decomp, composable.')
+    out.append(f'    /// SHA-256 over `name + "\\n" + block + "\\n"` for each block in this order: assigned, ccc, decomp, composable, cf, marks, casefold.')
     out.append(f'    static let digest = "{h.hexdigest()}"')
     out.append("}")
     return "\n".join(out) + "\n"

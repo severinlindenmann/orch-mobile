@@ -1,10 +1,257 @@
 {
+ "forms": [
+  {
+   "hub_needs": {
+    "content": {
+     "blocking": true,
+     "options": [
+      {
+       "cost": "\u00bd day",
+       "facts": [
+        [
+         "Effort",
+         "\u00bd day"
+        ],
+        [
+         "Cost",
+         "CHF 400"
+        ]
+       ],
+       "key": "csv",
+       "label": "Monthly CSV",
+       "text": "One file a month, checked by hand"
+      },
+      {
+       "facts": [
+        [
+         "Effort",
+         "2 days"
+        ]
+       ],
+       "key": "api",
+       "label": "Tariff API",
+       "text": "Daily pull, no manual step"
+      },
+      {
+       "key": "other",
+       "label": "Keep the old seeds"
+      }
+     ],
+     "question": "Q1",
+     "short_hash": "4ce043c8a548",
+     "spec": {
+      "allow_other": true,
+      "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+      "kind": "choice",
+      "recommended": "csv",
+      "why": "The seeds are stale."
+     },
+     "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+     "ticket_title": "Tariff seeds"
+    },
+    "row": {
+     "deadline": null,
+     "hash": "sha256:4ce043c8a54809b66226299087f177ce99331746a1dd70925748b99bc57ea0bd",
+     "item_id": "d60478ec5ff8f6ff213cded9c0f8f243",
+     "key": "DEMO-0001",
+     "kind": "question",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "title": "Which export should feed the tariff tables?",
+     "type": "question"
+    }
+   },
+   "name": "choice_full",
+   "raw_event": {
+    "hash": "sha256:4ce043c8a54809b66226299087f177ce99331746a1dd70925748b99bc57ea0bd",
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+    "question": {
+     "allow_other": true,
+     "blocking": true,
+     "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+     "id": "Q1",
+     "kind": "choice",
+     "options": [
+      {
+       "cost": "\u00bd day",
+       "facts": [
+        [
+         "Effort",
+         "\u00bd day"
+        ],
+        [
+         "Cost",
+         "CHF 400"
+        ]
+       ],
+       "key": "csv",
+       "label": "Monthly CSV",
+       "text": "One file a month, checked by hand"
+      },
+      {
+       "facts": [
+        [
+         "Effort",
+         "2 days"
+        ]
+       ],
+       "key": "api",
+       "label": "Tariff API",
+       "text": "Daily pull, no manual step"
+      },
+      {
+       "key": "other",
+       "label": "Keep the old seeds"
+      }
+     ],
+     "recommended": "csv",
+     "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+     "to": "ticket_owner",
+     "why": "The seeds are stale."
+    },
+    "type": "question.asked"
+   },
+   "read_item": {
+    "answered_by": null,
+    "answered_seq": null,
+    "asked_at": "2026-10-23T12:00:00Z",
+    "asked_by": {
+     "for": "p_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+     "grant": "g_33333333333333333333333333333333",
+     "id": "a_11111111111111111111111111111111",
+     "kind": "agent",
+     "session": "s_22222222222222222222222222222222"
+    },
+    "asked_seq": 2,
+    "blocking": true,
+    "hash": "sha256:4ce043c8a54809b66226299087f177ce99331746a1dd70925748b99bc57ea0bd",
+    "id": "Q1",
+    "options": [
+     {
+      "cost": "\u00bd day",
+      "facts": [
+       [
+        "Effort",
+        "\u00bd day"
+       ],
+       [
+        "Cost",
+        "CHF 400"
+       ]
+      ],
+      "key": "csv",
+      "label": "Monthly CSV",
+      "text": "One file a month, checked by hand"
+     },
+     {
+      "facts": [
+       [
+        "Effort",
+        "2 days"
+       ]
+      ],
+      "key": "api",
+      "label": "Tariff API",
+      "text": "Daily pull, no manual step"
+     },
+     {
+      "key": "other",
+      "label": "Keep the old seeds"
+     }
+    ],
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+    "spec": {
+     "allow_other": true,
+     "details": "If you pick CSV, we import monthly.\n\tAPI means a daily pull.",
+     "kind": "choice",
+     "recommended": "csv",
+     "why": "The seeds are stale."
+    },
+    "state": "open",
+    "text": "Which export should feed the tariff tables?\nPick the one we keep.",
+    "to": [
+     "p_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+    ],
+    "to_ref": "ticket_owner"
+   },
+   "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+  },
+  {
+   "hub_needs": {
+    "content": {
+     "blocking": true,
+     "question": "Q1",
+     "short_hash": "6059b02ec306",
+     "spec": {
+      "details": "IBAN or name is fine.",
+      "kind": "text",
+      "why": "For the invoice."
+     },
+     "text": "Which bank?",
+     "ticket_title": "Tariff seeds"
+    },
+    "row": {
+     "deadline": null,
+     "hash": "sha256:6059b02ec306fb08d5632a82bd961ddb4cef8eb9d6190836994820a6274caf18",
+     "item_id": "d60478ec5ff8f6ff213cded9c0f8f243",
+     "key": "DEMO-0001",
+     "kind": "question",
+     "log": "01J9ZK4Q7M3R8T2V6X0B5N1C9D",
+     "title": "Which bank?",
+     "type": "question"
+    }
+   },
+   "name": "text_with_why_and_details",
+   "raw_event": {
+    "hash": "sha256:6059b02ec306fb08d5632a82bd961ddb4cef8eb9d6190836994820a6274caf18",
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+    "question": {
+     "blocking": true,
+     "details": "IBAN or name is fine.",
+     "id": "Q1",
+     "kind": "text",
+     "text": "Which bank?",
+     "to": "ticket_owner",
+     "why": "For the invoice."
+    },
+    "type": "question.asked"
+   },
+   "read_item": {
+    "answered_by": null,
+    "answered_seq": null,
+    "asked_at": "2026-10-23T12:00:00Z",
+    "asked_by": {
+     "for": "p_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+     "grant": "g_33333333333333333333333333333333",
+     "id": "a_11111111111111111111111111111111",
+     "kind": "agent",
+     "session": "s_22222222222222222222222222222222"
+    },
+    "asked_seq": 2,
+    "blocking": true,
+    "hash": "sha256:6059b02ec306fb08d5632a82bd961ddb4cef8eb9d6190836994820a6274caf18",
+    "id": "Q1",
+    "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
+    "spec": {
+     "details": "IBAN or name is fine.",
+     "kind": "text",
+     "why": "For the invoice."
+    },
+    "state": "open",
+    "text": "Which bank?",
+    "to": [
+     "p_5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+    ],
+    "to_ref": "ticket_owner"
+   },
+   "ticket": "01J9ZK4Q7M3R8T2V6X0B5N1C9D"
+  }
+ ],
  "pins": "question ids and hashes, answers, and a decision for the same qid after a restore",
  "scenarios": [
   {
    "answer_id": "01J9ZK0000000000000000000D",
    "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
-   "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+   "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
    "name": "question_ids_and_answers",
    "now": "2026-10-10T10:03:20Z",
    "pins": "the qid and the question hash are derived (5.6); the first valid signed answer for the current hash wins",
@@ -292,15 +539,16 @@
       },
       "at": "2026-10-10T10:01:10Z",
       "based_on": "sha256:ba9f14d505565d49ad5885306e922d1f5d7b4ee41592a3c607fc5b35488e9cf9",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "piMA171tzFy-H6lYuoRsze7TRUcXbD1MHq6aeMTjjETewsl-hoa4KNy_TNPZ8_s9S4EbMApUwf2X91oUH3LXeg",
+      "host_sig": "PTJIdHtYdsxh4Jp93PmEH3wFv45HwugjcXV0t4XK8ONuRZ-gitICZczW_OkclBhcGlg70xW-A_mi9wEjTaxxnw",
       "id": "01J9ZK00000000000000000007",
       "prev": "sha256:ba9f14d505565d49ad5885306e922d1f5d7b4ee41592a3c607fc5b35488e9cf9",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "csv",
@@ -333,16 +581,17 @@
        "session": "s_01J9ZK00000000000000000S01"
       },
       "at": "2026-10-10T10:01:20Z",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "YsRMrUDIAeZLSYx6CIj7LqQBINzdOJFqx45ZosAplksYrqOpTWdatwGe4fghRmIty6EaS6ODzrtnElHSsCS8nQ",
+      "host_sig": "FeDKmBNuX0M1bmDTmnc5B7vho4U_cLJH5FEVxBACAMz4c21kjqNFzML4ikFqhZA_fbA9S1rD3KFJt5Fu59yfIQ",
       "id": "01J9ZK00000000000000000008",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q2",
+       "kind": "choice",
        "options": [
         {
          "key": "csv",
@@ -375,16 +624,17 @@
        "session": "s_01J9ZK00000000000000000S01"
       },
       "at": "2026-10-10T10:01:30Z",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "hash": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
       "hash_v": 1,
-      "host_sig": "scmw7GdyqpGhq1Fa0fJUv0QflwEqJnvmLmzAijlkMjrQlA7ES1HkQ4Bx0q6RFXM7k7vveGDSY38yNqLqTPA6oA",
+      "host_sig": "X8_yg47jPSrDWCY4MpJYPDA9OM8EZ1YB5EV52TDsyP0iOiScL9LHXz3S-d0O4IyWxK8kd0fSKO3N5WVm-GooKA",
       "id": "01J9ZK00000000000000000009",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "csv",
@@ -416,17 +666,17 @@
       },
       "at": "2026-10-10T10:01:40Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "E_XHHeLUDe6bZ-dDEHDUw5LN_u3xcUDQ6escZH7njzPguuRlmWi43hxz_e6xJeCS5wL7x-aBho5wwFq3JJHoOg",
+      "host_sig": "bvx-57hpJsggf_959uRUWTH4ek6QmGlNyeW3bWsU-yZf2q6F_0XZIipEbJjAn6QI_DSnxyzs5kzvuiDFJ1Hw5Q",
       "id": "01J9ZK0000000000000000000A",
       "option": "csv",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "question": "Q1",
       "roster_v": 3,
       "seq": 3,
-      "sig": "jba_2yDjYRmLbBnTE94SOQ5BhlPQanHmoSbQ29D-ckAMiX_p6f6PaA8tZkObfd5fRIdhQrIqoqvfnkpSOHpeDw",
+      "sig": "6b7EhUuyLvI2KyPQlfXM7ivRytKACf1TTg-enRPR3ktblZ3kG7Ex1M8Tm2zxoLjuvgweU3fCT3wvcm_koOSZ0A",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5
@@ -444,17 +694,17 @@
       },
       "at": "2026-10-10T10:01:50Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "hash": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
       "hash_v": 1,
-      "host_sig": "LQLDnKLm1UtFyHPq39r7ikStu46SHCYkJxVd9r-KXKsvhI6ZP-EqQNJyADMvws0WnCvzB11O8xhPKbg96dqLaQ",
+      "host_sig": "KJB3F-x49i-6FRuzUUW5sdiX_AMkuEttnI3sBPlUpXh9RAUJCnS_DleSqyuSxbFJhWNYdS_Hmhe6gGwe_lnjrw",
       "id": "01J9ZK0000000000000000000B",
       "option": "csv",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "question": "Q1",
       "roster_v": 3,
       "seq": 3,
-      "sig": "ZuFdFYckZ165-fcjEVaOhU9S8DKKp_TlckTe6awjg9lM2Sb8VGOoR41EuyZuXZdmNjz7BI9jLBem3nlhit9daA",
+      "sig": "vNNig-28AC6tgnliA24NmkLtEs5gnHpsOnNSdVvVlmDKbjr2hRG4DBOFi7rPj3HnTPqQjQekt_VqnoI23isLsg",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5
@@ -472,17 +722,17 @@
       },
       "at": "2026-10-10T10:02:00Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "l-MxzNEDAulV3-1KR19ncZdvy5LH8KWZGRsJt1LwCI-FyChjQ7F4lmj_d-KU1Skpnt-TeLFcPbDacZ5q7EJ-yA",
+      "host_sig": "P1AZqz9kZ-IDYATg6eaPnHgLKmyqJLEG0WSU2KWB0G2A-uHXM45dPpIOxh6Efjma602i165RBCSpnSQnpiT7sg",
       "id": "01J9ZK0000000000000000000C",
       "option": "pdf",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "question": "Q1",
       "roster_v": 3,
       "seq": 3,
-      "sig": "ew3YPpSCw8O4d5j7eJpPuxzaBwgzM1GqX_ZQrYHUw9JiW_Scc8-U9aBsGZUYryewzjGBF2C4ngrIhlTWGnIPWw",
+      "sig": "QmdMziNBXeNXQv2EyJbamhZAUBNsq6hRkFJAyG8PhqFh9y_LdZWMKWeYsBsFQ_z4tlzANpYJXv2EQ2ed865arQ",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5
@@ -500,17 +750,17 @@
       },
       "at": "2026-10-10T10:02:10Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "vPltBV0BnkD1xIO32orcGpQSwgflAbMQalvA4pDDeF70TrSM52CZl8Ef0GtGhCitW62pGD8dOFIBdP-fRW4B4Q",
+      "host_sig": "Rukv6YswVZyrLKu6D24Y4la6f5OOZLdQbwNsGgZczJfvObtwnSyLeybhm5C99J9-z6h2-NzXg3gHsVH01-s-qg",
       "id": "01J9ZK0000000000000000000D",
       "option": "csv",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "question": "Q1",
       "roster_v": 3,
       "seq": 3,
-      "sig": "2bCWOiO5413RoeeUDvs4iECvPVlCJe8ECn1fJetB4Lnv19aYn38ChE1Akw4jeyw2Ov42-5GaB3G_lec2fNw7dw",
+      "sig": "bTbHcri2IJcRPz1W4uR2LmnjoD3zgJX-23GywlONW7jalgdq7Blx-_mKKiExBp4RWHtSxgjsmjo60vaylfljOQ",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5
@@ -528,17 +778,17 @@
       },
       "at": "2026-10-10T10:02:20Z",
       "auth": "passphrase",
-      "based_on": "sha256:3cc401aa5e11f4de408f019692c5cb42aca75173796edf16f0843971ab28f3eb",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:92ca193808e998759fb7d9a34a2ac5c9213f2ac31aa16ce0f79fe8addcfcbbea",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "W048WrmGZStkgVqeypcpnstt6UcqJaPioA5t5GLDZYjSypf-wGOXTVj8GhdskCfQmx1pLqBN9x5Hm7u_JLaaDQ",
+      "host_sig": "kxt2l9GVW2NWB7awqMlJjKnWNHExP02Gnc3eRekWJ62lPc83rXmS6h91hFV7_WT0Ovs00u-OLCF1g9GSAIaUow",
       "id": "01J9ZK0000000000000000000E",
       "option": "api",
-      "prev": "sha256:3cc401aa5e11f4de408f019692c5cb42aca75173796edf16f0843971ab28f3eb",
+      "prev": "sha256:92ca193808e998759fb7d9a34a2ac5c9213f2ac31aa16ce0f79fe8addcfcbbea",
       "question": "Q1",
       "roster_v": 3,
       "seq": 4,
-      "sig": "K6Suqzvo6-9Plz7ktBOvJOMR2DBdVfX-vh23YloAcHHKAySPRpAJGMjAEummMRQ4uWVYCk9X4F709t4SFR4GtA",
+      "sig": "Lwip74Kqa5bgDAoClU3uzVAHDTbsQcu9qbRPnR3y8WUHJy5bms9TF0SgCgBjQJylo70-v8izEGGBMcmLYDBebg",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5
@@ -559,23 +809,23 @@
     },
     "at": "2026-10-10T10:01:20Z",
     "auth": "passphrase",
-    "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-    "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+    "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+    "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
     "hash_v": 1,
-    "host_sig": "34B2WOHss3a_s8lxOjmJi0OD0rX8LujSGouAi8EksjseZUewg5XyXMCBag9SAOlluelv2NksZ-hBHNb8l0vinw",
+    "host_sig": "kFign8O0WVxEaa4wtusPkG8RRndolyLQt4Q1Cx1Cv9MzpaV45Y0nlXGanSLX47dDgO20cI5r8ywYZoYd11Z6cQ",
     "id": "01J9ZK00000000000000000008",
     "option": "csv",
-    "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+    "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
     "question": "Q1",
     "roster_v": 3,
     "seq": 3,
-    "sig": "WwtY4TmLZcTi7CGgxwDQH7ATJlfIIFJufjvWuOjtDOK_ZpPpuntj3pYzdifrIpikkTtqNtOlnrQ264fA0UdeFw",
+    "sig": "965a2YkTkK5sqYiMh-GakbDNed8s56WgnImXl-d3mr27bov_iipw_tVCTSyrsrUleyJbb1S7xXqcNcsUHoo78A",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 5
    },
    "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
-   "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+   "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
    "name": "question_fresh_answer_after_restore",
    "now": "2026-10-10T10:02:40Z",
    "pins": "after a restore to the question, the same question (same qid and hash) can be answered afresh",
@@ -863,15 +1113,16 @@
       },
       "at": "2026-10-10T10:01:10Z",
       "based_on": "sha256:ba9f14d505565d49ad5885306e922d1f5d7b4ee41592a3c607fc5b35488e9cf9",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "piMA171tzFy-H6lYuoRsze7TRUcXbD1MHq6aeMTjjETewsl-hoa4KNy_TNPZ8_s9S4EbMApUwf2X91oUH3LXeg",
+      "host_sig": "PTJIdHtYdsxh4Jp93PmEH3wFv45HwugjcXV0t4XK8ONuRZ-gitICZczW_OkclBhcGlg70xW-A_mi9wEjTaxxnw",
       "id": "01J9ZK00000000000000000007",
       "prev": "sha256:ba9f14d505565d49ad5885306e922d1f5d7b4ee41592a3c607fc5b35488e9cf9",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "csv",
@@ -897,7 +1148,7 @@
     {
      "event": {
       "abandoned": {
-       "head": "sha256:3adc900055dc698f89c8a3e1275ae61d44c2795c6c767f8d1384eb6378b86f75",
+       "head": "sha256:90f09014db36f25730d3ed62e299a8f309e658b8529243078b5817a7eeab2776",
        "seq": 3
       },
       "abandoned_decisions": [
@@ -910,18 +1161,18 @@
       },
       "at": "2026-10-10T10:01:30Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "from_seq": 2,
       "hash_v": 1,
-      "head": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "host_sig": "u3GnySdNfZoNvOuQZcBgzltrvDrdObFQXxlF_GZc3uH4gph6xQ51NnHnPl4wpm1MMxrHp7EhoZnS5-51HngIYw",
+      "head": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "host_sig": "ZfearpHowbpjiAKa0ovw2EvPIvNl-bJirNHgJDf_mkeSfKP_XeGxWMQzZloauJlvgrntGctpClI155LqeVb9YQ",
       "id": "01J9ZK00000000000000000009",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "reason": "rollback",
       "revocations": [],
       "roster_v": 3,
       "seq": 3,
-      "sig": "N3TyLpPmkhd2718Yq49Q1YGG6AnsZ97vcKYMOgZrybNw3fW_6cb8z2j1ZZhg8aX-_YkeV-GAas5b9znGT7ZvKA",
+      "sig": "ER4H1_xJ7KZLoHJ71ByTor5I5-0hKUgFqJDdg13aI_YHnkfztl2WpR4aGuvEAqXnHydhXa8h0lUKjmvkdg3gww",
       "source": null,
       "type": "restore",
       "v": 2,
@@ -940,17 +1191,17 @@
       },
       "at": "2026-10-10T10:01:40Z",
       "auth": "passphrase",
-      "based_on": "sha256:ef6689fe076c1e43d07540d6e5b7aae26a1d17e7d802cc9cc39a7c1ef8f66e04",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:e05be742cfd40c5f01c8181d34aa3cc8182fb1405653540b8a29ed76a370bca2",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "l3HBdkaGZiIWklQBb1ekXEjOM719wqFVDmg0B_qQPh0CGtRZ5fiMNwC7PIsky3rI-f9EvP5I2YiHdkzT5tA67w",
+      "host_sig": "1FDB1imUuD1rS99hGzODRzzo0PNVqI_GbC5yAKZQxKlTwKOx83_v7cHERmddipNiihkJlEiHc8trW4LuS8fw_Q",
       "id": "01J9ZK0000000000000000000A",
       "option": "csv",
-      "prev": "sha256:ef6689fe076c1e43d07540d6e5b7aae26a1d17e7d802cc9cc39a7c1ef8f66e04",
+      "prev": "sha256:e05be742cfd40c5f01c8181d34aa3cc8182fb1405653540b8a29ed76a370bca2",
       "question": "Q1",
       "roster_v": 3,
       "seq": 4,
-      "sig": "IF5MCwZlRR0-fXMjx6pPyixP0L5gJ9UcDIXkrL5Z3gmtXuhDkzVm42-jHr1SyJBGTj8yokZu7C1hLzE70lkamg",
+      "sig": "NAYsOU6eO_-yG4tr7wE9ilnc5yiPu94o43cMQVoSm0xlK0sUJHoPQg4itaJEQEcddKYQSIETKRBj26a-WijCpg",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5
@@ -971,23 +1222,23 @@
     },
     "at": "2026-10-10T10:01:20Z",
     "auth": "passphrase",
-    "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-    "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+    "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+    "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
     "hash_v": 1,
-    "host_sig": "34B2WOHss3a_s8lxOjmJi0OD0rX8LujSGouAi8EksjseZUewg5XyXMCBag9SAOlluelv2NksZ-hBHNb8l0vinw",
+    "host_sig": "kFign8O0WVxEaa4wtusPkG8RRndolyLQt4Q1Cx1Cv9MzpaV45Y0nlXGanSLX47dDgO20cI5r8ywYZoYd11Z6cQ",
     "id": "01J9ZK00000000000000000008",
     "option": "csv",
-    "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+    "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
     "question": "Q1",
     "roster_v": 3,
     "seq": 3,
-    "sig": "WwtY4TmLZcTi7CGgxwDQH7ATJlfIIFJufjvWuOjtDOK_ZpPpuntj3pYzdifrIpikkTtqNtOlnrQ264fA0UdeFw",
+    "sig": "965a2YkTkK5sqYiMh-GakbDNed8s56WgnImXl-d3mr27bov_iipw_tVCTSyrsrUleyJbb1S7xXqcNcsUHoo78A",
     "type": "question.answered",
     "v": 2,
     "ws_seq": 5
    },
    "genesis": "sha256:d24af6280335a5f01ef006cd5ca4b2f302fa464ba9740b0c2f56bf80e18f52b5",
-   "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+   "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
    "name": "question_replayed_decision_after_restore",
    "now": "2026-10-10T10:02:40Z",
    "pins": "a restore abandons a signed answer (listed in abandoned_decisions): the same signed event cannot be appended again on the new chain",
@@ -1275,15 +1526,16 @@
       },
       "at": "2026-10-10T10:01:10Z",
       "based_on": "sha256:ba9f14d505565d49ad5885306e922d1f5d7b4ee41592a3c607fc5b35488e9cf9",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "piMA171tzFy-H6lYuoRsze7TRUcXbD1MHq6aeMTjjETewsl-hoa4KNy_TNPZ8_s9S4EbMApUwf2X91oUH3LXeg",
+      "host_sig": "PTJIdHtYdsxh4Jp93PmEH3wFv45HwugjcXV0t4XK8ONuRZ-gitICZczW_OkclBhcGlg70xW-A_mi9wEjTaxxnw",
       "id": "01J9ZK00000000000000000007",
       "prev": "sha256:ba9f14d505565d49ad5885306e922d1f5d7b4ee41592a3c607fc5b35488e9cf9",
       "qid": "d60478ec5ff8f6ff213cded9c0f8f243",
       "question": {
        "blocking": true,
        "id": "Q1",
+       "kind": "choice",
        "options": [
         {
          "key": "csv",
@@ -1309,7 +1561,7 @@
     {
      "event": {
       "abandoned": {
-       "head": "sha256:3adc900055dc698f89c8a3e1275ae61d44c2795c6c767f8d1384eb6378b86f75",
+       "head": "sha256:90f09014db36f25730d3ed62e299a8f309e658b8529243078b5817a7eeab2776",
        "seq": 3
       },
       "abandoned_decisions": [
@@ -1322,18 +1574,18 @@
       },
       "at": "2026-10-10T10:01:30Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "from_seq": 2,
       "hash_v": 1,
-      "head": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "host_sig": "u3GnySdNfZoNvOuQZcBgzltrvDrdObFQXxlF_GZc3uH4gph6xQ51NnHnPl4wpm1MMxrHp7EhoZnS5-51HngIYw",
+      "head": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "host_sig": "ZfearpHowbpjiAKa0ovw2EvPIvNl-bJirNHgJDf_mkeSfKP_XeGxWMQzZloauJlvgrntGctpClI155LqeVb9YQ",
       "id": "01J9ZK00000000000000000009",
-      "prev": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
+      "prev": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
       "reason": "rollback",
       "revocations": [],
       "roster_v": 3,
       "seq": 3,
-      "sig": "N3TyLpPmkhd2718Yq49Q1YGG6AnsZ97vcKYMOgZrybNw3fW_6cb8z2j1ZZhg8aX-_YkeV-GAas5b9znGT7ZvKA",
+      "sig": "ER4H1_xJ7KZLoHJ71ByTor5I5-0hKUgFqJDdg13aI_YHnkfztl2WpR4aGuvEAqXnHydhXa8h0lUKjmvkdg3gww",
       "source": null,
       "type": "restore",
       "v": 2,
@@ -1352,17 +1604,17 @@
       },
       "at": "2026-10-10T10:01:40Z",
       "auth": "passphrase",
-      "based_on": "sha256:87aeb558f60f936cef4e3acff0449ccce50b2a6662cbee13a695d43930b86baa",
-      "hash": "sha256:aa54705d19cf7bf8279503160dfe64212a7a4821f55bff18ef5fe1707e7d807e",
+      "based_on": "sha256:28af805e92045123689cc79f85ce6be11044eb3d0757f5a8dc83da5dc4e4d333",
+      "hash": "sha256:f0635c4201cfeb26c38959c011ddb976ca65b9d94dc67160748129e6bb44e0b9",
       "hash_v": 1,
-      "host_sig": "1C2CZ12DTlfDk1ioHpEJNg_dWt7Umns2Kv-GQk_-HtPWr9vPbDglupHpiZTaYdvDbrnwIHRbVU_onWQ7006dmA",
+      "host_sig": "Fsz7xILn7oXs-gRMEJS3qr-Cv7TWGSsDpSDDU2VbCO3bCAbIyPmH5vZJdeJ8uYcLljBH9saRb7CYpnhIIriJnQ",
       "id": "01J9ZK00000000000000000008",
       "option": "csv",
-      "prev": "sha256:ef6689fe076c1e43d07540d6e5b7aae26a1d17e7d802cc9cc39a7c1ef8f66e04",
+      "prev": "sha256:e05be742cfd40c5f01c8181d34aa3cc8182fb1405653540b8a29ed76a370bca2",
       "question": "Q1",
       "roster_v": 3,
       "seq": 4,
-      "sig": "WwtY4TmLZcTi7CGgxwDQH7ATJlfIIFJufjvWuOjtDOK_ZpPpuntj3pYzdifrIpikkTtqNtOlnrQ264fA0UdeFw",
+      "sig": "965a2YkTkK5sqYiMh-GakbDNed8s56WgnImXl-d3mr27bov_iipw_tVCTSyrsrUleyJbb1S7xXqcNcsUHoo78A",
       "type": "question.answered",
       "v": 2,
       "ws_seq": 5

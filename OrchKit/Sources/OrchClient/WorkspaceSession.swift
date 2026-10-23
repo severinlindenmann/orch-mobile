@@ -1198,22 +1198,26 @@ extension WorkspaceSession {
     static var maxTicketPages: Int { 5 }
     static var maxTicketGets: Int { 30 }
 
-    /// The questions of one ticket this phone may show, and the ones it cannot (`macOnly`): unreadable entries, a label or hash check that
-    /// fails, and free-text questions (no options: nothing to choose from, C2b). Those are counted, never dropped silently; none is signable.
-    private func questions(of t: TicketGet, askedByNeeds since: [String: Int64], openIn needs: Set<String>) -> (shown: [Question], macOnly: Set<String>) {
-        var out: [Question] = [], mac: Set<String> = []
+    /// The questions of one ticket this phone may show, and the ones it cannot (`macOnly`, with the reason): unreadable entries, a content
+    /// or hash check that fails, an unknown kind, and `text` questions (no input on the phone yet: D-mob-2). Those are counted, never
+    /// dropped silently; none is signable.
+    private func questions(of t: TicketGet, askedByNeeds since: [String: Int64], openIn needs: Set<String>) -> (shown: [Question], macOnly: [String: String]) {
+        var out: [Question] = [], mac: [String: String] = [:]
         for entry in t.questions {
             guard case .question(let q) = entry else {
-                if case .unreadable(let id?) = entry, needs.contains(id) { mac.insert(id) }
+                if case .unreadable(let id?, let reason) = entry, needs.contains(id) { mac[id] = reason }
                 continue
             }
             guard q.state != .stale else { continue }
             if q.state == .open, !needs.contains(q.id) { continue }       // open for someone else: not this person's to answer
             let created = since[q.id] ?? q.askedAt.flatMap(HostTime.ms) ?? q.answer.flatMap { HostTime.ms($0.at) } ?? 0
-            if let made = try? Question(q, ticketKey: t.key, ticketUID: t.uid, workspace: workspace, createdMs: created,
-                                        deviceLabel: { self.label(forDevice: $0, person: $1) }), !(made.options.isEmpty && made.state == "open") {
-                out.append(made)
-            } else if q.state == .open { mac.insert(q.id) }
+            do {
+                let made = try Question(q, ticketKey: t.key, ticketUID: t.uid, workspace: workspace, createdMs: created,
+                                        deviceLabel: { self.label(forDevice: $0, person: $1) })
+                if made.kind == .text && made.state == "open" { mac[q.id] = "this iPhone cannot answer a typed question yet; answer it on your Mac" } else { out.append(made) }
+            } catch {
+                if q.state == .open { mac[q.id] = (error as? F1QuestionRefusal)?.reason ?? "this iPhone cannot verify the host's view of this question" }
+            }
         }
         return (out, mac)
     }
@@ -1271,7 +1275,7 @@ extension WorkspaceSession {
         }
         var keys: [String] = []
         for k in openByTicket.keys.sorted() + answered.items.compactMap(\.key) where !keys.contains(k) && keys.count < Self.maxTicketGets { keys.append(k) }
-        var questions: [Question] = [], index: [ID16: QuestionLocator] = [:], macOnly: Set<String> = []
+        var questions: [Question] = [], index: [ID16: QuestionLocator] = [:], macOnly: [String: String] = [:]
         for key in keys {
             let row = rowsByKey[key]
             let get: TicketGet
@@ -1284,10 +1288,10 @@ extension WorkspaceSession {
             }
             let (shown, mac) = self.questions(of: get, askedByNeeds: since[key] ?? [:], openIn: openByTicket[key] ?? [])
             for q in shown { questions.append(q); index[q.questionID] = QuestionLocator(key: key, uid: get.uid, number: q.number) }
-            for n in mac { macOnly.insert(key + "#" + n) }
+            for (n, reason) in mac { macOnly[key + "#" + n] = reason }
         }
         // a needed question whose ticket was not read (cap) is also one this phone cannot show
-        for n in needed where !keys.contains(n.key) { macOnly.insert(n.key + "#" + n.ref) }
+        for n in needed where !keys.contains(n.key) { macOnly[n.key + "#" + n.ref] = "this iPhone did not read the ticket (too many tickets); answer it on your Mac" }
         ticketCache = ticketCache.filter { keys.contains($0.key) }
         questionIndex = index
         let tickets = rows.map { Ticket(row: $0) }
@@ -1296,17 +1300,21 @@ extension WorkspaceSession {
                 ID16(hex: String(d.id.dropFirst(2))).map { WorkspaceMember(deviceID: $0, label: d.label ?? m.name) }
             }
         }
+        let cannotVerify = macOnly.map { k, reason -> CannotVerifyQuestion in
+            let p = k.split(separator: "#", maxSplits: 1).map(String.init)
+            return CannotVerifyQuestion(ticket: p[0], question: p.count > 1 ? p[1] : "", reason: reason)
+        }.sorted { ($0.ticket, $0.question) < ($1.ticket, $1.question) }
         let sorted = questions.sorted { $0.createdMs != $1.createdMs ? $0.createdMs < $1.createdMs : $0.questionID.hex < $1.questionID.hex }
         // monotonic: a dropped cache (a failed read, a reader refusal) never lowers it
         let previous = cachedSnapshot
         let same = previous.map {
             $0.questions == sorted && $0.tickets == tickets && $0.members == people && $0.name == show.name && $0.nextKey == show.nextKey
-                && $0.macOnlyCount == macOnly.count && $0.ticketsIncomplete == incomplete
+                && $0.cannotVerify == cannotVerify && $0.ticketsIncomplete == incomplete
         } ?? false
         snapshotRevision = same ? snapshotRevision : snapshotRevision + 1
         lastCursor = answered.subCursor
         return try WorkspaceSnapshot(workspace: workspace, revision: max(snapshotRevision, 1), checkedMs: now, questions: sorted, tickets: tickets, members: people,
-                                     name: show.name, nextKey: show.nextKey, macOnlyCount: macOnly.count, ticketsIncomplete: incomplete)
+                                     name: show.name, nextKey: show.nextKey, cannotVerify: cannotVerify, ticketsIncomplete: incomplete)
     }
 
     package func snapshotView() async throws -> WorkspaceSnapshot {

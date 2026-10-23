@@ -32,7 +32,18 @@ struct FakeQuestion: Sendable, Equatable {
     var number: String
     var text: String
     var options: [F1QuestionOption]
+    /// Bound content beside `text` and `options` (the question's `spec`): `details` is the long text a question text (140 at most) cannot hold.
+    var details: String?
     var blocking: Bool
+    /// `text` kind when there are no options (the open question of design #1123 rev 4), `choice` otherwise.
+    var kind: F1QuestionKind { options.isEmpty ? .text : .choice }
+    /// `spec` as the host sends it, and `options` verbatim (absent for a `text` question): what the hash covers.
+    var specWire: JSONValue {
+        var o: [String: JSONValue] = ["kind": .string(kind.rawValue)]
+        if let details { o["details"] = .string(details) }
+        return .object(o)
+    }
+    var optionsWire: JSONValue? { options.isEmpty ? nil : .array(options.map(\.json)) }
     var askedMs: Int64, askedSeq: Int64
     var answer: FakeAnswer?
 }
@@ -121,7 +132,7 @@ struct HostViewState: Sendable {
 
     /// Asks a new question on `ticket` (created as a stub when it does not exist yet). Returns its index.
     @discardableResult
-    mutating func ask(_ entropy: any Entropy, ticket key: String, text: String, options: [F1QuestionOption], blocking: Bool = true, at: Int64) -> Int {
+    mutating func ask(_ entropy: any Entropy, ticket key: String, text: String, options: [F1QuestionOption], details: String? = nil, blocking: Bool = true, at: Int64) -> Int {
         if !tickets.contains(where: { $0.key == key }) {
             tickets.append(Self.ticket(entropy, at, key, key, at: at))
             append(type: "ticket.created", ticket: tickets.last, at: at)
@@ -130,7 +141,7 @@ struct HostViewState: Sendable {
         let n = questions.filter { $0.ticketUID == t.uid }.count + 1
         touch(key, type: "question.asked", at: at)
         let seq = tickets.first { $0.key == key }!.headSeq
-        questions.append(FakeQuestion(ticketUID: t.uid, number: "Q\(n)", text: text, options: options, blocking: blocking, askedMs: at, askedSeq: seq, answer: nil))
+        questions.append(FakeQuestion(ticketUID: t.uid, number: "Q\(n)", text: text, options: options, details: details, blocking: blocking, askedMs: at, askedSeq: seq, answer: nil))
         return questions.count - 1
     }
 }
@@ -150,7 +161,9 @@ extension FakeHost {
     private func ticketKey(_ q: FakeQuestion) -> String { viewState!.tickets.first { $0.uid == q.ticketUID }?.key ?? "" }
 
     func qid(_ q: FakeQuestion) -> String { (try? F1Question.questionID(question: q.number, ticketUID: q.ticketUID, workspace: workspace)) ?? "" }
-    func hash(_ q: FakeQuestion) -> String { (try? F1Question.questionHash(qid: qid(q), ticketUID: q.ticketUID, text: q.text, options: q.options)) ?? "" }
+    func hash(_ q: FakeQuestion) -> String {
+        (try? F1Question.questionHash(qid: qid(q), ticketUID: q.ticketUID, text: .string(q.text), options: q.optionsWire, spec: q.specWire)) ?? ""
+    }
     func questionIndex(_ id: ID16) -> Int? { viewState?.questions.firstIndex { qid($0) == id.hex } }
     func deviceLabel(_ d: ID16) -> String { core.pendingPairs[d]?.label ?? (d == primary.deviceID ? "Demo Mac" : "Demo iPhone") }
 
@@ -180,13 +193,8 @@ extension FakeHost {
                                       "answered_by": q.answer == nil ? .null : .string(viewer), "answered_seq": q.answer.map { .int($0.seq) } ?? .null,
                                       "text": .string(q.text), "to_ref": .string(viewer), "asked_at": .string(Self.time(q.askedMs)),
                                       "asked_by": ["kind": "agent", "id": .null], "asked_seq": .int(q.askedSeq), "qid": .string(qid(q)), "hash": .string(hash(q))]
-        if !q.options.isEmpty {
-            o["options"] = .array(q.options.map { opt in
-                var m: [String: JSONValue] = ["key": .string(opt.key), "label": .string(opt.label)]
-                if let c = opt.cost { m["cost"] = .string(c) }
-                return .object(m)
-            })
-        }
+        if let options = q.optionsWire { o["options"] = options }
+        o["spec"] = q.specWire
         if let a = q.answer {
             o["answer"] = ["by": .string(viewer), "at": .string(Self.time(a.atMs)), "seq": .int(a.seq),
                            "option": a.option.map(JSONValue.string) ?? .null, "text": a.text.map(JSONValue.string) ?? .null,

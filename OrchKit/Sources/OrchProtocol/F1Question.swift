@@ -58,18 +58,47 @@ public enum F1Auth: String, Sendable, Equatable, CaseIterable {
     }
 }
 
+/// One `[label, value]` fact of an option (arrays only: an object form is refused).
+public struct F1Fact: Equatable, Sendable {
+    public let label: String
+    public let value: String
+    public init(label: String, value: String) { self.label = label; self.value = value }
+    var json: JSONValue { .array([.string(label), .string(value)]) }
+}
+
+/// One option of a `choice` question: `{key, label, text?, facts?, cost?}` (design #1123 rev 4 section 2). The hash binds the option
+/// VERBATIM (`F1Question.Content.optionsWire`); these are its parsed fields, which a signing surface shows. `label` is the title.
 public struct F1QuestionOption: Equatable, Sendable {
     public let key: String
     public let label: String
+    public let text: String?
+    public let facts: [F1Fact]
     public let cost: String?
-    public init(key: String, label: String, cost: String? = nil) { self.key = key; self.label = label; self.cost = cost }
+    public init(key: String, label: String, cost: String? = nil, text: String? = nil, facts: [F1Fact] = []) {
+        self.key = key; self.label = label; self.cost = cost; self.text = text; self.facts = facts
+    }
 
-    /// `{key, label}` plus `cost` when present: exactly the hashed form (11A.14 14.5).
-    var json: JSONValue {
+    /// The option as core writes it: absent is the only "none" (no empty `facts`).
+    public var json: JSONValue {
         var o: [String: JSONValue] = ["key": .string(key), "label": .string(label)]
+        if let text { o["text"] = .string(text) }
+        if !facts.isEmpty { o["facts"] = .array(facts.map(\.json)) }
         if let cost { o["cost"] = .string(cost) }
         return .object(o)
     }
+}
+
+/// The kinds of the closed registry (`canon/question.py KINDS`). A kind this phone does not know is "cannot verify", never a guess.
+public enum F1QuestionKind: String, Sendable, Equatable, CaseIterable { case choice, text }
+
+/// A question that does not parse, has a kind or key the phone does not know, or breaks a limit. It is shown as "cannot verify" with
+/// `reason` (a plain sentence naming the field), never answerable; the ticket stays.
+public struct F1QuestionRefusal: Error, Equatable, Sendable, CustomStringConvertible {
+    public enum Code: String, Sendable, Equatable { case malformed, unknownKind, unknownKey, text, option, facts, spec, hashMismatch }
+    public let code: Code
+    public let reason: String
+    public var description: String { reason }
+    init(_ code: Code, _ reason: String) { self.code = code; self.reason = reason }
 }
 
 /// `questions[].answer` of `ticket.get` (host section 0.8, v1.5/v1.7 fields) with the H12d `signer {device, auth}` view field.
@@ -86,15 +115,135 @@ public struct F1Answer: Equatable, Sendable {
     public let signerAuth: F1Auth?
 }
 
-/// A question of `ticket.get` under the F1 values (host section 11A.14 14.5, F1 section 5.6). Not the v0 `Question` of the
-/// host-api: the ticket is a uid, options are `{key, label, cost?}`, the hash is `sha256:` + hex.
+/// A question of `ticket.get` under the F1 values (host section 11A.14 14.5, F1 section 5.6, design #1123 rev 4). The ticket is a uid and
+/// the hash is `sha256:` + hex over the RAW question: `{question_id, ticket, text, options or [], spec}` where `options` and `spec` are
+/// exactly as the host sent them (`Content.optionsWire`, `Content.specWire`); the phone never rebuilds `spec` from other keys.
 ///
-/// Strictness has two levels. Question, answer and signer objects IGNORE unknown keys (host section 0.4: clients ignore unknown keys the
-/// host sends), while every key the phone knows is validated strictly (required keys present, types, section 11.3 text, unknown `auth`
-/// values refused). Option entries are CLOSED (`key`, `label`, `cost?` only): they are hashed into the question hash, so a key the
-/// phone does not know would be bound content it never rendered, and the hash would not match what it shows.
+/// Strictness has two levels. Question, answer and signer objects IGNORE unknown top-level keys (host section 0.4), while every key the
+/// phone knows is validated strictly. `text`, `options` and `spec` are HASHED content, so they are CLOSED: a key or kind the phone does
+/// not know would be bound content it never rendered, and the question becomes "cannot verify" (`F1QuestionRefusal`).
 public struct F1Question: Equatable, Sendable {
     public enum State: Sendable, Equatable { case open, answered, stale }
+
+    /// Limits of `canon/question.py LIMITS`: (min, max) in scalars or items; every string is also at most 4096 UTF-8 bytes.
+    enum Limit {
+        static let question = 140, label = 60, optionText = 200, cost = 60, factLabel = 24, factValue = 40, details = 1500, why = 4096, answer = 1000
+        static let options = 2...6, facts = 1...3, key = 32
+    }
+
+    /// The hashed content of a question: parsed fields for display, and the verbatim `options` and `spec` the hash binds.
+    public struct Content: Equatable, Sendable {
+        public let kind: F1QuestionKind
+        public let text: String
+        public let why: String?
+        public let details: String?
+        public let recommended: String?
+        public let allowOther: Bool
+        public let options: [F1QuestionOption]
+        /// `options` as received (`.array`, `[]` when absent) and `spec` as received (`.object`): what the hash covers.
+        public let optionsWire: JSONValue
+        public let specWire: JSONValue
+
+        /// Parses and validates `text`, `options` and `spec` as `validate_question` does. `options` is absent for a `text` question.
+        public init(text textValue: JSONValue?, options optionsValue: JSONValue?, spec specValue: JSONValue?) throws {
+            func plain(_ v: JSONValue?, _ what: String, oneLine: Bool, limit: Int, code: F1QuestionRefusal.Code = .text) throws -> String {
+                guard let s = v?.string else { throw F1QuestionRefusal(code, "\(what) is missing or not text") }
+                do { try F1Text.checkPlain(s, oneLine: oneLine, limit: limit) } catch { throw F1QuestionRefusal(code, "\(what) breaks the text rules") }
+                return s
+            }
+            guard let spec = specValue?.object else { throw F1QuestionRefusal(.malformed, "the question has no spec") }
+            guard spec.keys.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { $0 < 0x80 } }) else { throw F1QuestionRefusal(.unknownKey, "a spec key is not ASCII") }
+            guard let kindRaw = spec["kind"]?.string else { throw F1QuestionRefusal(.unknownKind, "the question has no kind") }
+            guard let kindName = F1ASCII.oneOf(kindRaw, F1QuestionKind.allCases.map(\.rawValue)), let kind = F1QuestionKind(rawValue: kindName) else {
+                throw F1QuestionRefusal(.unknownKind, "this question has a kind this iPhone does not know")
+            }
+            let allowed: Set<String> = kind == .choice ? ["kind", "why", "details", "recommended", "allow_other"] : ["kind", "why", "details"]
+            if let extra = spec.keys.first(where: { !allowed.contains($0) }) {
+                throw F1QuestionRefusal(.unknownKey, "the question carries \(extra.count <= 24 ? "\"\(extra)\"" : "a key") this iPhone does not know")
+            }
+            let text = try plain(textValue, "the question", oneLine: false, limit: Limit.question)
+            let why = try spec["why"].map { try plain($0, "why", oneLine: false, limit: Limit.why, code: .spec) }
+            let details = try spec["details"].map { try plain($0, "details", oneLine: false, limit: Limit.details, code: .spec) }
+            var options: [F1QuestionOption] = [], recommended: String?, allowOther = false
+            switch kind {
+            case .text:
+                // a text question has no options: absent is the only "none" (`[]` would be a second encoding)
+                guard optionsValue == nil else { throw F1QuestionRefusal(.option, "a text question has no options") }
+            case .choice:
+                guard let arr = optionsValue?.array, Limit.options.contains(arr.count) else { throw F1QuestionRefusal(.option, "a choice question has 2 to 6 options") }
+                for (i, item) in arr.enumerated() { options.append(try Content.parseOption(item, index: i)) }
+                guard Set(options.map { Array($0.key.utf8) }).count == options.count else { throw F1QuestionRefusal(.option, "two options have the same key") }
+                guard Set(options.map { Array(F1Text.fold($0.label).utf8) }).count == options.count else { throw F1QuestionRefusal(.option, "two options have the same title") }
+                if let r = spec["recommended"] {
+                    guard let key = r.string, options.contains(where: { $0.key.bytesEqual(key) }) else { throw F1QuestionRefusal(.spec, "recommended is not an option key") }
+                    recommended = key
+                }
+                if let a = spec["allow_other"] {
+                    guard a == .bool(true) else { throw F1QuestionRefusal(.spec, "allow_other is true or absent") }
+                    allowOther = true
+                }
+            }
+            self.kind = kind; self.text = text; self.why = why; self.details = details; self.recommended = recommended; self.allowOther = allowOther
+            self.options = options; optionsWire = optionsValue ?? .array([]); specWire = .object(spec)
+        }
+
+        /// The answer rule of the kind (core `validate_answer`): choice = an `option` (a `text` is then only a note that never replaces
+        /// it) or, with `allow_other`, a `text` alone; text = a `text` alone. A text is 1..1000 scalars and plain. Checks the text as given
+        /// (never normalises): phone-authored text goes through `PhoneEvents.prepareText` first.
+        public func checkAnswer(option: String?, text answer: String?) throws {
+            guard option != nil || answer != nil else { throw PhoneEvents.Failure.noAnswer }
+            if let answer {
+                guard !F1Text.isBlank(answer) else { throw PhoneEvents.Failure.emptyText }
+                guard answer.unicodeScalars.count <= Limit.answer, answer.utf8.count <= PhoneEvents.maxAnswerTextBytes else { throw PhoneEvents.Failure.textTooLong }
+                guard F1Text.isPlain(answer, oneLine: false, limit: Limit.answer) else { throw PhoneEvents.Failure.textRefused }
+            }
+            switch kind {
+            case .choice:
+                if let option {
+                    guard options.contains(where: { $0.key.bytesEqual(option) }) else { throw PhoneEvents.Failure.unknownOption }
+                } else if !allowOther { throw PhoneEvents.Failure.otherNotAllowed }
+            case .text:
+                guard option == nil else { throw PhoneEvents.Failure.optionOnTextQuestion }
+                guard answer != nil else { throw PhoneEvents.Failure.noAnswer }
+            }
+        }
+
+        private static func parseOption(_ v: JSONValue, index i: Int) throws -> F1QuestionOption {
+            let n = "option \(i + 1)"
+            guard let o = v.object, o.keys.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { $0 < 0x80 } }) else { throw F1QuestionRefusal(.option, "\(n) is not an object") }
+            guard let extra = Optional(o.keys.filter { !["key", "label", "text", "facts", "cost"].contains($0) }), extra.isEmpty else {
+                throw F1QuestionRefusal(.unknownKey, "\(n) carries a key this iPhone does not know")
+            }
+            guard let key = o["key"]?.string, isToken(key) else { throw F1QuestionRefusal(.option, "\(n) has a bad key") }
+            func field(_ name: String, oneLine: Bool = true, limit: Int) throws -> String? {
+                guard let v = o[name] else { return nil }
+                guard let s = v.string, F1Text.isPlain(s, oneLine: oneLine, limit: limit) else { throw F1QuestionRefusal(.option, "\(n) \(name) breaks the text rules") }
+                return s
+            }
+            guard o["label"] != nil, let label = try field("label", limit: Limit.label) else { throw F1QuestionRefusal(.option, "\(n) has no title") }
+            let text = try field("text", limit: Limit.optionText), cost = try field("cost", limit: Limit.cost)
+            var facts: [F1Fact] = []
+            if let fv = o["facts"] {
+                guard let arr = fv.array, Limit.facts.contains(arr.count) else { throw F1QuestionRefusal(.facts, "\(n) facts are 1 to 3 [label, value] pairs") }
+                for f in arr {
+                    guard let p = f.array, p.count == 2, let l = p[0].string, let val = p[1].string,
+                          F1Text.isPlain(l, oneLine: true, limit: Limit.factLabel), F1Text.isPlain(val, oneLine: true, limit: Limit.factValue) else {
+                        throw F1QuestionRefusal(.facts, "\(n) has a fact that is not a [label, value] pair of plain text")
+                    }
+                    facts.append(F1Fact(label: l, value: val))
+                }
+                guard Set(facts.map { Array(F1Text.fold($0.label).utf8) }).count == facts.count else { throw F1QuestionRefusal(.facts, "\(n) has two facts with the same label") }
+            }
+            return F1QuestionOption(key: key, label: label, cost: cost, text: text, facts: facts)
+        }
+
+        /// `[a-z][a-z0-9_]*`, at most 32.
+        static func isToken(_ s: String) -> Bool {
+            let u = Array(s.utf8)
+            guard (1...Limit.key).contains(u.count), u[0] >= 0x61, u[0] <= 0x7A else { return false }
+            return u.allSatisfy { ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x5F }
+        }
+    }
 
     public let id: String
     public let state: State
@@ -102,20 +251,26 @@ public struct F1Question: Equatable, Sendable {
     public let blocking: Bool
     public let answeredBy: String?
     public let answeredSeq: Int64?
-    public let text: String?
-    public let why: String?
     public let toRef: String?
-    /// `ticket.get` omits the field when the question has no options: `[]` here, and `[]` in the hash.
-    public let options: [F1QuestionOption]
-    public let recommended: String?
+    /// `text`, `options` and `spec` as hashed, parsed (see `Content`).
+    public let content: Content
     public let askedAt: String?
     public let askedSeq: Int64?
     public let answer: F1Answer?
     public let qid: String?
     public let hash: String?
 
+    public var kind: F1QuestionKind { content.kind }
+    public var text: String { content.text }
+    public var why: String? { content.why }
+    public var details: String? { content.details }
+    public var recommended: String? { content.recommended }
+    public var allowOther: Bool { content.allowOther }
+    /// Empty for a `text` question.
+    public var options: [F1QuestionOption] { content.options }
+
     static let requiredKeys: Set<String> = ["id", "state", "to", "blocking", "answered_by", "answered_seq"]
-    static let optionalKeys: Set<String> = ["text", "why", "to_ref", "options", "recommended", "asked_at", "asked_by", "asked_seq", "answer", "qid", "hash"]
+    static let optionalKeys: Set<String> = ["text", "spec", "to_ref", "options", "asked_at", "asked_by", "asked_seq", "answer", "qid", "hash"]
     static let answerRequired: Set<String> = ["by", "at", "seq", "option", "text", "id"]
     static let answerOptional: Set<String> = ["auth", "signer"]
 
@@ -133,10 +288,8 @@ public struct F1Question: Equatable, Sendable {
         self.blocking = blocking
         answeredBy = try F1Question.nullable(m["answered_by"]) { $0.string.flatMap { F1ASCII.isPrefixedHex32($0, prefix: "p_") ? $0 : nil } }
         answeredSeq = try F1Question.nullable(m["answered_seq"]) { $0.int.flatMap { $0 >= 0 && $0 <= maxSafeInt ? $0 : nil } }
-        text = try F1Question.optionalText(m["text"], oneLine: false)
-        why = try F1Question.optionalText(m["why"], oneLine: false)
         toRef = try F1Question.optionalText(m["to_ref"], oneLine: true)
-        recommended = try F1Question.optionalText(m["recommended"], oneLine: true)
+        content = try Content(text: m["text"], options: m["options"], spec: m["spec"])
         askedAt = m["asked_at"]?.string
         if m["asked_at"] != nil, askedAt == nil { throw Refusal.malformed }
         if let a = m["asked_by"], a.object == nil { throw Refusal.malformed }
@@ -144,15 +297,6 @@ public struct F1Question: Equatable, Sendable {
             guard let n = s.int, n >= 0, n <= maxSafeInt else { throw Refusal.malformed }
             askedSeq = n
         } else { askedSeq = nil }
-        if let o = m["options"] {
-            guard let arr = o.array else { throw Refusal.malformed }
-            var opts: [F1QuestionOption] = []
-            for item in arr { opts.append(try F1Question.parseOption(item)) }
-            guard Set(opts.map { Array($0.key.utf8) }).count == opts.count else { throw Refusal.malformed }
-            guard F1Question.labelsDistinct(opts) else { throw Refusal.malformed }
-            options = opts
-        } else { options = [] }
-        if let r = recommended, !options.isEmpty, !options.contains(where: { $0.key.bytesEqual(r) }) { throw Refusal.malformed }
         if let q = m["qid"] {
             guard let s = q.string, F1ASCII.isHex32(s) else { throw Refusal.malformed }
             qid = s
@@ -166,16 +310,13 @@ public struct F1Question: Equatable, Sendable {
         guard (state == .answered) == (answer != nil) else { throw Refusal.malformed }
     }
 
-    /// The stored form of an OPEN question as reviewed (C2b `pe_reviews.snapshot`): exactly the fields this parser reads back, with every
-    /// display string as received (no normalisation). `F1Question(wire)` reproduces an equal question, byte for byte.
+    /// The stored form of an OPEN question as reviewed (C2b `pe_reviews.snapshot`): exactly the fields this parser reads back, with `text`,
+    /// `options` and `spec` as received (no normalisation). `F1Question(wire)` reproduces an equal question, byte for byte.
     public var openWire: JSONValue {
         var o: [String: JSONValue] = ["id": .string(id), "state": "open", "to": .array(to.map(JSONValue.string)), "blocking": .bool(blocking),
-                                      "answered_by": .null, "answered_seq": .null,
-                                      "options": .array(options.map(\.json))]
-        if let text { o["text"] = .string(text) }
-        if let why { o["why"] = .string(why) }
+                                      "answered_by": .null, "answered_seq": .null, "text": .string(content.text), "spec": content.specWire]
+        if content.kind == .choice { o["options"] = content.optionsWire }
         if let toRef { o["to_ref"] = .string(toRef) }
-        if let recommended { o["recommended"] = .string(recommended) }
         if let askedAt { o["asked_at"] = .string(askedAt) }
         if let askedSeq { o["asked_seq"] = .int(askedSeq) }
         if let qid { o["qid"] = .string(qid) }
@@ -184,13 +325,6 @@ public struct F1Question: Equatable, Sendable {
     }
 
     // MARK: parsing helpers
-
-    /// Display safety of a signing surface: two options whose labels are the same after the phone's own NFC port (`F1Text.nfc`, never
-    /// Foundation's) and case folding would look alike, so a question carrying them is refused. Keys are byte-unique separately.
-    public static func labelsDistinct(_ options: [F1QuestionOption]) -> Bool {
-        let folded = options.map { F1Text.nfc(F1Text.nfc($0.label).folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))) }
-        return Set(folded.map { Array($0.utf8) }).count == options.count
-    }
 
     /// `closed: false` ignores unknown keys (known keys are still checked by the callers); `closed: true` refuses them.
     private static func keysOK(_ m: [String: JSONValue], required: Set<String>, optional: Set<String>, closed: Bool = false) -> Bool {
@@ -210,18 +344,6 @@ public struct F1Question: Equatable, Sendable {
         guard let v else { return nil }
         guard let s = v.string, (try? F1Text.check(s, oneLine: oneLine)) != nil else { throw Refusal.malformed }
         return s
-    }
-
-    private static func parseOption(_ v: JSONValue) throws -> F1QuestionOption {
-        guard let o = v.object, keysOK(o, required: ["key", "label"], optional: ["cost"], closed: true),
-              let key = o["key"]?.string, !key.isEmpty, (try? F1Text.check(key, oneLine: true)) != nil,
-              let label = o["label"]?.string, !label.isEmpty, (try? F1Text.check(label, oneLine: true)) != nil else { throw Refusal.malformed }
-        var cost: String?
-        if let c = o["cost"] {
-            guard let s = c.string, (try? F1Text.check(s, oneLine: true)) != nil else { throw Refusal.malformed }
-            cost = s
-        }
-        return F1QuestionOption(key: key, label: label, cost: cost)
     }
 
     private static func parseAuth(_ v: JSONValue) throws -> F1Auth {
@@ -247,7 +369,7 @@ public struct F1Question: Equatable, Sendable {
         return F1Answer(by: by, at: at, seq: seq, option: option, text: text, auth: auth, id: id, signerDevice: dev, signerAuth: sauth)
     }
 
-    // MARK: question id and hash (11A.14 14.5, F1 section 5.6)
+    // MARK: question id and hash (11A.14 14.5, F1 section 5.6, design #1123 rev 4)
 
     /// `qid = hex(SHA-256("orch/v2/question-id|" || cj({"question":"Q1","ticket":uid,"workspace_id":W}))[0:16])`.
     public static func questionID(question: String, ticketUID: String, workspace: ID16) throws -> String {
@@ -256,20 +378,24 @@ public struct F1Question: Equatable, Sendable {
         return Hex.encode(SHA256.hash(data: Data(Label.hQuestionID.utf8) + body).prefix(16))
     }
 
-    /// `hash = "sha256:" + hex(SHA-256("orch/v2/question|" || cj({"options":options, "question_id":qid, "text":text, "ticket":uid})))`.
-    /// `options` is the list in asked order (`[]` when the question has none). Only `text` and `options` are bound.
-    public static func questionHash(qid: String, ticketUID: String, text: String, options: [F1QuestionOption]) throws -> String {
+    /// `hash = "sha256:" + hex(SHA-256("orch/v2/question|" || cj({"question_id":qid, "ticket":uid, "text":text, "options":options or [],
+    /// "spec":spec})))`. `options` and `spec` are hashed VERBATIM (the host's JSON, as received), never rebuilt from parsed fields. The
+    /// content is validated first (core `question_hash` calls `validate_question`): nothing hashes a question that breaks the shape.
+    public static func questionHash(qid: String, ticketUID: String, content: Content) throws -> String {
         guard F1ASCII.isHex32(qid), F1ASCII.isULID(ticketUID) else { throw Refusal.malformed }
-        // core refuses, never normalises, a string that breaks section 11.3 (hashes.json question_hash_refused)
-        guard F1Text.isClean(text), options.allSatisfy({ F1Text.isClean($0.key, oneLine: true) && F1Text.isClean($0.label, oneLine: true)
-            && ($0.cost.map { F1Text.isClean($0, oneLine: true) } ?? true) }) else { throw Refusal.malformed }
-        let digest = try Decisions.contentHash(of: ["question_id": .string(qid), "ticket": .string(ticketUID), "text": .string(text),
-                                                    "options": .array(options.map(\.json))])
+        let digest = try Decisions.contentHash(of: ["question_id": .string(qid), "ticket": .string(ticketUID), "text": .string(content.text),
+                                                    "options": content.optionsWire, "spec": content.specWire])
         return "sha256:" + Hex.encode(digest)
     }
 
-    /// What the phone shows and signs for a question: both values recomputed from the uid, the paired workspace id, the displayed text and
-    /// options, and equal to the host's `qid` and `hash` (14.5). Anything else is refused: no sign sheet for a question the phone cannot
+    /// Parses `text`, `options` (nil when absent) and `spec` as received, then hashes them. Throws `F1QuestionRefusal` for content the
+    /// phone cannot read or verify.
+    public static func questionHash(qid: String, ticketUID: String, text: JSONValue, options: JSONValue?, spec: JSONValue) throws -> String {
+        try questionHash(qid: qid, ticketUID: ticketUID, content: Content(text: text, options: options, spec: spec))
+    }
+
+    /// What the phone shows and signs for a question: both values recomputed from the uid, the paired workspace id and the displayed
+    /// content, and equal to the host's `qid` and `hash` (14.5). Anything else is refused: no sign sheet for a question the phone cannot
     /// reproduce. Requires `state == open`.
     public struct Reviewed: Equatable, Sendable {
         public let question: F1Question
@@ -286,12 +412,20 @@ public struct F1Question: Equatable, Sendable {
         }
     }
 
+    /// The recomputed `qid` and `hash`, each compared byte-exactly with the host's. Throws `F1QuestionRefusal(.hashMismatch)` when the host
+    /// hash is not the phone's, so the caller can say why the question cannot be verified.
+    package func verified(ticketUID: String, workspace: ID16) throws -> (qid: String, hash: String) {
+        guard let hostQid = qid, let hostHash = hash else { throw F1QuestionRefusal(.malformed, "the host sent no id or hash for this question") }
+        let myQid = try F1Question.questionID(question: id, ticketUID: ticketUID, workspace: workspace)
+        let myHash = try F1Question.questionHash(qid: myQid, ticketUID: ticketUID, content: content)
+        guard myQid.bytesEqual(hostQid), myHash.bytesEqual(hostHash) else { throw F1QuestionRefusal(.hashMismatch, "the host's hash is not the one this iPhone computes") }
+        return (myQid, myHash)
+    }
+
     public func reviewed(ticketUID: String, workspace: ID16, basedOn: String, rosterV: Int64) throws -> Reviewed {
         guard F1ASCII.isHash(basedOn), rosterV >= 0, rosterV <= maxSafeInt else { throw Refusal.malformed }
-        guard state == .open, let text, let hostQid = qid, let hostHash = hash else { throw Refusal.malformed }
-        let myQid = try F1Question.questionID(question: id, ticketUID: ticketUID, workspace: workspace)
-        let myHash = try F1Question.questionHash(qid: myQid, ticketUID: ticketUID, text: text, options: options)
-        guard myQid.bytesEqual(hostQid), myHash.bytesEqual(hostHash) else { throw Refusal.malformed }
+        guard state == .open else { throw Refusal.malformed }
+        let (myQid, myHash) = try verified(ticketUID: ticketUID, workspace: workspace)
         return Reviewed(question: self, ticketUID: ticketUID, qid: myQid, hash: myHash, text: text, basedOn: basedOn, rosterV: rosterV)
     }
 }

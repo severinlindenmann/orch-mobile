@@ -244,7 +244,9 @@ public struct TicketPage: Equatable, Sendable {
 /// does not take the other questions of the ticket with it.
 public enum TicketQuestion: Equatable, Sendable {
     case question(F1Question)
-    case unreadable(id: String?)
+    /// The entry does not parse, has a kind or key this iPhone does not know, or breaks a limit: shown as "cannot verify" with `reason`,
+    /// never answerable. The ticket and its other questions stay.
+    case unreadable(id: String?, reason: String)
     public var question: F1Question? { if case .question(let q) = self { return q }; return nil }
 }
 
@@ -281,7 +283,10 @@ public struct TicketGet: Equatable, Sendable {
         subCursor = try NeedsResult.cursor(o)
         var qs: [TicketQuestion] = []
         for v in try o.array("questions") {
-            if let q = try? F1Question(v) { qs.append(.question(q)) } else { qs.append(.unreadable(id: v.object?["id"]?.string)) }
+            do { qs.append(.question(try F1Question(v))) } catch {
+                let reason = (error as? F1QuestionRefusal)?.reason ?? "the host's view of this question is not one this iPhone can read"
+                qs.append(.unreadable(id: v.object?["id"]?.string, reason: reason))
+            }
         }
         let ids = qs.compactMap { $0.question?.id }
         guard Set(ids.map { Array($0.utf8) }).count == ids.count else { throw ViewError.malformed }

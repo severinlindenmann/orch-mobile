@@ -51,7 +51,7 @@ import OrchProtocol
     }
 
     @Test func ticketGetNeedsTheBoundFields() throws {
-        let q: JSONValue = ["id": "Q1", "state": "open", "to": [.string(person)], "blocking": true, "answered_by": .null, "answered_seq": .null, "text": "Which?"]
+        let q: JSONValue = ["id": "Q1", "state": "open", "to": [.string(person)], "blocking": true, "answered_by": .null, "answered_seq": .null, "text": "Which?", "spec": ["kind": "text"]]
         func get(_ edit: (inout [String: JSONValue]) -> Void = { _ in }) -> JSONValue {
             var o: [String: JSONValue] = ["doc": ["uid": .string(uid), "key": "MOB-0001", "title": "T", "type": "ticket", "status": "open", "head": ["seq": 4, "head": .string(hash)]],
                                           "log": [], "log_more": false, "questions": [q, ["garbage": 1]], "criteria": [], "gates": [:], "sub_cursor": "j:4", "members_v": 7]
@@ -61,7 +61,10 @@ import OrchProtocol
         let t = try TicketGet(get())
         #expect(t.uid == uid && t.headSeq == 4 && t.headHash == hash && t.membersV == 7 && t.questions.count == 2)
         #expect(t.questions[0].question?.id == "Q1")
-        #expect(t.questions[1] == .unreadable(id: nil))               // a bad entry does not take the others with it
+        // a bad entry does not take the others with it: it is "cannot verify" with a reason, and the ticket stays
+        if case .unreadable(let id, let reason) = t.questions[1] { #expect(id == nil && !reason.isEmpty) } else { Issue.record("expected an unreadable entry") }
+        let unknownKind = try TicketGet(get { var bad = q.object!; bad["spec"] = ["kind": "date"]; $0["questions"] = [.object(bad)] })
+        if case .unreadable(let id, let reason) = unknownKind.questions[0] { #expect(id == "Q1" && reason.contains("kind")) } else { Issue.record("expected an unreadable entry") }
         #expect(throws: ViewError.malformed) { _ = try TicketGet(get { $0["members_v"] = nil }) }
         #expect(throws: ViewError.malformed) { _ = try TicketGet(get { var d = $0["doc"]!.object!; d["head"] = nil; $0["doc"] = .object(d) }) }
         #expect(throws: ViewError.malformed) { _ = try TicketGet(get { var d = $0["doc"]!.object!; d["uid"] = "nope"; $0["doc"] = .object(d) }) }

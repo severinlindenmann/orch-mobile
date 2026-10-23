@@ -63,7 +63,7 @@ import Testing
         let c = accepted("answer_passphrase"), s = c["submitted"]
         let h = c["question"]["hashed"]
         var q: [String: JSONValue] = ["id": s["question"], "state": "open", "to": [], "blocking": false, "answered_by": .null, "answered_seq": .null,
-                                      "text": h["text"], "qid": c["question"]["qid"], "hash": c["question"]["hash"]]
+                                      "text": h["text"], "spec": h["spec"], "qid": c["question"]["qid"], "hash": c["question"]["hash"]]
         if !h["options"].items.isEmpty { q["options"] = h["options"] }
         let r = try F1Question(.object(q)).reviewed(ticketUID: c["log"].str, workspace: wsid, basedOn: s["based_on"].str, rosterV: s["roster_v"].i64)
         let text = try s["text"].string.map { try PhoneEvents.prepareText($0, oneLine: false) }

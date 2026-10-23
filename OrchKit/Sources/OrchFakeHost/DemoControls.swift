@@ -111,7 +111,7 @@ extension FakeHost {
     public func demoChangeCost(_ id: ID16, key: String, cost: String?) throws {
         seedViews()
         guard var state = viewState, let i = questionIndex(id) else { throw ViewError.malformed }
-        state.questions[i].options = state.questions[i].options.map { $0.key == key ? F1QuestionOption(key: $0.key, label: $0.label, cost: cost) : $0 }
+        state.questions[i].options = state.questions[i].options.map { $0.key == key ? F1QuestionOption(key: $0.key, label: $0.label, cost: cost, text: $0.text, facts: $0.facts) : $0 }
         viewState = state
     }
 

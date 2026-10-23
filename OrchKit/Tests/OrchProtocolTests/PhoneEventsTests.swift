@@ -22,7 +22,7 @@ import Testing
     func questionView(_ c: JSONValue) -> JSONValue {
         let h = c["question"]["hashed"]
         var q: [String: JSONValue] = ["id": c["submitted"]["question"], "state": "open", "to": [], "blocking": false,
-                                      "answered_by": .null, "answered_seq": .null, "text": h["text"],
+                                      "answered_by": .null, "answered_seq": .null, "text": h["text"], "spec": h["spec"],
                                       "qid": c["question"]["qid"], "hash": c["question"]["hash"]]
         if !h["options"].items.isEmpty { q["options"] = h["options"] }
         return .object(q)
@@ -285,7 +285,8 @@ extension String {
     }
 
     @Test func unicodeTablesMatchTheirPinnedDigest() {
-        let blocks = [("assigned", Unicode16Data.assigned), ("ccc", Unicode16Data.ccc), ("decomp", Unicode16Data.decomp), ("composable", Unicode16Data.composable)]
+        let blocks = [("assigned", Unicode16Data.assigned), ("ccc", Unicode16Data.ccc), ("decomp", Unicode16Data.decomp), ("composable", Unicode16Data.composable),
+                      ("cf", Unicode16Data.cf), ("marks", Unicode16Data.marks), ("casefold", Unicode16Data.casefold)]
         var h = SHA256()
         for (n, b) in blocks { h.update(data: Data((n + "\n" + b + "\n").utf8)) }
         #expect(Hex.encode(h.finalize()) == Unicode16Data.digest)
