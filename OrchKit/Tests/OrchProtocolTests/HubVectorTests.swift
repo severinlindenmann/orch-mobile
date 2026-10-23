@@ -147,4 +147,15 @@ enum HubVectors {
         #expect(throws: Refusal.devMismatch) { try check(obj { $0["dev"] = false }) }
         #expect(throws: Refusal.devRefused) { _ = try HubVerifier(devMode: false).checkRegistrationChallenge(obj(), challengeID: nonce, hubID: hubID, userID: user, ownKey: key, nowMs: now) }
     }
+
+    @Test func renderCasesMatchTheHub() {
+        let cases = HubVectors.cases("render")
+        #expect(cases.count == 3)
+        for c in cases {
+            #expect(HubText.render(c["args"]["text"].str) == c["expect"]["ok"]["shown"].str, "\(c["name"].str)")
+        }
+        // Idempotent, and the escapes are plain ASCII.
+        #expect(HubText.render(HubText.render("a\u{202E}b\u{3164}")) == "a<U+202E>b<U+3164>")
+        #expect(HubText.render("\u{0}\u{7F}x") == "<U+0000><U+007F>x")
+    }
 }
