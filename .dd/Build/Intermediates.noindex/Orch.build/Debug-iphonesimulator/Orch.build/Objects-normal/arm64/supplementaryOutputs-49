@@ -1,0 +1,30 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Models/ShareBridge.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareBridge.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareBridge.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareBridge.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareBridge.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareBridge.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/ShareFixture.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareFixture.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareFixture.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareFixture.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareFixture.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareFixture.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/ShareStatusPreview.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusPreview.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusPreview.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusPreview.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusPreview.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusPreview.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/ShareExtension/ShareStatusViews.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusViews.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusViews.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusViews.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusViews.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ShareStatusViews.swiftdeps"
+  }
+}

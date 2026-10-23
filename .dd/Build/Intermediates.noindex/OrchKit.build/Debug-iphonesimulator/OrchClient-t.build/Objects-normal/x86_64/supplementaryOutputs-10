@@ -1,0 +1,30 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/PersonEventCreation.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventCreation.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventCreation.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventCreation.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventCreation.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventCreation.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/PersonEventGates.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventGates.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventGates.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventGates.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventGates.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventGates.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/PersonEventPolicy.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventPolicy.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventPolicy.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventPolicy.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventPolicy.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventPolicy.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/PersonEventWrites.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventWrites.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventWrites.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventWrites.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventWrites.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/x86_64/PersonEventWrites.swiftdeps"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Models/ApprovalModels.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalModels.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalModels.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalModels.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalModels.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalModels.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Push/APNsRegistration.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/APNsRegistration.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/APNsRegistration.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/APNsRegistration.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/APNsRegistration.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/APNsRegistration.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/ApprovalScreens.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalScreens.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalScreens.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalScreens.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalScreens.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ApprovalScreens.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/ConvenienceBanner.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ConvenienceBanner.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ConvenienceBanner.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ConvenienceBanner.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ConvenienceBanner.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ConvenienceBanner.swiftdeps"
+  }
+}

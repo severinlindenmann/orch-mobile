@@ -1,0 +1,30 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/Injection.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/Injection.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/Injection.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/Injection.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/Injection.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/Injection.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/JSONFields.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JSONFields.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JSONFields.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JSONFields.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JSONFields.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JSONFields.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/JoinAnchor.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JoinAnchor.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JoinAnchor.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JoinAnchor.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JoinAnchor.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/JoinAnchor.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/LeasedKeys.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/LeasedKeys.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/LeasedKeys.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/LeasedKeys.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/LeasedKeys.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/LeasedKeys.swiftdeps"
+  }
+}

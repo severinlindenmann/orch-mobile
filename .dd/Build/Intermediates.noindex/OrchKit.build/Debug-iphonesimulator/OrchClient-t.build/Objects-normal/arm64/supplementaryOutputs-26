@@ -1,0 +1,23 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/WorkspaceRestoration.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceRestoration.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceRestoration.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceRestoration.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceRestoration.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceRestoration.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/WorkspaceSession.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceSession.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceSession.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceSession.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceSession.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceSession.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchClient/WorkspaceViews.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceViews.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceViews.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceViews.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceViews.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchClient-t.build/Objects-normal/arm64/WorkspaceViews.swiftdeps"
+  }
+}

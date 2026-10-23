@@ -48,6 +48,7 @@ targets:
             CFBundleTypeRole: Viewer
             CFBundleURLSchemes: [orch]
         NSCameraUsageDescription: orch uses the camera only to scan the pairing QR code shown by orch on your Mac.
+        NSFaceIDUsageDescription: orch asks for Face ID to confirm it is you before it sends a signature request from your hub.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

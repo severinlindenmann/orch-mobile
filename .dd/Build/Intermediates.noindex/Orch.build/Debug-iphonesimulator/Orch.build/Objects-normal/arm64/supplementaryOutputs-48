@@ -1,0 +1,30 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Live/RealmRuntime.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/RealmRuntime.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/RealmRuntime.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/RealmRuntime.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/RealmRuntime.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/RealmRuntime.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Live/ServerCleanupStore.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ServerCleanupStore.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ServerCleanupStore.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ServerCleanupStore.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ServerCleanupStore.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/ServerCleanupStore.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/Routes.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/Routes.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/Routes.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/Routes.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/Routes.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/Routes.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/SettingsScreen.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/SettingsScreen.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/SettingsScreen.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/SettingsScreen.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/SettingsScreen.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/arm64/SettingsScreen.swiftdeps"
+  }
+}

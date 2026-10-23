@@ -1,0 +1,30 @@
+{
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Live/LiveIntake.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveIntake.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveIntake.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveIntake.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveIntake.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveIntake.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Live/LivePairingModel.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LivePairingModel.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LivePairingModel.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LivePairingModel.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LivePairingModel.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LivePairingModel.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Live/LiveReviewModel.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveReviewModel.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveReviewModel.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveReviewModel.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveReviewModel.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveReviewModel.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/App/Screens/LiveEntryScreens.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveEntryScreens.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveEntryScreens.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveEntryScreens.dia",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveEntryScreens.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/Orch.build/Debug-iphonesimulator/Orch.build/Objects-normal/x86_64/LiveEntryScreens.swiftdeps"
+  }
+}

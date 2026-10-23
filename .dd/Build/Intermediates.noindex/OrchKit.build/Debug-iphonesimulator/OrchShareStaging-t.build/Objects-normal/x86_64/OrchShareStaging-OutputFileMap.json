@@ -1,0 +1,89 @@
+{
+  "" : {
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/OrchShareStaging-primary.dia",
+    "emit-module-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/OrchShareStaging-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/OrchShareStaging-primary-emit-module.dia",
+    "pch" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/OrchShareStaging-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/OrchShareStaging-primary.swiftdeps"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/Diagnostics.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Diagnostics~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/Inbox.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Inbox~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/Manifest.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Manifest~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/PendingRemovals.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/PendingRemovals~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/ProviderStager.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ProviderStager~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/ShareArea.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareArea~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/ShareFS.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/ShareFS~partial.swiftmodule"
+  },
+  "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/OrchKit/Sources/OrchShareStaging/Stager.swift" : {
+    "const-values" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.swiftconstvalues",
+    "dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.d",
+    "diagnostics" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.dia",
+    "index-unit-output-path" : "/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.o",
+    "llvm-bc" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.bc",
+    "object" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.o",
+    "swift-dependencies" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager.swiftdeps",
+    "swiftmodule" : "/Users/lume/orch-dev/.worktrees/v3-b3-hub-sign/.dd/Build/Intermediates.noindex/OrchKit.build/Debug-iphonesimulator/OrchShareStaging-t.build/Objects-normal/x86_64/Stager~partial.swiftmodule"
+  }
+}

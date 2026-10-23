@@ -99,7 +99,7 @@ enum HubLaunch {
     }
 
     /// Whether a launch argument asks for the hub screen (no model is made: `HubLaunchRoot` makes it once).
-    static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") }
+    static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") || arguments.contains("--hub-sign") }
 
     @MainActor static func model(arguments: [String] = ProcessInfo.processInfo.arguments) -> HubPairingModel? {
         if let i = arguments.firstIndex(of: "--hub-fake") {
@@ -115,6 +115,15 @@ import SwiftUI
 /// Owns the launch-argument model for the life of the view (a computed `root` would rebuild it on every body pass).
 struct HubLaunchRoot: View {
     @State private var model = HubLaunch.model() ?? HubPairingModel.live()
-    var body: some View { HubPairingScreen(model: model) }
+    /// `--hub-sign [script]`: the sign prompt against the in-process hub (screenshots and UI tests).
+    @State private var sign = HubLaunchRoot.signModel()
+    var body: some View {
+        if let sign { HubSignScreen(model: sign) } else { HubPairingScreen(model: model) }
+    }
+
+    static func signModel(arguments: [String] = ProcessInfo.processInfo.arguments) -> HubSignModel? {
+        guard let i = arguments.firstIndex(of: "--hub-sign") else { return nil }
+        return HubSignModel.fake(script: arguments.indices.contains(i + 1) && !arguments[i + 1].hasPrefix("--") ? arguments[i + 1] : nil)
+    }
 }
 #endif
