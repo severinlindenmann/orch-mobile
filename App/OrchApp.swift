@@ -26,6 +26,7 @@ struct OrchApp: App {
     @ViewBuilder private var root: some View {
         #if DEBUG
         if options.pushHarness { PushHarnessView(material: options.pushMaterial) }
+        else if HubLaunch.model(arguments: ProcessInfo.processInfo.arguments, probe: true) { HubLaunchRoot() }
         else if let kind = Self.shareStatusKind(options.initialRoute) { ShareStatusPreview(kind: kind) }
         else if options.uiPreview { HomeScreen(services: PreviewWorld(demo: options.demo), options: options) }
         else { AppRoot(options: options) }
@@ -45,6 +46,10 @@ struct AppRoot: View {
     @Environment(\.scenePhase) private var scenePhase
     /// Parsed exactly once, after boot: a route's side effects (e.g. the Demo sign outcome) must not repeat on every body pass.
     @State private var initial: InitialRoute?
+    #if DEBUG
+    /// An opened `orch://hub-pair/...` link (V3 dev): the hub pairing screen, never the workspace intake.
+    @State private var hubPairing: HubPairingModel?
+    #endif
 
     init(options: LaunchOptions) {
         self.options = options
@@ -72,7 +77,15 @@ struct AppRoot: View {
         }
         .environment(intake)
         // Cold launch included: the intake holds an early URL until the realm has booted, then classifies it.
-        .onOpenURL { intake.handle(url: $0) }
+        .onOpenURL { url in
+            #if DEBUG
+            if HubLaunch.isHubLink(url.absoluteString) { hubPairing = HubLaunch.model(link: url.absoluteString); return }
+            #endif
+            intake.handle(url: url)
+        }
+        #if DEBUG
+        .sheet(item: $hubPairing) { HubPairingScreen(model: $0) }
+        #endif
         // Scene and protected-data lifecycle ownership: workspaces and the pairing on screen pause in the background, codes hide.
         .onChange(of: scenePhase) { _, phase in
             // C2b: `.inactive` ends every answer's eligibility for an automatic re-sign before anything else runs
@@ -89,7 +102,9 @@ struct AppRoot: View {
             await realm.boot()
             intake.realmBooted()
             #if DEBUG
-            if let url = options.openURL { intake.handle(text: url, source: .otherApp) }
+            if let url = options.openURL {
+                if HubLaunch.isHubLink(url) { hubPairing = HubLaunch.model(link: url) } else { intake.handle(text: url, source: .otherApp) }
+            }
             #endif
             if initial == nil { initial = InitialRouteParser.parse(options.initialRoute, services: realm.services) }
         }

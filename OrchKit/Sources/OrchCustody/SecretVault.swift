@@ -62,9 +62,19 @@ public struct SecretVault: Sendable {
         for id in try ids() where id.realm == realm && id.ws == ws { try delete(id) }
     }
 
-    /// Remove everything of a realm in this group, device keys included.
+    /// Remove everything of a realm in this group, device keys included, EXCEPT the hub pairing (`hub.<hub_id>.*`, D-B1): a direct-mode
+    /// wipe (first Live entry, Leave Live, an interrupted reset) never removes it. Only `HubKeyCustody.deleteAll` and
+    /// `wipeHubItems` (Reset this iPhone) do.
     public func wipe(realm: Realm) throws {
-        for id in try ids() where id.realm == realm { try delete(id) }
+        for id in try ids() where id.realm == realm && !Self.isHubItem(id) { try delete(id) }
+    }
+
+    /// Items of the hub pairing namespace.
+    public static func isHubItem(_ id: SecretID) -> Bool { id.ws == nil && id.purpose.hasPrefix("hub.") }
+
+    /// Remove every hub pairing item of a realm in this group ("Reset this iPhone" only).
+    public func wipeHubItems(realm: Realm) throws {
+        for id in try ids() where id.realm == realm && Self.isHubItem(id) { try delete(id) }
     }
 
     /// Launch cleanup (U9): remove workspace items whose workspace is not in the realm index (left over after a
