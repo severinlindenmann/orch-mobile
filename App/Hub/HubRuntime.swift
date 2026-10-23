@@ -16,10 +16,15 @@ final class HubRuntime: Sendable {
     let push: HubPushCoordinator
     /// DEBUG launch helper (`--hub-fake`): the in-process hub behind this runtime.
     let fake: FakeHub?
+    /// What B3's sign sessions are built from: the same custody, the same hub senders, Face ID (scripted for the in-process hub).
+    let makeSender: @Sendable (String) throws -> any RequestSender
+    let biometry: BiometricGate
 
     init(custody: HubKeyCustody, cache: any HubCacheStore, config: HubPairingConfig, fake: FakeHub? = nil, pushDir: URL = HubRuntime.pushDirectory,
          makeRelaySender: (@Sendable (String) throws -> any RequestSender)? = nil) {
         self.custody = custody; self.fake = fake
+        makeSender = config.makeSender
+        biometry = fake == nil ? BiometricGate() : BiometricGate(makeContext: { ScriptedBiometry() })
         pairing = HubPairingCoordinator(config)
         let home = HubHomeCoordinator(custody: custody, cache: cache, verifier: config.verifier, wall: config.wall, makeSender: config.makeSender)
         self.home = home
@@ -49,7 +54,7 @@ final class HubRuntime: Sendable {
     static func live() -> HubRuntime {
         let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
-        return HubRuntime(custody: custody, cache: FileHubCache(directory: cacheDirectory), config: HubPairingConfig(custody: custody))
+        return HubRuntime(custody: custody, cache: FileHubCache(directory: cacheDirectory), config: HubPairingConfig(custody: custody, biometryBaseline: { BiometricGate().currentDomainState() }))
     }
 
     /// `--hub-fake`: the same stack against `FakeHub` with sample data (no network, nothing on disk, nothing in the keychain).
@@ -61,7 +66,7 @@ final class HubRuntime: Sendable {
         let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
             guard origin == hub.origin else { throw HubAPIError.network }
             return hub
-        })
+        }, biometryBaseline: { ScriptedBiometry.state })
         return HubRuntime(custody: custody, cache: InMemoryHubCache(), config: cfg, fake: hub)
     }
 

@@ -50,6 +50,8 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case staleTimestamp = "stale_timestamp"
     case challengeInvalid = "challenge_invalid"
     case factorMismatch = "factor_mismatch"
+    /// Custodial signing (protocol 8.4): the hub's prepared request is not the one the phone computed or asked for. Nothing is signed.
+    case eventChanged = "event_changed"
 }
 
 /// Failures of the byte-level primitives (encodings, keys, AEAD).
