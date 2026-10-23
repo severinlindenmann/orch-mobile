@@ -2,8 +2,9 @@
 
 Native iPhone app for orch v2 (Swift/SwiftUI). It replaces the PWA that earlier drafts planned.
 
-orch mobile is the phone side of orch v2: pair with a workspace by QR scan, see workspace cards, answer questions
-("needs you"), receive push, explicitly confirm signatures, and move files with Drop. The relay never sees plaintext.
+orch mobile is the phone side of orch: pair with your hub (QR scan or `orch://hub-pair/...` link), see the workspaces the hub
+lists, answer questions ("needs you"), receive push and explicitly confirm signatures. The phone pairs with the hub only, never
+directly with a workspace (V3 D69); the old direct pairing, direct relay transport and phone Drop were deleted (V3-D36).
 
 ## Decisions
 
@@ -64,10 +65,9 @@ simulator from `xcrun simctl list devices available`. The Orch scheme runs hoste
 tests locally; CI uses `build-for-testing` then `test-without-building` with
 `-only-testing:OrchTests` to exclude UI tests from execution.
 
-Debug launch arguments are parsed only by `LaunchOptions`: `--demo` opens the static
-Home preview; `--ui-testing` marks a test launch. Release ignores both. With no
-workspaces, Welcome offers Try Demo and Pair a workspace. Try Demo opens the same
-static fixtures in either configuration.
+Debug launch arguments are parsed only by `LaunchOptions` (`--ui-testing`, `--appearance`, `--push-harness`, `--push-material`)
+and `HubLaunch` (`--hub-pair`, `--hub-fake`, `--hub-sign`). Release ignores all of them; the hub screens are DEBUG-only until
+their design is final, so a Release build shows a placeholder.
 
 ## Hub pairing (V3, dev builds only)
 
@@ -83,7 +83,7 @@ loopback or http link, and has no hub UI.
 
 `vectors_hub.json` is orch-hub's contract file, copied byte for byte (`Tests/OrchTestVectors/PROVENANCE.md`). In a debug build:
 `--hub-pair` opens the screen on the real stack, `--hub-fake [link|confirm|paired]` runs it against the in-process `FakeHub`, and an opened
-`orch://hub-pair/...` link lands on it. Settings has a "Pair with a hub" row.
+`orch://hub-pair/...` link lands on it.
 
 ## TestFlight
 
@@ -115,11 +115,7 @@ scripts/testflight.sh --add-internal  # --upload, then wait for processing and a
 
 ## Status
 
-M1 skeleton: Home shows Laptop and Client VM, a Needs you list, and Drop. Demo is
-explicitly labelled static preview data. Pairing, transport, crypto, storage, push
-processing, and share staging are not implemented. The NSE emits only app-authored
-generic text; the share composer has disabled Cancel/Save controls. No security or
-real-device delivery claims follow from this milestone.
+The hub path (B1-B7) is built: pairing, home lists, sign prompts, push hints, leave/wipe. The hub UI is dev-build only.
 
 Work is tracked in the issues (labels `v2`, `v2:P4-mobile`). Security-relevant changes
 carry the `security-review` label and need an Opus review before merge.

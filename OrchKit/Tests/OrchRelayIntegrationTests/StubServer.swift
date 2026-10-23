@@ -156,3 +156,24 @@ final class StubServer: @unchecked Sendable {
         c.send(content: chunk, completion: .contentProcessed { [weak self] e in if let self, e == nil { self.stream(c, chunk, sent: sent + chunk.count) } else { c.cancel() } })
     }
 }
+
+#if os(macOS)
+/// A free loopback TCP port (bound and released), for tests that start an external server.
+enum FreePort {
+    struct Failure: Error { let step: String }
+    static func get() throws -> UInt16 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw Failure(step: "socket") }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0; addr.sin_addr = in_addr(s_addr: UInt32(0x7F000001).bigEndian)
+        let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        guard bound == 0 else { throw Failure(step: "bind") }
+        var out = sockaddr_in(); var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let got = withUnsafeMutablePointer(to: &out) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) } }
+        guard got == 0 else { throw Failure(step: "getsockname") }
+        return UInt16(bigEndian: out.sin_port)
+    }
+}
+#endif

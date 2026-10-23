@@ -37,7 +37,7 @@ struct HubPairingScreen: View {
                 }
             }
             .sheet(isPresented: $scanning) {
-                LiveScannerSheet { code in model.linkText = code; scanning = false; model.start() }
+                HubScannerSheet { code in model.linkText = code; scanning = false; model.start() }
             }
         }
     }
