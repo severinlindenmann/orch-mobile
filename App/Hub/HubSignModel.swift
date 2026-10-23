@@ -135,15 +135,16 @@ extension HubSignModel {
         let backend: any VaultBackend = InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let make: @Sendable (String) throws -> any RequestSender = { _ in link }
+        let wipe = HubWipe(custody: custody, cache: InMemoryHubCache())
         let m = HubSignModel(session: nil, fake: hub)
         m.state = .loading
         m.task = Task {
-            let coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, makeSender: make, biometryBaseline: { ScriptedBiometry.state }))
+            let coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, makeSender: make, biometryBaseline: { ScriptedBiometry.state }, wipe: wipe))
             guard case .confirm = await coordinator.begin(link: hub.pairingLink),
                   case .paired(let s) = await coordinator.complete(password: hub.password, totp: hub.totp, label: "Dev hub") else {
                 m.state = .failed(.notPaired); return
             }
-            m.session = HubSignSession(HubSignConfig(custody: custody, makeSender: make, biometry: BiometricGate(makeContext: { ScriptedBiometry() }), contentLink: hubHome),
+            m.session = HubSignSession(HubSignConfig(custody: custody, makeSender: make, biometry: BiometricGate(makeContext: { ScriptedBiometry() }), contentLink: hubHome, wipe: wipe),
                                        hubID: s.hubID)
             await m.play(script, hub: hub, link: link)
         }

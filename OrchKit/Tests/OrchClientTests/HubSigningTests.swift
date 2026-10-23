@@ -84,7 +84,7 @@ private struct Rig {
         var baseline: (@Sendable () -> Data?)?
         if let f = faces { baseline = { @Sendable in f } }
         let coordinator = HubPairingCoordinator(HubPairingConfig(custody: cust, verifier: HubVerifier(devMode: true), wall: clock, makeSender: make,
-                                                                  biometryBaseline: baseline))
+                                                                  biometryBaseline: baseline, wipe: HubWipe(custody: cust, cache: InMemoryHubCache())))
         guard case .confirm = await coordinator.begin(link: h.pairingLink),
               case .paired(let s) = await coordinator.complete(password: h.password, totp: h.totp, label: "Dev hub") else { throw TransportError.disconnected }
         hubID = s.hubID
@@ -364,7 +364,7 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
     }
 
     @Test func withoutAConfiguredLinkContentBoundDecisionsAreNotOffered() async throws {
-        let cfg = HubSignConfig(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())))
+        let cfg = HubSignConfig(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())), wipe: HubWipe(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())), cache: InMemoryHubCache()))
         #expect(cfg.contentLink("https://h", "w", "l") == nil)
     }
 

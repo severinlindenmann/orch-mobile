@@ -113,14 +113,14 @@ public struct HubPairingConfig: Sendable {
     /// A sender bound to exactly the origin it is given (production: `HubSenders.make`).
     public let makeSender: @Sendable (String) throws -> any RequestSender
     /// The hub wipe (B6): while one is unfinished no pairing starts (a new key would be deleted by the resuming wipe).
-    public let wipe: HubWipe?
+    public let wipe: HubWipe
     /// The device's biometry state at pairing (`BiometricGate.currentDomainState`), recorded with the pairing so that a later change of the
     /// enrolled faces or fingers means "sign in again" (design B3, R2). Nil: none recorded, and the phone will not sign until one is.
     public let biometryBaseline: (@Sendable () -> Data?)?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
                 makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
-                biometryBaseline: (@Sendable () -> Data?)? = nil, wipe: HubWipe? = nil) {
+                biometryBaseline: (@Sendable () -> Data?)? = nil, wipe: HubWipe) {
         self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometryBaseline = biometryBaseline
         self.wipe = wipe
     }
@@ -170,7 +170,7 @@ public actor HubPairingCoordinator {
         catch { return finish(mine, .failed(.badLink)) }
         do {
             guard try cfg.custody.pairedHubs().isEmpty else { return finish(mine, .failed(.alreadyPaired)) }
-            guard HubWipe.workToken(cfg.wipe).isValid else { return finish(mine, .failed(.custody)) }      // the wipe barrier
+            guard cfg.wipe.workToken().isValid else { return finish(mine, .failed(.custody)) }      // the wipe barrier
             let api = try HubAPI(origin: link.api, sender: try cfg.makeSender(link.api))
             let answer = try await api.hubCard()
             guard mine == generation else { return state }
@@ -195,7 +195,7 @@ public actor HubPairingCoordinator {
         defer { if mine == generation { busy = false } }
         let hubID = p.held.hubID
         // the wipe barrier (HubWorkBarrier): taken before the work starts; every write below goes through it
-        let work = HubWipe.workToken(cfg.wipe)
+        let work = cfg.wipe.workToken()
         var pairingSession: HubBearer?
         // Rollback removes only what THIS attempt made, and only while it is still the current attempt: a cancelled attempt that wakes up
         // later must not touch its successor's key, token or record (L2-B1-2).

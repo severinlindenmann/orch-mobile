@@ -48,12 +48,12 @@ private struct Rig {
         }
         sender = make
         let verifier = HubVerifier(devMode: true)
-        let pairing = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: verifier, wall: clock, makeSender: make))
+        let pairing = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: verifier, wall: clock, makeSender: make, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
         guard case .confirm = await pairing.begin(link: h.pairingLink) else { throw HubPairingFailure.badLink }
         guard case .paired(let summary) = await pairing.complete(password: h.password, totp: h.totp, label: "Work hub") else { throw HubPairingFailure.noSession }
         channelID = summary.channelID
         coordinator = HubPushCoordinator(.init(custody: custody, pushDir: pushDir, verifier: verifier, wall: clock, makeSender: make,
-                                                onRelayRevoked: nil))
+                                                onRelayRevoked: nil, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
     }
     let reachable: ReachFlag
     final class ReachFlag: @unchecked Sendable { private let l = NSLock(); private var v: Bool; init(_ v: Bool) { self.v = v }
@@ -206,7 +206,7 @@ private struct Rig {
         _ = await rig.coordinator.registerPush(Rig.target)
         let asked = Rig.Counter()
         let c = HubPushCoordinator(.init(custody: rig.custody, pushDir: rig.pushDir, verifier: HubVerifier(devMode: true), wall: rig.clock,
-                                         makeSender: rig.sender, onRelayRevoked: { asked.bump(); return .unconfirmed }))
+                                         makeSender: rig.sender, onRelayRevoked: { asked.bump(); return .unconfirmed }, wipe: HubWipe(custody: rig.custody, cache: InMemoryHubCache())))
         rig.relay.forcedRefusal = (403, "channel_revoked")
         #expect(await c.catchUp() == .relayRevoked(.unconfirmed))
         let paired = try rig.custody.pairedHubs()

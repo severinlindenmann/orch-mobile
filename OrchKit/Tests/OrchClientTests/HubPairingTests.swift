@@ -45,7 +45,7 @@ private struct Rig {
             guard origin == h.origin else { throw TransportError.disconnected }
             return h
         }
-        coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: verifier, wall: FixedWall(), makeSender: make))
+        coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: verifier, wall: FixedWall(), makeSender: make, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
     }
 
     var stored: [String] {
@@ -90,7 +90,7 @@ private final class GateSender: RequestSender, @unchecked Sendable {
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         // request 3 = register/begin of the FIRST complete; it is held while the second attempt runs
         let gate = GateSender(hub, holdAt: 3)
-        let co = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: FixedWall(), makeSender: { _ in gate }))
+        let co = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: FixedWall(), makeSender: { _ in gate }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
         guard case .confirm = await co.begin(link: hub.pairingLink) else { Issue.record("no confirm"); return }
         let first = Task { await co.complete(password: hub.password, totp: hub.totp, label: "One") }
         try await Task.sleep(for: .milliseconds(200))

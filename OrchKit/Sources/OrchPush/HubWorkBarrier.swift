@@ -22,11 +22,22 @@ public final class HubWorkBarrier: @unchecked Sendable {
 
     public init(closed: Bool = false) { self.closed = closed }
 
-    /// A wipe begins: every token taken so far is dead, and none is handed out until `open`.
-    public func close() { lock.withLock { epoch += 1; closed = true } }
+    /// A wipe begins: every token taken so far is dead, and none is handed out until `finishWipe` opens the barrier. `journalStep` is the wipe
+    /// journal's read-and-write of the new intent; it runs UNDER THE SAME LOCK, so "barrier closed" and "intent journaled" change together. If it
+    /// throws, the barrier stays closed (fail closed). Keep it short (a `UserDefaults` read and write) and never await in it.
+    public func beginWipe<T>(_ journalStep: () throws -> T) rethrows -> T {
+        try lock.withLock { epoch += 1; closed = true; return try journalStep() }
+    }
 
-    /// The wipe finished. Tokens taken from now on are valid; older ones stay dead.
-    public func open() { lock.withLock { closed = false } }
+    /// A wipe ran to its end. `clearIfSame` runs under the lock: it clears the journal ONLY IF it still holds the intent that just finished, and
+    /// returns whether it did. Only then does the barrier open; if a newer intent arrived (a Reset over a Leave) it stays closed and the caller
+    /// runs that one. This is what makes "finished" and "a new wipe began" mutually exclusive.
+    public func finishWipe(_ clearIfSame: () -> Bool) {
+        lock.withLock { if clearIfSame() { closed = false } }
+    }
+
+    /// A journal change that is not a begin or a finish (a phase advance) under the same lock, so it cannot overwrite a newer intent.
+    public func serialized<T>(_ body: () throws -> T) rethrows -> T { try lock.withLock(body) }
 
     public var isClosed: Bool { lock.withLock { closed } }
 

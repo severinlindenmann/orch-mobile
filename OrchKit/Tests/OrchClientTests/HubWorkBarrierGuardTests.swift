@@ -86,10 +86,27 @@ import Testing
         #expect(intake[accept.lowerBound...].prefix(2400).contains("work.perform { try store.transact"))
     }
 
+    @Test func theWipeIsNeverOptional() {
+        // a component built without a wipe would write without a barrier; the configs and coordinators take `wipe: HubWipe`, never `HubWipe?`
+        for (path, text) in Self.sources() {
+            #expect(!text.contains("HubWipe?") && !text.contains("wipe: HubWipe? "), "\(path) has an optional wipe")
+            #expect(!text.contains("HubWipe.workToken(cfg") && !text.contains("workToken(nil"), "\(path) asks for a token without a wipe")
+        }
+    }
+
+    @Test func theCacheIsWrittenOnlyThroughAToken() {
+        for (path, text) in Self.sources() {
+            for (n, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() where line.contains("cache.write(") || line.contains(".cache.write(") {
+                #expect(line.contains("work.perform"), "\(path):\(n + 1) writes the hub cache without the wipe barrier")
+            }
+            // the store itself is only written by the coordinator above (FileHubCache/InMemoryHubCache define `write`, they never call it)
+            if !path.hasSuffix("OrchClient/HubCache.swift") { #expect(!text.contains("FileHubCache(directory:") || path.hasPrefix("App/"), "\(path) builds a cache store") }
+        }
+    }
+
     @Test func theUnguardedTokenExistsOnlyWhereItIsAllowed() {
         for (path, text) in Self.sources() where text.contains(".unguarded") {
             let ok = path.hasSuffix("OrchPush/HubWorkBarrier.swift") || path.hasSuffix("OrchPush/PushHandler.swift")
-                || path.hasSuffix("OrchClient/HubWipe.swift")       // `HubWipe.workToken(nil)`: components built without a wipe (tests)
                 || path.hasSuffix("OrchPush/HubPush.swift")         // a comment: the extension's replay write
             #expect(ok, "\(path) uses HubWorkToken.unguarded")
         }
@@ -112,10 +129,10 @@ import Testing
     @Test func everyHubComponentTakesATokenBeforeItsWork() throws {
         let src = Dictionary(uniqueKeysWithValues: Self.sources().map { ($0.path, $0.text) })
         func text(_ suffix: String) throws -> String { try #require(src.first { $0.key.hasSuffix(suffix) }).value }
-        #expect(try text("OrchClient/HubPairing.swift").contains("HubWipe.workToken(cfg.wipe)"))
+        #expect(try text("OrchClient/HubPairing.swift").contains("cfg.wipe.workToken()"))
         #expect(try text("OrchClient/HubHome.swift").contains("wipe.workToken()"))
-        #expect(try text("OrchClient/HubPush.swift").contains("HubWipe.workToken(cfg.wipe)"))
-        #expect(try text("OrchClient/HubSigning.swift").contains("HubWipe.workToken(cfg.wipe)"))
+        #expect(try text("OrchClient/HubPush.swift").contains("cfg.wipe.workToken()"))
+        #expect(try text("OrchClient/HubSigning.swift").contains("cfg.wipe.workToken()"))
         #expect(try text("App/Hub/HubPushDriver.swift").contains("runtime.wipe.workToken()"))
         // nobody asks "is a wipe pending?" instead of holding a token (the per-component check this barrier replaced)
         for suffix in ["OrchClient/HubPairing.swift", "OrchClient/HubPush.swift", "OrchClient/HubSigning.swift"] {

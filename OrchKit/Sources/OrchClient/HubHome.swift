@@ -70,9 +70,9 @@ public actor HubHomeCoordinator {
     private var signingIn = false
 
     public init(custody: HubKeyCustody, cache: any HubCacheStore, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
-                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make, wipe: HubWipe? = nil) {
+                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make, wipe: HubWipe) {
         self.custody = custody; self.cache = cache; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender
-        self.wipe = wipe ?? HubWipe(custody: custody, cache: cache)
+        self.wipe = wipe
         // phase 1 of every wipe (also Reset, which starts outside this actor): nothing here refreshes, caches or commits any more
         self.wipe.onQuiesce { [weak self] _ in await self?.quiesce() }
     }

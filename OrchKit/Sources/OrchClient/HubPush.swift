@@ -69,11 +69,11 @@ public actor HubPushCoordinator {
         /// which wipes nothing). Nil: this coordinator only asks the hub itself.
         let onRelayRevoked: (@Sendable () async -> HubStatus)?
         /// The hub wipe (B6): while one is unfinished nothing is registered, published or fetched.
-        let wipe: HubWipe?
+        let wipe: HubWipe
 
         public init(custody: HubKeyCustody, pushDir: URL, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
                     entropy: any Entropy = SystemEntropy(), makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
-                    makeRelaySender: (@Sendable (String) throws -> any RequestSender)? = nil, onRelayRevoked: (@Sendable () async -> HubStatus)? = nil, wipe: HubWipe? = nil) {
+                    makeRelaySender: (@Sendable (String) throws -> any RequestSender)? = nil, onRelayRevoked: (@Sendable () async -> HubStatus)? = nil, wipe: HubWipe) {
             self.wipe = wipe
             self.custody = custody; self.verifier = verifier; self.wall = wall; self.entropy = entropy; self.makeSender = makeSender
             self.makeRelaySender = makeRelaySender ?? makeSender; self.intake = HubPushIntake(pushDir: pushDir); self.onRelayRevoked = onRelayRevoked
@@ -119,7 +119,7 @@ public actor HubPushCoordinator {
     /// `PUT /channels/{id}/push` with the channel-key-signed `hub.channel_push` (once; `null` afterwards) and the target.
     public func registerPush(_ target: HubPushTarget) async -> HubPushRegistration {
         // the wipe barrier (HubWorkBarrier): taken before the work starts; the key, the material and the push state are written only through it
-        let work = HubWipe.workToken(cfg.wipe)
+        let work = cfg.wipe.workToken()
         guard work.isValid, let p = paired() else { return .notPaired }
         let hubID = p.record.hubID
         do { try ensureMaterial(p, work) } catch { return work.isValid ? .custody : .notPaired }
@@ -169,7 +169,7 @@ public actor HubPushCoordinator {
         guard !running else { return .done(hints: [], dropped: 0) }
         running = true; defer { running = false }
         if isPaused { return .paused }
-        let work = HubWipe.workToken(cfg.wipe)        // the wipe barrier: the replay record is written only through it
+        let work = cfg.wipe.workToken()        // the wipe barrier: the replay record is written only through it
         guard work.isValid, let p = paired() else { return .notPaired }
         guard let relayURL = p.held.relayURL else { return .noRelay }
         guard let material = try? cfg.custody.pushMaterial() else { return .noMaterial }

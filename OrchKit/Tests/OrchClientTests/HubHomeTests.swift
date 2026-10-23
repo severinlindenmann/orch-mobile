@@ -80,12 +80,12 @@ struct HomeRig {
     }
 
     static func pairingConfig(_ c: HubKeyCustody, _ clock: HomeClock, _ h: FakeHub) -> HubPairingConfig {
-        HubPairingConfig(custody: c, verifier: HubVerifier(devMode: true), wall: clock, makeSender: { o in guard o == h.origin else { throw TransportError.disconnected }; return h })
+        HubPairingConfig(custody: c, verifier: HubVerifier(devMode: true), wall: clock, makeSender: { o in guard o == h.origin else { throw TransportError.disconnected }; return h }, wipe: HubWipe(custody: c, cache: InMemoryHubCache()))
     }
 
     static func makeHome(_ c: HubKeyCustody, _ cache: any HubCacheStore, _ clock: HomeClock, _ h: FakeHub) -> HubHomeCoordinator {
         HubHomeCoordinator(custody: c, cache: cache, verifier: HubVerifier(devMode: true), wall: clock,
-                           makeSender: { o in guard o == h.origin else { throw TransportError.disconnected }; return h })
+                           makeSender: { o in guard o == h.origin else { throw TransportError.disconnected }; return h }, wipe: HubWipe(custody: c, cache: cache))
     }
 }
 
@@ -247,7 +247,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     @Test func oneRefreshAtATime() async throws {
         let r0 = await HomeRig()
         let hold = HoldSender(r0.hub, path: "/api/v1/me/workspaces")
-        let home = HubHomeCoordinator(custody: r0.custody, cache: r0.cache, verifier: HubVerifier(devMode: true), wall: r0.clock, makeSender: { _ in hold })
+        let home = HubHomeCoordinator(custody: r0.custody, cache: r0.cache, verifier: HubVerifier(devMode: true), wall: r0.clock, makeSender: { _ in hold }, wipe: HubWipe(custody: r0.custody, cache: r0.cache))
         let before = r0.hub.log.count
         async let a = home.refresh()
         await hold.waitUntilHeld()
@@ -384,7 +384,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         let asked = OriginLog()
         let hub = r.hub
         let home = HubHomeCoordinator(custody: r.custody, cache: r.cache, verifier: HubVerifier(devMode: true), wall: r.clock,
-                                      makeSender: { o in asked.add(o); return hub })
+                                      makeSender: { o in asked.add(o); return hub }, wipe: HubWipe(custody: r.custody, cache: r.cache))
         #expect(live(await home.signInAgain(password: hub.password, totp: hub.totp)) != nil)
         #expect(Set(asked.all) == [hub.origin])
     }
@@ -395,7 +395,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         r.clock.advance(hours: 13)
         let hold = HoldSender(r.hub, path: "/api/v1/session/channel")
         let hub = r.hub
-        let home = HubHomeCoordinator(custody: r.custody, cache: r.cache, verifier: HubVerifier(devMode: true), wall: r.clock, makeSender: { _ in hold })
+        let home = HubHomeCoordinator(custody: r.custody, cache: r.cache, verifier: HubVerifier(devMode: true), wall: r.clock, makeSender: { _ in hold }, wipe: HubWipe(custody: r.custody, cache: r.cache))
         async let result = home.signInAgain(password: hub.password, totp: hub.totp)
         await hold.waitUntilHeld()
         try r.custody.deleteAll(hubID: hub.hubID)          // Leave / wipe while the bind is in flight
@@ -425,7 +425,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         let backend = InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let hold = HoldSender(h, path: "/api/v1/session/channel")
-        let xCfg = HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: clock, makeSender: { _ in hold })
+        let xCfg = HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: clock, makeSender: { _ in hold }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache()))
         let x = HubPairingCoordinator(xCfg), y = HubPairingCoordinator(HomeRig.pairingConfig(custody, clock, h))
         _ = await x.begin(link: h.pairingLink)
         _ = await y.begin(link: h.pairingLink)

@@ -348,6 +348,56 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         #expect(try r.custody.pairedHubs().isEmpty && SecretVault(group: .keys, backend: r.backend).ids().isEmpty)
     }
 
+    // MARK: finish is atomic with begin (L2-B6d2-1)
+
+    @Test func aResetThatLandsOnALeavesLastPhaseIsNeverErased() async throws {
+        let r = await WipeRig()
+        let hubID = r.hub.hubID
+        let journal = HookJournal()
+        let wipe = HubWipe(custody: r.custody, cache: r.rig.cache, journal: journal)
+        try r.rig.cache.write(Data("{}".utf8), hubID: String(repeating: "ab", count: 16))     // another hub's cache: only Reset removes it
+        // the Reset begins right after the Leave's loop read its LAST phase and before it finishes
+        journal.onRead = { [unowned journal] i in
+            guard i?.phase == HubWipe.Phase.record else { return }
+            journal.onRead = nil
+            try? wipe.begin(.everything)
+        }
+        try await wipe.wipe(.hub(hubID))
+        #expect(journal.read() == nil && wipe.workToken().isValid, "the Reset ran to its end and the barrier opened only then")
+        #expect(r.rig.cache.hubIDs.isEmpty, "the Reset's own steps ran: it was not reported finished by the Leave's finish")
+    }
+
+    @Test func aWipeThatBeginsWhileAnotherFinishesKeepsTheBarrierClosed() async throws {
+        let r = await WipeRig()
+        let journal = HookJournal()
+        let wipe = HubWipe(custody: r.custody, cache: r.rig.cache, journal: journal)
+        let started = DispatchSemaphore(value: 0), done = Counter()
+        Thread.detachNewThread { started.wait(); try? wipe.begin(.everything); _ = done.next() }
+        // the second `begin` is released while the first one is inside its finish (the compare read happens under the barrier lock)
+        let reads = Counter()
+        journal.onRead = { i in
+            guard i?.phase == HubWipe.Phase.record, reads.next() == 2 else { return }
+            started.signal(); Thread.sleep(forTimeInterval: 0.05)
+        }
+        try await wipe.wipe(.hub(r.hub.hubID))
+        while done.value == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        // whichever order they took: a pending intent always means a closed barrier, and finishing it opens the barrier for good
+        #expect(wipe.pending == wipe.barrier.isClosed)
+        try await wipe.resume()
+        #expect(journal.read() == nil && wipe.workToken().isValid)
+    }
+
+    @Test(arguments: 0..<40) func beginAndFinishNeverLeaveAPendingIntentWithAnOpenBarrier(round: Int) async throws {
+        let r = await WipeRig()
+        let wipe = HubWipe(custody: r.custody, cache: r.rig.cache, journal: InMemoryHubWipeJournal())
+        async let a: Void = wipe.wipe(.hub(r.hub.hubID))
+        async let b: Void = { try? wipe.begin(.everything) }()
+        _ = try await (a, b)
+        #expect(wipe.pending == wipe.barrier.isClosed, "round \(round)")
+        try await wipe.resume()
+        #expect(!wipe.pending && wipe.workToken().isValid)
+    }
+
     @Test func theJournalSurvivesInUserDefaults() throws {
         let suite = "orch.test.hubwipe." + UUID().uuidString
         let d = try #require(UserDefaults(suiteName: suite))
@@ -403,4 +453,29 @@ private final class FailOnce: @unchecked Sendable {
 private actor Seen {
     var items: [String] = []
     func add(_ s: String) { items.append(s) }
+}
+
+/// A journal that tells a test when it is read, to place a second wipe exactly between two steps of the first.
+private final class HookJournal: HubWipeJournal, @unchecked Sendable {
+    private let lock = NSLock()
+    private var intent: HubWipeIntent?
+    private var hook: (@Sendable (HubWipeIntent?) -> Void)?
+    var onRead: (@Sendable (HubWipeIntent?) -> Void)? {
+        get { lock.withLock { hook } }
+        set { lock.withLock { hook = newValue } }
+    }
+    func read() -> HubWipeIntent? {
+        let (i, h) = lock.withLock { (intent, hook) }
+        h?(i)
+        return i
+    }
+    func write(_ i: HubWipeIntent) throws { lock.withLock { intent = i } }
+    func clear() { lock.withLock { intent = nil } }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func next() -> Int { lock.withLock { n += 1; return n } }
+    var value: Int { lock.withLock { n } }
 }

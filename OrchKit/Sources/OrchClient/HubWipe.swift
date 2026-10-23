@@ -99,8 +99,6 @@ public final class HubWipe: Sendable {
 
     /// A new unit of hub work: take it BEFORE the work starts (see `HubWorkBarrier`).
     public func workToken() -> HubWorkToken { barrier.token() }
-    /// The token for a component that may have no wipe (tests): unguarded then.
-    public static func workToken(_ wipe: HubWipe?) -> HubWorkToken { wipe?.workToken() ?? .unguarded }
 
     /// A wipe was started and has not finished: nothing of this hub may be used or paired over until `resume` finishes it.
     public var pending: Bool { journal.read() != nil }
@@ -109,12 +107,15 @@ public final class HubWipe: Sendable {
     /// Writes the intent (synchronously, durable before any await). A wipe already pending is kept; `.everything` widens a pending hub wipe.
     /// Throws when the intent cannot be made durable: nothing is deleted then.
     public func begin(_ scope: HubWipeScope) throws {
-        barrier.close()                           // first: from here no hub write can succeed, whatever happens to the journal write
-        let current = journal.read()
-        switch (current?.scope, scope) {
-        case (nil, _): try journal.write(HubWipeIntent(scope: scope, phase: Phase.begun))
-        case (.hub?, .everything): try journal.write(HubWipeIntent(scope: .everything, phase: Phase.begun))
-        default: break
+        // The barrier closes and the intent is journaled under ONE lock (`HubWorkBarrier.beginWipe`): from here no hub write can succeed, whatever
+        // happens to the journal write, and a finishing wipe cannot reopen the barrier over this intent.
+        try barrier.beginWipe {
+            let current = journal.read()
+            switch (current?.scope, scope) {
+            case (nil, _): try journal.write(HubWipeIntent(scope: scope, phase: Phase.begun))
+            case (.hub?, .everything): try journal.write(HubWipeIntent(scope: .everything, phase: Phase.begun))
+            default: break
+            }
         }
     }
 
@@ -154,15 +155,23 @@ public final class HubWipe: Sendable {
                 try custody.deleteRecords(hubID: i.scope.hubID)
                 try advance(i, to: Phase.record)
             default:
-                journal.clear()
-                barrier.open()
+                // finished: clear the journal and open the barrier only if the journal still holds exactly this intent (else a newer wipe
+                // began meanwhile: it stays pending, the barrier stays closed, and the loop runs it)
+                barrier.finishWipe {
+                    guard journal.read() == i else { return false }
+                    journal.clear()
+                    return true
+                }
             }
         }
     }
 
     private func advance(_ i: HubWipeIntent, to phase: Int) throws {
         // A widened intent (a hub wipe became Reset while this ran) starts over from its first phase: it is re-read, never overwritten.
-        guard let now = journal.read(), now.scope == i.scope else { return }
-        try journal.write(HubWipeIntent(scope: now.scope, phase: max(now.phase, phase)))
+        // (under the barrier lock: a begin cannot land between the read and the write)
+        try barrier.serialized {
+            guard let now = journal.read(), now.scope == i.scope else { return }
+            try journal.write(HubWipeIntent(scope: now.scope, phase: max(now.phase, phase)))
+        }
     }
 }
