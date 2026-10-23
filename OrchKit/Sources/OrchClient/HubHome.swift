@@ -1,6 +1,7 @@
 import Foundation
 import OrchCustody
 import OrchProtocol
+import OrchPush
 
 // The phone's view of its hub (design B2). ONE `HubHomeCoordinator` per process owns the hub's list, the cache and every refresh; the
 // views only render its state. Requests go through the channel session bound to the origin verified at pairing (D2, `HubPairingRecord.api`),
@@ -109,6 +110,7 @@ public actor HubHomeCoordinator {
 
     private func runRefresh() async -> HubHomeState {
         if let s = await finishPendingWipe() { return s }
+        let work = wipe.workToken()           // the wipe barrier: the cache is written only through it
         generation += 1
         let mine = generation
         let ctx: Context
@@ -119,9 +121,9 @@ public actor HubHomeCoordinator {
         do {
             let ws = try await ctx.api.myWorkspaces(ctx.bearer)
             let ny = try await ctx.api.needsYou(ctx.bearer, workspaces: ws)
-            guard mine == generation, stillPaired(ctx.record) else { return state }
+            guard mine == generation, work.isValid, stillPaired(ctx.record) else { return state }
             let snap = HubSnapshot(workspaces: ws, needsYou: ny, asOfMs: wall.nowMs)
-            store(snap, ctx)
+            store(snap, ctx, work)
             return set(.live(snap), mine)
         } catch {
             guard mine == generation else { return state }
@@ -208,6 +210,7 @@ public actor HubHomeCoordinator {
         guard !signingIn else { return state }
         signingIn = true
         defer { signingIn = false }
+        let work = wipe.workToken()           // the wipe barrier (HubWorkBarrier): every write below goes through it
         guard let hubID = (try? custody.pairedHubs())?.first else { state = .notPaired; return state }
         let record: HubPairingRecord, held: HeldHubCard
         do {
@@ -238,12 +241,12 @@ public actor HubHomeCoordinator {
                                         card: bound.card, channelCert: bound.channelCert, sessionExpiresMs: bound.expiresMs, pairedMs: record.pairedMs)
             // the last await is behind us: the key must still be this channel's and the record the one we loaded (a wipe or Leave during
             // the bind must not be undone by a record for a deleted key; L2-B2-5, the pairing step-5 check)
-            guard !wipe.pending, (try? custody.loadChannelKey(hubID: hubID))?.channelID == record.channelID,
+            guard work.isValid, (try? custody.loadChannelKey(hubID: hubID))?.channelID == record.channelID,
                   let stored = try? custody.record(hubID: hubID), (try? HubPairingRecord.decode(stored)) == record
             else { throw CustodyError.missing }
             // commit: token, then the record (the old session's expiry stays in force until the record is rewritten)
-            try custody.putSessionToken(bound.bearer.token, hubID: hubID)
-            try custody.putRecord(try canonicalJSON(next.json), hubID: hubID)
+            try custody.putSessionToken(bound.bearer.token, hubID: hubID, work: work)
+            try custody.putRecord(try canonicalJSON(next.json), hubID: hubID, work: work)
             generation += 1
         } catch {
             if let p = pairing { await api.signOut(p) }
@@ -325,7 +328,7 @@ public actor HubHomeCoordinator {
     /// The pairing the request was made for is still the stored one and no wipe has started (a Leave or Reset during the request must not
     /// get its cache written back).
     private func stillPaired(_ r: HubPairingRecord) -> Bool {
-        guard !wipe.pending, let data = try? custody.record(hubID: r.hubID), let now = try? HubPairingRecord.decode(data) else { return false }
+        guard let data = try? custody.record(hubID: r.hubID), let now = try? HubPairingRecord.decode(data) else { return false }
         return now.channelID == r.channelID
     }
 
@@ -344,9 +347,9 @@ public actor HubHomeCoordinator {
         return HubSnapshot(workspaces: e.workspaces, needsYou: e.needsYou, asOfMs: e.asOfMs)
     }
 
-    private func store(_ s: HubSnapshot, _ ctx: Context) {
+    private func store(_ s: HubSnapshot, _ ctx: Context, _ work: HubWorkToken) {
         let e = HubCacheEntry(hubID: ctx.record.hubID, userID: ctx.record.userID, channelID: ctx.record.channelID, asOfMs: s.asOfMs,
                               workspaces: s.workspaces, needsYou: s.needsYou)
-        if let d = try? JSONEncoder().encode(e) { try? cache.write(d, hubID: ctx.record.hubID) }
+        if let d = try? JSONEncoder().encode(e) { try? work.perform { try cache.write(d, hubID: ctx.record.hubID) } }
     }
 }

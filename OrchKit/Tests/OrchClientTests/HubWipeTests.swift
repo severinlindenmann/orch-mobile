@@ -1,6 +1,7 @@
 import Foundation
 import OrchCustody
 import OrchFakeHost
+import OrchPush
 import OrchProtocol
 import Testing
 @testable import OrchClient
@@ -36,7 +37,7 @@ private struct WipeRig {
     }
 
     /// A push key, as B4 stores it after the pairing, so the wipe has the whole set to remove.
-    func addPushKey() throws { _ = try custody.createPushKey(hubID: hub.hubID) }
+    func addPushKey() throws { _ = try custody.createPushKey(hubID: hub.hubID, work: .unguarded) }
 }
 
 private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s { return x }; return nil }
@@ -204,7 +205,7 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         let r = await WipeRig()
         _ = await r.home.leave()
         let fresh = FakeHub(origin: "https://hub.dev.orch.example", wall: r.rig.clock)
-        try r.journal.write(HubWipeIntent(scope: .hub(fresh.hubID), phase: 0))
+        try r.wipe.begin(.hub(fresh.hubID))
         let pairing = HubPairingCoordinator(HubPairingConfig(custody: r.custody, verifier: HubVerifier(devMode: true), wall: r.rig.clock,
                                                               makeSender: { _ in fresh }, wipe: r.wipe))
         #expect(await pairing.begin(link: fresh.pairingLink) == .failed(.custody))
@@ -271,8 +272,8 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         let r = await WipeRig()
         try r.addPushKey()
         let hubID = r.hub.hubID
-        try r.custody.putPushState(HubPushState(issuedMs: 1_790_000_000_123, keyRegistered: true, targetDigest: "ab"), hubID: hubID)
-        try r.custody.publishPushMaterial(hubID: hubID, channelID: String(repeating: "cd", count: 16), label: "Dev hub")
+        try r.custody.putPushState(HubPushState(issuedMs: 1_790_000_000_123, keyRegistered: true, targetDigest: "ab"), hubID: hubID, work: .unguarded)
+        try r.custody.publishPushMaterial(hubID: hubID, channelID: String(repeating: "cd", count: 16), label: "Dev hub", work: .unguarded)
         #expect(try r.custody.pushState(hubID: hubID)?.issuedMs == 1_790_000_000_123 && r.custody.pushMaterial() != nil)
         try await r.wipe.wipe(.hub(hubID))
         #expect(try r.custody.pushState(hubID: hubID) == nil && r.custody.pushMaterial() == nil && r.vaultEmpty())
@@ -286,6 +287,65 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         let n = r.hub.log.count
         #expect(await push.registerPush(HubPushTarget(env: .sandbox, token: "AAAA")) == .notPaired)
         #expect(try r.hub.log.count == n && r.custody.pushMaterial() == nil)
+    }
+
+    // MARK: the wipe barrier (L2-B6d-1)
+
+    @Test func aTokenDiesWhenAWipeBeginsAndNewOnesWorkOnlyAfterItFinished() async throws {
+        let r = await WipeRig()
+        let before = r.wipe.workToken()
+        #expect(before.isValid)
+        #expect(try before.perform { 1 } == 1)
+        try r.wipe.begin(.everything)
+        let during = r.wipe.workToken()
+        #expect(!before.isValid && !during.isValid)
+        #expect(throws: HubWorkError.wipeInProgress) { try before.perform { 1 } }
+        #expect(throws: HubWorkError.wipeInProgress) { try during.perform { 1 } }
+        try await r.wipe.run()
+        #expect(!before.isValid && !during.isValid, "a token from before or during a wipe never comes back")
+        #expect(r.wipe.workToken().isValid)
+    }
+
+    @Test func aLeftoverWipeBlocksAllHubWorkFromTheStartOfTheNextLaunch() async throws {
+        let r = await WipeRig()
+        try r.journal.write(HubWipeIntent(scope: .everything, phase: 1))
+        let relaunched = HubWipe(custody: r.custody, cache: r.rig.cache, journal: r.journal)
+        #expect(!relaunched.workToken().isValid)
+        try await relaunched.resume()
+        #expect(relaunched.workToken().isValid)
+    }
+
+    @Test func aPushRegistrationRacingAResetWritesNothingAndLeavesNothingBehind() async throws {
+        let r = await WipeRig()
+        _ = try #require(live(await r.home.refresh()))
+        let channel = try #require(r.hub.registeredChannels.first)
+        let hold = HoldSender(r.hub, path: "/api/v1/channels/\(channel)/push")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hubrace-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let push = HubPushCoordinator(.init(custody: r.custody, pushDir: dir, verifier: HubVerifier(devMode: true), wall: r.rig.clock,
+                                            makeSender: { _ in hold }, wipe: r.wipe))
+        async let registration = push.registerPush(HubPushTarget(env: .sandbox, token: "AAAA"))
+        await hold.waitUntilHeld()              // the push key, the material and the first push state are written; the PUT is in flight
+        try await r.wipe.wipe(.everything)      // Reset runs to its end meanwhile
+        hold.release()
+        #expect(await registration == .notPaired)
+        #expect(try r.vaultEmpty(), "no push state, key or material was written back after the wipe")
+    }
+
+    @Test func aPairingRacingAResetCommitsNothing() async throws {
+        let r = await HomeRig(paired: false)
+        let hold = HoldSender(r.hub, path: "/api/v1/session/channel")
+        let wipe = HubWipe(custody: r.custody, cache: r.cache)
+        let hub = r.hub, clock = r.clock
+        let pairing = HubPairingCoordinator(HubPairingConfig(custody: r.custody, verifier: HubVerifier(devMode: true), wall: clock,
+                                                              makeSender: { _ in hold }, wipe: wipe))
+        _ = await pairing.begin(link: hub.pairingLink)
+        async let result = pairing.complete(password: hub.password, totp: hub.totp, label: "Dev hub")
+        await hold.waitUntilHeld()              // the key is made and registered; the bind is in flight
+        try await wipe.wipe(.everything)
+        hold.release()
+        guard case .failed = await result else { Issue.record("a pairing that lost to a Reset must fail"); return }
+        #expect(try r.custody.pairedHubs().isEmpty && SecretVault(group: .keys, backend: r.backend).ids().isEmpty)
     }
 
     @Test func theJournalSurvivesInUserDefaults() throws {

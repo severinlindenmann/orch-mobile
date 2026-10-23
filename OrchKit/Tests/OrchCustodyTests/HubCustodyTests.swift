@@ -160,18 +160,18 @@ private func scalarFromSeed(_ seed: Data) -> Data {
     @Test func channelKeyCreateLoadDelete() throws {
         let (c, _) = make()
         #expect(throws: CustodyError.missing) { try c.loadChannelKey(hubID: hub) }
-        let s = try c.createChannelKey(hubID: hub)
+        let s = try c.createChannelKey(hubID: hub, work: .unguarded)
         #expect(try c.loadChannelKey(hubID: hub).publicKey == s.publicKey)
-        #expect(throws: CustodyError.alreadyExists) { try c.createChannelKey(hubID: hub) }
+        #expect(throws: CustodyError.alreadyExists) { try c.createChannelKey(hubID: hub, work: .unguarded) }
         try c.deleteChannelKey(hubID: hub)
         #expect(throws: CustodyError.missing) { try c.loadChannelKey(hubID: hub) }
-        #expect(throws: CustodyError.vault(.badName)) { try c.createChannelKey(hubID: "not-a-hub-id") }
+        #expect(throws: CustodyError.vault(.badName)) { try c.createChannelKey(hubID: "not-a-hub-id", work: .unguarded) }
     }
 
     @Test func hubItemsLiveInTheirOwnNamespaceAndGroups() throws {
         let (c, b) = make()
-        _ = try c.createChannelKey(hubID: hub); _ = try c.createPushKey(hubID: hub)
-        try c.putSessionToken("tok", hubID: hub); try c.putRecord(Data("r".utf8), hubID: hub)
+        _ = try c.createChannelKey(hubID: hub, work: .unguarded); _ = try c.createPushKey(hubID: hub, work: .unguarded)
+        try c.putSessionToken("tok", hubID: hub, work: .unguarded); try c.putRecord(Data("r".utf8), hubID: hub, work: .unguarded)
         let keyIDs = try SecretVault(group: .keys, backend: b).ids().map(\.purpose).sorted()
         let pushIDs = try SecretVault(group: .push, backend: b).ids().map(\.purpose)
         #expect(keyIDs == ["hub.\(hub).channel-key", "hub.\(hub).record", "hub.\(hub).session"])
@@ -186,8 +186,8 @@ private func scalarFromSeed(_ seed: Data) -> Data {
 
     @Test func aDirectModeWipeNeverRemovesTheHubPairing() throws {
         let (c, b) = make()
-        _ = try c.createChannelKey(hubID: hub); _ = try c.createPushKey(hubID: hub)
-        try c.putSessionToken("tok", hubID: hub); try c.putRecord(Data("r".utf8), hubID: hub)
+        _ = try c.createChannelKey(hubID: hub, work: .unguarded); _ = try c.createPushKey(hubID: hub, work: .unguarded)
+        try c.putSessionToken("tok", hubID: hub, work: .unguarded); try c.putRecord(Data("r".utf8), hubID: hub, work: .unguarded)
         let keys = SecretVault(group: .keys, backend: b), push = SecretVault(group: .push, backend: b)
         // a direct-mode device identity and workspace item in the same groups
         try keys.put(Data("dk".utf8), for: SecretID(realm: .live, purpose: "dk_sig"))
@@ -207,7 +207,7 @@ private func scalarFromSeed(_ seed: Data) -> Data {
 
     @Test func theHubPrefixIsReservedForTheHubPairing() throws {
         let (c, b) = make()
-        _ = try c.createChannelKey(hubID: hub)
+        _ = try c.createChannelKey(hubID: hub, work: .unguarded)
         let keys = SecretVault(group: .keys, backend: b)
         let direct = keys.scoped(to: .live)
         // the direct-mode view can neither create, read, replace nor remove a `hub.` item, with or without a workspace
@@ -224,13 +224,18 @@ private func scalarFromSeed(_ seed: Data) -> Data {
         #expect(try direct.get(purpose: "hubkey") == Data("x".utf8))
     }
 
+    @Test func theUnkeyedItemListIsBuiltFromThePurposeConstant() {
+        #expect(HubKeyCustody.unkeyedHubItems == [HubPushMaterial.purpose])
+        #expect(HubPushMaterial.purpose == "hub.push.material" && SecretVault.isHubItem(try! SecretID(realm: .live, purpose: HubPushMaterial.purpose)))
+    }
+
     @Test func theHubWipeTakesOnlyHubItemsAndRecordLast() throws {
         let (c, b) = make()
         let other = String(repeating: "cd", count: 16)
-        _ = try c.createChannelKey(hubID: hub); _ = try c.createPushKey(hubID: hub)
-        try c.putSessionToken("tok", hubID: hub); try c.putRecord(Data("r".utf8), hubID: hub)
+        _ = try c.createChannelKey(hubID: hub, work: .unguarded); _ = try c.createPushKey(hubID: hub, work: .unguarded)
+        try c.putSessionToken("tok", hubID: hub, work: .unguarded); try c.putRecord(Data("r".utf8), hubID: hub, work: .unguarded)
         // a second hub, a leftover of an interrupted pairing, a later task's item under the hub's prefix, and direct-mode items
-        _ = try c.createChannelKey(hubID: other)
+        _ = try c.createChannelKey(hubID: other, work: .unguarded)
         let keys = SecretVault(group: .keys, backend: b)
         try keys.put(Data("b".utf8), for: SecretID(realm: .live, purpose: "hub.\(hub).biometry-baseline"))
         try keys.put(Data("dk".utf8), for: SecretID(realm: .live, purpose: "dk_sig"))
@@ -263,13 +268,13 @@ private func scalarFromSeed(_ seed: Data) -> Data {
         #expect(throws: Refusal.malformed) { try opener.openPush(sealed: "AAAA", hubID: hub, channelID: ch, messageID: id) }
         // another recipient key cannot open it
         let (c, _) = make()
-        let other = try c.createPushKey(hubID: hub)
+        let other = try c.createPushKey(hubID: hub, work: .unguarded)
         #expect(throws: Refusal.malformed) { try other.openPush(sealed: ps["sealed"].str, hubID: hub, channelID: ch, messageID: id) }
     }
 
     @Test func pushKeyRoundTripsThroughTheVault() throws {
         let (c, _) = make()
-        let k = try c.createPushKey(hubID: hub)
+        let k = try c.createPushKey(hubID: hub, work: .unguarded)
         #expect(try c.loadPushKey(hubID: hub).publicKey == k.publicKey)
         try c.deletePushKey(hubID: hub)
         #expect(throws: CustodyError.missing) { try c.loadPushKey(hubID: hub) }

@@ -1,5 +1,6 @@
 import Foundation
 import OrchCustody
+import OrchPush
 
 // The wipe of the phone's hub pairing (design B6). One resumable operation for three triggers: Leave, a revoke the hub itself confirmed, and
 // Reset this iPhone. The intent is written to a journal BEFORE anything is deleted, every phase is idempotent, and the phase is persisted
@@ -62,6 +63,8 @@ public final class HubWipe: Sendable {
     private let journal: any HubWipeJournal
     private let quiesce: @Sendable (HubWipeScope) async -> Void
     private let hooks = Hooks()
+    /// The one wipe barrier (see `HubWorkBarrier`): closed when a wipe begins, open again when it has finished.
+    public let barrier: HubWorkBarrier
     private let steps: [HubWipeStep]
     private let running = Running()
 
@@ -91,7 +94,13 @@ public final class HubWipe: Sendable {
     public init(custody: HubKeyCustody, cache: any HubCacheStore, journal: any HubWipeJournal = InMemoryHubWipeJournal(),
                 quiesce: @escaping @Sendable (HubWipeScope) async -> Void = { _ in }, steps: [HubWipeStep] = []) {
         self.custody = custody; self.cache = cache; self.journal = journal; self.quiesce = quiesce; self.steps = steps
+        barrier = HubWorkBarrier(closed: journal.read() != nil)      // a wipe a killed run left blocks all hub work until it has finished
     }
+
+    /// A new unit of hub work: take it BEFORE the work starts (see `HubWorkBarrier`).
+    public func workToken() -> HubWorkToken { barrier.token() }
+    /// The token for a component that may have no wipe (tests): unguarded then.
+    public static func workToken(_ wipe: HubWipe?) -> HubWorkToken { wipe?.workToken() ?? .unguarded }
 
     /// A wipe was started and has not finished: nothing of this hub may be used or paired over until `resume` finishes it.
     public var pending: Bool { journal.read() != nil }
@@ -100,6 +109,7 @@ public final class HubWipe: Sendable {
     /// Writes the intent (synchronously, durable before any await). A wipe already pending is kept; `.everything` widens a pending hub wipe.
     /// Throws when the intent cannot be made durable: nothing is deleted then.
     public func begin(_ scope: HubWipeScope) throws {
+        barrier.close()                           // first: from here no hub write can succeed, whatever happens to the journal write
         let current = journal.read()
         switch (current?.scope, scope) {
         case (nil, _): try journal.write(HubWipeIntent(scope: scope, phase: Phase.begun))
@@ -145,6 +155,7 @@ public final class HubWipe: Sendable {
                 try advance(i, to: Phase.record)
             default:
                 journal.clear()
+                barrier.open()
             }
         }
     }

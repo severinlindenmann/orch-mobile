@@ -97,7 +97,7 @@ public actor HubPushCoordinator {
     private struct Paired { let record: HubPairingRecord; let held: HeldHubCard; let signer: HubChannelSigner }
 
     private func paired() -> Paired? {
-        guard !(cfg.wipe?.pending ?? false), let hubID = (try? cfg.custody.pairedHubs())?.first, let now = Optional(cfg.wall.nowMs),
+        guard let hubID = (try? cfg.custody.pairedHubs())?.first, let now = Optional(cfg.wall.nowMs),
               let record = try? HubPairingRecord.load(custody: cfg.custody, hubID: hubID, verifier: cfg.verifier, nowMs: now),
               let held = try? cfg.verifier.verifyCard(record.card, nowMs: now),
               let signer = try? cfg.custody.loadChannelKey(hubID: hubID), signer.channelID == record.channelID else { return nil }
@@ -107,20 +107,22 @@ public actor HubPushCoordinator {
     // MARK: push key and target
 
     /// Creates the push key if it does not exist and (re)writes `hub.push.material` (the extension's one item). Idempotent.
-    private func ensureMaterial(_ p: Paired) throws {
+    private func ensureMaterial(_ p: Paired, _ work: HubWorkToken) throws {
         let hubID = p.record.hubID
-        do { _ = try cfg.custody.loadPushKey(hubID: hubID) } catch CustodyError.missing { _ = try cfg.custody.createPushKey(hubID: hubID) }
+        do { _ = try cfg.custody.loadPushKey(hubID: hubID) } catch CustodyError.missing { _ = try cfg.custody.createPushKey(hubID: hubID, work: work) }
         if let m = try? cfg.custody.pushMaterial(), m.hubID == hubID, m.channelID == p.record.channelID, m.label == p.record.label,
            m.opener.publicKey == (try cfg.custody.loadPushKey(hubID: hubID)).publicKey { return }
-        try cfg.custody.publishPushMaterial(hubID: hubID, channelID: p.record.channelID, label: p.record.label)
+        try cfg.custody.publishPushMaterial(hubID: hubID, channelID: p.record.channelID, label: p.record.label, work: work)
     }
 
     /// After bind (and again whenever the APNs token changes, or at launch): publishes the extension's material, then
     /// `PUT /channels/{id}/push` with the channel-key-signed `hub.channel_push` (once; `null` afterwards) and the target.
     public func registerPush(_ target: HubPushTarget) async -> HubPushRegistration {
-        guard let p = paired() else { return .notPaired }
+        // the wipe barrier (HubWorkBarrier): taken before the work starts; the key, the material and the push state are written only through it
+        let work = HubWipe.workToken(cfg.wipe)
+        guard work.isValid, let p = paired() else { return .notPaired }
         let hubID = p.record.hubID
-        do { try ensureMaterial(p) } catch { return .custody }
+        do { try ensureMaterial(p, work) } catch { return work.isValid ? .custody : .notPaired }
         var state: HubPushState
         do { state = try cfg.custody.pushState(hubID: hubID) ?? HubPushState() } catch { return .custody }
         if state.keyRegistered, state.targetDigest == target.digest { return .unchanged }
@@ -137,14 +139,14 @@ public actor HubPushCoordinator {
                 do {
                     signed = try p.signer.pushKey(hubID: hubID, pushPub: opener.publicKey, nowMs: issued)
                     state.issuedMs = issued
-                    try cfg.custody.putPushState(state, hubID: hubID)
-                } catch { return .custody }
+                    try cfg.custody.putPushState(state, hubID: hubID, work: work)
+                } catch { return work.isValid ? .custody : .notPaired }
             }
             do {
                 try await api.registerPush(bearer: HubBearer(token), channelID: p.record.channelID, env: target.env, topic: target.topic,
                                            token: target.token, pushKey: signed)
                 state.keyRegistered = true; state.targetDigest = target.digest
-                do { try cfg.custody.putPushState(state, hubID: hubID) } catch { return .custody }
+                do { try cfg.custody.putPushState(state, hubID: hubID, work: work) } catch { return work.isValid ? .custody : .notPaired }
                 return .registered
             } catch HubAPIError.refused(let code, _) {
                 switch code {
@@ -167,7 +169,8 @@ public actor HubPushCoordinator {
         guard !running else { return .done(hints: [], dropped: 0) }
         running = true; defer { running = false }
         if isPaused { return .paused }
-        guard let p = paired() else { return .notPaired }
+        let work = HubWipe.workToken(cfg.wipe)        // the wipe barrier: the replay record is written only through it
+        guard work.isValid, let p = paired() else { return .notPaired }
         guard let relayURL = p.held.relayURL else { return .noRelay }
         guard let material = try? cfg.custody.pushMaterial() else { return .noMaterial }
         let relay: HubChannelRelay
@@ -179,9 +182,10 @@ public actor HubPushCoordinator {
         do {
             for entry in try await relay.list().prefix(Self.maxPerRun) {
                 try Task.checkCancellation()
+                try work.check()                              // a wipe began during an await: stop, keep the rest on the relay
                 guard let c = try await relay.get(entry.id) else { continue }
                 switch cfg.intake.accept(material: material, hubID: p.record.hubID, channelID: p.record.channelID, messageID: entry.id,
-                                         sealed: c, nowMs: cfg.wall.nowMs) {
+                                         sealed: c, nowMs: cfg.wall.nowMs, work: work) {
                 case .hint(let h): hints.append(h)
                 case .dropped(.capacity): dropped += 1; continue   // the replay state could not be written: keep the message for the next run
                 case .dropped: dropped += 1
@@ -194,6 +198,8 @@ public actor HubPushCoordinator {
             return .relayRevoked(await relayClaimedRevoked(p))
         } catch is CancellationError {
             return .done(hints: hints, dropped: dropped)
+        } catch HubWorkError.wipeInProgress {
+            return .notPaired
         } catch { return hints.isEmpty && dropped == 0 ? .network : .done(hints: hints, dropped: dropped) }
     }
 

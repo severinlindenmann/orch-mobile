@@ -21,10 +21,10 @@ final class HubResetTests: XCTestCase {
 
     private func pairedStores() throws -> Stores {
         let s = Stores()
-        _ = try s.custody.createChannelKey(hubID: hub)
-        _ = try s.custody.createPushKey(hubID: hub)
-        try s.custody.putSessionToken("tok", hubID: hub)
-        try s.custody.putRecord(Data("r".utf8), hubID: hub)
+        _ = try s.custody.createChannelKey(hubID: hub, work: .unguarded)
+        _ = try s.custody.createPushKey(hubID: hub, work: .unguarded)
+        try s.custody.putSessionToken("tok", hubID: hub, work: .unguarded)
+        try s.custody.putRecord(Data("r".utf8), hubID: hub, work: .unguarded)
         try s.cache.write(Data("{}".utf8), hubID: hub)
         return s
     }
@@ -104,7 +104,7 @@ final class HubResetTests: XCTestCase {
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: state.appendingPathComponent("replay.0.json"))
         let st = try pairedStores()
-        try st.custody.putPushState(HubPushState(issuedMs: 5, keyRegistered: true), hubID: hub)
+        try st.custody.putPushState(HubPushState(issuedMs: 5, keyRegistered: true), hubID: hub, work: .unguarded)
         let wipe = st.wipe(steps: [{ _ in HubPushIntake(pushDir: dir).purgeAll() }])
         try await wipe.wipe(.everything)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("state/hub").path))

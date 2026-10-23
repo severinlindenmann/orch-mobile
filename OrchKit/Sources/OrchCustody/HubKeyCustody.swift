@@ -11,7 +11,7 @@ import Security
 ///   on macOS), the channel session token (`session`) and the pairing record (`record`).
 /// - `.push` group (app and notification extension): the agreement-only push key (`push-key`).
 ///
-/// Nothing here can read a private key back.
+/// Nothing here can read a private key back. Every WRITE takes a `HubWorkToken` (the wipe barrier, `HubWorkBarrier`): a write after a hub wipe began is refused.
 public struct HubKeyCustody: Sendable {
     let keys: SecretVault
     let push: SecretVault
@@ -42,7 +42,7 @@ public struct HubKeyCustody: Sendable {
 
     // MARK: channel key
 
-    public func createChannelKey(hubID: String) throws -> HubChannelSigner {
+    public func createChannelKey(hubID: String, work: HubWorkToken) throws -> HubChannelSigner {
         let blob: Data, signer: any Signer, kind: CustodyKind
         #if targetEnvironment(simulator) || os(macOS)
         let k = P256.Signing.PrivateKey()
@@ -54,7 +54,7 @@ public struct HubKeyCustody: Sendable {
         catch { throw CustodyError.unavailable }
         blob = k.dataRepresentation; signer = try SecureEnclaveSigner(blob: blob); kind = .secureEnclave
         #endif
-        try map { try keys.putNew(blob, for: try id(hubID, .channelKey)) }
+        try work.perform { try map { try keys.putNew(blob, for: try id(hubID, .channelKey)) } }
         return HubChannelSigner(signer: signer, custody: kind)
     }
 
@@ -73,9 +73,9 @@ public struct HubKeyCustody: Sendable {
 
     // MARK: push key
 
-    public func createPushKey(hubID: String) throws -> HubPushOpener {
+    public func createPushKey(hubID: String, work: HubWorkToken) throws -> HubPushOpener {
         let k = P256.KeyAgreement.PrivateKey()
-        try map { try push.putNew(k.rawRepresentation, for: try id(hubID, .pushKey)) }
+        try work.perform { try map { try push.putNew(k.rawRepresentation, for: try id(hubID, .pushKey)) } }
         return try HubPushOpener(raw: k.rawRepresentation)
     }
 
@@ -91,10 +91,10 @@ public struct HubKeyCustody: Sendable {
 
     /// Writes `hub.push.material` for the paired channel: the hub and channel ids, the label and the push key (read back from the `.push`
     /// group here, so the key is never handed around). One atomic `put`; the extension sees the old item or the new one, never half.
-    public func publishPushMaterial(hubID: String, channelID: String, label: String) throws {
+    public func publishPushMaterial(hubID: String, channelID: String, label: String, work: HubWorkToken) throws {
         let material = try HubPushMaterial(hubID: hubID, channelID: channelID, label: label, opener: try loadPushKey(hubID: hubID))
         let item = try SecretID(realm: realm, purpose: HubPushMaterial.purpose)
-        try map { try push.put(try material.encoded(), for: item) }
+        try work.perform { try map { try push.put(try material.encoded(), for: item) } }
     }
 
     public func pushMaterial() throws -> HubPushMaterial? {
@@ -118,11 +118,15 @@ public struct HubKeyCustody: Sendable {
         return s
     }
 
-    public func putPushState(_ state: HubPushState, hubID: String) throws { try map { try keys.put(try state.encoded(), for: try id(hubID, .pushState)) } }
+    public func putPushState(_ state: HubPushState, hubID: String, work: HubWorkToken) throws {
+        try work.perform { try map { try keys.put(try state.encoded(), for: try id(hubID, .pushState)) } }
+    }
 
     // MARK: channel session token (only ever in .keys, never in .push, a file or UserDefaults)
 
-    public func putSessionToken(_ token: String, hubID: String) throws { try map { try keys.put(Data(token.utf8), for: try id(hubID, .session)) } }
+    public func putSessionToken(_ token: String, hubID: String, work: HubWorkToken) throws {
+        try work.perform { try map { try keys.put(Data(token.utf8), for: try id(hubID, .session)) } }
+    }
     public func sessionToken(hubID: String) throws -> String? {
         try read(keys, hubID, .session).map { String(decoding: $0, as: UTF8.self) }
     }
@@ -131,13 +135,17 @@ public struct HubKeyCustody: Sendable {
     // MARK: the biometry baseline (design B3, R2): `evaluatedPolicyDomainState` at pairing. It is not a secret, but it is what makes a
     // changed set of faces mean "sign in again", so it lives with the session token in the app-only `.keys` group.
 
-    package func putBiometryBaseline(_ state: Data, hubID: String) throws { try map { try keys.put(state, for: try id(hubID, .biometry)) } }
+    package func putBiometryBaseline(_ state: Data, hubID: String, work: HubWorkToken) throws {
+        try work.perform { try map { try keys.put(state, for: try id(hubID, .biometry)) } }
+    }
     public func biometryBaseline(hubID: String) throws -> Data? { try read(keys, hubID, .biometry) }
     public func deleteBiometryBaseline(hubID: String) throws { try map { try keys.delete(try id(hubID, .biometry)) } }
 
     // MARK: the pairing record (what the phone verified: card, origin, user, channel, certificate)
 
-    public func putRecord(_ data: Data, hubID: String) throws { try map { try keys.put(data, for: try id(hubID, .record)) } }
+    public func putRecord(_ data: Data, hubID: String, work: HubWorkToken) throws {
+        try work.perform { try map { try keys.put(data, for: try id(hubID, .record)) } }
+    }
     public func record(hubID: String) throws -> Data? { try read(keys, hubID, .record) }
     public func deleteRecord(hubID: String) throws { try map { try keys.delete(try id(hubID, .record)) } }
 
@@ -148,7 +156,7 @@ public struct HubKeyCustody: Sendable {
     }
 
     /// Hub items that carry no hub id in their name (V3 has one hub): `hub.push.material` (B4). A wipe of one hub removes them too.
-    static let unkeyedHubItems: Set<String> = ["hub.push.material"]
+    static let unkeyedHubItems: Set<String> = [HubPushMaterial.purpose]
 
     /// Every hub item in this custody, in both groups: of one hub, or of all (`hubID == nil`, Reset this iPhone). It lists the vault instead of
     /// naming the items, so an item a later task adds under `hub.<hub_id>.` (the push material, the biometry baseline) is wiped too, and a

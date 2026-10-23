@@ -169,6 +169,7 @@ public actor HubSignSession {
     /// the digest computed from the held `ctx`, and sends it. Takes the prepared id and nothing else: the signed bytes are the ones this
     /// instance rendered.
     public func confirm(preparedID: String) async throws -> HubSignReceipt {
+        let work = HubWipe.workToken(cfg.wipe)       // the wipe barrier (HubWorkBarrier): taken before the first await, re-checked after each
         guard var held = live[preparedID], !held.confirming else { throw HubSignFailure.notLive }
         held.confirming = true; live[preparedID] = held
         var proofMade = false
@@ -186,7 +187,7 @@ public actor HubSignSession {
             throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue)
         }
         // Cancel is structural (L2-B3-1): every step re-checks that this attempt is still live (not discarded) and not cancelled.
-        func stillLive() throws { if live[preparedID] == nil || Task.isCancelled || (cfg.wipe?.pending ?? false) { throw HubSignFailure.notLive } }
+        func stillLive() throws { if live[preparedID] == nil || Task.isCancelled || !work.isValid { throw HubSignFailure.notLive } }
         try stillLive()
         // 2. Face ID, biometry only; a changed set of faces drops the session
         do {
@@ -281,7 +282,7 @@ public actor HubSignSession {
     // MARK: pairing, session, errors
 
     private func context() throws -> (Bindings, HubAPI, HubBearer) {
-        if cfg.wipe?.pending ?? false { throw HubSignFailure.notPaired }
+        if !HubWipe.workToken(cfg.wipe).isValid { throw HubSignFailure.notPaired }      // the wipe barrier (HubWorkBarrier)
         let now = cfg.wall.nowMs
         let record: HubPairingRecord, cert: HubChannelCert
         do {

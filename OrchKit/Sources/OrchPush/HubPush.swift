@@ -82,13 +82,18 @@ public struct HubPushIntake: Sendable {
 
     /// Protocol 10.8.2: the phone opens a hint only when `hub` and `ch` are its own pairing's, the seal opens, `ts_ms` is within
     /// [now - 24 h, now + 300 s] and the `id` was not handled before.
-    public func accept(material: HubPushMaterial, hubID: String, channelID: String, messageID: String, sealed: String, nowMs: Int64) -> Verdict {
+    ///
+    /// The replay record is hub-scoped state: it is written under the wipe barrier (`work`). After a wipe began nothing is recorded and the answer
+    /// is `.dropped(.capacity)` ("keep the message"). The notification extension passes `.unguarded` (it holds no session; the wipe deletes the
+    /// material it needs to open anything).
+    public func accept(material: HubPushMaterial, hubID: String, channelID: String, messageID: String, sealed: String, nowMs: Int64,
+                       work: HubWorkToken) -> Verdict {
         guard hubID == material.hubID, channelID == material.channelID, let channel = ID16(hex: channelID) else { return .dropped(.noKey) }
         let hint: HubPushHint
         do { hint = try material.opener.openPush(sealed: sealed, hubID: hubID, channelID: channelID, messageID: messageID) }
         catch { return .dropped(.tag) }
         do {
-            return try store.transact(workspace: channel, generation: 0, nowMs: nowMs) { current -> (Verdict, PushProcessor.WorkspaceReplay?) in
+            return try work.perform { try store.transact(workspace: channel, generation: 0, nowMs: nowMs) { current -> (Verdict, PushProcessor.WorkspaceReplay?) in
                 let state = current.pruned()
                 if hint.tsMs <= state.notBeforeTs { return (.dropped(.replay), state) }
                 if let why = PushProcessor.checkTimestamp(tsMs: hint.tsMs, nowMs: nowMs, floorNowMs: state.maxShownTs, lastShown: state.last(id: messageID)) {
@@ -97,7 +102,7 @@ public struct HubPushIntake: Sendable {
                 let advanced = state.recording(messageID, hint.tsMs)
                 if state.last(id: messageID) == nil, advanced.lastShown.count > PushProcessor.maxEntriesPerWorkspace { return (.dropped(.capacity), state) }
                 return (.hint(hint), advanced)
-            }
+            } }
         } catch { return .dropped(.capacity) }
     }
 

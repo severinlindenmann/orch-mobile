@@ -23,15 +23,13 @@ final class HubPushDriver {
     @ObservationIgnored private var running = false
     @ObservationIgnored private let runtime: HubRuntime
 
-    /// A wipe is running or has run: nothing registers or fetches until the next foreground finds no wipe pending (B6 quiesce).
-    @ObservationIgnored private var quiesced = false
-
     init(runtime: HubRuntime = .shared) {
         self.runtime = runtime
         runtime.wipe.onQuiesce { [weak self] _ in await self?.quiesce() }
     }
 
-    private func quiesce() { quiesced = true; poll?.cancel(); poll = nil }
+    /// Phase 1 of a wipe: stop polling. What is already running is stopped by the wipe barrier (`HubWorkToken`), not by a flag here.
+    private func quiesce() { poll?.cancel(); poll = nil }
 
     /// The APNs target to register: the stored token of a real device. The Simulator has no APNs: it registers a stable placeholder so the hub
     /// still seals hints and leaves them in the mailbox, which the catch-up reads (the Simulator push path).
@@ -47,13 +45,11 @@ final class HubPushDriver {
 
     /// After a successful pairing, and whenever iOS hands over a token.
     func registerPush() async {
-        if quiesced, !runtime.wipe.pending { quiesced = false }       // a new pairing after a Leave
         guard let t = target() else { return }
         _ = await runtime.push.registerPush(t)
     }
 
     func foreground() {
-        if quiesced, !runtime.wipe.pending { quiesced = false }
         poll?.cancel()
         poll = Task { [weak self] in
             while !Task.isCancelled {
@@ -69,9 +65,11 @@ final class HubPushDriver {
     func pushArrived() { Task { await tick() } }
 
     func tick() async {
-        guard !running, !quiesced else { return }
+        let work = runtime.wipe.workToken()          // the wipe barrier (HubWorkBarrier): a unit of work is one tick
+        guard !running, work.isValid else { return }
         running = true; defer { running = false }
         await registerPush()
+        guard work.isValid else { return }           // a wipe began during the registration: no catch-up
         let r = await runtime.push.catchUp()
         lastCatchUp = r
         if case .done(let hints, _) = r, !hints.isEmpty { hintTick += 1 }

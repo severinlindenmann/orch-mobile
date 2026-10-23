@@ -131,7 +131,8 @@ public struct PushHandler: Sendable {
         let mat: HubPushMaterial
         do { guard let m = try source.load() else { return generic(.droppedNoMaterial) }; mat = m } catch { return generic(.droppedNoMaterial) }
         let verdict = HubPushIntake(pushDir: pushDir).accept(material: mat, hubID: outer.hubID, channelID: outer.channelID,
-                                                             messageID: outer.messageID, sealed: outer.sealed, nowMs: nowMs)
+                                                             messageID: outer.messageID, sealed: outer.sealed, nowMs: nowMs,
+                                                             work: .unguarded)    // the extension has no session; see HubWorkBarrier
         switch verdict {
         case .hint(let hint): return Result(presentation: .hubHint(hint.type, label: mat.label), outcome: .shown)
         case .dropped(let why): return generic(NSEMarker.Outcome(drop: why))

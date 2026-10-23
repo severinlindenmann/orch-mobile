@@ -237,7 +237,7 @@ private final class GateSender: RequestSender, @unchecked Sendable {
 
     @Test func aLeftoverKeyOfAnInterruptedPairingIsReplaced() async throws {
         let rig = Rig()
-        let old = try rig.custody.createChannelKey(hubID: rig.hub.hubID)
+        let old = try rig.custody.createChannelKey(hubID: rig.hub.hubID, work: .unguarded)
         _ = try #require(await rig.confirm())
         guard case .paired(let s) = await rig.coordinator.complete(password: rig.hub.password, totp: rig.hub.totp, label: "Dev hub") else {
             Issue.record("not paired"); return

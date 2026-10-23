@@ -105,7 +105,7 @@ private struct Rig {
         _ = await rig.coordinator.registerPush(Rig.target)
         let first = try #require(rig.hub.heldPushIssuedMs(channelID: rig.channelID))
         // the phone forgets that the hub holds the key (state lost): it signs again, with the same clock, and must still be newer
-        try rig.custody.putPushState(HubPushState(issuedMs: 0, keyRegistered: false), hubID: rig.hub.hubID)
+        try rig.custody.putPushState(HubPushState(issuedMs: 0, keyRegistered: false), hubID: rig.hub.hubID, work: .unguarded)
         let other = HubPushTarget(env: .sandbox, token: B64U.encode(Data(repeating: 3, count: 32)))
         #expect(await rig.coordinator.registerPush(other) == .registered)
         #expect(try #require(rig.hub.heldPushIssuedMs(channelID: rig.channelID)) > first)
