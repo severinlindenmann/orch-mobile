@@ -119,8 +119,12 @@ import SwiftUI
 /// Owns the launch-argument model for the life of the view (a computed `root` would rebuild it on every body pass).
 struct HubLaunchRoot: View {
     @State private var model = HubLaunch.homeScript() == nil ? (HubLaunch.model() ?? HubPairingModel.live()) : nil
+    /// `--hub-pair` on the real stack: after "Done" the home of the hub just paired (the Simulator lane, one launch from pairing to list).
+    @State private var home = false
     var body: some View {
-        if let script = HubLaunch.homeScript() { HubHomeLaunchRoot(script: script) } else if let model { HubPairingScreen(model: model) }
+        if let script = HubLaunch.homeScript() { HubHomeLaunchRoot(script: script) }
+        else if home { HubHomeScreen() }
+        else if let model { HubPairingScreen(model: model, onDone: ProcessInfo.processInfo.arguments.contains("--hub-pair") ? { home = true } : nil) }
     }
 }
 #endif
