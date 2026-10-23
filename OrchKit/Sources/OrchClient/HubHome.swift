@@ -25,13 +25,26 @@ public enum HubHomeState: Sendable, Equatable {
     case offline(HubSnapshot?)
     /// The 12 h session is over (or the hub no longer knows it): still paired, sign in again. The cache is dropped.
     case signedOut
-    /// The hub says this channel is revoked or its certificate expired: the cache is dropped; B6 wipes and offers to pair again.
+    /// The hub itself said this channel is revoked or its certificate expired (an authenticated answer), or the certificate ran out by the
+    /// phone's own clock. The cache is dropped; for the hub's answer the pairing is wiped (B6), and "Pair again" starts a new one. After a
+    /// local expiry nothing is wiped until the person chooses "Pair again" (`pairAgain`): a wrong clock must not wipe a good phone.
     case revoked
     /// The sign-in again did not work; the phone is unchanged (still signed out, nothing kept).
     case signInFailed(HubSignInFailure)
 }
 
 public enum HubSignInFailure: Sendable, Equatable { case badCredentials, rateLimited, network, refused, verification }
+
+/// How a Leave ended (B6).
+public enum HubLeaveOutcome: Sendable, Equatable {
+    /// There was no pairing to leave.
+    case notPaired
+    /// The pairing is wiped. `revokedAtHub` says whether the hub confirmed the revoke; when it did not, the person is told to ask the hub
+    /// admin to remove this iPhone (the key is gone either way).
+    case left(revokedAtHub: Bool)
+    /// The wipe did not finish; it resumes at the next launch.
+    case incomplete
+}
 
 public enum HubItemResult: Sendable, Equatable {
     case detail(HubItemDetail)
@@ -48,6 +61,7 @@ public actor HubHomeCoordinator {
     private let wall: any WallClock
     private let makeSender: @Sendable (String) throws -> any RequestSender
     private let cache: any HubCacheStore
+    private let wipe: HubWipe
     public private(set) var state: HubHomeState = .notPaired
     private var generation = 0
     private var refreshing: (id: Int, task: Task<HubHomeState, Never>)?
@@ -55,15 +69,17 @@ public actor HubHomeCoordinator {
     private var signingIn = false
 
     public init(custody: HubKeyCustody, cache: any HubCacheStore, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
-                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make) {
+                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make, wipe: HubWipe? = nil) {
         self.custody = custody; self.cache = cache; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender
+        self.wipe = wipe ?? HubWipe(custody: custody, cache: cache)
     }
 
     // MARK: restore and refresh
 
     /// What can be shown without the network: the cached lists of the paired hub, read-only (never when the session is over). Call at
     /// launch, then `refresh()`.
-    public func restore() -> HubHomeState {
+    public func restore() async -> HubHomeState {
+        if let s = await finishPendingWipe() { state = s; return s }
         switch context() {
         case .end(let s): state = s
         case .ok(let ctx): state = .offline(cached(ctx))
@@ -85,6 +101,7 @@ public actor HubHomeCoordinator {
     }
 
     private func runRefresh() async -> HubHomeState {
+        if let s = await finishPendingWipe() { return s }
         generation += 1
         let mine = generation
         let ctx: Context
@@ -101,8 +118,64 @@ public actor HubHomeCoordinator {
             return set(.live(snap), mine)
         } catch {
             guard mine == generation else { return state }
-            return set(classify(error, ctx), mine)
+            let s = classify(error, ctx)
+            if s == .revoked { await wipeAfterHubRevoke(ctx.record); state = .revoked; return .revoked }
+            return set(s, mine)
         }
+    }
+
+    /// A wipe an earlier run did not finish is finished before anything else (nothing of a half-wiped hub is used). Nil: nothing pending, or
+    /// it finished. `.revoked`: it could not finish (the pairing is not usable; "Pair again" retries).
+    private func finishPendingWipe() async -> HubHomeState? {
+        guard wipe.pending else { return nil }
+        generation += 1
+        refreshing?.task.cancel()
+        do { try await wipe.resume() } catch { return .revoked }
+        return nil
+    }
+
+    /// The hub's own authenticated answer (`channel_revoked` or `cert_expired` to a channel-session request or to a bind) wipes the pairing,
+    /// the cache included (R3: a revoked phone may be a stolen phone). Only the pairing the answer was about: if the stored channel is no longer
+    /// `record`'s (the person paired again meanwhile), a late answer wipes nothing. A relay's answer never gets here (L2B-2).
+    private func wipeAfterHubRevoke(_ record: HubPairingRecord) async {
+        guard let stored = try? custody.record(hubID: record.hubID), let now = try? HubPairingRecord.decode(stored),
+              now.channelID == record.channelID else { return }
+        generation += 1
+        refreshing?.task.cancel()
+        cache.remove(hubID: record.hubID)
+        try? await wipe.wipe(.hub(record.hubID))      // a failure leaves the journal: the next launch (or `pairAgain`) finishes it
+    }
+
+    // MARK: leave and pair again (B6)
+
+    /// Leave the hub: ask the hub to revoke this phone's channel (its own channel session, its own channel), then wipe whatever the answer. A
+    /// failed revoke is reported (`revokedAtHub: false`); the keys are gone either way. The cache goes first so nothing is shown while it runs.
+    public func leave() async -> HubLeaveOutcome {
+        if wipe.pending { _ = await finishPendingWipe() }
+        guard let hubID = (try? custody.pairedHubs())?.first else { state = .notPaired; return .notPaired }
+        generation += 1                          // an in-flight refresh must not write the cache back, nor sign anything on
+        refreshing?.task.cancel(); refreshing = nil
+        cache.remove(hubID: hubID)
+        var revoked = false
+        if let data = try? custody.record(hubID: hubID), let rec = try? HubPairingRecord.decode(data), rec.hubID == hubID,
+           let token = (try? custody.sessionToken(hubID: hubID)) ?? nil, let api = try? rec.api(makeSender: makeSender) {
+            do { try await api.revokeChannel(HubBearer(token), channelID: rec.channelID); revoked = true }
+            catch HubAPIError.refused(let code, _) where code == "channel_revoked" { revoked = true }     // already revoked: nothing to ask
+            catch {}
+        }
+        do { try await wipe.wipe(.hub(hubID)) } catch { state = .revoked; return .incomplete }
+        state = .notPaired
+        return .left(revokedAtHub: revoked)
+    }
+
+    /// "Pair again" after `.revoked`: removes what is left of the old pairing (after a local certificate expiry nothing was wiped yet), so a
+    /// new pairing starts clean. The person chose this, so it needs no hub answer. Returns `.notPaired` when pairing may start.
+    public func pairAgain() async -> HubHomeState {
+        generation += 1
+        refreshing?.task.cancel(); refreshing = nil
+        if let hubID = (try? custody.pairedHubs())?.first { try? await wipe.wipe(.hub(hubID)) } else { try? await wipe.resume() }
+        state = ((try? custody.pairedHubs())?.isEmpty ?? false) && !wipe.pending ? .notPaired : .revoked
+        return state
     }
 
     /// The relay says this channel is revoked. Its answer is not signed (L2B-2), so it never wipes: stop trusting the cache at once, then
@@ -112,7 +185,7 @@ public actor HubHomeCoordinator {
     public func relayReportsRevoked() async -> HubHomeState {
         generation += 1                       // an in-flight refresh must not write the cache back
         if let hubID = try? custody.pairedHubs().first { cache.remove(hubID: hubID) }
-        state = .offline(nil)
+        state = .offline(nil)           // (B6) the pairing stays; only an answer from the hub itself can wipe it
         refreshing?.task.cancel()
         refreshing = nil
         return await refresh()
@@ -169,7 +242,7 @@ public actor HubHomeCoordinator {
             if let p = pairing { await api.signOut(p) }
             switch error {
             case HubAPIError.refused(let code, _) where code == "channel_revoked" || code == "cert_expired":
-                cache.remove(hubID: hubID); state = .revoked
+                cache.remove(hubID: hubID); await wipeAfterHubRevoke(record); state = .revoked
             case HubAPIError.refused(let code, _): state = .signInFailed(code == "bad_credentials" ? .badCredentials : code == "rate_limited" ? .rateLimited : .refused)
             case HubAPIError.network: state = .signInFailed(.network)
             case is CustodyError: state = .signInFailed(.verification)
@@ -196,6 +269,7 @@ public actor HubHomeCoordinator {
             return .refused(code: code)
         } catch {
             let s = classify(error, ctx)
+            if s == .revoked { await wipeAfterHubRevoke(ctx.record) }
             generation += 1
             state = s
             if case .offline = s { return .offline }

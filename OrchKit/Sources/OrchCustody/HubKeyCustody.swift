@@ -106,7 +106,36 @@ public struct HubKeyCustody: Sendable {
             .map { String($0.purpose.dropFirst(4).dropLast(7)) }
     }
 
-    /// Removes everything of one hub in this custody (used on a failed pairing and by the wipe of B6). Each delete is tried; the first
+    /// Every hub item in this custody, in both groups: of one hub, or of all (`hubID == nil`, Reset this iPhone). It lists the vault instead of
+    /// naming the items, so an item a later task adds under `hub.<hub_id>.` (the push material, the biometry baseline) is wiped too, and a
+    /// leftover of an interrupted pairing with no record is not forgotten.
+    func hubItems(_ hubID: String?) throws -> [(vault: SecretVault, id: SecretID)] {
+        if let hubID, Hex.decode(hubID, length: 16) == nil { throw VaultError.badName }
+        let prefix = hubID.map { "hub.\($0)." } ?? "hub."
+        var out: [(SecretVault, SecretID)] = []
+        for v in [keys, push] {
+            for id in try map({ try v.ids() }) where id.realm == realm && id.ws == nil && id.purpose.hasPrefix(prefix) { out.append((v, id)) }
+        }
+        return out
+    }
+
+    /// The wipe of B6, in two parts so the record (what makes the phone paired) goes last: first everything but `record`, then the record.
+    /// Each delete is tried and the first error rethrown after all were attempted. Idempotent.
+    public func deleteSecrets(hubID: String?) throws {
+        try deleteItems(hubID: hubID) { !$0.purpose.hasSuffix(".record") }
+    }
+    public func deleteRecords(hubID: String?) throws {
+        try deleteItems(hubID: hubID) { $0.purpose.hasSuffix(".record") }
+    }
+    private func deleteItems(hubID: String?, where pick: (SecretID) -> Bool) throws {
+        var first: Error?
+        for (v, id) in try hubItems(hubID) where pick(id) {
+            do { try map { try v.delete(id) } } catch { first = first ?? error }
+        }
+        if let first { throw first }
+    }
+
+    /// Removes the known items of one hub in this custody (used on a failed pairing; the wipe of B6 uses `deleteSecrets`/`deleteRecords`). Each delete is tried; the first
     /// error is rethrown after all were attempted.
     public func deleteAll(hubID: String) throws {
         var first: Error?

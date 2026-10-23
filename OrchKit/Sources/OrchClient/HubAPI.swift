@@ -109,6 +109,12 @@ public struct HubAPI: Sendable {
         return Bound(bearer: HubBearer(t), userID: u, channelID: c, expiresMs: e, channelCert: cert, card: card)
     }
 
+    /// `POST /channels/{channel_id}/revoke` (channel session, its own channel only; permanent). A pairing session may not call it.
+    public func revokeChannel(_ bearer: HubBearer, channelID: String) async throws {
+        guard Hex.decode(channelID, length: 16) != nil else { throw HubAPIError.badReply }
+        _ = try await call("POST", "/channels/\(channelID)/revoke", bearer: bearer)
+    }
+
     // MARK: the person's home (channel session; design B2)
 
     /// `GET /me/workspaces`: the workspaces this user has a part in, with role, mode and whether the host is online.

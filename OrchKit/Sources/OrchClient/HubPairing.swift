@@ -111,10 +111,12 @@ public struct HubPairingConfig: Sendable {
     public let wall: any WallClock
     /// A sender bound to exactly the origin it is given (production: `HubSenders.make`).
     public let makeSender: @Sendable (String) throws -> any RequestSender
+    /// The hub wipe (B6): while one is unfinished no pairing starts (a new key would be deleted by the resuming wipe).
+    public let wipe: HubWipe?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
-                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make) {
-        self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender
+                makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make, wipe: HubWipe? = nil) {
+        self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.wipe = wipe
     }
 }
 
@@ -162,6 +164,7 @@ public actor HubPairingCoordinator {
         catch { return finish(mine, .failed(.badLink)) }
         do {
             guard try cfg.custody.pairedHubs().isEmpty else { return finish(mine, .failed(.alreadyPaired)) }
+            guard !(cfg.wipe?.pending ?? false) else { return finish(mine, .failed(.custody)) }
             let api = try HubAPI(origin: link.api, sender: try cfg.makeSender(link.api))
             let answer = try await api.hubCard()
             guard mine == generation else { return state }
@@ -189,7 +192,22 @@ public actor HubPairingCoordinator {
         // Rollback removes only what THIS attempt made, and only while it is still the current attempt: a cancelled attempt that wakes up
         // later must not touch its successor's key, token or record (L2-B1-2).
         var ownKey: HubChannelSigner?
+        // A channel the hub already registered for our key (L2-B1-3): a failure after that point leaves it registered at the hub, and, once
+        // bound, a 12 h channel session. Both are ended on failure, best effort.
+        var registeredChannel: String?
+        var channelSession: HubBearer?
         func rollback() async {
+            // the hub first, while the key can still sign: a pairing session may not revoke, so an unbound channel is bound (with the key
+            // that registered it) to get a channel session, which may revoke its own channel and sign out
+            if let ch = registeredChannel, let k = ownKey {
+                if channelSession == nil, let ps = pairingSession,
+                   let auth = try? k.channelAuth(hubID: hubID, userID: p.link.userID, sessionToken: ps.token, nowMs: cfg.wall.nowMs),
+                   let bound = try? await p.api.bindChannel(bearer: ps, auth: auth), bound.channelID == ch { channelSession = bound.bearer }
+                if let cs = channelSession {
+                    try? await p.api.revokeChannel(cs, channelID: ch)
+                    await p.api.signOut(cs)
+                }
+            }
             if mine == generation {
                 if let k = ownKey, (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == k.channelID,
                    (try? cfg.custody.record(hubID: hubID)) == nil { try? cfg.custody.deleteAll(hubID: hubID) }
@@ -208,6 +226,7 @@ public actor HubPairingCoordinator {
             // 2. the channel key (a leftover key of an interrupted pairing has no record and is replaced)
             state = .working(.creatingKey)
             guard try cfg.custody.record(hubID: hubID) == nil, try cfg.custody.pairedHubs().isEmpty else { throw HubPairingFailure.alreadyPaired }
+            guard !(cfg.wipe?.pending ?? false) else { throw HubPairingFailure.custody }
             let signer: HubChannelSigner
             do {
                 try? cfg.custody.deleteChannelKey(hubID: hubID)   // a leftover key of an interrupted pairing (no record) is replaced
@@ -219,6 +238,7 @@ public actor HubPairingCoordinator {
             guard mine == generation else { await rollback(); return state }
             let challenge = try cfg.verifier.checkRegistrationChallenge(begun.challenge, challengeID: begun.challengeID, hubID: hubID,
                                                                         userID: p.link.userID, ownKey: signer.publicKey, nowMs: cfg.wall.nowMs)
+            registeredChannel = signer.channelID          // from this request on the hub may hold a certificate for our key
             let certJSON = try await p.api.registerComplete(bearer: signedIn.bearer, challengeID: begun.challengeID,
                                                             signed: try signer.register(challenge))
             let cert = try cfg.verifier.verifyChannelCert(certJSON, held: p.held, nowMs: cfg.wall.nowMs)
@@ -227,6 +247,7 @@ public actor HubPairingCoordinator {
             state = .working(.binding)
             let auth = try signer.channelAuth(hubID: hubID, userID: p.link.userID, sessionToken: signedIn.bearer.token, nowMs: cfg.wall.nowMs)
             let bound = try await p.api.bindChannel(bearer: signedIn.bearer, auth: auth)
+            channelSession = bound.bearer
             guard mine == generation else { await rollback(); return state }
             let now = cfg.wall.nowMs
             guard bound.userID == p.link.userID, bound.channelID == signer.channelID else { throw Refusal.otherUser }

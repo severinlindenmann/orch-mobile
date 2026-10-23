@@ -5,7 +5,7 @@ import OrchProtocol
 import Testing
 @testable import OrchClient
 
-private final class Clock: WallClock, @unchecked Sendable {
+final class HomeClock: WallClock, @unchecked Sendable {
     private let lock = NSLock()
     private var ms: Int64 = 1_790_000_000_000
     var nowMs: Int64 { lock.withLock { ms } }
@@ -56,34 +56,34 @@ private final class OriginLog: @unchecked Sendable {
     var all: [String] { lock.withLock { items } }
 }
 
-private struct Rig {
+struct HomeRig {
     let hub: FakeHub
-    let clock = Clock()
+    let clock = HomeClock()
     let backend = InMemoryVaultBackend()
     let custody: HubKeyCustody
     let cache = InMemoryHubCache()
     let home: HubHomeCoordinator
 
-    init(paired: Bool = true, seed: Bool = true, home makeHome: ((HubKeyCustody, InMemoryHubCache, Clock, FakeHub) -> HubHomeCoordinator)? = nil) async {
+    init(paired: Bool = true, seed: Bool = true, home makeHome: ((HubKeyCustody, InMemoryHubCache, HomeClock, FakeHub) -> HubHomeCoordinator)? = nil) async {
         let clock = self.clock
         let h = FakeHub(origin: "https://hub.dev.orch.example", wall: clock)
         hub = h
         if seed { h.seedHome() }
         custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
-        home = makeHome?(custody, cache, clock, h) ?? Rig.makeHome(custody, cache, clock, h)
+        home = makeHome?(custody, cache, clock, h) ?? HomeRig.makeHome(custody, cache, clock, h)
         if paired {
-            let pairing = HubPairingCoordinator(Rig.pairingConfig(custody, clock, h))
+            let pairing = HubPairingCoordinator(HomeRig.pairingConfig(custody, clock, h))
             _ = await pairing.begin(link: h.pairingLink)
             let r = await pairing.complete(password: h.password, totp: h.totp, label: "Dev hub")
             guard case .paired = r else { fatalError("rig could not pair: \(r)") }
         }
     }
 
-    static func pairingConfig(_ c: HubKeyCustody, _ clock: Clock, _ h: FakeHub) -> HubPairingConfig {
+    static func pairingConfig(_ c: HubKeyCustody, _ clock: HomeClock, _ h: FakeHub) -> HubPairingConfig {
         HubPairingConfig(custody: c, verifier: HubVerifier(devMode: true), wall: clock, makeSender: { o in guard o == h.origin else { throw TransportError.disconnected }; return h })
     }
 
-    static func makeHome(_ c: HubKeyCustody, _ cache: any HubCacheStore, _ clock: Clock, _ h: FakeHub) -> HubHomeCoordinator {
+    static func makeHome(_ c: HubKeyCustody, _ cache: any HubCacheStore, _ clock: HomeClock, _ h: FakeHub) -> HubHomeCoordinator {
         HubHomeCoordinator(custody: c, cache: cache, verifier: HubVerifier(devMode: true), wall: clock,
                            makeSender: { o in guard o == h.origin else { throw TransportError.disconnected }; return h })
     }
@@ -94,14 +94,14 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
 
 @Suite struct HubHomeTests {
     @Test func notPairedUntilThereIsARecord() async {
-        let r = await Rig(paired: false)
+        let r = await HomeRig(paired: false)
         #expect(await r.home.refresh() == .notPaired)
         #expect(await r.home.restore() == .notPaired)
         #expect(r.hub.log.isEmpty)
     }
 
     @Test func liveListsComeFromTheHubThroughTheChannelSession() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         let before = r.hub.log.count
         let snap = try #require(live(await r.home.refresh()))
         #expect(snap.workspaces.map(\.name) == ["Platform", "Billing", "Acme (shared)"])
@@ -116,7 +116,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func selectiveRowsAreNeverSignableAndNeedsYouIsSummaryOnly() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         r.hub.needsYouRows[2] = FakeHub.needsRow(ws: FakeHub.wsShared, mode: "selective", item: "s1", kind: "ticket", title: "x", signable: true)
         let snap = try #require(live(await r.home.refresh()))
         let shared = snap.rows(in: FakeHub.wsShared)
@@ -129,7 +129,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func aPausedWorkspaceIsNeverSignable() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: FakeHub.wsBilling, item: "b1", kind: "gate", title: "Approve", signable: true))
         let snap = try #require(live(await r.home.refresh()))
         #expect(snap.rows(in: FakeHub.wsBilling).map(\.signable) == [false])
@@ -137,7 +137,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func rowsOfUnknownWorkspacesOrOtherModesAreDropped() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: String(repeating: "dd", count: 16), item: "x1", kind: "question", title: "stranger"))
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: FakeHub.wsPlatform, mode: "selective", item: "x2", kind: "ticket", title: "wrong mode"))
         r.hub.needsYouRows.append(FakeHub.needsRow(ws: FakeHub.wsShared, mode: "selective", item: "x3", kind: "gate", title: "not a shared kind"))
@@ -146,7 +146,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func textFromTheHubIsRenderedAgain() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         r.hub.needsYouRows[0] = FakeHub.needsRow(ws: FakeHub.wsPlatform, item: "q1", kind: "question", title: "Approve \u{202E}payroll\u{202C} now")
         r.hub.workspaceRows[0] = FakeHub.workspaceRow(id: FakeHub.wsPlatform, name: "Plat\u{3164}form", mode: "full", role: "edit", online: true)
         let snap = try #require(live(await r.home.refresh()))
@@ -155,7 +155,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func offlineShowsTheCacheReadOnlyAndNeverAsLive() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         let snap = try #require(live(await r.home.refresh()))
         r.hub.faults.down = true
         r.clock.advance(hours: 1)
@@ -163,21 +163,21 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
         #expect(s == .offline(snap))
         #expect(live(s) == nil)
         // a fresh process (new coordinator, same cache) restores the same read-only view without asking the hub
-        let again = Rig.makeHome(r.custody, r.cache, r.clock, r.hub)
+        let again = HomeRig.makeHome(r.custody, r.cache, r.clock, r.hub)
         #expect(await again.restore() == .offline(snap))
         // an item is not shown from the cache
         #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: "q1") == .offline)
     }
 
     @Test func offlineWithoutACacheIsEmptyAndReadOnly() async {
-        let r = await Rig()
+        let r = await HomeRig()
         r.hub.faults.down = true
         #expect(await r.home.refresh() == .offline(nil))
         #expect(await r.home.restore() == .offline(nil))
     }
 
     @Test func aGarbledAnswerKeepsTheCacheButIsNotLive() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         let snap = try #require(live(await r.home.refresh()))
         r.hub.faults.garbledLists = true
         #expect(await r.home.refresh() == .offline(snap))
@@ -187,18 +187,18 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func anExpiredSessionDropsTheCacheAndAsksForASignIn() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = try #require(live(await r.home.refresh()))
         #expect(r.cache.hubIDs.count == 1)
         r.clock.advance(hours: 13)
         r.hub.faults.down = true     // even with the hub unreachable: nothing is kept after the session ended
         #expect(await r.home.refresh() == .signedOut)
         #expect(r.cache.hubIDs.isEmpty)
-        #expect(await Rig.makeHome(r.custody, r.cache, r.clock, r.hub).restore() == .signedOut)
+        #expect(await HomeRig.makeHome(r.custody, r.cache, r.clock, r.hub).restore() == .signedOut)
     }
 
     @Test func noSessionFromTheHubDropsTheCache() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = try #require(live(await r.home.refresh()))
         r.hub.faults.channelAnswer = "no_session"
         #expect(await r.home.refresh() == .signedOut)
@@ -206,17 +206,17 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test(arguments: ["channel_revoked", "cert_expired"]) func aRevokeFromTheHubDropsTheCache(code: String) async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = try #require(live(await r.home.refresh()))
         r.hub.faults.channelAnswer = code
         #expect(await r.home.refresh() == .revoked)
         #expect(r.cache.hubIDs.isEmpty)
-        // nothing was wiped here (that is B6): the pairing record is still there
-        #expect(try r.custody.pairedHubs().count == 1)
+        // the hub's own answer wipes the pairing (B6; the full set of checks is in HubWipeTests)
+        #expect(try r.custody.pairedHubs().isEmpty)
     }
 
     @Test func otherRefusalsKeepTheCacheReadOnly() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         let snap = try #require(live(await r.home.refresh()))
         r.hub.faults.channelAnswer = "unavailable"
         #expect(await r.home.refresh() == .offline(snap))
@@ -225,7 +225,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     // MARK: relay channel_revoked (L2B-2)
 
     @Test func aRelayRevokeDropsTheCacheAtOnceThenTheHubDecides() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         let snap = try #require(live(await r.home.refresh()))
         // hub unreachable: read-only and WITHOUT the cache; nothing is wiped
         r.hub.faults.down = true
@@ -245,7 +245,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     // MARK: single flight
 
     @Test func oneRefreshAtATime() async throws {
-        let r0 = await Rig()
+        let r0 = await HomeRig()
         let hold = HoldSender(r0.hub, path: "/api/v1/me/workspaces")
         let home = HubHomeCoordinator(custody: r0.custody, cache: r0.cache, verifier: HubVerifier(devMode: true), wall: r0.clock, makeSender: { _ in hold })
         let before = r0.hub.log.count
@@ -262,7 +262,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     // MARK: items
 
     @Test func anItemComesFromTheHubAndIsFlattenedToLines() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         guard case .detail(let d) = await r.home.item(workspaceID: FakeHub.wsShared, itemID: "s1") else { Issue.record("no detail"); return }
         #expect(d.row.title == "Review the launch checklist" && d.row.signable == false)
@@ -274,7 +274,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func itemIdsNeverChangeThePath() async {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         let n = r.hub.log.count
         for bad in ["../me/workspaces", "a/b", "a?x=1", "", String(repeating: "a", count: 65), "a b"] {
@@ -285,7 +285,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func anItemOfAWorkspaceNotInTheListIsNotAsked() async {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         let n = r.hub.log.count
         #expect(await r.home.item(workspaceID: String(repeating: "ee", count: 16), itemID: "q1") == .refused(code: "unknown_workspace"))
@@ -293,7 +293,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func aRevokeDuringAnItemFetchEndsTheView() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         let s = await r.home.refresh()
         _ = try #require(live(s))
         r.hub.faults.channelAnswer = "channel_revoked"
@@ -304,7 +304,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     // MARK: cache hygiene
 
     @Test func aCacheOfAnotherPairingIsNotShown() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = try #require(live(await r.home.refresh()))
         var e = try JSONDecoder().decode(HubCacheEntry.self, from: try #require(r.cache.read(hubID: r.hub.hubID)))
         e = HubCacheEntry(hubID: e.hubID, userID: e.userID, channelID: String(repeating: "0", count: 32), asOfMs: e.asOfMs, workspaces: e.workspaces, needsYou: e.needsYou)
@@ -330,7 +330,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     // MARK: sign in again
 
     @Test func signInAgainAfterTheSessionEndedBindsTheSameChannelAndGoesLive() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = try #require(live(await r.home.refresh()))
         let before = try #require(try HubPairingRecord.load(custody: r.custody, hubID: r.hub.hubID, verifier: HubVerifier(devMode: true), nowMs: r.clock.nowMs))
         r.clock.advance(hours: 13)
@@ -347,7 +347,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func aFailedSignInAgainChangesNothing() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = try #require(live(await r.home.refresh()))
         r.clock.advance(hours: 13)
         _ = await r.home.refresh()
@@ -366,7 +366,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func aRevokedChannelCannotSignInAgain() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         r.clock.advance(hours: 13)
         r.hub.faults.bindAnswer = "channel_revoked"
@@ -374,7 +374,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func signInAgainGoesOnlyToTheStoredOrigin() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         r.clock.advance(hours: 13)
         let asked = OriginLog()
@@ -386,7 +386,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func aWipeDuringTheBindIsNotUndoneBySignInAgain() async throws {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         r.clock.advance(hours: 13)
         let hold = HoldSender(r.hub, path: "/api/v1/session/channel")
@@ -408,7 +408,7 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     }
 
     @Test func dotOnlyItemIdsAreRefused() async {
-        let r = await Rig()
+        let r = await HomeRig()
         _ = await r.home.refresh()
         for bad in [".", ".."] { #expect(await r.home.item(workspaceID: FakeHub.wsPlatform, itemID: bad) == .refused(code: "malformed")) }
     }
@@ -416,13 +416,13 @@ private func offline(_ s: HubHomeState) -> HubSnapshot?? { if case .offline(let 
     // MARK: one coordinator (L2-B1d-2)
 
     @Test func aSecondPairingCannotCommitOverTheKeyOfAnother() async throws {
-        let clock = Clock()
+        let clock = HomeClock()
         let h = FakeHub(origin: "https://hub.dev.orch.example", wall: clock)
         let backend = InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let hold = HoldSender(h, path: "/api/v1/session/channel")
         let xCfg = HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: clock, makeSender: { _ in hold })
-        let x = HubPairingCoordinator(xCfg), y = HubPairingCoordinator(Rig.pairingConfig(custody, clock, h))
+        let x = HubPairingCoordinator(xCfg), y = HubPairingCoordinator(HomeRig.pairingConfig(custody, clock, h))
         _ = await x.begin(link: h.pairingLink)
         _ = await y.begin(link: h.pairingLink)
         async let xr = x.complete(password: h.password, totp: h.totp, label: "X")

@@ -28,6 +28,8 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         public var channelAnswer: String?
         /// Answer `POST /session/channel` with this error code (a revoked channel cannot bind again).
         public var bindAnswer: String?
+        /// Answer `POST /channels/{id}/revoke` with this error code instead of revoking.
+        public var revokeAnswer: String?
         /// Answer the lists with a body of the wrong shape.
         public var garbledLists = false
         public init() {}
@@ -57,6 +59,9 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     private var sessions: [String: (kind: String, expires: Int64)] = [:]
     private var challenges: [String: (key: SigningPublicKey, expires: Int64, session: String)] = [:]
     private var channels: [String: (key: SigningPublicKey, cert: JSONValue)] = [:]
+    /// channel session token -> the channel it is bound to; channels revoked at the hub (permanent).
+    private var sessionChannel: [String: String] = [:]
+    private var revoked: Set<String> = []
     private var _log: [String] = []
     private var _bearers: [String] = []
     private var counter = 0
@@ -69,6 +74,8 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     public var log: [String] { lock.withLock { _log } }
     /// Channel ids the hub issued certificates for.
     public var registeredChannels: [String] { lock.withLock { Array(channels.keys) } }
+    /// Channel ids revoked at the hub (by the phone's own revoke call).
+    public var revokedChannels: Set<String> { lock.withLock { revoked } }
     public var pairingLink: String { "orch://hub-pair/\(Self.authority(of: origin))#h1.\(hubID).\(userID).\(pairingCode)" }
 
     static func authority(of origin: String) -> String { String(origin.drop(while: { $0 != "/" }).dropFirst(2)) }
@@ -126,7 +133,9 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
     /// A channel-session route: the configured fault, else `no_session` without a live channel session.
     private func channelFault(_ token: String?) -> (Int, [String: JSONValue])? {
         if let c = faults.channelAnswer { return err(403, c) }
-        return token == nil ? err(403, "no_session") : nil
+        guard let token else { return err(403, "no_session") }
+        if let ch = sessionChannel[token], revoked.contains(ch) { return err(403, "channel_revoked") }
+        return nil
     }
 
     private func err(_ status: Int, _ code: String) -> (Int, [String: JSONValue]) { (status, ["error": .string(code)]) }
@@ -179,6 +188,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
         case ("POST", "/api/v1/session/channel"):
             guard let t = session("pairing") else { return err(403, "no_session") }
             if let c = faults.bindAnswer { return err(403, c) }
+            if let cid = body["auth"]?.at("o")?.object?["channel_id"]?.string, revoked.contains(cid) { return err(403, "channel_revoked") }
             guard let auth = body["auth"], let ao = auth.at("o")?.object, let cid = ao["channel_id"]?.string, let ch = channels[cid],
                   let sig = auth.at("sig")?.string.flatMap({ B64U.decode($0, length: 64) }),
                   Signature.verify(ch.key, signature: sig, label: Label.sigHubChannelAuth, message: (try? canonicalJSON(.object(ao))) ?? Data())
@@ -190,6 +200,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             let token = "FAKE-HUB-CHANNEL-\(counter)"
             let life: Int64 = faults.longSession ? 48 * 3_600_000 : 12 * 3_600_000
             sessions[token] = ("channel", now + life)
+            sessionChannel[token] = cid
             return (200, ["token": .string(token), "user_id": .string(userID), "channel_id": .string(cid), "expires_ms": .int(now + life),
                           "channel_cert": ch.cert, "card": card])
         case ("GET", "/api/v1/me/workspaces"), ("GET", "/api/v1/me/needs-you"):
@@ -203,6 +214,14 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             let parts = r.target.dropFirst("/api/v1/workspaces/".count).components(separatedBy: "/items/")
             guard parts.count == 2, let a = itemAnswers[parts[0] + "/" + parts[1]] else { return err(404, "unknown_item") }
             return (200, a.object ?? [:])
+        case ("POST", _) where r.target.hasPrefix("/api/v1/channels/") && r.target.hasSuffix("/revoke"):
+            let id = String(r.target.dropFirst("/api/v1/channels/".count).dropLast("/revoke".count))
+            if session("pairing") != nil { return err(403, "forbidden_role") }       // a pairing session may not revoke
+            if let e = channelFault(session("channel")) { return e }
+            if let c = faults.revokeAnswer { return err(503, c) }
+            guard let t = session("channel"), sessionChannel[t] == id else { return err(403, "other_user") }
+            revoked.insert(id)
+            return (200, ["ok": true])
         default:
             return err(404, "unknown_op")
         }

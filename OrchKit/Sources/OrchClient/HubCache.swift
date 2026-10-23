@@ -17,6 +17,8 @@ public protocol HubCacheStore: Sendable {
     func read(hubID: String) -> Data?
     func write(_ data: Data, hubID: String) throws
     func remove(hubID: String)
+    /// Every hub's cache (Reset this iPhone, via the wipe of B6).
+    func removeAll()
 }
 
 public final class InMemoryHubCache: HubCacheStore, @unchecked Sendable {
@@ -26,6 +28,7 @@ public final class InMemoryHubCache: HubCacheStore, @unchecked Sendable {
     public func read(hubID: String) -> Data? { lock.withLock { items[hubID] } }
     public func write(_ data: Data, hubID: String) throws { lock.withLock { items[hubID] = data } }
     public func remove(hubID: String) { lock.withLock { items[hubID] = nil } }
+    public func removeAll() { lock.withLock { items = [:] } }
     public var hubIDs: [String] { lock.withLock { Array(items.keys) } }
 }
 
@@ -58,6 +61,6 @@ public struct FileHubCache: HubCacheStore {
 
     public func remove(hubID: String) { if let u = url(hubID) { try? FileManager.default.removeItem(at: u) } }
 
-    /// Everything of every hub (the app's Reset; the hub wipe of B6 uses `remove`).
+    /// Everything of every hub (Reset this iPhone; the wipe of one hub uses `remove`).
     public func removeAll() { try? FileManager.default.removeItem(at: directory) }
 }

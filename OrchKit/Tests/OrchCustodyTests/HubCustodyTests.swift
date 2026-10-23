@@ -202,6 +202,51 @@ private func scalarFromSeed(_ seed: Data) -> Data {
         #expect(try keys.ids().isEmpty && push.ids().isEmpty)
     }
 
+    // MARK: the hub name prefix is reserved (P3, B6)
+
+    @Test func theHubPrefixIsReservedForTheHubPairing() throws {
+        let (c, b) = make()
+        _ = try c.createChannelKey(hubID: hub)
+        let keys = SecretVault(group: .keys, backend: b)
+        let direct = keys.scoped(to: .live)
+        // the direct-mode view can neither create, read, replace nor remove a `hub.` item, with or without a workspace
+        #expect(throws: VaultError.badName) { try direct.put(Data("x".utf8), purpose: "hub.\(hub).record") }
+        #expect(throws: VaultError.badName) { try direct.put(Data("x".utf8), purpose: "hub.anything") }
+        #expect(throws: VaultError.badName) { try direct.put(Data("x".utf8), ws: String(repeating: "a", count: 32), purpose: "hub.x") }
+        #expect(throws: VaultError.badName) { _ = try direct.get(purpose: "hub.\(hub).channel-key") }
+        #expect(throws: VaultError.badName) { try direct.delete(purpose: "hub.\(hub).channel-key") }
+        #expect(throws: VaultError.badName) { try direct.delete(item: SecretID(realm: .live, purpose: "hub.\(hub).channel-key")) }
+        #expect(try c.loadChannelKey(hubID: hub).channelID.count == 32)
+        // ordinary names still work, and a name that merely contains `hub` is not reserved
+        try direct.put(Data("x".utf8), purpose: "hubkey")
+        try direct.put(Data("y".utf8), purpose: "dk.hub.x")
+        #expect(try direct.get(purpose: "hubkey") == Data("x".utf8))
+    }
+
+    @Test func theHubWipeTakesOnlyHubItemsAndRecordLast() throws {
+        let (c, b) = make()
+        let other = String(repeating: "cd", count: 16)
+        _ = try c.createChannelKey(hubID: hub); _ = try c.createPushKey(hubID: hub)
+        try c.putSessionToken("tok", hubID: hub); try c.putRecord(Data("r".utf8), hubID: hub)
+        // a second hub, a leftover of an interrupted pairing, a later task's item under the hub's prefix, and direct-mode items
+        _ = try c.createChannelKey(hubID: other)
+        let keys = SecretVault(group: .keys, backend: b)
+        try keys.put(Data("b".utf8), for: SecretID(realm: .live, purpose: "hub.\(hub).biometry-baseline"))
+        try keys.put(Data("dk".utf8), for: SecretID(realm: .live, purpose: "dk_sig"))
+        try keys.put(Data("x".utf8), for: SecretID(realm: .live, ws: String(repeating: "a", count: 32), purpose: "wk"))
+        try c.deleteSecrets(hubID: hub)
+        // the record is still there (the hub is still named), everything else of this hub is gone, other hub and direct items stay
+        #expect(try keys.ids().map(\.purpose).sorted() == ["dk_sig", "hub.\(hub).record", "hub.\(other).channel-key", "wk"])
+        #expect(try c.pairedHubs() == [hub])
+        try c.deleteRecords(hubID: hub)
+        #expect(try c.pairedHubs().isEmpty)
+        #expect(try keys.ids().map(\.purpose).sorted() == ["dk_sig", "hub.\(other).channel-key", "wk"])
+        // Reset: every hub item of the realm, nothing else
+        try c.deleteSecrets(hubID: nil); try c.deleteRecords(hubID: nil)
+        #expect(try keys.ids().map(\.purpose).sorted() == ["dk_sig", "wk"])
+        #expect(throws: VaultError.badName) { try c.deleteSecrets(hubID: "not-hex") }
+    }
+
     @Test func pushKeyOpensTheVectorHintAndNothingElse() throws {
         let ps = HV.root["phase4"]["relay_routes"]["push_seal"]
         let opener = try HubPushOpener(raw: scalarFromSeed(Hex.decode(HV.keys["push_alice_phone"]["seed"].str!)!))
