@@ -66,7 +66,7 @@ struct HubHomeScreen: View {
         case .live: EmptyView()
         case .offline(let snap):
             if let snap {
-                note("Hub offline. Showing what it said at \(Self.time(snap.asOfMs)). Read only.", icon: "wifi.slash", color: OC.warn, id: "hubhome.offline")
+                note("Hub offline. Showing the last update from \(Self.time(snap.asOfMs)). You can read, but not answer or approve.", icon: "wifi.slash", color: OC.warn, id: "hubhome.offline")
             } else {
                 note("Hub offline. There is nothing saved to show yet.", icon: "wifi.slash", color: OC.warn, id: "hubhome.offline")
             }
@@ -83,8 +83,13 @@ struct HubHomeScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading).padding(OS.s3).orchCard().accessibilityIdentifier(id)
     }
 
+    static func role(_ r: String) -> String {
+        switch r { case "owner": "You own it"; case "admin": "Can manage"; case "edit": "Can edit"; default: "Can read" }
+    }
+
     static func time(_ ms: Int64) -> String {
-        Date(timeIntervalSince1970: Double(ms) / 1000).formatted(date: .omitted, time: .shortened)
+        let d = Date(timeIntervalSince1970: Double(ms) / 1000)
+        return Calendar.current.isDateInToday(d) ? d.formatted(date: .omitted, time: .shortened) : d.formatted(date: .abbreviated, time: .shortened)
     }
 
     // MARK: content
@@ -105,7 +110,7 @@ struct HubHomeScreen: View {
                     if !ws.online { StatusChip("Paused", systemImage: "pause.circle", color: OC.warn) }
                     if ws.mode == .selective { StatusChip("Shared items only", systemImage: "eye", color: OC.info) }
                 }
-                Text(verbatim: "Hub reads: " + ws.hubReads + " · your role: " + ws.role).font(OF.meta).foregroundStyle(OC.textMuted)
+                Text(verbatim: "Hub reads: " + ws.hubReads + " · " + Self.role(ws.role)).font(OF.meta).foregroundStyle(OC.textMuted)
             }
             if rows.isEmpty {
                 Text(ws.online ? "Nothing needs you here." : "Paused: the workspace's computer is not connected, so nothing can be asked or signed.")
