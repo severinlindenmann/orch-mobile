@@ -70,6 +70,9 @@ final class HubPairingModel: Identifiable {
         password = ""; totp = ""
         task = Task { [coordinator] in
             state = await coordinator.complete(password: p, totp: t, label: n)
+            // After bind: publish the extension's material and register the push key and target (B4). Not part of the pairing: a failure leaves
+            // the phone paired, and the next foreground tries again.
+            if case .paired = state { await HubPushDriver.shared.registerPush() }
         }
         state = .working(.signingIn)
     }
