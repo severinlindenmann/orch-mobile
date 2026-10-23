@@ -219,7 +219,7 @@ public actor PairingCoordinator: RealmParticipant {
     ///
     /// The lifecycle is reserved before the first await: a `cancel()` during the index lookups is honoured (the call returns
     /// `.cancelled`, creates nothing and removes keys it made).
-    public func start(link: PairingLink) async -> PairingState {
+    public func start(link: PairingLink, cardHubMode: HubWorkspace.Mode? = nil) async -> PairingState {
         guard !dead, record == nil, !lifecycleBusy, !isBusyWithPairing else { return current }
         token += 1
         let mine = token
@@ -228,6 +228,8 @@ public actor PairingCoordinator: RealmParticipant {
         try? await crashPoint("start.reserved")          // test seam, like `resume.row`: the lifecycle is held and nothing else has happened
         do { try checkConfig(); try cfg.context.admit(origin: link.origin) } catch { return fail(violation(error), mine) }
         let ws = link.workspace
+        // B8: a workspace whose card says hub mode full (or that reported cut_over) takes no new direct pairing; nothing is sent or created.
+        if let flag = cfg.directPath, flag.admitPairing(workspace: ws.hex, cardHubMode: cardHubMode) == .usesHub { return fail(.usesHub, mine) }
         do {
             if try await cfg.index.workspaces().contains(where: { $0.ws == ws.hex }) { return fail(.alreadyMember, mine) }
             guard mine == token else { return self.current }

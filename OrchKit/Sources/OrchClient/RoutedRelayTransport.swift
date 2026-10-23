@@ -10,6 +10,8 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     let origin: String
     let sender: Sender
     let clientAddress: String
+    /// B8: told when a `/v2/workspaces/{ws}` route answers `403 cut_over`, so the phone switches that workspace's direct path OFF.
+    let directPath: DirectPathFlag?
 
     /// `origin` is the origin this transport talks to; it must be admitted by `context` or construction throws, so a
     /// transport for an external origin cannot exist in a Demo context.
@@ -17,11 +19,11 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
     /// A `.demo` context is refused (`RealmViolation.wrongTransport`) unless the sender is an `InProcessDemoSender` (the in-process FakeRelay
     /// and the test doubles that stand in for it): no sender that reaches a network can serve a Demo realm, so a Demo key or event can never
     /// travel over one. The same fact decides which `WritePermit` `bridgePost` takes (see there).
-    package init(context: RealmContext, origin: String, sender: Sender, clientAddress: String) throws {
+    package init(context: RealmContext, origin: String, sender: Sender, clientAddress: String, directPath: DirectPathFlag? = nil) throws {
         if context.realm == .demo, !(sender is any InProcessDemoSender) { throw TransportError.realm(.wrongTransport) }
         try context.admit(origin: origin)
         guard sender.origin == origin else { throw TransportError.realm(.externalOrigin) }
-        self.context = context; self.origin = origin; self.sender = sender; self.clientAddress = clientAddress
+        self.context = context; self.origin = origin; self.sender = sender; self.clientAddress = clientAddress; self.directPath = directPath
     }
 
     private var R: String { HostAPI.base }
@@ -48,7 +50,10 @@ public struct RoutedRelayTransport<Sender: RequestSender>: RelayTransport {
             try context.admit(origin: sender.origin)
         } catch let v as RealmViolation { throw TransportError.realm(v) }
         try Task.checkCancellation()
-        return try await sender.send(r)
+        let reply = try await sender.send(r)
+        if let flag = directPath, DirectPathFlag.isCutOver(status: reply.status, body: reply.body),
+           let ws = DirectPathFlag.workspace(inTarget: r.target, base: R) { flag.noteCutOver(workspace: ws) }
+        return reply
     }
 
     private func json(_ method: String, _ path: String, _ body: Data, session: RelaySession? = nil) async throws -> WireReply {

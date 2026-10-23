@@ -412,6 +412,8 @@ enum PairingRefusal: String, Hashable, Sendable {
     case refused
     case rejectedOnHost, rejectedOnPrimary, linkUsed, otherPerson, invalidLink, relayNotConnected, timedOut
     case alreadyMember, clockWrong, couldNotVerify, keysUnavailable
+    /// B8: the workspace is in hub mode; direct pairing is closed. Offer hub pairing.
+    case usesHub
     /// Fresh keys could not be drawn for this attempt (G3b): another pairing may use the current ones, or that could not be confirmed.
     case keysInUse
     /// Live could not be prepared on this iPhone (the install record or the keychain): nothing was added.

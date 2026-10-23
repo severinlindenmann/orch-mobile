@@ -24,6 +24,8 @@ public enum PairingFailure: Error, Equatable, Sendable {
     case alreadyMember
     /// The device keys are missing or unusable.
     case custody
+    /// B8: the workspace's hub mode is full (or it reported `cut_over`): "This workspace now uses your hub". Nothing was sent.
+    case usesHub
 }
 
 public enum PairingExpiry: String, Sendable, Equatable {
@@ -138,6 +140,8 @@ public struct PairingConfig: Sendable {
     public var reader: ReaderRuntime
     /// C2b: the Demo environment's write grant, handed to every session this coordinator builds (nil in Live).
     public var processLocalWriteGrant: ProcessLocalWriteGrant?
+    /// B8: the direct-path flag (nil: no gate, direct stays on).
+    public var directPath: DirectPathFlag?
     #if DEBUG && targetEnvironment(simulator)
     /// The Simulator dev-sandbox lane's enabler (`DevSandboxLane.swift`): minted by the `OrchDevSandbox` App target only; nil everywhere else.
     public var devSandboxEnabler: DevSandboxLaneEnabler?

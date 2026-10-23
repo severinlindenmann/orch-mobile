@@ -293,6 +293,7 @@ final class LivePairingModel: PairingFlowModel {
             case .joiningTimedOut: state = .refused(.timedOut)
             case .alreadyMember: state = .refused(.alreadyMember)
             case .custody: state = .refused(.keysUnavailable)
+            case .usesHub: state = .refused(.usesHub)
             }
         case .cancelled: state = .entry
         }
