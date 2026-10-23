@@ -19,6 +19,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         /// The Live realm's own gate: set at the start of a Live Leave/Reset, cleared only after the realm-wide wipe succeeded. A launch that
         /// finds it set completes the wipe BEFORE any realm starts, so no Live successor ever runs next to unwiped Live data.
         static let liveResetPending = "orch.live.resetPending"
+        /// Set by Reset this iPhone only (Leave Live sets `liveResetPending` too and must not wipe the hub): the hub pairing is wiped by
+        /// `wipe(.everything)`, which writes its own intent. Cleared only after that wipe ran, so a failed intent write cannot report a finished Reset.
+        static let hubResetPending = "orch.hub.resetPending"
         /// A Live pairing got as far as the host's comparison or beyond (the Mac may hold a device entry). Cleared with the install.
         static let pairingProgressed = "orch.live.pairingProgressed"
     }
@@ -224,10 +227,16 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                 PresentationGate.requireRebuild()
             }
         }
-        if hubWipe.pending {
-            do { try await hubWipe.resume() } catch {
+        if resetFlags.bool(forKey: Keys.hubResetPending) {
+            do { try await hubWipe.wipe(.everything); resetFlags.set(false, forKey: Keys.hubResetPending) } catch {
                 resetIncomplete = true
                 PresentationGate.requireRebuild()
+            }
+        } else if hubWipe.pending {
+            // Leave or a hub revoke left a wipe: finish it. A failure there never locks the direct realms (only a Reset does, above);
+            // the hub home shows "Pair again", which retries.
+            do { try await hubWipe.resume() } catch {
+                if hubWipe.intent?.scope == .everything { resetIncomplete = true; PresentationGate.requireRebuild() }
             }
         }
         if !options.uiTesting, resetFlags.bool(forKey: Keys.resetPending) {
@@ -1241,7 +1250,9 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
         pushOffSinceStored = nil
         // Reset (and only Reset) also removes the hub pairing and the hub's cache: a direct-mode wipe leaves `hub.*` items alone (D-B1). The
         // intent is made durable here, before anything is awaited; the wipe itself runs with the realm's (below, or at the next launch).
-        do { try hubWipe.begin(.everything) } catch { resetIncomplete = true }
+        resetFlags.set(true, forKey: Keys.hubResetPending)
+        resetFlagKeys.insert(Keys.hubResetPending)
+        try? hubWipe.begin(.everything)          // a failure here is caught by the reset task's own `wipe(.everything)` (and by the flag at launch)
         leaveRealm(thenDemo: false)
     }
     func exitDemo() { leaveRealm(thenDemo: false) }
@@ -1394,7 +1405,7 @@ final class LiveServices: AppServices, HomeModel, DropModel, SettingsModel, Shar
                     if self.resetFlagKeys.contains(Keys.resetPending), !self.options.uiTesting { try await self.finishInterruptedReset() }
                     if self.resetFlagKeys.contains(Keys.liveResetPending) { try await self.finishLiveReset() }
                 }
-                try await self.hubWipe.resume()
+                if self.resetFlagKeys.contains(Keys.hubResetPending) { try await self.hubWipe.wipe(.everything) }
                 self.failedReset = nil
                 for id in self.lifecycle.keys { self.transition(id, to: .removed) }
                 // The wipe succeeded: only now do the realm's records and cleanups go.

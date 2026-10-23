@@ -247,6 +247,26 @@ private func live(_ s: HubHomeState) -> HubSnapshot? { if case .live(let x) = s 
         #expect(await seen.items == ["hub(\"\(r.hub.hubID)\")"])
     }
 
+    @Test func quiesceRunsFirstAndAnInFlightRefreshDoesNotWriteTheCacheBack() async throws {
+        let r0 = await WipeRig()
+        _ = try #require(live(await r0.home.refresh()))
+        r0.rig.cache.remove(hubID: r0.hub.hubID)
+        // a refresh is in flight at the hub when a Reset wipe runs (it starts outside the home coordinator)
+        let hold = HoldSender(r0.hub, path: "/api/v1/me/needs-you")
+        let home = HubHomeCoordinator(custody: r0.custody, cache: r0.rig.cache, verifier: HubVerifier(devMode: true), wall: r0.rig.clock,
+                                      makeSender: { _ in hold }, wipe: r0.wipe)
+        let seen = Seen()
+        let custody = r0.custody, hubID = r0.hub.hubID
+        r0.wipe.onQuiesce { _ in await seen.add((try? custody.sessionToken(hubID: hubID)) == nil ? "gone" : "still-there") }
+        async let refreshed = home.refresh()
+        await hold.waitUntilHeld()
+        try await r0.wipe.wipe(.everything)
+        hold.release()
+        _ = await refreshed
+        #expect(await seen.items == ["still-there"])                 // quiesce ran before anything was deleted
+        #expect(try r0.rig.cache.hubIDs.isEmpty && r0.vaultEmpty())
+    }
+
     @Test func theJournalSurvivesInUserDefaults() throws {
         let suite = "orch.test.hubwipe." + UUID().uuidString
         let d = try #require(UserDefaults(suiteName: suite))

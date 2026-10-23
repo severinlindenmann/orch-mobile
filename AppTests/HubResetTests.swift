@@ -28,8 +28,8 @@ final class HubResetTests: XCTestCase {
         return s
     }
 
-    private func services(_ wipe: HubWipe) throws -> LiveServices {
-        let flags = try XCTUnwrap(UserDefaults(suiteName: "orch.tests.hubreset." + UUID().uuidString))
+    private func services(_ wipe: HubWipe, flags given: UserDefaults? = nil) throws -> LiveServices {
+        let flags = try given ?? XCTUnwrap(UserDefaults(suiteName: "orch.tests.hubreset." + UUID().uuidString))
         let s = LiveServices(options: .parse(arguments: ["--ui-testing"], debug: true), resetFlags: flags)
         s.hubWipe = wipe
         return s
@@ -64,6 +64,32 @@ final class HubResetTests: XCTestCase {
         XCTAssertNil(st.journal.read())
     }
 
+    func testAFailedIntentWriteIsNeverReportedAsAFinishedReset() async throws {
+        let st = try pairedStores()
+        let journal = FlakyJournal(failures: 2)            // the Reset's own begin AND the reset task's retry fail
+        let flaky = HubWipe(custody: st.custody, cache: st.cache, journal: journal)
+        let s = try services(flaky)
+        s.resetThisiPhone()
+        await s.waitForReset()
+        XCTAssertTrue(s.resetIncomplete, "no intent, no wipe: not a finished Reset")
+        XCTAssertEqual(try st.custody.pairedHubs(), [hub], "the keys survived, and the app says so")
+        // the sticky flag makes the next launch run the wipe (a journal that works now)
+        let next = try services(st.wipe(), flags: s.cleanupDefaults)
+        await next.boot()
+        XCTAssertFalse(next.resetIncomplete)
+        XCTAssertTrue(try st.custody.pairedHubs().isEmpty && SecretVault(group: .keys, backend: st.backend).ids().isEmpty)
+        XCTAssertTrue(st.cache.hubIDs.isEmpty)
+    }
+
+    func testAFailedHubOnlyWipeAtLaunchNeverLocksTheDirectRealms() async throws {
+        let st = try pairedStores()
+        try st.journal.write(HubWipeIntent(scope: .hub(hub), phase: 0))
+        let s = try services(st.wipe(steps: [{ _ in throw CocoaError(.fileWriteUnknown) }]))
+        await s.boot()
+        XCTAssertFalse(s.resetIncomplete)
+        XCTAssertNotNil(st.journal.read(), "still pending for the hub home to retry")
+    }
+
     func testALaunchWithNothingPendingTouchesNothing() async throws {
         let st = try pairedStores()
         let s = try services(st.wipe())
@@ -81,4 +107,19 @@ private final class HubWipeStepOnce: @unchecked Sendable {
         let first = lock.withLock { () -> Bool in defer { done = true }; return !done }
         if first { throw CocoaError(.fileWriteUnknown) }
     }
+}
+
+private final class FlakyJournal: HubWipeJournal, @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: Int
+    private var intent: HubWipeIntent?
+    init(failures: Int) { self.failures = failures }
+    func read() -> HubWipeIntent? { lock.withLock { intent } }
+    func write(_ i: HubWipeIntent) throws {
+        try lock.withLock {
+            if failures > 0 { failures -= 1; throw CocoaError(.fileWriteUnknown) }
+            intent = i
+        }
+    }
+    func clear() { lock.withLock { intent = nil } }
 }

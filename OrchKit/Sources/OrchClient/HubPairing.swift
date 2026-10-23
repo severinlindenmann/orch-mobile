@@ -262,7 +262,8 @@ public actor HubPairingCoordinator {
             do {
                 // Structural check (L2-B1d-2): the key in the keychain is still OURS and nothing is recorded yet. Another coordinator's
                 // attempt (or a reset) may have replaced the key while this one waited; a record for a key that is gone must never exist.
-                guard (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == signer.channelID, try cfg.custody.record(hubID: hubID) == nil
+                guard !(cfg.wipe?.pending ?? false), (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == signer.channelID,
+                      try cfg.custody.record(hubID: hubID) == nil
                 else { throw HubPairingFailure.custody }
                 try cfg.custody.putSessionToken(bound.bearer.token, hubID: hubID)
                 try cfg.custody.putRecord(try canonicalJSON(record.json), hubID: hubID)

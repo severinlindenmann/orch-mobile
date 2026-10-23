@@ -13,7 +13,7 @@ final class HomeClock: WallClock, @unchecked Sendable {
 }
 
 /// Holds the first request whose target equals `path` until released.
-private final class HoldSender: RequestSender, @unchecked Sendable {
+final class HoldSender: RequestSender, @unchecked Sendable {
     let inner: FakeHub
     let path: String
     private let lock = NSLock()

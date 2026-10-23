@@ -72,6 +72,13 @@ public actor HubHomeCoordinator {
                 makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make, wipe: HubWipe? = nil) {
         self.custody = custody; self.cache = cache; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender
         self.wipe = wipe ?? HubWipe(custody: custody, cache: cache)
+        // phase 1 of every wipe (also Reset, which starts outside this actor): nothing here refreshes, caches or commits any more
+        self.wipe.onQuiesce { [weak self] _ in await self?.quiesce() }
+    }
+
+    private func quiesce() {
+        generation += 1
+        refreshing?.task.cancel(); refreshing = nil
     }
 
     // MARK: restore and refresh
@@ -231,7 +238,7 @@ public actor HubHomeCoordinator {
                                         card: bound.card, channelCert: bound.channelCert, sessionExpiresMs: bound.expiresMs, pairedMs: record.pairedMs)
             // the last await is behind us: the key must still be this channel's and the record the one we loaded (a wipe or Leave during
             // the bind must not be undone by a record for a deleted key; L2-B2-5, the pairing step-5 check)
-            guard (try? custody.loadChannelKey(hubID: hubID))?.channelID == record.channelID,
+            guard !wipe.pending, (try? custody.loadChannelKey(hubID: hubID))?.channelID == record.channelID,
                   let stored = try? custody.record(hubID: hubID), (try? HubPairingRecord.decode(stored)) == record
             else { throw CustodyError.missing }
             // commit: token, then the record (the old session's expiry stays in force until the record is rewritten)

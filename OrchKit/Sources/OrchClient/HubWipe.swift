@@ -18,6 +18,7 @@ public enum HubWipeScope: Sendable, Equatable, Codable {
 public struct HubWipeIntent: Sendable, Equatable, Codable {
     public var scope: HubWipeScope
     public var phase: Int
+    public init(scope: HubWipeScope, phase: Int) { self.scope = scope; self.phase = phase }
 }
 
 /// Where the intent lives. It must survive a kill (production: `UserDefaults`); it holds no secret (a hub id and a phase number).
@@ -60,8 +61,20 @@ public final class HubWipe: Sendable {
     private let cache: any HubCacheStore
     private let journal: any HubWipeJournal
     private let quiesce: @Sendable (HubWipeScope) async -> Void
+    private let hooks = Hooks()
     private let steps: [HubWipeStep]
     private let running = Running()
+
+    private final class Hooks: @unchecked Sendable {
+        private let lock = NSLock()
+        private var list: [@Sendable (HubWipeScope) async -> Void] = []
+        func add(_ f: @escaping @Sendable (HubWipeScope) async -> Void) { lock.withLock { list.append(f) } }
+        var all: [@Sendable (HubWipeScope) async -> Void] { lock.withLock { list } }
+    }
+
+    /// Registers something that must stop before a wipe deletes anything: the hub home's refreshes, B3's sign session, B4's push driver.
+    /// Best effort, must not throw. Registered by the owner of the thing at its creation.
+    public func onQuiesce(_ f: @escaping @Sendable (HubWipeScope) async -> Void) { hooks.add(f) }
 
     private actor Running {
         var task: Task<Void, Error>?
@@ -114,6 +127,7 @@ public final class HubWipe: Sendable {
             switch i.phase {
             case Phase.begun:
                 await quiesce(i.scope)
+                for f in hooks.all { await f(i.scope) }
                 try advance(i, to: Phase.quiesced)
             case Phase.quiesced:
                 // the keys, the session token and the push key; the record stays, so a half-done wipe still names the hub
