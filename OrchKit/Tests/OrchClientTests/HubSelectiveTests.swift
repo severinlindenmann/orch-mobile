@@ -36,14 +36,14 @@ private struct Rig {
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let make: @Sendable (String) throws -> any RequestSender = { o in guard o == h.origin else { throw TransportError.disconnected }; return h }
         let pairing = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: clock, makeSender: make,
-                                                             biometryBaseline: { Data("faces-1".utf8) }))
+                                                             biometryBaseline: { Data("faces-1".utf8) }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
         _ = await pairing.begin(link: h.pairingLink)
         guard case .paired(let s) = await pairing.complete(password: h.password, totp: h.totp, label: "Dev hub") else { throw TransportError.disconnected }
-        home = HubHomeCoordinator(custody: custody, cache: InMemoryHubCache(), verifier: HubVerifier(devMode: true), wall: clock, makeSender: make)
+        home = HubHomeCoordinator(custody: custody, cache: InMemoryHubCache(), verifier: HubVerifier(devMode: true), wall: clock, makeSender: make, wipe: HubWipe(custody: custody, cache: InMemoryHubCache()))
         session = HubSignSession(HubSignConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: clock, makeSender: make,
                                                biometry: BiometricGate(makeContext: { Face() }),
                                                isMyWorkspace: { $0 == FakeHub.wsShared }, contentLink: { o, _, _ in URL(string: o + "/") },
-                                               workspaceMode: mode),
+                                               workspaceMode: mode, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())),
                                  hubID: s.hubID)
         _ = await home.refresh()
     }

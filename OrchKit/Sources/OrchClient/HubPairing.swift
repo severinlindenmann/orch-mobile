@@ -1,6 +1,7 @@
 import Foundation
 import OrchCustody
 import OrchProtocol
+import OrchPush
 
 // Pairing this phone with a hub (design B1, orch-hub protocol 6.3 and 6.4). Staged: nothing is committed before every check passed, and a
 // failure at any step leaves no key, token or row.
@@ -111,14 +112,17 @@ public struct HubPairingConfig: Sendable {
     public let wall: any WallClock
     /// A sender bound to exactly the origin it is given (production: `HubSenders.make`).
     public let makeSender: @Sendable (String) throws -> any RequestSender
+    /// The hub wipe (B6): while one is unfinished no pairing starts (a new key would be deleted by the resuming wipe).
+    public let wipe: HubWipe
     /// The device's biometry state at pairing (`BiometricGate.currentDomainState`), recorded with the pairing so that a later change of the
     /// enrolled faces or fingers means "sign in again" (design B3, R2). Nil: none recorded, and the phone will not sign until one is.
     public let biometryBaseline: (@Sendable () -> Data?)?
 
     public init(custody: HubKeyCustody, verifier: HubVerifier = HubVerifier(), wall: any WallClock = SystemWallClock(),
                 makeSender: @escaping @Sendable (String) throws -> any RequestSender = HubSenders.make,
-                biometryBaseline: (@Sendable () -> Data?)? = nil) {
+                biometryBaseline: (@Sendable () -> Data?)? = nil, wipe: HubWipe) {
         self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometryBaseline = biometryBaseline
+        self.wipe = wipe
     }
 }
 
@@ -166,6 +170,7 @@ public actor HubPairingCoordinator {
         catch { return finish(mine, .failed(.badLink)) }
         do {
             guard try cfg.custody.pairedHubs().isEmpty else { return finish(mine, .failed(.alreadyPaired)) }
+            guard cfg.wipe.workToken().isValid else { return finish(mine, .failed(.custody)) }      // the wipe barrier
             let api = try HubAPI(origin: link.api, sender: try cfg.makeSender(link.api))
             let answer = try await api.hubCard()
             guard mine == generation else { return state }
@@ -189,11 +194,28 @@ public actor HubPairingCoordinator {
         let mine = generation
         defer { if mine == generation { busy = false } }
         let hubID = p.held.hubID
+        // the wipe barrier (HubWorkBarrier): taken before the work starts; every write below goes through it
+        let work = cfg.wipe.workToken()
         var pairingSession: HubBearer?
         // Rollback removes only what THIS attempt made, and only while it is still the current attempt: a cancelled attempt that wakes up
         // later must not touch its successor's key, token or record (L2-B1-2).
         var ownKey: HubChannelSigner?
+        // A channel the hub already registered for our key (L2-B1-3): a failure after that point leaves it registered at the hub, and, once
+        // bound, a 12 h channel session. Both are ended on failure, best effort.
+        var registeredChannel: String?
+        var channelSession: HubBearer?
         func rollback() async {
+            // the hub first, while the key can still sign: a pairing session may not revoke, so an unbound channel is bound (with the key
+            // that registered it) to get a channel session, which may revoke its own channel and sign out
+            if let ch = registeredChannel, let k = ownKey {
+                if channelSession == nil, let ps = pairingSession,
+                   let auth = try? k.channelAuth(hubID: hubID, userID: p.link.userID, sessionToken: ps.token, nowMs: cfg.wall.nowMs),
+                   let bound = try? await p.api.bindChannel(bearer: ps, auth: auth), bound.channelID == ch { channelSession = bound.bearer }
+                if let cs = channelSession {
+                    try? await p.api.revokeChannel(cs, channelID: ch)
+                    await p.api.signOut(cs)
+                }
+            }
             if mine == generation {
                 if let k = ownKey, (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == k.channelID,
                    (try? cfg.custody.record(hubID: hubID)) == nil { try? cfg.custody.deleteAll(hubID: hubID) }
@@ -212,10 +234,11 @@ public actor HubPairingCoordinator {
             // 2. the channel key (a leftover key of an interrupted pairing has no record and is replaced)
             state = .working(.creatingKey)
             guard try cfg.custody.record(hubID: hubID) == nil, try cfg.custody.pairedHubs().isEmpty else { throw HubPairingFailure.alreadyPaired }
+            guard work.isValid else { throw HubPairingFailure.custody }
             let signer: HubChannelSigner
             do {
                 try? cfg.custody.deleteChannelKey(hubID: hubID)   // a leftover key of an interrupted pairing (no record) is replaced
-                signer = try cfg.custody.createChannelKey(hubID: hubID); ownKey = signer
+                signer = try cfg.custody.createChannelKey(hubID: hubID, work: work); ownKey = signer
             } catch { throw HubPairingFailure.custody }
             // 3. register: the hub's challenge is checked field by field BEFORE the key signs it
             state = .working(.registering)
@@ -223,6 +246,7 @@ public actor HubPairingCoordinator {
             guard mine == generation else { await rollback(); return state }
             let challenge = try cfg.verifier.checkRegistrationChallenge(begun.challenge, challengeID: begun.challengeID, hubID: hubID,
                                                                         userID: p.link.userID, ownKey: signer.publicKey, nowMs: cfg.wall.nowMs)
+            registeredChannel = signer.channelID          // from this request on the hub may hold a certificate for our key
             let certJSON = try await p.api.registerComplete(bearer: signedIn.bearer, challengeID: begun.challengeID,
                                                             signed: try signer.register(challenge))
             let cert = try cfg.verifier.verifyChannelCert(certJSON, held: p.held, nowMs: cfg.wall.nowMs)
@@ -231,6 +255,7 @@ public actor HubPairingCoordinator {
             state = .working(.binding)
             let auth = try signer.channelAuth(hubID: hubID, userID: p.link.userID, sessionToken: signedIn.bearer.token, nowMs: cfg.wall.nowMs)
             let bound = try await p.api.bindChannel(bearer: signedIn.bearer, auth: auth)
+            channelSession = bound.bearer
             guard mine == generation else { await rollback(); return state }
             let now = cfg.wall.nowMs
             guard bound.userID == p.link.userID, bound.channelID == signer.channelID else { throw Refusal.otherUser }
@@ -245,11 +270,12 @@ public actor HubPairingCoordinator {
             do {
                 // Structural check (L2-B1d-2): the key in the keychain is still OURS and nothing is recorded yet. Another coordinator's
                 // attempt (or a reset) may have replaced the key while this one waited; a record for a key that is gone must never exist.
-                guard (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == signer.channelID, try cfg.custody.record(hubID: hubID) == nil
+                guard work.isValid, (try? cfg.custody.loadChannelKey(hubID: hubID))?.channelID == signer.channelID,
+                      try cfg.custody.record(hubID: hubID) == nil
                 else { throw HubPairingFailure.custody }
-                try cfg.custody.putSessionToken(bound.bearer.token, hubID: hubID)
-                if let state = cfg.biometryBaseline?() { try cfg.custody.putBiometryBaseline(state, hubID: hubID) }
-                try cfg.custody.putRecord(try canonicalJSON(record.json), hubID: hubID)
+                try cfg.custody.putSessionToken(bound.bearer.token, hubID: hubID, work: work)
+                if let state = cfg.biometryBaseline?() { try cfg.custody.putBiometryBaseline(state, hubID: hubID, work: work) }
+                try cfg.custody.putRecord(try canonicalJSON(record.json), hubID: hubID, work: work)
             } catch { throw HubPairingFailure.custody }
             pending = nil
             let summary = HubPairingSummary(hubID: hubID, fingerprint: p.preview.fingerprint, host: p.preview.host, userID: record.userID,

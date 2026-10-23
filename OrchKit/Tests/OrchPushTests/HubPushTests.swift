@@ -91,22 +91,35 @@ private func handler(_ dir: URL, source: StubHubSource?, now: Int64 = HV.tsMs + 
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let intake = HubPushIntake(pushDir: dir)
         let m = HV.material()
-        let first = intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + 5)
+        let first = intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + 5, work: .unguarded)
         guard case .hint(let hint) = first else { Issue.record("not opened: \(first)"); return }
         #expect(hint.type == .prepare && hint.ref == HV.ref)
         // the extension then finds the id already handled
         #expect(handler(dir, source: StubHubSource(material: m)).handle(o: HV.outer()).outcome == .droppedReplay)
-        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + 5) == .dropped(.replay))
+        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + 5, work: .unguarded) == .dropped(.replay))
+    }
+
+    @Test func resetForgetsTheReplayStateOfEveryHubChannel() throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let intake = HubPushIntake(pushDir: dir), m = HV.material()
+        guard case .hint = intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + 5, work: .unguarded)
+        else { Issue.record("not opened"); return }
+        let hubState = dir.appendingPathComponent("state/hub")
+        #expect(FileManager.default.fileExists(atPath: hubState.path))
+        intake.purgeAll()
+        #expect(!FileManager.default.fileExists(atPath: hubState.path))
+        // the content-free high-water mark outside the state folder stays (as for a direct workspace wipe): a relay cannot replay a shown hint
+        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + 5, work: .unguarded) == .dropped(.replay))
     }
 
     @Test func staleAndFutureHintsAreDropped() {
         let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
         let m = HV.material(), intake = HubPushIntake(pushDir: dir)
         let day: Int64 = 24 * 3600 * 1000
-        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + day + 1) == .dropped(.stale))
-        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs - 300_001) == .dropped(.stale))
+        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + day + 1, work: .unguarded) == .dropped(.stale))
+        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs - 300_001, work: .unguarded) == .dropped(.stale))
         // the edges are inclusive
-        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + day) != .dropped(.stale))
+        #expect(intake.accept(material: m, hubID: HV.hub, channelID: HV.channel, messageID: HV.messageID, sealed: HV.sealed, nowMs: HV.tsMs + day, work: .unguarded) != .dropped(.stale))
     }
 
     @Test func onlyItsOwnHubAndChannelOpen() {

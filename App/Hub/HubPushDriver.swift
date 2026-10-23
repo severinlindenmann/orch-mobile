@@ -23,7 +23,13 @@ final class HubPushDriver {
     @ObservationIgnored private var running = false
     @ObservationIgnored private let runtime: HubRuntime
 
-    init(runtime: HubRuntime = .shared) { self.runtime = runtime }
+    init(runtime: HubRuntime = .shared) {
+        self.runtime = runtime
+        runtime.wipe.onQuiesce { [weak self] _ in await self?.quiesce() }
+    }
+
+    /// Phase 1 of a wipe: stop polling. What is already running is stopped by the wipe barrier (`HubWorkToken`), not by a flag here.
+    private func quiesce() { poll?.cancel(); poll = nil }
 
     /// The APNs target to register: the stored token of a real device. The Simulator has no APNs: it registers a stable placeholder so the hub
     /// still seals hints and leaves them in the mailbox, which the catch-up reads (the Simulator push path).
@@ -59,9 +65,11 @@ final class HubPushDriver {
     func pushArrived() { Task { await tick() } }
 
     func tick() async {
-        guard !running else { return }
+        let work = runtime.wipe.workToken()          // the wipe barrier (HubWorkBarrier): a unit of work is one tick
+        guard !running, work.isValid else { return }
         running = true; defer { running = false }
         await registerPush()
+        guard work.isValid else { return }           // a wipe began during the registration: no catch-up
         let r = await runtime.push.catchUp()
         lastCatchUp = r
         if case .done(let hints, _) = r, !hints.isEmpty { hintTick += 1 }

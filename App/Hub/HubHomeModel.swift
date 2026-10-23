@@ -13,6 +13,9 @@ final class HubHomeModel {
     var selected: String?
     private(set) var item: ItemState = .idle
     private(set) var loaded = false
+    /// What Leave told the person (B6): whether the hub confirmed, or that the wipe will finish at the next launch.
+    private(set) var leaveNotice: String?
+    private(set) var leaving = false
 
     enum ItemState: Equatable { case idle, loading, detail(HubItemDetail), offline, failed(String), ended }
 
@@ -69,5 +72,31 @@ final class HubHomeModel {
     func signInAgain(password: String, totp: String) async { state = await runtime.home.signInAgain(password: password, totp: totp) }
 
     func clearItem() { item = .idle }
+
+    /// Leave the hub: the hub is asked to revoke this iPhone first, then everything of the pairing is wiped whatever the answer.
+    func leave() async {
+        guard !leaving else { return }
+        leaving = true
+        defer { leaving = false }
+        let outcome = await runtime.home.leave()
+        selected = nil; item = .idle
+        switch outcome {
+        case .notPaired: state = .notPaired; leaveNotice = nil
+        case .left(let revoked):
+            state = .notPaired
+            leaveNotice = revoked ? "You left the hub. This iPhone was removed from it."
+                                  : "You left the hub on this iPhone. The hub could not be reached to remove it: ask your hub admin to remove this iPhone."
+        case .incomplete:
+            state = .revoked
+            leaveNotice = "Leaving did not finish. It finishes the next time you open the app."
+        }
+    }
+
+    /// "Pair this iPhone again": the old pairing is removed completely first. True when a new pairing may start.
+    func pairAgain() async -> Bool {
+        state = await runtime.home.pairAgain()
+        leaveNotice = nil; selected = nil; item = .idle
+        return state == .notPaired
+    }
 }
 #endif

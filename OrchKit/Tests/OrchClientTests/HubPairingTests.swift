@@ -45,7 +45,7 @@ private struct Rig {
             guard origin == h.origin else { throw TransportError.disconnected }
             return h
         }
-        coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: verifier, wall: FixedWall(), makeSender: make))
+        coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: verifier, wall: FixedWall(), makeSender: make, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
     }
 
     var stored: [String] {
@@ -90,7 +90,7 @@ private final class GateSender: RequestSender, @unchecked Sendable {
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         // request 3 = register/begin of the FIRST complete; it is held while the second attempt runs
         let gate = GateSender(hub, holdAt: 3)
-        let co = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: FixedWall(), makeSender: { _ in gate }))
+        let co = HubPairingCoordinator(HubPairingConfig(custody: custody, verifier: HubVerifier(devMode: true), wall: FixedWall(), makeSender: { _ in gate }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache())))
         guard case .confirm = await co.begin(link: hub.pairingLink) else { Issue.record("no confirm"); return }
         let first = Task { await co.complete(password: hub.password, totp: hub.totp, label: "One") }
         try await Task.sleep(for: .milliseconds(200))
@@ -215,7 +215,7 @@ private final class GateSender: RequestSender, @unchecked Sendable {
         #expect(rig.hub.log.last == "DELETE /api/v1/session" || fault == "long_session")
     }
 
-    @Test(arguments: 1...5)
+    @Test(.timeLimit(.minutes(2)), arguments: 1...5)
     func aNetworkFailureAtAnyStepLeavesNothing(step: Int) async {
         let rig = Rig(sender: { hub in { @Sendable _ in FlakySender(hub, failAt: step) } })
         let first = await rig.coordinator.begin(link: rig.hub.pairingLink)
@@ -224,6 +224,27 @@ private final class GateSender: RequestSender, @unchecked Sendable {
         let r = await rig.coordinator.complete(password: rig.hub.password, totp: rig.hub.totp, label: "Dev hub")
         #expect(r == .failed(.network), "step \(step)")
         #expect(rig.stored.isEmpty, "step \(step)")
+    }
+
+    /// The five failure steps, many pairings at once (L2-B6e-1: CI hung in this test on the B6 branch; every pairing now also takes the wipe
+    /// barrier, and its rollback revokes at the hub). Each case must finish, leave nothing, and never block another.
+    @Test(.timeLimit(.minutes(2))) func theFailureStepsRunConcurrentlyAndAllFinish() async {
+        await withTaskGroup(of: Bool.self) { group in
+            for round in 0..<200 {
+                group.addTask {
+                    let step = round % 5 + 1
+                    let rig = Rig(sender: { hub in { @Sendable _ in FlakySender(hub, failAt: step) } })
+                    let first = await rig.coordinator.begin(link: rig.hub.pairingLink)
+                    if step == 1 { return first == .failed(.network) }
+                    guard case .confirm = first else { return false }
+                    let r = await rig.coordinator.complete(password: rig.hub.password, totp: rig.hub.totp, label: "Dev hub")
+                    return r == .failed(.network) && rig.stored.isEmpty
+                }
+            }
+            var ok = 0
+            for await good in group where good { ok += 1 }
+            #expect(ok == 200)
+        }
     }
 
     @Test func cancelForgetsTheStagedPairing() async throws {
@@ -237,7 +258,7 @@ private final class GateSender: RequestSender, @unchecked Sendable {
 
     @Test func aLeftoverKeyOfAnInterruptedPairingIsReplaced() async throws {
         let rig = Rig()
-        let old = try rig.custody.createChannelKey(hubID: rig.hub.hubID)
+        let old = try rig.custody.createChannelKey(hubID: rig.hub.hubID, work: .unguarded)
         _ = try #require(await rig.confirm())
         guard case .paired(let s) = await rig.coordinator.complete(password: rig.hub.password, totp: rig.hub.totp, label: "Dev hub") else {
             Issue.record("not paired"); return

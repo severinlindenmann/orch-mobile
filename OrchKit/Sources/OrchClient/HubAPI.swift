@@ -109,6 +109,12 @@ public struct HubAPI: Sendable {
         return Bound(bearer: HubBearer(t), userID: u, channelID: c, expiresMs: e, channelCert: cert, card: card)
     }
 
+    /// `POST /channels/{channel_id}/revoke` (channel session, its own channel only; permanent). A pairing session may not call it.
+    public func revokeChannel(_ bearer: HubBearer, channelID: String) async throws {
+        guard Hex.decode(channelID, length: 16) != nil else { throw HubAPIError.badReply }
+        _ = try await call("POST", "/channels/\(channelID)/revoke", bearer: bearer)
+    }
+
     /// `PUT /channels/{id}/push` (channel session of that channel): the APNs target, and the channel-key-signed `hub.channel_push` naming the push
     /// key, or `nil` to keep the key the hub holds (an APNs token change needs no new key). `token` is the b64u APNs device token.
     public func registerPush(bearer: HubBearer, channelID: String, env: String, topic: String, token: String, pushKey: JSONValue?) async throws {

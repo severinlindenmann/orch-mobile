@@ -72,6 +72,37 @@ final class HubHomeModelTests: XCTestCase {
         XCTAssertTrue(m.rows.isEmpty)
     }
 
+    func testARevokeFromTheHubWipesThePairingAndPairAgainStartsClean() async throws {
+        let (m, rt, hub) = try await opened()
+        hub.faults.channelAnswer = "channel_revoked"
+        await m.refresh()
+        XCTAssertEqual(m.state, .revoked)
+        XCTAssertTrue(try rt.custody.pairedHubs().isEmpty, "the hub's own answer wiped the pairing")
+        XCTAssertFalse(rt.wipe.pending)
+        let ready = await m.pairAgain()
+        XCTAssertTrue(ready)
+        XCTAssertEqual(m.state, .notPaired)
+    }
+
+    func testLeaveRevokesAtTheHubAndWipesThisPhone() async throws {
+        let (m, rt, hub) = try await opened()
+        await m.leave()
+        XCTAssertEqual(m.state, .notPaired)
+        XCTAssertEqual(hub.revokedChannels.count, 1)
+        XCTAssertTrue(try rt.custody.pairedHubs().isEmpty)
+        XCTAssertNil(m.snapshot)
+        XCTAssertTrue(try XCTUnwrap(m.leaveNotice).contains("removed"))
+    }
+
+    func testLeaveWithTheHubDownStillWipesAndTellsThePersonToAskTheAdmin() async throws {
+        let (m, rt, hub) = try await opened()
+        hub.faults.down = true
+        await m.leave()
+        XCTAssertEqual(m.state, .notPaired)
+        XCTAssertTrue(try rt.custody.pairedHubs().isEmpty)
+        XCTAssertTrue(try XCTUnwrap(m.leaveNotice).contains("ask your hub admin"))
+    }
+
     func testTheSelectionResetsWhenTheWorkspaceIsGone() async throws {
         let (m, _, hub) = try await opened()
         m.selected = FakeHub.wsShared

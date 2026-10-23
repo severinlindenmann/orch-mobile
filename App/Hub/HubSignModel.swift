@@ -40,7 +40,7 @@ final class HubSignModel: Identifiable {
         let backend: any VaultBackend = KeychainBackend.fromBundle() ?? InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         guard let hubID = try? custody.pairedHubs().first else { return nil }
-        return HubSignModel(session: HubSignSession(HubSignConfig(custody: custody, isMyWorkspace: workspaces, contentLink: hubHome), hubID: hubID))
+        return HubSignModel(session: HubSignSession(HubSignConfig(custody: custody, isMyWorkspace: workspaces, contentLink: hubHome, wipe: HubStorage.wipe), hubID: hubID))
     }
 
     /// The sign model for the one paired hub of this runtime. `workspaces` is B2's list at the moment the person opened the item: a request
@@ -49,7 +49,8 @@ final class HubSignModel: Identifiable {
         guard let hubID = try? runtime.custody.pairedHubs().first else { return nil }
         let cfg = HubSignConfig(custody: runtime.custody, makeSender: runtime.makeSender, biometry: runtime.biometry,
                                 isMyWorkspace: { workspaces.contains($0) }, contentLink: hubHome,
-                                workspaceMode: { selective.contains($0) ? .selective : (workspaces.contains($0) ? .full : nil) })
+                                workspaceMode: { selective.contains($0) ? .selective : (workspaces.contains($0) ? .full : nil) },
+                                wipe: runtime.wipe)
         return HubSignModel(session: HubSignSession(cfg, hubID: hubID))
     }
 
@@ -136,15 +137,16 @@ extension HubSignModel {
         let backend: any VaultBackend = InMemoryVaultBackend()
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let make: @Sendable (String) throws -> any RequestSender = { _ in link }
+        let wipe = HubWipe(custody: custody, cache: InMemoryHubCache())
         let m = HubSignModel(session: nil, fake: hub)
         m.state = .loading
         m.task = Task {
-            let coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, makeSender: make, biometryBaseline: { ScriptedBiometry.state }))
+            let coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, makeSender: make, biometryBaseline: { ScriptedBiometry.state }, wipe: wipe))
             guard case .confirm = await coordinator.begin(link: hub.pairingLink),
                   case .paired(let s) = await coordinator.complete(password: hub.password, totp: hub.totp, label: "Dev hub") else {
                 m.state = .failed(.notPaired); return
             }
-            m.session = HubSignSession(HubSignConfig(custody: custody, makeSender: make, biometry: BiometricGate(makeContext: { ScriptedBiometry() }), contentLink: hubHome),
+            m.session = HubSignSession(HubSignConfig(custody: custody, makeSender: make, biometry: BiometricGate(makeContext: { ScriptedBiometry() }), contentLink: hubHome, wipe: wipe),
                                        hubID: s.hubID)
             await m.play(script, hub: hub, link: link)
         }

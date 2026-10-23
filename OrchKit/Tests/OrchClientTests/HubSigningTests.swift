@@ -66,6 +66,7 @@ private struct Rig {
     let custody: HubKeyCustody
     let session: HubSignSession
     let hubID: String
+    let wipe: HubWipe
     static let faces = Data("faces-1".utf8)
 
     /// Pairs with the fake hub (recording the biometry baseline), then builds the sign session.
@@ -77,11 +78,13 @@ private struct Rig {
         hub = h; link = l
         let cust = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         custody = cust
+        let wipe = HubWipe(custody: cust, cache: InMemoryHubCache())
+        self.wipe = wipe
         let make: @Sendable (String) throws -> any RequestSender = { _ in l }
         var baseline: (@Sendable () -> Data?)?
         if let f = faces { baseline = { @Sendable in f } }
         let coordinator = HubPairingCoordinator(HubPairingConfig(custody: cust, verifier: HubVerifier(devMode: true), wall: clock, makeSender: make,
-                                                                  biometryBaseline: baseline))
+                                                                  biometryBaseline: baseline, wipe: HubWipe(custody: cust, cache: InMemoryHubCache())))
         guard case .confirm = await coordinator.begin(link: h.pairingLink),
               case .paired(let s) = await coordinator.complete(password: h.password, totp: h.totp, label: "Dev hub") else { throw TransportError.disconnected }
         hubID = s.hubID
@@ -89,7 +92,7 @@ private struct Rig {
         session = HubSignSession(HubSignConfig(custody: cust, verifier: HubVerifier(devMode: true), wall: clock, makeSender: make,
                                                biometry: BiometricGate(makeContext: { MockLA() }),
                                                isMyWorkspace: { workspaces && $0 == ws },
-                                               contentLink: { o, _, _ in contentLink ? URL(string: o + "/") : nil }),
+                                               contentLink: { o, _, _ in contentLink ? URL(string: o + "/") : nil }, wipe: wipe),
                                  hubID: s.hubID)
     }
 
@@ -287,6 +290,33 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
         #expect(try rig.custody.biometryBaseline(hubID: rig.hubID) == nil)
     }
 
+    @Test func aHubWipeDropsOpenRequestsAndSweepsTheBaseline() async throws {
+        let rig = try await Rig()
+        let p = try await rig.prepare()
+        try await rig.wipe.wipe(.hub(rig.hubID))                     // quiesce drops the prompt; the sweep takes the baseline with the rest
+        #expect(try rig.custody.biometryBaseline(hubID: rig.hubID) == nil)
+        #expect(try SecretVault(group: .keys, backend: rig.backend).ids().isEmpty)
+        #expect(await failure { try await rig.session.confirm(preparedID: p.preparedID) } == .notLive)
+        #expect(MockLA.evaluations == 0 && rig.hub.signedEvents.isEmpty && !rig.hub.log.contains("POST /api/v1/sign/sign"))
+    }
+
+    @Test func aWipeStartedDuringFaceIDMeansNoProofAndNoPost() async throws {
+        let rig = try await Rig()
+        let p = try await rig.prepare()
+        let wipe = rig.wipe, hubID = rig.hubID
+        MockLA.onEvaluateAsync = { try? wipe.begin(.hub(hubID)) }    // a Reset/Leave begins while the Face ID sheet is up
+        #expect(await failure { try await rig.session.confirm(preparedID: p.preparedID) } == .notLive)
+        #expect(rig.hub.signedEvents.isEmpty && !rig.hub.log.contains("POST /api/v1/sign/sign"))
+    }
+
+    @Test func nothingIsPreparedWhileAWipeIsPending() async throws {
+        let rig = try await Rig()
+        try rig.wipe.begin(.everything)
+        let before = rig.hub.log.count
+        #expect(await failure { try await rig.prepare() } == .notPaired)
+        #expect(rig.hub.log.count == before)
+    }
+
     @Test func aCancelDuringFaceIDMeansNoProofAndNoPost() async throws {
         let rig = try await Rig()
         let p = try await rig.prepare()
@@ -334,7 +364,7 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
     }
 
     @Test func withoutAConfiguredLinkContentBoundDecisionsAreNotOffered() async throws {
-        let cfg = HubSignConfig(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())))
+        let cfg = HubSignConfig(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())), wipe: HubWipe(custody: HubKeyCustody(keys: SecretVault(group: .keys, backend: InMemoryVaultBackend()), push: SecretVault(group: .push, backend: InMemoryVaultBackend())), cache: InMemoryHubCache()))
         #expect(cfg.contentLink("https://h", "w", "l") == nil)
     }
 

@@ -37,7 +37,7 @@ final class HubPairingModel: Identifiable {
         let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
             guard origin == hub.origin else { throw HubAPIError.network }
             return hub
-        })
+        }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache()))
         let m = HubPairingModel(coordinator: HubPairingCoordinator(cfg), fake: hub)
         m.linkText = hub.pairingLink
         if script == "confirm" || script == "paired" || script == "failed" {

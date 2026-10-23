@@ -124,6 +124,8 @@ public struct HubSignConfig: Sendable {
     /// A link for the person to look at the reviewed content (the hub's browser home is a stand-in; the independent check is Mission Control's
     /// content reference, L2-B3-3). Explicit on purpose: nil (the default) means content-bound decisions are not offered, questions still are.
     public let contentLink: @Sendable (_ origin: String, _ workspaceID: String, _ log: String) -> URL?
+    /// The hub wipe (B6): while one is pending nothing is prepared, proved or sent, and a wipe drops every open request first.
+    public let wipe: HubWipe
     /// The mode the hub's list gave a workspace (B2), when known. A pushed request has no action to tell selective from full, so `item_hash` is
     /// held against this: present exactly in a selective workspace. nil (unknown) leaves the event's own shape to decide.
     public let workspaceMode: @Sendable (String) async -> HubWorkspace.Mode?
@@ -133,7 +135,8 @@ public struct HubSignConfig: Sendable {
                 biometry: BiometricGate = BiometricGate(),
                 isMyWorkspace: @escaping @Sendable (String) async -> Bool = { _ in false },
                 contentLink: @escaping @Sendable (String, String, String) -> URL? = { _, _, _ in nil },
-                workspaceMode: @escaping @Sendable (String) async -> HubWorkspace.Mode? = { _ in nil }) {
+                workspaceMode: @escaping @Sendable (String) async -> HubWorkspace.Mode? = { _ in nil }, wipe: HubWipe) {
+        self.wipe = wipe
         self.custody = custody; self.verifier = verifier; self.wall = wall; self.makeSender = makeSender; self.biometry = biometry
         self.isMyWorkspace = isMyWorkspace; self.contentLink = contentLink; self.workspaceMode = workspaceMode
     }
@@ -153,7 +156,13 @@ public actor HubSignSession {
     }
     private var live: [String: Live] = [:]
 
-    public init(_ config: HubSignConfig, hubID: String) { cfg = config; self.hubID = hubID }
+    public init(_ config: HubSignConfig, hubID: String) {
+        cfg = config; self.hubID = hubID
+        // phase 1 of every hub wipe: every open request is dropped, so an in-flight confirm finds it gone and makes no proof and no POST
+        config.wipe.onQuiesce { [weak self] _ in await self?.quiesce() }
+    }
+
+    private func quiesce() { live = [:] }
 
     /// The phone's own facts about this pairing, re-verified on every use (the card, the certificate, the key).
     struct Bindings {
@@ -191,6 +200,7 @@ public actor HubSignSession {
     /// the digest computed from the held `ctx`, and sends it. Takes the prepared id and nothing else: the signed bytes are the ones this
     /// instance rendered.
     public func confirm(preparedID: String) async throws -> HubSignReceipt {
+        let work = cfg.wipe.workToken()       // the wipe barrier (HubWorkBarrier): taken before the first await, re-checked after each
         guard var held = live[preparedID], !held.confirming else { throw HubSignFailure.notLive }
         held.confirming = true; live[preparedID] = held
         var proofMade = false
@@ -208,7 +218,7 @@ public actor HubSignSession {
             throw HubSignFailure.changed(code: Refusal.eventChanged.rawValue)
         }
         // Cancel is structural (L2-B3-1): every step re-checks that this attempt is still live (not discarded) and not cancelled.
-        func stillLive() throws { if live[preparedID] == nil || Task.isCancelled { throw HubSignFailure.notLive } }
+        func stillLive() throws { if live[preparedID] == nil || Task.isCancelled || !work.isValid { throw HubSignFailure.notLive } }
         try stillLive()
         // 2. Face ID, biometry only; a changed set of faces drops the session
         do {
@@ -325,6 +335,7 @@ public actor HubSignSession {
     // MARK: pairing, session, errors
 
     private func context() throws -> (Bindings, HubAPI, HubBearer) {
+        if !cfg.wipe.workToken().isValid { throw HubSignFailure.notPaired }      // the wipe barrier (HubWorkBarrier)
         let now = cfg.wall.nowMs
         let record: HubPairingRecord, cert: HubChannelCert
         do {
