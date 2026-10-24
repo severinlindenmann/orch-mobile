@@ -3,13 +3,13 @@ import OrchCoordination
 
 /// The notification extension's invocation marker (decision A12, challenge C2): written by the extension itself on every
 /// invocation, so a test can tell "the extension ran" from "a notification appeared". It holds a counter, an outcome
-/// enum and a timestamp, and nothing decrypted: no label, no id, no workspace name, not even the workspace id.
+/// enum and a timestamp, and nothing decrypted: no label, no id, not even the hub id.
 public struct NSEMarker: Equatable, Codable, Sendable {
     public enum Outcome: String, Codable, Sendable, CaseIterable {
-        case shown, closed, droppedVerification, droppedReplay, droppedNoMaterial, droppedRemoved, droppedState, joinHidden, expired
+        case shown, droppedVerification, droppedReplay, droppedNoMaterial, droppedState, expired
 
         /// `stale` counts as replay: both are "not fresh".
-        public init(drop why: PushProcessor.DropReason) {
+        public init(drop why: PushReplay.DropReason) {
             switch why {
             case .replay, .stale: self = .droppedReplay
             case .noKey: self = .droppedNoMaterial
@@ -17,7 +17,6 @@ public struct NSEMarker: Equatable, Codable, Sendable {
             default: self = .droppedVerification
             }
         }
-        public init(shown p: PushProcessor.Payload) { self = p.kind == "question.closed" ? .closed : p.kind == "join" ? .joinHidden : .shown }
     }
     public let count: Int
     public let outcome: Outcome

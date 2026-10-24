@@ -25,7 +25,7 @@ func openCoordinationLock(_ path: String, relativeTo directory: Int32 = AT_FDCWD
 
 /// Small Foundation-only file primitives shared by the app and both extensions (no SQLite, no crypto, no network):
 /// crash-safe atomic writes and flock helpers. Decision A11: this module (with the tombstone coordination files) is what
-/// an extension links to honour removal; `OrchNotify` and the share extension must not need OrchStore for that.
+/// an extension links to honour removal; `OrchNotify` must not need a database module for that.
 public enum CoordinationFiles {
     public enum FileError: Error, Equatable, Sendable { case io(String), unsafeLock }
 

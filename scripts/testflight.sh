@@ -154,7 +154,7 @@ if [ "$MODE" = dry-run ]; then
   unzip -p "$EXPORT/Orch.ipa" 'Payload/Orch.app/embedded.mobileprovision' 2>/dev/null \
     | security cms -D 2>/dev/null | plutil -extract Entitlements json -o - - 2>/dev/null \
     | jq -c '{aps:."aps-environment",groups:."com.apple.security.application-groups",get_task_allow:."get-task-allow"}' | tee -a "$LOG" || true
-  for t in Payload/Orch.app Payload/Orch.app/PlugIns/OrchNotify.appex Payload/Orch.app/PlugIns/OrchShare.appex; do
+  for t in Payload/Orch.app Payload/Orch.app/PlugIns/OrchNotify.appex; do
     V=$(unzip -p "$EXPORT/Orch.ipa" "$t/Info.plist" | plutil -extract CFBundleVersion raw -o - -)
     say "$t CFBundleVersion=$V"
     [ "$V" = "$BUILD" ] || die "$t CFBundleVersion $V != $BUILD"

@@ -161,7 +161,7 @@ private struct Rig {
         _ = await rig.coordinator.registerPush(Rig.target)
         let s = try #require(rig.hub.sealHint(channelID: rig.channelID, type: "prepare", ref: nil))
         // the extension (same App Group directory) shows the push first
-        let h = PushHandler(material: Empty(), hubMaterial: Source(try #require(try rig.custody.pushMaterial())), pushDir: rig.pushDir,
+        let h = PushHandler(hubMaterial: Source(try #require(try rig.custody.pushMaterial())), pushDir: rig.pushDir,
                             now: { Date(timeIntervalSince1970: Double(rig.clock.nowMs) / 1000) })
         #expect(h.handle(o: s.outer).outcome == .shown)
         rig.relay.put(channelID: rig.channelID, id: s.id, c: s.c)
@@ -250,7 +250,6 @@ private struct Rig {
         #expect(!(await rig.coordinator.isPaused))
     }
 
-    private struct Empty: PushMaterialSource { func loadAll(realm: String) throws -> [ID16: PushMaterial] { [:] } }
     private struct Source: HubPushMaterialSource {
         let m: HubPushMaterial
         init(_ m: HubPushMaterial) { self.m = m }

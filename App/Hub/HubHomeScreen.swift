@@ -1,7 +1,8 @@
-#if DEBUG
 import SwiftUI
 import OrchClient
+#if DEBUG
 import OrchFakeHost
+#endif
 import OrchProtocol
 import OrchUI
 
@@ -11,7 +12,7 @@ import OrchUI
 struct HubHomeScreen: View {
     @State private var model: HubHomeModel
     @State private var path: [HubNeedsYouRow] = []
-    /// DEBUG launch helper: an item to open once the lists are there (`--hub-fake home-selective-question`).
+    /// An item to open once the lists are there (a deep-link seam; the DEBUG launch root uses it for `--hub-fake home-selective-question`).
     private let openItem: String?
     @State private var password = ""
     @State private var totp = ""
@@ -372,6 +373,7 @@ struct HubEntryScreen: View {
     }
 }
 
+#if DEBUG
 /// `--hub-fake home|home-offline|home-signedout|home-revoked|home-selective|home-selective-question`: the home against the in-process hub, paired without a screen.
 struct HubHomeLaunchRoot: View {
     let script: String
@@ -401,7 +403,9 @@ struct HubHomeLaunchRoot: View {
     }
 }
 
-/// The DEBUG app root: the hub home (a not-paired phone offers pairing there), the hub push work, and an opened `orch://hub-pair/...` link
+#endif
+
+/// The app root: the hub home (a not-paired phone offers pairing there), the hub push work, and an opened `orch://hub-pair/...` link
 /// goes to the hub pairing screen. There is no other pairing in the app.
 struct HubRoot: View {
     @State private var pairing: HubPairingModel?
@@ -410,7 +414,7 @@ struct HubRoot: View {
     var body: some View {
         HubHomeScreen()
             .onOpenURL { url in
-                if HubLaunch.isHubLink(url.absoluteString) { pairing = HubLaunch.model(link: url.absoluteString) }
+                if HubPairingLink.isHubLink(url.absoluteString) { pairing = HubPairingModel.live(link: url.absoluteString) }
             }
             .sheet(item: $pairing) { HubPairingScreen(model: $0) }
             .onChange(of: scenePhase) { _, phase in
@@ -419,4 +423,3 @@ struct HubRoot: View {
             .onAppear { if scenePhase == .active { HubPushDriver.shared.foreground() } }
     }
 }
-#endif
