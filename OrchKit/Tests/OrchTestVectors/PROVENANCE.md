@@ -102,3 +102,8 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
   (the CaseFolding C+F table for `F1Text.fold`); `Scripts/gen_unicode16_swift.py --check` still guards drift.
 - `f1/core_unicode16.py` is core's `plugins/orch-core/src/orch/canon/_unicode16.py` at the same commit, unmodified (sha256 `94cad1ffe3988fd11270dc3c4dfac00680acd470c9443d875c56579295856616`). `FieldRules.unicodeTablesEqualCoresBundledTables`
   compares every block of `Unicode16Data.swift` with it, so the test fails when the phone drifts from core, not only on a hand edit. Re-copy it together with the vectors.
+
+## vectors_hub.json (orch-hub)
+
+- Pinned by `vectors_hub.SOURCE` (hub commit + sha256); refresh only with `scripts/sync-hub-vectors.sh`, never by hand. `HubVectorTests` checks the pin against the file.
+- Includes the C8 signed `reader` card field (`card_reader` group, orch-hub docs/protocol.md section 5).

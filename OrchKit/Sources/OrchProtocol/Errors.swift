@@ -20,6 +20,7 @@ public enum Refusal: String, Error, Sendable, Equatable {
     case wkCommitChanged = "wk_commit_changed"
     case delegationMismatch = "delegation_mismatch"
     case staleCard = "stale_card"
+    case readerDowngrade = "reader_downgrade"
     case wskChanged = "wsk_changed"
     case delegationChanged = "delegation_changed"
     case wxkChangedWithoutVersion = "wxk_changed_without_version"

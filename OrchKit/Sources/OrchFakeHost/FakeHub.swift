@@ -138,7 +138,7 @@ public final class FakeHub: RequestSender, @unchecked Sendable {
             var c = header("hub.card")
             c["hub_id"] = .string(HubIdentifiers.hubID(root: root.publicKey)); c["hk_root_pub"] = .string(B64U.encode(root.publicKey.x963))
             c["hxk_pub"] = .string(B64U.encode(SoftwareKeyAgreer().publicKey.x963)); c["relay_url"] = relayURL.map { JSONValue.string($0) } ?? .null
-            c["tls_spki_sha256"] = .string(B64U.encode(Data(count: 32))); c["card_seq"] = 1; c["issued_ms"] = .int(now - 1000)
+            c["tls_spki_sha256"] = .string(B64U.encode(Data(count: 32))); c["card_seq"] = 1; c["reader"] = 1; c["issued_ms"] = .int(now - 1000)
             let signedOp = sign(oc, root, Label.sigHubOpCert)
             let signed = sign(c, op, Label.sigHubCard)
             return .object(["o": signed.at("o")!, "op_cert": signedOp, "sig": signed.at("sig")!])
