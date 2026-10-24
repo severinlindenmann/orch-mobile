@@ -1,8 +1,6 @@
-#if DEBUG
 import Foundation
 import Observation
 import OrchClient
-import OrchFakeHost
 
 /// The hub home's model (design B2). It renders the coordinator's state and filters nothing in: what the user may see is the hub's decision.
 /// The selection (switcher) only narrows what is already shown. Nothing here signs or can enable signing from a cached answer.
@@ -99,4 +97,3 @@ final class HubHomeModel {
         return state == .notPaired
     }
 }
-#endif

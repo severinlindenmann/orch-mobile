@@ -1,16 +1,19 @@
-#if DEBUG
 import Foundation
+#if DEBUG
 import LocalAuthentication
+#endif
 import Observation
 import OrchClient
 import OrchCustody
+#if DEBUG
 import OrchFakeHost
+#endif
 import OrchProtocol
 
 /// Stand-in link: the hub's browser home (no item deep link yet). The independent check is Mission Control's content reference.
 @Sendable func hubHome(_ origin: String, _ ws: String, _ log: String) -> URL? { URL(string: origin + "/") }
 
-/// The sign prompt's model (design B3; V3 dev builds only, like the pairing screen). Every check and every key is in `HubSignSession`; this
+/// The sign prompt's model (design B3). Every check and every key is in `HubSignSession`; this
 /// holds what the screen shows. It never holds a ctx or a digest: `confirm` hands the session the prepared id and nothing else.
 ///
 /// The seam for the workspace list (B2) and for pushes (B4): `open(preparedID:)` ("open the sign prompt for prepared id") and
@@ -29,10 +32,12 @@ final class HubSignModel: Identifiable {
     private(set) var state: State = .idle
     @ObservationIgnored fileprivate var session: HubSignSession?
     @ObservationIgnored private var task: Task<Void, Never>?
-    /// DEBUG launch helpers (`--hub-sign`): the in-process hub the scripted states run against.
+    #if DEBUG
+    /// DEBUG launch helper (`--hub-sign`): the in-process hub the scripted states run against.
     @ObservationIgnored fileprivate(set) var fake: FakeHub?
+    #endif
 
-    init(session: HubSignSession?, fake: FakeHub? = nil) { self.session = session; self.fake = fake }
+    init(session: HubSignSession?) { self.session = session }
 
     /// The real stack for the first paired hub (D-B1: one in V3), or nil when this iPhone is not paired. `workspaces` is B2's list: a pushed
     /// request is refused unless its workspace is one of them.
@@ -102,6 +107,7 @@ final class HubSignModel: Identifiable {
     fileprivate static func failure(_ e: Error) -> HubSignFailure { (e as? HubSignFailure) ?? .custody }
 }
 
+#if DEBUG
 // MARK: DEBUG scripted states (screenshots, UI tests): `--hub-sign [review|code|question|selective|selective-stale|signed|type|changed|expired|offline]`
 
 /// Face ID stand-in for the in-process hub (the Simulator has no enrolled face unless the tester sets it up): matches the recorded state.
@@ -138,7 +144,8 @@ extension HubSignModel {
         let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
         let make: @Sendable (String) throws -> any RequestSender = { _ in link }
         let wipe = HubWipe(custody: custody, cache: InMemoryHubCache())
-        let m = HubSignModel(session: nil, fake: hub)
+        let m = HubSignModel(session: nil)
+        m.fake = hub
         m.state = .loading
         m.task = Task {
             let coordinator = HubPairingCoordinator(HubPairingConfig(custody: custody, makeSender: make, biometryBaseline: { ScriptedBiometry.state }, wipe: wipe))

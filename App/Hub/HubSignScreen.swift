@@ -1,4 +1,3 @@
-#if DEBUG
 import SwiftUI
 import OrchClient
 import OrchProtocol
@@ -161,4 +160,3 @@ struct HubSignScreen: View {
         }
     }
 }
-#endif

@@ -94,7 +94,7 @@ public struct ReplayStore: Sendable {
 
     /// Read-only snapshot: never mutates anything, throws `.corrupt` for an unparseable file (recovery happens only
     /// inside `transact`, under the lock). Nil when there is no state.
-    public func load(workspace: ID16, generation: Int64) throws -> PushProcessor.WorkspaceReplay? {
+    public func load(workspace: ID16, generation: Int64) throws -> PushReplay.WorkspaceReplay? {
         try read(workspace: workspace, generation: generation)
     }
 
@@ -108,22 +108,22 @@ public struct ReplayStore: Sendable {
     ///
     /// `lockTimeout`: give up (throw `.io("lock")`) if the workspace's replay lock is not free in time.
     public func transact<T>(workspace: ID16, generation: Int64, nowMs: Int64, lockTimeout: TimeInterval? = nil,
-                            _ body: (PushProcessor.WorkspaceReplay) throws -> (T, PushProcessor.WorkspaceReplay?)) throws -> T {
+                            _ body: (PushReplay.WorkspaceReplay) throws -> (T, PushReplay.WorkspaceReplay?)) throws -> T {
         let dir = stateDir(workspace: workspace)
         let lock = lockURL(workspace: workspace)
         try Self.makeDir(lock.deletingLastPathComponent())
         guard let r = try CoordinationFiles.withFlock(lock.path, timeout: lockTimeout, { () throws -> T in
             try Self.makeDir(dir)
             try dropOlderGenerations(workspace: workspace, generation: generation)
-            var current: PushProcessor.WorkspaceReplay
+            var current: PushReplay.WorkspaceReplay
             do {
                 if let s = try read(workspace: workspace, generation: generation) { current = s }
-                else { current = PushProcessor.WorkspaceReplay().with(notBeforeTs: try effectiveFloor(workspace: workspace, nowMs: nowMs)) }
+                else { current = PushReplay.WorkspaceReplay().with(notBeforeTs: try effectiveFloor(workspace: workspace, nowMs: nowMs)) }
             } catch ReplayStoreError.corrupt {
                 let url = fileURL(workspace: workspace, generation: generation)
                 _ = try? FileManager.default.removeItem(at: url.appendingPathExtension("corrupt"))
                 try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("corrupt"))
-                current = PushProcessor.WorkspaceReplay().with(notBeforeTs: max(try effectiveFloor(workspace: workspace, nowMs: nowMs), nowMs))
+                current = PushReplay.WorkspaceReplay().with(notBeforeTs: max(try effectiveFloor(workspace: workspace, nowMs: nowMs), nowMs))
                 try write(current, workspace: workspace, generation: generation)
             }
             let (result, next) = try body(current)
@@ -151,7 +151,7 @@ public struct ReplayStore: Sendable {
         }
     }
 
-    private func read(workspace: ID16, generation: Int64) throws -> PushProcessor.WorkspaceReplay? {
+    private func read(workspace: ID16, generation: Int64) throws -> PushReplay.WorkspaceReplay? {
         let url = fileURL(workspace: workspace, generation: generation)
         let data: Data
         do { data = try Data(contentsOf: url) }
@@ -165,10 +165,10 @@ public struct ReplayStore: Sendable {
             guard let id = B64U.decode(e.id), id.count == 32 else { throw ReplayStoreError.corrupt }
             last[id] = e.ts
         }
-        return PushProcessor.WorkspaceReplay(lastShown: last, maxShownTs: f.maxShownTs, notBeforeTs: f.notBeforeTs)
+        return PushReplay.WorkspaceReplay(lastShown: last, maxShownTs: f.maxShownTs, notBeforeTs: f.notBeforeTs)
     }
 
-    private func write(_ s: PushProcessor.WorkspaceReplay, workspace: ID16, generation: Int64) throws {
+    private func write(_ s: PushReplay.WorkspaceReplay, workspace: ID16, generation: Int64) throws {
         let f = File(v: 1, realm: realm, ws: workspace.hex, generation: generation, maxShownTs: s.maxShownTs, notBeforeTs: s.notBeforeTs,
                      lastShown: s.lastShown.sorted { $0.key.lexicographicallyPrecedes($1.key) }.map { .init(id: B64U.encode($0.key), ts: $0.value) })
         try Self.atomicWrite(try JSONEncoder().encode(f), to: fileURL(workspace: workspace, generation: generation), dir: stateDir(workspace: workspace))

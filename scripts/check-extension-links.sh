@@ -4,14 +4,12 @@ cd "$(dirname "$0")/.."
 # Ruby's standard-library YAML parser avoids adding a build dependency.
 ruby -ryaml -rjson -ropen3 <<'RUBY'
 project = YAML.load_file('project.yml')
-allowed = { 'OrchNotify' => %w[OrchPush OrchProtocol OrchCoordination], 'OrchShare' => %w[OrchUI OrchCoordination OrchShareStaging] }
+allowed = { 'OrchNotify' => %w[OrchPush OrchProtocol OrchCoordination] }
 # Extension-linked modules may not import these (also checked below for the extensions' own sources).
 forbidden_imports = %w[Security CryptoKit LocalAuthentication Network CFNetwork CommonCrypto]
 # Declaration-kind aware: `import struct OrchCustody.X` imports from OrchCustody. Submodule paths (`CryptoKit.Foo`) stop at the module.
 KIND = '(?:(?:typealias|struct|class|enum|protocol|let|var|func|actor)[ \\t]+)?'
 IMPORT_RE = /^[ \t]*(?:@\w+(?:\([^)]*\))?[ \t]+)*import[ \t]+#{KIND}(\w+)/
-# Network-capable or crypto API tokens: forbidden anywhere in what the share extension links.
-FORBIDDEN_TOKENS = /\b(URLSession\w*|NSURLConnection|NSURLSession\w*|CFNetwork\w*|CFSocket\w*|SecItem\w*|SecKey\w*|CommonCrypto|CC_SHA\w*|CCCrypt\w*|NWConnection|URLRequest)\b/
 # Keep compiler caches in the worktree; manifest evaluation needs no nested sandbox
 # (there are no remote dependencies or build plugins).
 ENV['CLANG_MODULE_CACHE_PATH'] ||= File.expand_path('.build/clang-cache')
@@ -32,7 +30,7 @@ allowed.each do |name, permitted|
       products.fetch(product)
     end
   end
-  abort "#{name}: missing required product" unless roots.include?(name == 'OrchNotify' ? 'OrchPush' : 'OrchShareStaging') && (name == 'OrchNotify' || roots.include?('OrchUI'))
+  abort "#{name}: missing required product" unless roots.include?('OrchPush')
   visited = []
   visit = lambda do |module_name|
     return if visited.include?(module_name)
@@ -54,13 +52,7 @@ allowed.each do |name, permitted|
       File.read(file).scan(/\bimport[ \t]+#{KIND}(Orch\w+)/).flatten.each do |imported|
         abort "#{name}: forbidden import #{imported} in #{file}" unless permitted.include?(imported)
       end
-      # The notification extension legitimately opens sealed pushes (OrchProtocol uses CryptoKit); the share extension never may.
-      File.read(file).scan(IMPORT_RE).flatten.each do |imported|
-        abort "#{name}: forbidden import #{imported} in #{file}" if name == 'OrchShare' && forbidden_imports.include?(imported)
-      end
-      File.read(file).scan(FORBIDDEN_TOKENS).flatten.each do |token|
-        abort "#{name}: forbidden API #{token} in #{file}" if name == 'OrchShare'
-      end
+      # The notification extension legitimately opens sealed pushes (OrchProtocol uses CryptoKit).
     end
   end
   Array(target.fetch('sources')).each do |source|
@@ -68,12 +60,6 @@ allowed.each do |name, permitted|
     Dir["#{path}/**/*.swift"].each do |file|
       File.read(file).scan(/\bimport[ \t]+#{KIND}(Orch\w+)/).flatten.each do |imported|
         abort "#{name}: forbidden import #{imported} in #{file}" unless permitted.include?(imported)
-      end
-      File.read(file).scan(IMPORT_RE).flatten.each do |imported|
-        abort "#{name}: forbidden import #{imported} in #{file}" if name == 'OrchShare' && forbidden_imports.include?(imported)
-      end
-      File.read(file).scan(FORBIDDEN_TOKENS).flatten.each do |token|
-        abort "#{name}: forbidden API #{token} in #{file}" if name == 'OrchShare'
       end
     end
   end
@@ -90,14 +76,10 @@ abort 'OrchNotify: app group must be exactly group.io.severin.orch' unless nse['
 keychain = nse['keychain-access-groups']
 abort 'OrchNotify: keychain group must be exactly one group ending io.severin.orch.push' unless keychain.is_a?(Array) && keychain.size == 1 && keychain[0].end_with?('io.severin.orch.push')
 abort 'OrchNotify: unexpected entitlements' unless (nse.keys - %w[com.apple.security.application-groups keychain-access-groups]).empty?
-share = entitlements('ShareExtension/OrchShare.entitlements')
-abort 'OrchShare: app group must be exactly group.io.severin.orch.share' unless share['com.apple.security.application-groups'] == ['group.io.severin.orch.share']
-abort 'OrchShare: keychain-access-groups is forbidden' if share.key?('keychain-access-groups')
-abort 'OrchShare: unexpected entitlements' unless (share.keys - %w[com.apple.security.application-groups]).empty?
 
 # Extensions must not touch crypto, biometrics or networking; scan their own sources and the modules they link.
 forbidden = forbidden_imports
-extension_sources = Dir['NotificationService/**/*.swift'] + Dir['ShareExtension/**/*.swift']
+extension_sources = Dir['NotificationService/**/*.swift']
 extension_sources.each do |file|
   File.read(file).scan(IMPORT_RE).flatten.each do |imported|
     abort "forbidden import #{imported} in #{file}" if forbidden.include?(imported)

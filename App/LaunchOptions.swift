@@ -6,9 +6,9 @@ struct LaunchOptions: Equatable, Sendable {
     let uiTesting: Bool
     /// DEBUG-only `--appearance dark|light`, so UI tests do not depend on simulator state.
     let appearance: String?
-    /// DEBUG-only `--push-harness`: shows the NSE test harness instead of the hub (push simulator tests, see UITests/PushNSETests).
+    /// DEBUG-only `--push-harness`: shows the NSE test harness instead of the hub (push simulator tests, see UITests/HubPushNSETests).
     let pushHarness: Bool
-    /// DEBUG-only `--push-material <base64url>`: a test `PushMaterial` item installed into the `.push` keychain group.
+    /// DEBUG-only `--push-material <base64url>`: `hub:` + the b64u of a test hub push material item, installed into the `.push` keychain group.
     let pushMaterial: String?
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {

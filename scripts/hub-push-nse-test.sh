@@ -8,7 +8,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 udid="${1:?usage: hub-push-nse-test.sh <udid>}"
 dir="$(mktemp -d "${TMPDIR:-/tmp}/orch-push-nse.XXXXXX")"
-scripts/make-push-fixture.sh --hub --out "$dir" >/dev/null || exit 1
+scripts/make-push-fixture.sh --out "$dir" >/dev/null || exit 1
 xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || true
 fixtures=("$dir"/*.apns)
 TEST_RUNNER_ORCH_PUSH_DIR="$dir" xcodebuild -project Orch.xcodeproj -scheme Orch -destination "platform=iOS Simulator,id=$udid" \
