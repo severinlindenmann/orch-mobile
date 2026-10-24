@@ -22,9 +22,6 @@ targets:
     platform: iOS
     sources:
       - App
-      # the share extension's status screens, rendered by the DEBUG share-status route (step 16 layout checks)
-      - path: ShareExtension/ShareStatusViews.swift
-        group: ShareExtension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch
@@ -54,10 +51,8 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     dependencies:
       - package: OrchKit
-        products: [OrchProtocol, OrchCustody, OrchStore, OrchCoordination, OrchShareStaging, OrchPush, OrchClient, OrchFakeHost, OrchUI]
+        products: [OrchProtocol, OrchCustody, OrchStore, OrchCoordination, OrchPush, OrchClient, OrchFakeHost, OrchUI]
       - target: OrchNotify
-        embed: true
-      - target: OrchShare
         embed: true
   OrchNotify:
     type: app-extension
@@ -82,42 +77,6 @@ targets:
     dependencies:
       - package: OrchKit
         product: OrchPush
-  OrchShare:
-    type: app-extension
-    platform: iOS
-    sources: [ShareExtension]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.share
-        CODE_SIGN_ENTITLEMENTS: ShareExtension/OrchShare.entitlements
-        TARGETED_DEVICE_FAMILY: "1"
-        APPLICATION_EXTENSION_API_ONLY: YES
-    info:
-      path: ShareExtension/Info.plist
-      properties:
-        CFBundleDisplayName: orch
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.share-services
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
-          NSExtensionAttributes:
-            # One OR'd predicate (a dictionary rule ANDs its keys, which hid the extension for image-only shares from Photos).
-            # public.data/url/text cover everything ProviderStager imports (files, images, movies, links, text). The count bound
-            # mirrors ShareLimits.maxItems but is PER extension item (one NSExtensionItem with more than 5 attachments does not
-            # activate); the overall 5-item cap across items is still enforced by ProviderStager/ShareModel.save.
-            NSExtensionActivationRule: >-
-              SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
-              (ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
-              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
-              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text")).@count >= 1).@count >= 1
-              AND SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment,
-              (ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data"
-              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
-              OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text")).@count > 5).@count == 0
-    dependencies:
-      - package: OrchKit
-        products: [OrchUI, OrchCoordination, OrchShareStaging]
   OrchTests:
     type: bundle.unit-test
     platform: iOS
@@ -129,7 +88,7 @@ targets:
     dependencies:
       - target: Orch
       - package: OrchKit
-        products: [OrchProtocol, OrchCustody, OrchPush, OrchCoordination, OrchShareStaging]
+        products: [OrchProtocol, OrchCustody, OrchPush, OrchCoordination]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.severin.orch.tests

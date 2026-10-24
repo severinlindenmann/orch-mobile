@@ -15,7 +15,7 @@ import Testing
     /// Production Swift sources (never tests).
     static func sources() -> [(path: String, text: String)] {
         var out: [(String, String)] = []
-        for dir in ["OrchKit/Sources", "App", "NotificationService", "ShareExtension"] {
+        for dir in ["OrchKit/Sources", "App", "NotificationService"] {
             let base = root.appendingPathComponent(dir)
             guard let e = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
             for case let u as URL in e where u.pathExtension == "swift" {
