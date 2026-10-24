@@ -1,4 +1,3 @@
-#if DEBUG
 import SwiftUI
 import OrchClient
 import OrchUI
@@ -153,4 +152,3 @@ struct HubPairingScreen: View {
         }
     }
 }
-#endif
