@@ -148,10 +148,8 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// Sendable annotation differs between them and fails to compile on CI).
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        #if DEBUG
-        // A hub push (V3 dev): read the channel's mailbox now. The notification itself is the extension's verified, generic text.
+        // A hub push: read the channel's mailbox now. The notification itself is the extension's verified, generic text.
         await MainActor.run { HubPushDriver.shared.pushArrived() }
-        #endif
         return [.banner, .list, .sound]
     }
 
@@ -161,9 +159,7 @@ final class OrchAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         let store = APNsTokenStore()
         guard let environment = APNsEnvironment.current else { return }
         store.save(deviceToken: deviceToken, environment: environment)
-        #if DEBUG
-        Task { @MainActor in await HubPushDriver.shared.registerPush() }   // the hub channel's target follows the token (V3 dev)
-        #endif
+        Task { @MainActor in await HubPushDriver.shared.registerPush() }   // the hub channel's target follows the token
         Self.lastRegistrationError = nil
     }
 
