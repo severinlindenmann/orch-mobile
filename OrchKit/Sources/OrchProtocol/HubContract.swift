@@ -122,6 +122,8 @@ public struct HeldHubCard: Sendable, Equatable {
     public let opCertID: String
     public let opSeq: Int64
     public let cardSeq: Int64
+    /// The hub's signed reader level (#1198 C8); it only goes up (`reader_downgrade`).
+    public let reader: Int64
     public let relayURL: String?
     /// The card as received, `{o, op_cert, sig}`.
     public let signed: JSONValue
@@ -198,6 +200,8 @@ public struct HubVerifier: Sendable {
     static let b64u32: Check = { $0.string.flatMap { B64U.decode($0, length: 32) } != nil }
     static func intMin(_ lo: Int64) -> Check { { ($0.int ?? Int64.min) >= lo } }
     static let bool: Check = { $0.bool != nil }
+    /// An exact uint31: an integer (never a bool or text) in 0...2^31-1.
+    static let uint31: Check = { ($0.int).map { (0...Int64(Int32.max)).contains($0) } ?? false }
     static func oneOf(_ vals: String...) -> Check { { v in v.string.map { s in vals.contains { $0.bytesEqual(s) } } ?? false } }
     /// `https://<host>[:port]`, or plain `http://` for a loopback host (protocol 6.4 `origin`, 5 `relay_url`).
     static func isHubURL(_ s: String) -> Bool {
@@ -265,9 +269,9 @@ public struct HubVerifier: Sendable {
         try Self.checkSignature(card, label: Label.sigHubCard, key: hkOp)
         try Self.checkFields(o, ["hub_id": Self.hex16, "hk_root_pub": Self.pub, "hxk_pub": Self.agreementPub,
                                  "relay_url": { $0.isNull || ($0.string.map(Self.isHubURL) ?? false) }, "tls_spki_sha256": Self.b64u32,
-                                 "card_seq": Self.intMin(1), "issued_ms": Self.intMin(0), "dev": Self.bool])
+                                 "card_seq": Self.intMin(1), "reader": Self.uint31, "issued_ms": Self.intMin(0), "dev": Self.bool])
         try checkDev(o)
-        guard let issued = o["issued_ms"]?.int, let cardSeq = o["card_seq"]?.int, let opSeq = op["op_seq"]?.int,
+        guard let issued = o["issued_ms"]?.int, let cardSeq = o["card_seq"]?.int, let reader = o["reader"]?.int, let opSeq = op["op_seq"]?.int,
               let certID = op["cert_id"]?.string, let hubID = o["hub_id"]?.string else { throw Refusal.malformed }
         if issued > saturatingAdd(nowMs, Self.clockSkewMs) { throw Refusal.certInvalid }
         if let held {
@@ -277,8 +281,10 @@ public struct HubVerifier: Sendable {
                 if cardSeq < held.cardSeq { throw Refusal.staleCard }
                 if cardSeq == held.cardSeq, (try? canonicalJSON(card)) != (try? canonicalJSON(held.signed)) { throw Refusal.staleCard }
             }
+            // After the order checks: a hub never lowers its reader level, under the same or a newer op cert.
+            if reader < held.reader { throw Refusal.readerDowngrade }
         }
-        return HeldHubCard(hubID: hubID, hkRootPub: root, hkOpPub: hkOp, opCertID: certID, opSeq: opSeq, cardSeq: cardSeq,
+        return HeldHubCard(hubID: hubID, hkRootPub: root, hkOpPub: hkOp, opCertID: certID, opSeq: opSeq, cardSeq: cardSeq, reader: reader,
                            relayURL: o["relay_url"]?.string, signed: card)
     }
 

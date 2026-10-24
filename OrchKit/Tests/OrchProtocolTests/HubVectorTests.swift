@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import OrchTestVectors
 import Testing
 @testable import OrchProtocol
@@ -25,10 +26,50 @@ enum HubVectors {
 @Suite struct HubVectorTests {
     @Test func theFileIsTheHubContractAndHasTheCasesWeReplay() {
         #expect(HubVectors.root["contract"].str == "orch.hub/0")
-        #expect(HubVectors.cases("pair_link").count == 25)
-        #expect(HubVectors.cases("api_origin").count == 13)
-        #expect(HubVectors.cases("card").count == 26)
-        #expect(HubVectors.cases("channel_cert").count == 3)
+        // Counts come from the file (the hub owns them); the file must at least hold every group this suite replays.
+        for check in ["pair_link", "api_origin", "card", "card_reader", "card_text", "channel_cert"] {
+            #expect(!HubVectors.cases(check).isEmpty, "\(check)")
+        }
+    }
+
+    @Test func theVendoredFileMatchesItsSourcePin() {
+        let source = Dictionary(uniqueKeysWithValues: OrchTestVectors.Vectors.hubSource.split(separator: "\n").compactMap { line -> (String, String)? in
+            let kv = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            return kv.count == 2 ? (kv[0], kv[1]) : nil
+        })
+        let digest = SHA256.hash(data: OrchTestVectors.Vectors.hub).map { String(format: "%02x", $0) }.joined()
+        #expect(source["hub_repo"] == "orch-hub")
+        #expect(source["hub_commit"]?.count == 40)
+        #expect(source["vectors_hub_sha256"] == digest, "re-run scripts/sync-hub-vectors.sh")
+    }
+
+    @Test func cardReaderCases() throws {
+        let cases = HubVectors.cases("card_reader")
+        #expect(cases.count >= 11)
+        for c in cases {
+            let a = c["args"], v = HubVerifier(devMode: a["dev_mode"].bool ?? false), now = a["now_ms"].i64
+            var got: HeldHubCard?
+            let err = HubVectors.run(c) {
+                let held = a["held_card"].isNull ? nil : try HubVectors.heldCard(a["held_card"], verifier: v, now: now)
+                got = try v.verifyCard(a["card"], nowMs: now, held: held)
+            }
+            #expect(err == HubVectors.errorCode(c), "\(c["name"].str)")
+            if HubVectors.errorCode(c) == nil { #expect(got?.reader == c["expect"]["ok"]["reader"].i64, "\(c["name"].str)") }
+        }
+    }
+
+    @Test func cardTextCases() throws {
+        let cases = HubVectors.cases("card_text")
+        #expect(!cases.isEmpty)
+        for c in cases {
+            let a = c["args"], v = HubVerifier(devMode: a["dev_mode"].bool ?? false)
+            let text = Hex.decode(a["text_hex"].str) ?? Data()
+            // The strict parser refuses duplicate keys and floats before the verifier runs; that is `malformed` at the contract.
+            var parsed: JSONValue?
+            do { parsed = try StrictJSON.parse(text, maxBytes: .max, maxDepth: 64) } catch { parsed = nil }
+            let err = parsed.map { card in HubVectors.run(c) { _ = try v.verifyCard(card, nowMs: a["now_ms"].i64) } } ?? Refusal.malformed.rawValue
+            #expect(err == HubVectors.errorCode(c), "\(c["name"].str)")
+        }
     }
 
     @Test func pairLinkCases() throws {

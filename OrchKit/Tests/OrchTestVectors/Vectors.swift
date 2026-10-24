@@ -8,6 +8,9 @@ public enum Vectors {
     /// orch-hub `vectors/vectors_hub.json` (hub contract H0, FAKE keys; see PROVENANCE.md).
     public static var hub: Data { try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("vectors_hub.json")) }
 
+    /// The pin of `vectors_hub.json`: `hub_repo`, `hub_commit`, `vectors_hub_sha256` lines (written by scripts/sync-hub-vectors.sh).
+    public static var hubSource: String { try! String(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("vectors_hub.SOURCE"), encoding: .utf8) }
+
     /// The H12d reader_decl group of orch-relay's vectors (suite 2, trimmed; see PROVENANCE.md).
     public static var readerDecl: Data { try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("reader_decl_vectors.json")) }
 
