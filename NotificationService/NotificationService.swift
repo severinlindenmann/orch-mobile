@@ -28,20 +28,11 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
-        guard let dir = Self.pushDir(), let source = KeychainPushMaterialSource.fromBundle() else {
+        guard let dir = Self.pushDir(), let hubSource = KeychainHubPushMaterialSource.fromBundle() else {
             contentHandler(Self.content(for: .generic))
             return
         }
-        let d = PushDelivery(handler: PushHandler(material: source, hubMaterial: KeychainHubPushMaterialSource.fromBundle(), pushDir: dir)) { key, done in
-            // "Answered on ...": remove the delivered question of the same (workspace, id), then deliver the closure.
-            let center = UNUserNotificationCenter.current()
-            center.getDeliveredNotifications { delivered in
-                let old = delivered.filter { ($0.request.content.userInfo["orch_key"] as? String).map { Data($0.utf8) == Data(key.utf8) } ?? false }
-                    .map(\.request.identifier)
-                center.removeDeliveredNotifications(withIdentifiers: old)
-                done()
-            }
-        }
+        let d = PushDelivery(handler: PushHandler(hubMaterial: hubSource, pushDir: dir))
         delivery = d
         d.start(o: RelayPushBody.outer(userInfo: request.content.userInfo)) { contentHandler(Self.content(for: $0)) }
     }

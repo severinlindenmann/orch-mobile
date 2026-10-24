@@ -24,24 +24,21 @@ Source of truth: [orch-core PR #327](https://github.com/severinlindenmann/orch-c
 ```
 orch-mobile/
 ├── project.yml             XcodeGen source; Orch.xcodeproj is generated and ignored
-├── App/                    SwiftUI Home/Welcome, DEBUG launch options, app entitlements
+├── App/                    SwiftUI hub screens, DEBUG launch options, app entitlements
 ├── OrchKit/                Swift 6 package (iOS 18 / macOS 15), no third-party dependencies
-│   ├── Sources/            OrchProtocol, OrchCustody, OrchStore, OrchPush, OrchClient,
-│   │                       OrchFakeHost, OrchUI (tokens and shared rails)
+│   ├── Sources/            OrchProtocol, OrchCustody, OrchCoordination, OrchPush,
+│   │                       OrchClient, OrchFakeHost, OrchUI (tokens and shared rails)
 │   └── Tests/              One unit-test target per module
 ├── NotificationService/    OrchNotify: generic notification fallback, completion gate
-├── ShareExtension/         OrchShare: compose placeholder
 ├── AppTests/               Hosted unit tests
 ├── UITests/                Home XCUITest
 ├── scripts/                Extension dependency audit
 └── .github/workflows/      Core and hosted-app CI
 ```
 
-The NSE links only OrchPush → OrchProtocol. The share extension links only OrchUI.
-All package modules compile with extension API restrictions. The app owns the `.keys`
-keychain group; only the app and NSE share `.push`. The share extension has no keychain
-entitlement. App Groups: `group.io.severin.orch` (app + NSE: push replay state) and
-`group.io.severin.orch.share` (app + share extension: share staging), so the NSE cannot read staged files.
+The NSE links only OrchPush, OrchProtocol and OrchCoordination. All package modules compile with extension API
+restrictions. The app owns the `.keys` keychain group; only the app and NSE share `.push`. App Group:
+`group.io.severin.orch` (app + NSE: hub push replay state).
 
 ## Build and test
 
@@ -66,10 +63,9 @@ tests locally; CI uses `build-for-testing` then `test-without-building` with
 `-only-testing:OrchTests` to exclude UI tests from execution.
 
 Debug launch arguments are parsed only by `LaunchOptions` (`--ui-testing`, `--appearance`, `--push-harness`, `--push-material`)
-and `HubLaunch` (`--hub-pair`, `--hub-fake`, `--hub-sign`). Release ignores all of them; the hub screens are DEBUG-only until
-their design is final, so a Release build shows a placeholder.
+and `HubLaunch` (`--hub-pair`, `--hub-fake`, `--hub-sign`). Release ignores all of them and shows the real hub app.
 
-## Hub pairing (V3, dev builds only)
+## Hub pairing (V3)
 
 B1 (orch-core #861) pairs the phone with an orch hub (`orch-hub` `docs/protocol.md` 5, 6.3, 6.4; design `state/design-b-phone.md`).
 `orch://hub-pair/<authority>#h1.<hub_id>.<user_id>.<code>` is parsed strictly (`HubVerifier.parseLink`); the card is verified pinned to the

@@ -51,7 +51,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     dependencies:
       - package: OrchKit
-        products: [OrchProtocol, OrchCustody, OrchStore, OrchCoordination, OrchPush, OrchClient, OrchFakeHost, OrchUI]
+        products: [OrchProtocol, OrchCustody, OrchCoordination, OrchPush, OrchClient, OrchFakeHost, OrchUI]
       - target: OrchNotify
         embed: true
   OrchNotify:
@@ -82,9 +82,6 @@ targets:
     platform: iOS
     sources:
       - AppTests
-      # test-only push fixtures (test keys), shared with scripts/make-push-fixture.swift and OrchPushTests
-      - path: OrchKit/Tests/OrchPushFixtures/PushFixtures.swift
-        group: PushFixtures
     dependencies:
       - target: Orch
       - package: OrchKit

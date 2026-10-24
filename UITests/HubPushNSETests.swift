@@ -1,6 +1,6 @@
 import XCTest
 
-/// Real-process evidence for the hub push path of the notification service extension (design B4), like PushNSETests: the DEBUG push harness installs a hub
+/// Real-process evidence for the hub push path of the notification service extension (design B4): the DEBUG push harness installs a hub
 /// push material item (the push key only), a HOST script (`scripts/hub-push-nse-test.sh`) plays the APNs sender with `xcrun simctl push`, and the test reads
 /// what the EXTENSION wrote: its marker and the notifications the OS delivered. A visible notification alone proves nothing: the marker must show the
 /// extension ran, else the test records UNVERIFIED and skips. Handshake files: `ready-N`, `sent-N`, `checked-N`.

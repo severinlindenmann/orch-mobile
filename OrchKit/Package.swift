@@ -30,8 +30,8 @@ let package = Package(
         .testTarget(name: "OrchCoordinationTests", dependencies: ["OrchCoordination"]),
         .target(name: "OrchPush", dependencies: ["OrchProtocol", "OrchCoordination"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
-        .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchCoordination", "OrchCustody", "OrchTestVectors", "OrchPushFixtures"]),
-        // Test-only: seals push fixtures from test keys. Not a product; the script and the UI tests compile this one file.
+        .testTarget(name: "OrchPushTests", dependencies: ["OrchPush", "OrchProtocol", "OrchCoordination", "OrchCustody", "OrchTestVectors"]),
+        // Test-only: the APNs body wrapper of the hub push fixtures. Not a product; scripts/make-push-fixture.sh compiles this one file.
         .target(name: "OrchPushFixtures", dependencies: ["OrchProtocol"], path: "Tests/OrchPushFixtures"),
         .target(name: "OrchClient", dependencies: ["OrchProtocol", "OrchCustody", "OrchPush"],
                 swiftSettings: [.unsafeFlags(["-application-extension", "-strict-concurrency=complete"])]),
