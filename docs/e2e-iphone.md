@@ -78,7 +78,6 @@ scrolling to the end, Cancel reachable, unsafe options refused sheet), Drop list
 Settings (last row above the tab bar), workspace Settings incl. Demo controls (Leave reachable) and a client-hosted workspace.
 Each screen asserts element reachability and that nothing runs past the screen edges; XL, XXXL and AX5 all end with 0 failures.
 Screenshots (half size, JPEG): `docs/screens/step16-<screen>-<xl|xxxl|ax5>-<light|dark>.jpg`, all three sizes, both themes.
-The share extension's unreadable / no-workspaces screens (incl. expanded Details) are covered too: `share-status`, `share-status-none` and their `-details` shots.
 
 Bugs found and fixed (restyle only; signed text, SafeText rules and arming/scroll-to-end gating untouched):
 - Sign sheet, unsafe content: the pinned footer's warning block was truncated ("Check it before you…") and left too little scroll area;
@@ -87,14 +86,12 @@ Bugs found and fixed (restyle only; signed text, SafeText rules and arming/scrol
 - AX5 workspace cards: a long chip laid out on one line wider than the card; FlowLayout now bounds chips to the row.
 - AX5 Pairing: the pinned Demo bar took about half the screen and truncated; it now scrolls with the content.
 
-- Share extension unreadable / no-workspaces screen: the Details disclosure sat in a fixed 200 pt box beside a scroll view; it is now one scrolling page.
 - AX5 Pairing: "Use link" wrapped mid-word next to the Paste button; the two buttons now stack.
 - AX5 Home: the Needs-you and Drop cards (and the pending-answer card) squeezed their text between icon and chevron ("6 need you" on three lines, "Laptop · Ena…", "work-/spaces"); at accessibility sizes the icon sits above the text and the chevron goes.
 - AX5 chips (Demo, Hosted by, status) kept a capsule shape when wrapped so text spilled past the tint; they are a rounded rectangle at accessibility sizes.
 - AX5 Drop rows: "expires in 1 w…" was truncated; it wraps now.
 - Sign sheet (security review): with the footer scrolling inside the content (XL+ unsafe, XXXL+), Sign could be on screen with its warning scrolled away. A compact "Check hidden characters" strip is pinned at the bottom, by Sign, whenever a signature is possible. `UnsafeWarningPinnedTests` scrolls to the end and back; the state "Sign visible, footer warning block scrolled away" is reached only at AX5 (at XL and XXXL the block always sits beside Sign), and the strip is visible in every step at all three sizes.
 
-The share extension itself (the real process) is driven by ShareExtensionTests; the Step 16 check renders the same view source (`ShareExtension/ShareStatusViews.swift`) through the DEBUG route `share-status/unreadable|none`, because the unreadable state cannot be produced in the real extension on a simulator.
 
 Remaining (not fixed): tab-bar translucency over scrolled content at AX5, and low-contrast grey text in Settings (visual review notes); the share sheet title "Share to orch" truncates to "Share t…" in the system toolbar at XXXL and AX5 (system chrome between Cancel and Save to send). Real-device pass (physical iPhone, real share sheet, VoiceOver) is still open.
 Test-only: `--hold-reconcile` launch flag (DEBUG) disables the timed background reconcile (see flaky test below).

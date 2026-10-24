@@ -4,8 +4,8 @@ import OrchCustody
 import OrchPush
 import UserNotifications
 
-/// The one hub storage of this process (design B6): the keychain custody, the cache and the resumable wipe over them. Not DEBUG-only: Reset
-/// this iPhone must be able to remove a hub pairing in every build. The pairing UI (`HubRuntime`) builds on the same objects, so Reset and the
+/// The one hub storage of this process (design B6): the keychain custody, the cache and the resumable wipe over them. Not DEBUG-only: Leave
+/// the hub must be able to remove the hub pairing in every build. The pairing UI (`HubRuntime`) builds on the same objects, so Leave and the
 /// hub screens never see two different stores.
 enum HubStorage {
     /// The keychain of the app (an in-memory vault when the Simulator build is unsigned).

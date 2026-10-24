@@ -1,4 +1,3 @@
-#if DEBUG
 import CryptoKit
 import Foundation
 import Observation
@@ -88,4 +87,3 @@ final class HubPushDriver {
         if case .done(let hints, _) = r, !hints.isEmpty { hintTick += 1 }
     }
 }
-#endif

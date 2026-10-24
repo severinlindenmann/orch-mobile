@@ -1,12 +1,13 @@
-#if DEBUG
 import Foundation
 import Observation
 import OrchClient
 import OrchCustody
+#if DEBUG
 import OrchFakeHost
+#endif
 import OrchProtocol
 
-/// The pairing-with-a-hub screen's model (design B1; V3 dev builds only). It holds what the person typed and the coordinator's state; the
+/// The pairing-with-a-hub screen's model (design B1). It holds what the person typed and the coordinator's state; the
 /// coordinator owns every key, token and check. The password and the code live here only until `pair()` hands them over and are cleared.
 @MainActor @Observable
 final class HubPairingModel: Identifiable {
@@ -15,37 +16,29 @@ final class HubPairingModel: Identifiable {
     var totp = ""
     var hubName = "Dev hub"
     private(set) var state: HubPairingState = .idle
-    /// DEBUG launch helpers (`--hub-fake`): an in-process hub so the Simulator can run the whole flow without a real one.
-    @ObservationIgnored private(set) var fake: FakeHub?
+    #if DEBUG
+    /// DEBUG launch helper (`--hub-fake`): an in-process hub so the Simulator can run the whole flow without a real one.
+    @ObservationIgnored var fake: FakeHub?
+    #endif
     @ObservationIgnored private let coordinator: HubPairingCoordinator
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    init(coordinator: HubPairingCoordinator, fake: FakeHub? = nil) {
-        self.coordinator = coordinator; self.fake = fake
-    }
+    init(coordinator: HubPairingCoordinator) { self.coordinator = coordinator }
 
     /// The process-wide stack (`HubRuntime.shared`): one pairing coordinator per process, never one per sheet (L2-B1d-2).
     static func live() -> HubPairingModel {
-        HubPairingModel(coordinator: HubRuntime.shared.pairing, fake: HubRuntime.shared.fake)
+        let m = HubPairingModel(coordinator: HubRuntime.shared.pairing)
+        #if DEBUG
+        m.fake = HubRuntime.shared.fake
+        #endif
+        return m
     }
 
-    /// `--hub-fake`: the same stack against `FakeHub` (no network). `script` is `link`, `confirm` or `paired` (screenshots and UI tests).
-    static func fake(script: String?) -> HubPairingModel {
-        let hub = FakeHub(origin: "https://hub.dev.orch.example")
-        let backend: any VaultBackend = InMemoryVaultBackend()   // the fake hub never touches the keychain
-        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
-        let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
-            guard origin == hub.origin else { throw HubAPIError.network }
-            return hub
-        }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache()))
-        let m = HubPairingModel(coordinator: HubPairingCoordinator(cfg), fake: hub)
-        m.linkText = hub.pairingLink
-        if script == "confirm" || script == "paired" || script == "failed" {
-            m.start()
-            if script == "paired" { m.password = hub.password; m.totp = hub.totp }
-            if script == "failed" { m.password = "wrong"; m.totp = "000000" }
-            if script != "confirm" { let started = m.task; m.task = Task { await started?.value; m.pair() } }
-        }
+    /// An opened `orch://hub-pair/...` link: the pairing screen starts on it.
+    static func live(link: String) -> HubPairingModel {
+        let m = live()
+        m.linkText = link
+        m.start()
         return m
     }
 
@@ -87,18 +80,38 @@ final class HubPairingModel: Identifiable {
     func tryAgain() { password = ""; totp = ""; state = .idle }
 }
 
-/// DEBUG launch arguments for the hub pairing screen (Release does not compile this file): `--hub-pair` opens the real stack,
-/// `--hub-fake [link|confirm|paired|failed]` the in-process fake hub (screenshots and UI tests).
-enum HubLaunch {
+/// The `orch://hub-pair/...` link of a hub QR code or invite.
+enum HubPairingLink {
     static func isHubLink(_ text: String) -> Bool { text.hasPrefix("orch://hub-pair/") }
+}
 
-    @MainActor static func model(link: String) -> HubPairingModel {
-        let m = HubPairingModel.live()
-        m.linkText = link
-        m.start()
+#if DEBUG
+extension HubPairingModel {
+    /// `--hub-fake`: the same stack against `FakeHub` (no network). `script` is `link`, `confirm` or `paired` (screenshots and UI tests).
+    static func fake(script: String?) -> HubPairingModel {
+        let hub = FakeHub(origin: "https://hub.dev.orch.example")
+        let backend: any VaultBackend = InMemoryVaultBackend()   // the fake hub never touches the keychain
+        let custody = HubKeyCustody(keys: SecretVault(group: .keys, backend: backend), push: SecretVault(group: .push, backend: backend))
+        let cfg = HubPairingConfig(custody: custody, makeSender: { origin in
+            guard origin == hub.origin else { throw HubAPIError.network }
+            return hub
+        }, wipe: HubWipe(custody: custody, cache: InMemoryHubCache()))
+        let m = HubPairingModel(coordinator: HubPairingCoordinator(cfg))
+        m.fake = hub
+        m.linkText = hub.pairingLink
+        if script == "confirm" || script == "paired" || script == "failed" {
+            m.start()
+            if script == "paired" { m.password = hub.password; m.totp = hub.totp }
+            if script == "failed" { m.password = "wrong"; m.totp = "000000" }
+            if script != "confirm" { let started = m.task; m.task = Task { await started?.value; m.pair() } }
+        }
         return m
     }
+}
 
+/// DEBUG launch arguments for the hub pairing screen (Release does not compile this block): `--hub-pair` opens the real stack,
+/// `--hub-fake [link|confirm|paired|failed]` the in-process fake hub (screenshots and UI tests).
+enum HubLaunch {
     /// Whether a launch argument asks for the hub screen (no model is made: `HubLaunchRoot` makes it once).
     static func model(arguments: [String], probe: Bool) -> Bool { arguments.contains("--hub-fake") || arguments.contains("--hub-pair") || arguments.contains("--hub-sign") }
 

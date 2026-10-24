@@ -1,8 +1,7 @@
 import SwiftUI
-import OrchUI
 
-/// The app is the phone of a hub (V3, D69): it pairs with the hub only, never with a workspace. The hub screens are still DEBUG-only
-/// while their design is open (mockup picks A4); a Release build shows `HubUnavailableView` until they ship.
+/// The app is the phone of a hub (V3, D69): it pairs with the hub only, never with a workspace. The hub flow (pair, home, sign) is the
+/// root in every configuration; DEBUG adds launch arguments for the push harness and the in-process hub (UI tests, screenshots).
 @main
 struct OrchApp: App {
     @UIApplicationDelegateAdaptor(OrchAppDelegate.self) private var delegate
@@ -21,25 +20,7 @@ struct OrchApp: App {
         else if HubLaunch.model(arguments: ProcessInfo.processInfo.arguments, probe: true) { HubLaunchRoot() }
         else { HubRoot() }
         #else
-        HubUnavailableView()
+        HubRoot()
         #endif
     }
 }
-
-#if !DEBUG
-/// Release placeholder: the hub screens are not shipped yet, and the app has no other pairing.
-struct HubUnavailableView: View {
-    var body: some View {
-        VStack(spacing: OS.s4) {
-            Image(systemName: "link.badge.plus").font(.system(size: 48)).foregroundStyle(OC.textMuted).accessibilityHidden(true)
-            Text("orch needs your hub").font(OF.wsName).accessibilityAddTraits(.isHeader)
-            Text("This iPhone pairs with your orch hub. Pairing arrives in an upcoming build.")
-                .font(OF.body).foregroundStyle(OC.textMuted).multilineTextAlignment(.center)
-        }
-        .padding(OS.s5)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(OC.bg)
-        .accessibilityIdentifier("app.hubunavailable")
-    }
-}
-#endif

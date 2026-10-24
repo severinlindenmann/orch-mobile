@@ -1,9 +1,18 @@
 import Foundation
 import OrchCoordination
 import OrchProtocol
+import Security
 
 // Hub pushes (design B4, orch-hub protocol 10.8.2): sealed to the channel's PUSH key, opened by the notification extension and by the app's
 // mailbox catch-up through the same intake, so one replay store sees every id once. A hint is never an authority.
+
+/// Why the extension's keychain read gave no material.
+public enum PushMaterialError: Error, Equatable, Sendable {
+    /// Before first unlock the item cannot be read: the extension shows the generic text.
+    case locked
+    case unavailable(Int32)
+    case invalid
+}
 
 /// Where the notification extension gets the hub material (one `.push` item). The production one reads the keychain; tests inject.
 public protocol HubPushMaterialSource: Sendable {
@@ -15,8 +24,8 @@ public protocol HubPushMaterialSource: Sendable {
 public struct KeychainHubPushMaterialSource: HubPushMaterialSource {
     let accessGroup: String?
     public init?(accessGroupPrefix prefix: String) {
-        guard KeychainPushMaterialSource.validPrefix(prefix) else { return nil }
-        accessGroup = prefix + KeychainPushMaterialSource.groupSuffix
+        guard Self.validPrefix(prefix) else { return nil }
+        accessGroup = prefix + Self.groupSuffix
     }
 
     public static func fromBundle(_ bundle: Bundle = .main) -> KeychainHubPushMaterialSource? {
@@ -27,6 +36,17 @@ public struct KeychainHubPushMaterialSource: HubPushMaterialSource {
     /// TEST-ONLY: no access group in the query.
     public init(unscopedForTests: Void) { accessGroup = nil }
     #endif
+
+    /// The `.push` keychain access group, after the team id prefix.
+    public static let groupSuffix = "io.severin.orch.push"
+
+    /// `prefix` is the team id with its trailing dot (`"77D4THRYUN."`); same Info.plist key as custody.
+    static func validPrefix(_ p: String) -> Bool {
+        let u = Array(p.utf8)
+        return u.count > 1 && u.last == 0x2E && u.dropLast().allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A)
+        }
+    }
 
     public func load() throws -> HubPushMaterial? {
         var q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrAccount: HubPushMaterial.purpose,
@@ -52,7 +72,7 @@ public struct HubPushOuter: Equatable, Sendable {
 
     /// nil unless the bytes are exactly that shape. `isHub` below tells a hub push from a direct one by its members.
     public static func parse(_ raw: Data) -> HubPushOuter? {
-        guard raw.count <= PushProcessor.maxOuterBytes, let m = try? StrictJSON.parse(raw, maxBytes: PushProcessor.maxOuterBytes).object,
+        guard raw.count <= PushReplay.maxOuterBytes, let m = try? StrictJSON.parse(raw, maxBytes: PushReplay.maxOuterBytes).object,
               Set(m.keys) == ["v", "hub", "ch", "id", "c"], m["v"] == .int(2), let hub = m["hub"]?.string, let ch = m["ch"]?.string,
               let id = m["id"]?.string, let c = m["c"]?.string, Hex.decode(hub, length: 16) != nil, Hex.decode(ch, length: 16) != nil,
               Hex.decode(id, length: 16) != nil, B64U.decode(c) != nil else { return nil }
@@ -61,7 +81,7 @@ public struct HubPushOuter: Equatable, Sendable {
 
     /// The outer names a hub (`hub` member): this is the hub path even when the rest is malformed (it then shows generic text).
     public static func isHub(_ raw: Data) -> Bool {
-        guard raw.count <= PushProcessor.maxOuterBytes, let m = try? StrictJSON.parse(raw, maxBytes: PushProcessor.maxOuterBytes).object else { return false }
+        guard raw.count <= PushReplay.maxOuterBytes, let m = try? StrictJSON.parse(raw, maxBytes: PushReplay.maxOuterBytes).object else { return false }
         return m["hub"] != nil
     }
 }
@@ -77,7 +97,7 @@ public struct HubPushIntake: Sendable {
     public enum Verdict: Equatable, Sendable {
         /// Opened, fresh and unseen: recorded durably BEFORE this returns (so before anything is shown).
         case hint(HubPushHint)
-        case dropped(PushProcessor.DropReason)
+        case dropped(PushReplay.DropReason)
     }
 
     /// Protocol 10.8.2: the phone opens a hint only when `hub` and `ch` are its own pairing's, the seal opens, `ts_ms` is within
@@ -93,14 +113,14 @@ public struct HubPushIntake: Sendable {
         do { hint = try material.opener.openPush(sealed: sealed, hubID: hubID, channelID: channelID, messageID: messageID) }
         catch { return .dropped(.tag) }
         do {
-            return try work.perform { try store.transact(workspace: channel, generation: 0, nowMs: nowMs) { current -> (Verdict, PushProcessor.WorkspaceReplay?) in
+            return try work.perform { try store.transact(workspace: channel, generation: 0, nowMs: nowMs) { current -> (Verdict, PushReplay.WorkspaceReplay?) in
                 let state = current.pruned()
                 if hint.tsMs <= state.notBeforeTs { return (.dropped(.replay), state) }
-                if let why = PushProcessor.checkTimestamp(tsMs: hint.tsMs, nowMs: nowMs, floorNowMs: state.maxShownTs, lastShown: state.last(id: messageID)) {
+                if let why = PushReplay.checkTimestamp(tsMs: hint.tsMs, nowMs: nowMs, floorNowMs: state.maxShownTs, lastShown: state.last(id: messageID)) {
                     return (.dropped(why), state)
                 }
                 let advanced = state.recording(messageID, hint.tsMs)
-                if state.last(id: messageID) == nil, advanced.lastShown.count > PushProcessor.maxEntriesPerWorkspace { return (.dropped(.capacity), state) }
+                if state.last(id: messageID) == nil, advanced.lastShown.count > PushReplay.maxEntriesPerWorkspace { return (.dropped(.capacity), state) }
                 return (.hint(hint), advanced)
             } }
         } catch { return .dropped(.capacity) }
@@ -128,7 +148,6 @@ extension PushPresentation {
     public static func hubHint(_ kind: HubPushHint.Kind, label: String) -> PushPresentation {
         let name = NotificationText.safe(label, limit: 80)
         let body = kind == .prepare ? "A signature request is waiting" : "Something needs you"
-        return PushPresentation(style: .event, title: name.isEmpty ? genericTitle : name, body: body, threadID: nil, entityKey: nil,
-                                removesDelivered: nil, sound: true, simulated: false)
+        return PushPresentation(style: .event, title: name.isEmpty ? genericTitle : name, body: body, sound: true)
     }
 }

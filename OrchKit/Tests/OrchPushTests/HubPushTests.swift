@@ -37,7 +37,9 @@ private struct StubHubSource: HubPushMaterialSource {
     func load() throws -> HubPushMaterial? { if fails { throw PushMaterialError.locked }; return material }
 }
 
-private struct NoWorkspaces: PushMaterialSource { func loadAll(realm: String) throws -> [ID16: PushMaterial] { [:] } }
+extension JSONValue {
+    fileprivate subscript(_ k: String) -> JSONValue { object?[k] ?? .null }
+}
 
 private func tempDir() -> URL {
     let d = FileManager.default.temporaryDirectory.appendingPathComponent("orch-b4-\(UUID().uuidString)", isDirectory: true)
@@ -46,7 +48,7 @@ private func tempDir() -> URL {
 }
 
 private func handler(_ dir: URL, source: StubHubSource?, now: Int64 = HV.tsMs + 1000) -> PushHandler {
-    PushHandler(material: NoWorkspaces(), hubMaterial: source, pushDir: dir, now: { Date(timeIntervalSince1970: Double(now) / 1000) })
+    PushHandler(hubMaterial: source ?? StubHubSource(material: nil), pushDir: dir, now: { Date(timeIntervalSince1970: Double(now) / 1000) })
 }
 
 @Suite struct HubPushNSETests {
@@ -69,7 +71,7 @@ private func handler(_ dir: URL, source: StubHubSource?, now: Int64 = HV.tsMs + 
         #expect(r.presentation.body == "A signature request is waiting")   // the vector's type is `prepare`
         // nothing of the payload (ref, ids) reaches the screen or the routing keys
         for text in [r.presentation.title, r.presentation.body] { #expect(!text.contains(HV.ref) && !text.contains(HV.channel)) }
-        #expect(r.presentation.userInfo.isEmpty && r.presentation.entityKey == nil && r.presentation.threadID == nil)
+        #expect(r.presentation.style == .event)
     }
 
     @Test func needsYouHasItsOwnFixedLine() {
