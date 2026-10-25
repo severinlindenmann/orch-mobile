@@ -76,10 +76,10 @@ vectors_v2.json sha256: `717b519025740348b35eecf80d9699d4cc7961ba79183bbfad00bd0
 
 ## vectors_hub.json (orch-hub hub contract H0, V3 B1)
 
-- SOURCE: orch-hub `vectors/vectors_hub.json` (hub contract `orch.hub/0`, `docs/protocol.md` section 15), orch-hub develop at
-  `b1bbd0c7a07174e8171908aad8c70b67db6cdd81` (last commit touching the file: `48c506900e66479509c99d26cf4e3118919f9031`).
-- Copied: 2026-10-23, byte for byte (`git show origin/develop:vectors/vectors_hub.json`). Re-copy and update this note; never edit by hand.
-- sha256: `a854ae4d7080719c48c136cb6c137083bb8a165ed25d3d1ecc98b34c71b17ebe`
+- SOURCE: orch-hub `vectors/vectors_hub.json` (hub contract `orch.hub/0`, `docs/protocol.md` section 15), orch-hub branch `feat/1237-addon-off` at
+  `e82bb2eba7dd54f19393f6bee210c47f4f456f1e` (8 new cases: the hub refuses `addon.enabled` and `addon.granted` with `off` as not custodial).
+- Copied: 2026-10-25, byte for byte (`git show origin/develop:vectors/vectors_hub.json`). Re-copy and update this note; never edit by hand.
+- sha256: `62a9e223abe7fcef540489909da68b407ecb7f4c26afebbb4b2db322e537eea5`
 - All keys are FAKE and test-only. `HubVectorTests` (OrchProtocolTests) replays `pair_link`, `api_origin`, `card` and `channel_cert`;
   `HubChannelSignerTests` (OrchCustodyTests) rebuilds the `channel_register`, `channel_auth`, `channel_push` and `channel_request` signed
   bytes and the custodial proof; `HubPushOpenerTests` opens the `push_seal` vector.
