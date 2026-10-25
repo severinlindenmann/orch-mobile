@@ -142,7 +142,7 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
     // MARK: allow-list
 
     @Test func nothingOutsideTheFourTypesCanBeConfirmed() async throws {
-        for type in ["ticket.moved", "people.changed", "visibility.changed", "settings.changed", "addon.purged", "workspace.created", "question.asked", "x"] {
+        for type in ["ticket.moved", "people.changed", "visibility.changed", "settings.changed", "addon.purged", "addon.enabled", "addon.granted", "workspace.created", "question.asked", "x"] {
             var f = FakeHub.Faults(); f.buildType = type
             let rig = try await Rig(workspaces: true)
             rig.hub.faults = f
@@ -166,7 +166,7 @@ private func failure(_ body: () async throws -> some Any) async -> HubSignFailur
     }
 
     @Test func movesAreNotSignableOnThePhone() {
-        for t in ["ticket.moved", "people.changed", "visibility.changed", "addon.disabled", "addon.purged", "policy.changed", "settings.changed"] {
+        for t in ["ticket.moved", "people.changed", "visibility.changed", "addon.enabled", "addon.granted", "addon.disabled", "addon.purged", "policy.changed", "settings.changed"] {
             #expect(!HubSign.isDecisionType(t), "\(t)")
         }
     }
