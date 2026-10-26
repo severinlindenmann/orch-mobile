@@ -14,7 +14,7 @@ import Testing
     }
 
     func sender(_ s: StubServer, cap: Int = 4096, idle: TimeInterval = 5, total: TimeInterval = 10) throws -> NWRequestSender {
-        try NWRequestSender(loopbackOrigin: s.origin, maxResponseBytes: cap, requestTimeout: idle, resourceTimeout: total)
+        try NWRequestSender(plainHTTPOrigin: s.origin, maxResponseBytes: cap, requestTimeout: idle, resourceTimeout: total)
     }
 
     func expectDisconnected(_ raw: Data, _ note: String = "", sourceLocation: SourceLocation = #_sourceLocation) async throws {
@@ -32,11 +32,14 @@ import Testing
         for o in ["http://127.0.0.1:8101", "http://localhost:8101", "http://relay.example.org", "https://relay.example.org/", "ftp://a", ""] {
             #expect(throws: OriginViolation.self) { _ = try NWRequestSender(origin: o) }
         }
-        #expect(throws: OriginViolation.self) { _ = try NWRequestSender(loopbackOrigin: "http://relay.example.org:80") }
-        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(loopbackOrigin: "http://localhost:8101") }
-        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(loopbackOrigin: "http://127.0.0.1") }
-        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(loopbackOrigin: "https://127.0.0.1:1") }
-        _ = try NWRequestSender(loopbackOrigin: "http://[::1]:8101")
+        #expect(throws: OriginViolation.self) { _ = try NWRequestSender(plainHTTPOrigin: "http://relay.example.org:80") }
+        _ = try NWRequestSender(plainHTTPOrigin: "http://localhost:8101")
+        _ = try NWRequestSender(plainHTTPOrigin: "http://100.71.14.98:8101")
+        _ = try NWRequestSender(plainHTTPOrigin: "http://192.168.1.10:8101")
+        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(plainHTTPOrigin: "http://8.8.8.8:8101") }
+        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(plainHTTPOrigin: "http://127.0.0.1") }
+        #expect(throws: OriginViolation.invalidOrigin) { _ = try NWRequestSender(plainHTTPOrigin: "https://127.0.0.1:1") }
+        _ = try NWRequestSender(plainHTTPOrigin: "http://[::1]:8101")
     }
 
     @Test func targetsThatCouldChangeTheRequestAreRefusedBeforeIO() async throws {
@@ -169,7 +172,7 @@ import Testing
         await #expect(throws: TransportError.responseTooLarge) { _ = try await snd.send(self.get("/over1")) }
         s.handle { _ in .endless(chunk: 1000) }
         await #expect(throws: TransportError.responseTooLarge) { _ = try await snd.send(self.get("/endless")) }
-        let big = try NWRequestSender(loopbackOrigin: s.origin)
+        let big = try NWRequestSender(plainHTTPOrigin: s.origin)
         #expect(big.maxResponseBytes == 4 << 20)
         s.handle { _ in .endless(chunk: 200_000) }
         await #expect(throws: TransportError.responseTooLarge) { _ = try await big.send(self.get("/endless-default")) }
@@ -370,7 +373,7 @@ import Testing
         let port = s.port
         s.stop()
         // idle limit far above the assertion: `.waiting` (refused / no path) must be final at once, not after the idle timeout
-        let dead = try NWRequestSender(loopbackOrigin: "http://127.0.0.1:\(port)", requestTimeout: 30, resourceTimeout: 60)
+        let dead = try NWRequestSender(plainHTTPOrigin: "http://127.0.0.1:\(port)", requestTimeout: 30, resourceTimeout: 60)
         let t0 = ContinuousClock.now
         await #expect(throws: TransportError.disconnected) { _ = try await dead.send(self.get("/x")) }
         #expect(ContinuousClock.now - t0 < .seconds(5))

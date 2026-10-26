@@ -56,21 +56,17 @@ public final class NWRequestSender: RequestSender, @unchecked Sendable {
         try self.init(validated: origin, tls: true, maxResponseBytes: maxResponseBytes, requestTimeout: requestTimeout, resourceTimeout: resourceTimeout)
     }
 
-    #if DEBUG
-    /// `http://127.0.0.1:<port>` or `http://[::1]:<port>`, valid under `RelayURL`, with an explicit port.
-    package static func isLoopbackHTTP(_ origin: String) -> Bool {
-        guard RelayURL.isValid(origin) else { return false }
-        for prefix in ["http://127.0.0.1:", "http://[::1]:"] where origin.hasPrefix(prefix) { return true }
-        return false
+    /// Plain http to an allowed host (loopback, private, CGNAT; `PlainHTTP`) with an explicit port. Prototype: also in Release.
+    package static func isPlainHTTP(_ origin: String) -> Bool {
+        guard PlainHTTP.isAllowedOrigin(origin), let c = URLComponents(string: origin), c.port != nil else { return false }
+        return true
     }
 
-    /// TEST-ONLY: a loopback `http` origin (`#if DEBUG` + `package`: a Release build has no such initializer).
-    package convenience init(loopbackOrigin origin: String, maxResponseBytes: Int = defaultMaxResponseBytes,
-                             requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 120) throws {
-        guard Self.isLoopbackHTTP(origin) else { throw OriginViolation.invalidOrigin }
+    public convenience init(plainHTTPOrigin origin: String, maxResponseBytes: Int = defaultMaxResponseBytes,
+                            requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 120) throws {
+        guard Self.isPlainHTTP(origin) else { throw OriginViolation.invalidOrigin }
         try self.init(validated: origin, tls: false, maxResponseBytes: maxResponseBytes, requestTimeout: requestTimeout, resourceTimeout: resourceTimeout)
     }
-    #endif
 
     private init(validated origin: String, tls: Bool, maxResponseBytes: Int, requestTimeout: TimeInterval, resourceTimeout: TimeInterval) throws {
         guard maxResponseBytes > 0, requestTimeout > 0, resourceTimeout > 0, let c = URLComponents(string: origin), var h = c.host, !h.isEmpty else {

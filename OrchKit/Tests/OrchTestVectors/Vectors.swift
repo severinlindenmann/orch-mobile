@@ -8,6 +8,9 @@ public enum Vectors {
     /// orch-hub `vectors/vectors_hub.json` (hub contract H0, FAKE keys; see PROVENANCE.md).
     public static var hub: Data { try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("vectors_hub.json")) }
 
+    /// `origin_http.json`: the shared plain-http origin rule (copied from orch-hub `vectors/origin_http.json`).
+    public static var originHTTP: Data { try! Data(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("origin_http.json")) }
+
     /// The pin of `vectors_hub.json`: `hub_repo`, `hub_commit`, `vectors_hub_sha256` lines (written by scripts/sync-hub-vectors.sh).
     public static var hubSource: String { try! String(contentsOf: Bundle.module.resourceURL!.appendingPathComponent("vectors_hub.SOURCE"), encoding: .utf8) }
 
