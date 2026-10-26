@@ -71,7 +71,8 @@ public struct HubPairLink: Sendable, Equatable, CustomStringConvertible, CustomD
         guard let host = parseAuthority(authority), let frag = parseFragment(fragment) else { throw Refusal.malformed }
         let isLoopback = loopback.contains(host)
         if isLoopback && !devMode { throw Refusal.malformed }
-        return HubPairLink(api: (isLoopback ? "http://" : "https://") + authority, hubID: frag.hub, userID: frag.user, code: frag.code)
+        let plain = PlainHTTP.isAllowedHost(host)   // loopback (dev only, above), private or CGNAT: plain http
+        return HubPairLink(api: (plain ? "http://" : "https://") + authority, hubID: frag.hub, userID: frag.user, code: frag.code)
     }
 
     /// The host of a valid authority (`host[:port]`), or nil. `[::1]` needs a port.
@@ -223,9 +224,15 @@ public struct HubVerifier: Sendable {
         }
         if s.hasPrefix("http://") {
             let (h, ok) = split(Substring(s.dropFirst(7)))
-            return ok && ["localhost", "127.0.0.1", "[::1]"].contains(String(h))
+            return ok && PlainHTTP.isAllowedHost(String(h))
         }
         return false
+    }
+
+    static func isLoopbackOrigin(_ o: String) -> Bool {
+        let rest = o.dropFirst(7)
+        let host = rest.hasPrefix("[") ? String(rest.prefix { $0 != "]" }) + "]" : String(rest.prefix { $0 != ":" })
+        return PlainHTTP.isLoopbackHost(host)
     }
 
     func checkDev(_ o: Obj) throws {
@@ -310,7 +317,7 @@ public struct HubVerifier: Sendable {
                               held: held, revoked: revokedOpCerts)
         guard let iss = o["issued_ms"]?.int, let origin = o["origin"]?.string else { throw Refusal.malformed }
         if iss > saturatingAdd(nowMs, Self.clockSkewMs) { throw Refusal.certInvalid }
-        if origin.hasPrefix("http://") && !devMode { throw Refusal.malformed }
+        if origin.hasPrefix("http://") && !devMode && Self.isLoopbackOrigin(origin) { throw Refusal.malformed }
         guard origin.bytesEqual(linkAPI) else { throw Refusal.otherOrigin }
         return origin
     }

@@ -1,6 +1,28 @@
 import CryptoKit
 import Foundation
 
+/// The one "plain http allowed host" rule (vectors `origin_http.json`, shared with core, hub, publish and relay): localhost, 127.0.0.1,
+/// [::1], private IPv4 (10/8, 172.16/12, 192.168/16) and CGNAT 100.64/10. Every other host needs https.
+public enum PlainHTTP {
+    public static func isLoopbackHost(_ h: String) -> Bool { ["localhost", "127.0.0.1", "[::1]"].contains(h) }
+
+    public static func isAllowedHost(_ h: String) -> Bool {
+        if isLoopbackHost(h) { return true }
+        let parts = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        var o: [Int] = []
+        for p in parts {
+            guard (1...3).contains(p.utf8.count), p.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), p == "0" || p.first != "0",
+                  let n = Int(p), n <= 255 else { return false }
+            o.append(n)
+        }
+        return o[0] == 10 || (o[0] == 172 && (16...31).contains(o[1])) || (o[0] == 192 && o[1] == 168) || (o[0] == 100 && (64...127).contains(o[1]))
+    }
+
+    /// True for `http://<allowed host>[:port]` that is also a valid `RelayURL`.
+    public static func isAllowedOrigin(_ origin: String) -> Bool { origin.hasPrefix("http://") && RelayURL.isValid(origin) }
+}
+
 /// `https://<lower-case host>[:port]` with no path and no trailing slash; for development only `http://localhost`,
 /// `http://127.0.0.1` or `http://[::1]` with an optional port (section 7.1). Byte-exact, same shape as the reference's
 /// regular expression.
@@ -40,8 +62,7 @@ public enum RelayURL {
         }
         if u.starts(with: http) {
             guard let (host, port) = splitPort(u[http.count...]) else { return false }
-            let allowed = ["localhost", "127.0.0.1", "[::1]"].map { Array($0.utf8) }
-            guard allowed.contains(where: { Array(host) == $0 }) else { return false }
+            guard PlainHTTP.isAllowedHost(String(decoding: host, as: UTF8.self)) else { return false }
             return port.map(validPort) ?? true
         }
         return false
