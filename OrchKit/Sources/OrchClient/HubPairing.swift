@@ -131,11 +131,7 @@ public struct HubPairingConfig: Sendable {
 public enum HubSenders {
     @Sendable public static func make(origin: String) throws -> any RequestSender {
         if origin.hasPrefix("https://") { return try NWRequestSender(origin: origin) }
-        #if DEBUG
-        return try NWRequestSender(loopbackOrigin: origin)
-        #else
-        throw OriginViolation.invalidOrigin
-        #endif
+        return try NWRequestSender(plainHTTPOrigin: origin)
     }
 }
 

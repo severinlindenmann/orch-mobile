@@ -1,5 +1,5 @@
 #!/bin/bash
-# The test hooks (RealmContext.liveLoopbackForTesting, NWRequestSender(loopbackOrigin:): `package` + `#if DEBUG`; LiveTransport.testingTransport: public but `#if DEBUG`)
+# The test hooks (RealmContext.liveLoopbackForTesting, NWRequestSender(plainHTTPOrigin:): prototype: no longer DEBUG-only, see check list; LiveTransport.testingTransport: public but `#if DEBUG`)
 # and must never be referenced from a shipped target. Fails if App/, NotificationService/ or ShareExtension/ mention them.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,7 +23,7 @@ files=()
 while IFS= read -r f; do files+=("$f"); done < <(find "${dirs[@]}" -type f ! -path "$allowed")
 [ ${#files[@]} -gt 0 ] || { echo "error: no files found" >&2; exit 2; }
 set +e
-hits=$(grep -nE "liveLoopbackForTesting|loopbackOrigin|isLoopbackHTTP|testingTransport|unreachableForUITests" "${files[@]}")
+hits=$(grep -nE "liveLoopbackForTesting|plainHTTPOrigin|isPlainHTTP|testingTransport|unreachableForUITests" "${files[@]}")
 rc=$?
 set -e
 # grep: 0 = matches (bad), 1 = no match (clean), anything else = grep itself failed (never treated as clean)
